@@ -25,6 +25,8 @@ private:
 		int index = 0;
     pid_t pid_;
 		std::recursive_mutex mtx_;
+		std::recursive_mutex mtx_per_cpu_;
+
     //uint32_t num_processors_;
     CPUInfo() {
 			const std::lock_guard<std::recursive_mutex> lock (mtx_);
@@ -214,11 +216,73 @@ private:
 			return result;
 		}
 
+	/**
+     * get current cpu utilization for the calling process
+     * result is calculated as (total_time - idle_time) / total_time, since the
+     * last recent call to this function
+     *
+     * return:  upon success, this function will return the utilization roughly
+     *          between 0.0 to 1.0 for total cpu, cpu0 to cpu2; otherwise, it will return negative values
+     */
+    std::vector<double> get_per_cpu_stat() {
+		const std::lock_guard<std::recursive_mutex> lock (mtx_per_cpu_);
+
+		static vector<double> last_working = vector<double>(4, -1.0);
+		static vector<double> last_total = vector<double>(4, -1.0);
+
+		vector<double> working = vector<double>(4, -1.0);
+		vector<double> total = vector<double>(4, -1.0);
+		vector<double> cpu_usage = vector<double>(4, -1.0);
+
+		std::ifstream statFile("/proc/stat");
+		verify(statFile.is_open());
+
+		std::string line;
+		std::string cpuLabel;
+		long user, nice, system, idle, iowait, irq, softirq;
+
+		for (int i = 0; i < 4; i++) {
+			std::getline(statFile, line);
+			std::istringstream iss(line);
+			iss >> cpuLabel >> user >> nice >> system >> idle >> iowait >> irq >> softirq;
+			working[i] = user + nice + system;
+			total[i] = user + nice + system + idle + iowait + irq + softirq;
+			cpu_usage[i] = (working[i] - last_working[i]) / (total[i] - last_total[i]);
+		}
+
+		last_working = working;
+		last_total = total;
+
+		return cpu_usage;
+	}
+
+	static CPUInfo* static_cpu_info() {
+		static CPUInfo cpu_info;
+		return &cpu_info;
+	}
+
 public:
     static std::vector<double> cpu_stat() {
-        static CPUInfo cpu_info;
-        return cpu_info.get_cpu_stat();
+        return static_cpu_info()->get_cpu_stat();
     }
+	static std::vector<double> per_cpu_stat() {
+		static std::chrono::high_resolution_clock::time_point last_recorded_time = std::chrono::high_resolution_clock::now();
+		static vector<double> last_per_cpu_usage = vector<double>(4, -1.0);
+
+		std::chrono::high_resolution_clock::time_point current_time = std::chrono::high_resolution_clock::now();
+		std::chrono::milliseconds duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_recorded_time);
+
+		if (duration.count() < 100) { // only measure cpu usage every 100ms
+			// Log_info("CPU measure duration %d ms < 100ms", duration.count());
+			return last_per_cpu_usage;
+		}
+		else {
+			// Log_info("CPU measure duration %d ms >= 100ms", duration.count());
+			last_recorded_time = current_time;
+			return last_per_cpu_usage = static_cpu_info()->get_per_cpu_stat();
+		}
+			
+	}
 };
 
 }
