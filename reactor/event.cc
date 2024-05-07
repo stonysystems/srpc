@@ -136,6 +136,47 @@ bool Event::Test() {
   return false;
 }
 
+bool Event::ThreadSafeTest() {
+  std::lock_guard<std::mutex> lock(status_mtx_);
+  verify(__debug_creator); // if this fails, the event is not created by reactor.
+  if (IsReady()) {
+    if (status_ == INIT) {
+      // wait has not been called, do nothing until wait happens.
+    } else if (status_ == WAIT) {
+      auto sp_coro = wp_coro_.lock();
+      verify(sp_coro);
+      verify(status_ != DEBUG);
+//      auto sched = Reactor::GetReactor();
+//      verify(sched.get() == _dbg_p_scheduler_);
+//      verify(sched->__debug_set_all_coro_.count(sp_coro.get()) > 0);
+//      verify(sched->coros_.count(sp_coro) > 0);
+      status_ = READY;
+      if (rcd_wait_) {
+        auto& waiting_events = Reactor::GetReactor()->waiting_events_;
+        auto it = waiting_events.find(shared_from_this());
+        if (it != waiting_events.end()) waiting_events.erase(it);
+      }
+      verify(current_reactor_);
+      Log_info("ThreadSafeTest ready_events_.push_back");
+      current_reactor_->ready_events_.push_back(shared_from_this());
+    } else if (status_ == READY) {
+      // This could happen for a quorum event.
+      Log_info("event status ready, triggered?");
+    } else if (status_ == DONE) {
+      // do nothing
+    } else {
+      verify(0);
+    }
+    return true;
+  }
+  else{
+    if(status_ == DONE){
+      status_ = INIT;
+    }
+  }
+  return false;
+}
+
 Event::Event() {
   auto coro = Coroutine::CurrentCoroutine();
 //  verify(coro);
@@ -252,6 +293,13 @@ void SharedIntEvent::Wait(function<bool(int v)> f) {
 //  sp_ev->Wait(1000*1000*1000);
 //  verify(sp_ev->status_ != Event::TIMEOUT);
   sp_ev->Wait();
+}
+
+ThreadSafeIntEvent::ThreadSafeIntEvent() {
+  current_reactor_ = rrr::Reactor::GetReactor();
+}
+ThreadSafeIntEvent::ThreadSafeIntEvent(int tar) :target_(tar) {
+  current_reactor_ = rrr::Reactor::GetReactor();
 }
 
 } // namespace rrr

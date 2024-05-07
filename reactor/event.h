@@ -11,6 +11,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <atomic>
+#include <mutex>
 //#include "../../deptran/client_worker.h"
 #include "../base/all.hpp"
 
@@ -32,6 +34,9 @@ using std::list;
 class Reactor;
 class Coroutine;
 class Event : public std::enable_shared_from_this<Event> {
+  std::mutex status_mtx_; // This is used for ThreadSafeTest
+ protected:
+  std::shared_ptr<Reactor> current_reactor_{nullptr}; // This is used for other thread access the reactor of the event
 //class Event {
  public:
   int __debug_creator{0};
@@ -68,6 +73,7 @@ class Event : public std::enable_shared_from_this<Event> {
   void RecordPlace(const char* file, int line);
 
   virtual bool Test();
+  virtual bool ThreadSafeTest();
 	virtual bool IsSlow();
   virtual bool IsReady() {
     verify(test_);
@@ -414,6 +420,44 @@ class SingleRPCEvent: public Event{
     bool IsReady() override{
       return res_ == SUCCESS || res_ == REJECT;
     }
+};
+
+// ----------------------------------------- Below are about thread safe events -----------------------------------
+
+// Only ensures Set is threadsafe so far
+class ThreadSafeIntEvent : public Event {
+  std::mutex value_mtx_;
+
+ public:
+  ThreadSafeIntEvent();
+  ThreadSafeIntEvent(int tar);
+  std::atomic<int> value_{0};
+  int target_{1};
+
+
+  bool TestTrigger();
+
+  int get() {
+    return value_;
+  }
+
+  // Threadsafe
+  int Set(int n) {
+    std::lock_guard<std::mutex> lock(value_mtx_); // To protect value_
+    int t = value_;
+    value_ = n;
+//    TestTrigger();
+    ThreadSafeTest();
+    return t;
+  };
+
+  virtual bool IsReady() override {
+    if (test_) {
+      return test_(value_);
+    } else {
+      return (value_ >= target_);
+    }
+  }
 };
 
 }
