@@ -157,7 +157,6 @@ bool Event::ThreadSafeTest() {
         if (it != waiting_events.end()) waiting_events.erase(it);
       }
       verify(current_reactor_);
-      Log_info("ThreadSafeTest ready_events_.push_back");
       current_reactor_->ready_events_.push_back(shared_from_this());
     } else if (status_ == READY) {
       // This could happen for a quorum event.

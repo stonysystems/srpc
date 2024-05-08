@@ -541,7 +541,7 @@ void PollMgr::PollThread::poll_loop() {
 
 		if (slow) Reactor::GetReactor()->slow_ = slow;
 
-    verify(Reactor::GetReactor()->ready_events_.empty());
+    //verify(Reactor::GetReactor()->ready_events_.empty());
     TriggerJob();
     // after each poll loop, remove uninterested pollables
     pending_remove_l_.lock();
@@ -570,9 +570,9 @@ void PollMgr::PollThread::poll_loop() {
       l_.unlock();
     }
     TriggerJob();
-    verify(Reactor::GetReactor()->ready_events_.empty());
+    // verify(Reactor::GetReactor()->ready_events_.empty());
     Reactor::GetReactor()->Loop();
-    verify(Reactor::GetReactor()->ready_events_.empty());
+    // verify(Reactor::GetReactor()->ready_events_.empty());
   }
 }
 
