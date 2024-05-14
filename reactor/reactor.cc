@@ -203,8 +203,8 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
 //        verify(event.status_ != Event::READY);
 //      }
 //    }
-  } while (looping_ || !ready_events_.empty() || !ready_disk_events_.empty());
-  verify(ready_events_.empty());
+  } while (looping_ || !ReadyEventsThreadSafeEmpty() || !ready_disk_events_.empty());
+  // verify(ready_events_.empty());
 }
 
 void Reactor::Recycle(std::shared_ptr<Coroutine>& sp_coro) {
@@ -336,6 +336,16 @@ void Reactor::DisplayWaitingEv() {
     offset += sprintf(buff+offset, "\n%s", it->wait_place_.c_str());
   }
   Log_info(buff);
+}
+
+void Reactor::ReadyEventsThreadSafePushBack(std::shared_ptr<Event> ev) {
+  std::lock_guard<std::mutex> lock(ready_events_mutex_);
+  ready_events_.push_back(ev);
+}
+
+bool Reactor::ReadyEventsThreadSafeEmpty() {
+  std::lock_guard<std::mutex> lock(ready_events_mutex_);
+  return ready_events_.empty();
 }
 
 // TODO PollThread -> Reactor

@@ -39,6 +39,7 @@ class Reactor {
    * A reactor needs to keep reference to all coroutines created,
    * in case it is freed by the caller after a yield.
    */
+  std::mutex ready_events_mutex_;
   std::list<std::shared_ptr<Event>> all_events_{};
   std::set<std::shared_ptr<Event>> waiting_events_{};
   std::vector<std::shared_ptr<Event>> ready_events_{};
@@ -85,6 +86,8 @@ class Reactor {
   void ContinueCoro(std::shared_ptr<Coroutine> sp_coro);
   void Recycle(std::shared_ptr<Coroutine>& sp_coro);
   void DisplayWaitingEv();
+  void ReadyEventsThreadSafePushBack(std::shared_ptr<Event> ev);
+  bool ReadyEventsThreadSafeEmpty();
 
   ~Reactor() {
 //    verify(0);
