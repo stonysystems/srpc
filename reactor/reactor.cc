@@ -165,8 +165,14 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
       ContinueCoro(sp_coro);
     }
 
-    std::vector<shared_ptr<Event>> ready_events = std::move(ready_events_);
-    verify(ready_events_.empty());
+    std::vector<shared_ptr<Event>> ready_events;
+    {
+      // For the thread-safety of ready_events_
+      std::lock_guard<std::mutex> lock(ready_events_mutex_);
+      ready_events = std::move(ready_events_);
+      verify(ready_events_.empty());
+    }
+    
 #ifdef DEBUG_CHECK
     for (auto ev : ready_events) {
       verify(ev->status_ == Event::READY);
