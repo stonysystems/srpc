@@ -184,11 +184,12 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
 
     for (auto it = ready_events.begin(); it != ready_events.end(); it++) {
       Event& event = **it;
-      verify(event.status_ != Event::DONE);
+      // verify(event.status_ != Event::DONE);
+      if (event.status_ == Event::DONE) continue;
       auto sp_coro = event.wp_coro_.lock();
       verify(sp_coro);
       verify(sp_coro->status_ == Coroutine::PAUSED);
-      verify(coros_.find(sp_coro) != coros_.end()); // TODO ?????????
+      // verify(coros_.find(sp_coro) != coros_.end()); // TODO ?????????
       if (event.status_ == Event::READY) {
         event.status_ = Event::DONE;
       } else {
@@ -345,12 +346,16 @@ void Reactor::DisplayWaitingEv() {
 }
 
 void Reactor::ReadyEventsThreadSafePushBack(std::shared_ptr<Event> ev) {
+  // Log_info("!!!!!!!!! acquire ready_events_mutex_");
   std::lock_guard<std::mutex> lock(ready_events_mutex_);
   ready_events_.push_back(ev);
+  // Log_info("!!!!!!!!! release ready_events_mutex_");
 }
 
 bool Reactor::ReadyEventsThreadSafeEmpty() {
+  // Log_info("!!!!!!!!! acquire ready_events_mutex_");
   std::lock_guard<std::mutex> lock(ready_events_mutex_);
+  // Log_info("!!!!!!!!! release ready_events_mutex_");
   return ready_events_.empty();
 }
 

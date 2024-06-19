@@ -118,6 +118,7 @@ bool Event::Test() {
         if (it != waiting_events.end()) waiting_events.erase(it);
       }
       Reactor::GetReactor()->ready_events_.push_back(shared_from_this());
+      // current_reactor_->ReadyEventsThreadSafePushBack(shared_from_this());
     } else if (status_ == READY) {
       // This could happen for a quorum event.
       Log_info("event status ready, triggered?");
