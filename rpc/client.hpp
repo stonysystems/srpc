@@ -114,6 +114,7 @@ public:
  class Client: public Pollable {
     Marshal in_, out_;
     uint64_t cnt_;
+    bool paused_{false};
 
     /**
      * NOT a refcopy! This is intended to avoid circular reference, which prevents everything from being released correctly.
@@ -213,7 +214,8 @@ public:
     void handle_write();
     void handle_error();
     void handle_free(i64 xid);
-
+    void pause();
+    void resume();
 };
 
 class ClientPool: public NoCopy {

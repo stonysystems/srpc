@@ -198,6 +198,7 @@ void Client::handle_write() {
   if (status_ != CONNECTED) {
     return;
   }
+  if (paused_) return;
 
   out_l_.lock();
   out_.write_to_fd(sock_);
@@ -473,6 +474,14 @@ void Client::handle_free(i64 xid) {
     Future::safe_release(it->second);
   }
   pending_fu_l_.unlock();
+}
+
+void Client::pause() {
+  paused_ = true;
+}
+
+void Client::resume() {
+  paused_ = false;
 }
 
 int Client::poll_mode() {
