@@ -51,6 +51,7 @@ std::vector<struct timespec> Epoll::Wait_One(int& num_ev, bool& slow) {
 			found = true;
 		Pollable* poll = (Pollable *) evlist[i].data.ptr;
 		verify(poll != nullptr);
+		// Log_info("i, evlist[i].events & EPOLLIN, evlist[i].events & EPOLLIN, %d, %d, %d", i, evlist[i].events & EPOLLIN, evlist[i].events & EPOLLOUT);
 		if (evlist[i].events & EPOLLIN) {
 					bool push = poll->handle_read_one();
 			if(push) pending.push_back(poll);
