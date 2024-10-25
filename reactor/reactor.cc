@@ -535,7 +535,16 @@ void PollMgr::PollThread::poll_loop() {
     Reactor::GetReactor()->Loop(false, true);
 
     if (!need_disk_) {
+#ifdef CHECK_LONG_POLL_WAIT
+      auto start = std::chrono::high_resolution_clock::now();
+#endif
 		poll_.Wait();
+#ifdef CHECK_LONG_POLL_WAIT
+      auto end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double, std::milli> duration = end - start;
+      if (duration.count() > 10)
+        std::cout << "Time taken by function: " << duration.count() << " milliseconds" << std::endl;
+#endif
     } else {
 		begins = poll_.Wait_One(num_events, slow);
 		
