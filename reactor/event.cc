@@ -121,7 +121,7 @@ bool Event::Test() {
       // current_reactor_->ReadyEventsThreadSafePushBack(shared_from_this());
     } else if (status_ == READY) {
       // This could happen for a quorum event.
-      Log_info("event status ready, triggered?");
+      // Log_info("event status ready, triggered?"); // [Ze]: I comment this since c8a49425440a5e339e0144c2ec1f037f52913f57 will introduce tons of this log. Not sure whether this is right way to solve it.
     } else if (status_ == DONE) {
       // do nothing
     } else {
