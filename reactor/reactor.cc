@@ -316,13 +316,13 @@ void Reactor::DiskLoop(){
 }
 
 void Reactor::ContinueCoro(std::shared_ptr<Coroutine> sp_coro) {
-  Log_info("ContinueCoro: Starting, coro ID = %d", sp_coro->id);
-  Log_info("ContinueCoro: Old sp_running_coro_th_ = %p", sp_running_coro_th_.get());
+  // Log_info("ContinueCoro: Starting, coro ID = %d", sp_coro->id);
+  // Log_info("ContinueCoro: Old sp_running_coro_th_ = %p", sp_running_coro_th_.get());
 //  verify(!sp_running_coro_th_); // disallow nested coros
   verify(sp_running_coro_th_ != sp_coro);
   auto sp_old_coro = sp_running_coro_th_;
   sp_running_coro_th_ = sp_coro;
-  Log_info("ContinueCoro: Set sp_running_coro_th_ = %p", sp_running_coro_th_.get());
+  // Log_info("ContinueCoro: Set sp_running_coro_th_ = %p", sp_running_coro_th_.get());
   verify(!sp_running_coro_th_->Finished());
   n_active_coroutines_++;
 
@@ -335,21 +335,21 @@ void Reactor::ContinueCoro(std::shared_ptr<Coroutine> sp_coro) {
 	clock_gettime(CLOCK_MONOTONIC, &begin);
 
 	if (sp_coro->status_ == Coroutine::INIT) {
-    Log_info("ContinueCoro: Running new coroutine");
+    // Log_info("ContinueCoro: Running new coroutine");
     sp_coro->Run();
   } else {
     // PAUSED or RECYCLED
-    Log_info("ContinueCoro: Continuing paused coroutine");
+    // Log_info("ContinueCoro: Continuing paused coroutine");  
     sp_coro->Continue();
   }
 
   verify(sp_running_coro_th_ == sp_coro);
   if (sp_running_coro_th_ -> Finished()) {
-    Log_info("ContinueCoro: Coroutine finished, recycling");
+    // Log_info("ContinueCoro: Coroutine finished, recycling");
     Recycle(sp_coro);
   }
   sp_running_coro_th_ = sp_old_coro;
-  Log_info("ContinueCoro: Restored sp_running_coro_th_ = %p", sp_running_coro_th_.get());
+  // Log_info("ContinueCoro: Restored sp_running_coro_th_ = %p", sp_running_coro_th_.get());
 }
 
 void Reactor::DisplayWaitingEv() {
