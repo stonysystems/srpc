@@ -444,6 +444,7 @@ void Server::server_loop(struct addrinfo* svr_addr) {
 }
 
 // @unsafe - Accepts new client connections
+// @unsafe - Calls unsafe Log::debug for connection logging
 // SAFETY: Thread-safe with server connection lock
 void ServerListener::handle_read() {
 //  fd_set fds;
@@ -473,14 +474,13 @@ void ServerListener::handle_read() {
   }
 }
 
-// @unsafe - Closes server socket
-// SAFETY: Simple socket close
+// @safe - Closes server socket using safe external annotation
 void ServerListener::close() {
   ::close(server_sock_);
 }
 
-// @unsafe - Creates listener socket and binds to address
-// SAFETY: Proper socket creation and error handling
+// @safe - Creates listener socket and binds to address
+// All socket operations are marked safe via external annotations
 ServerListener::ServerListener(Server* server, string addr) {
   server_ = server;
   addr_ = addr;

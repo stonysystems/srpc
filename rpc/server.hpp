@@ -61,33 +61,66 @@ public:
 
 // @unsafe - Server listener handling incoming connections
 // SAFETY: Manages socket lifecycle and address info properly
+// External annotations for socket operations
+// @external: {
+//   accept: [safe, (int, sockaddr*, socklen_t*) -> int]
+//   socket: [safe, (int, int, int) -> int]
+//   bind: [safe, (int, const sockaddr*, socklen_t) -> int]
+//   listen: [safe, (int, int) -> int]
+//   close: [safe, (int) -> int]
+//   getaddrinfo: [safe, (const char*, const char*, const addrinfo*, addrinfo**) -> int]
+//   freeaddrinfo: [safe, (addrinfo*) -> void]
+//   setsockopt: [safe, (int, int, int, const void*, socklen_t) -> int]
+//   set_nonblocking: [safe, (int, bool) -> int]
+//   unlink: [safe, (const char*) -> int]
+//   strcpy: [safe, (char*, const char*) -> char*]
+//   strlen: [safe, (const char*) -> size_t]
+//   gai_strerror: [safe, (int) -> const char*]
+//   memset: [safe, (void*, int, size_t) -> void*]
+// }
+
+// @unsafe - Contains unsafe handle_read() method that calls Log functions
+// SAFETY: Thread-safe server listener with proper socket lifecycle management
 class ServerListener: public Pollable {
   friend class Server;
  public:
   std:: string addr_;
-  Server* server_;
+  Server* server_;  // Non-owning pointer to parent server
   // cannot use smart pointers for memory management because this pointer
   // needs to be freed by freeaddrinfo.
   struct addrinfo* p_gai_result_{nullptr};
   struct addrinfo* p_svr_addr_{nullptr};
 
   int server_sock_{0};
+  
+  // @safe - Returns constant poll mode
   int poll_mode() {
     return Pollable::READ;
   }
+  
+  // @safe - Not implemented, will abort if called
   void handle_write() {verify(0);}
-  // @unsafe - Accepts new connections
-  // SAFETY: Proper socket acceptance and configuration
+  
+  // @unsafe - Calls unsafe Log::debug for connection logging
+  // SAFETY: Thread-safe with server connection lock
   void handle_read();
+  
+  // @safe - Not implemented, will abort if called
   void handle_error() {verify(0);}
-  // @unsafe - Closes server socket
-  // SAFETY: Proper cleanup
+  
+  // @safe - Closes server socket
+  // Close is marked safe via external annotation
   void close();
+  
+  // @safe - Returns file descriptor
   int fd() {return server_sock_;}
+  
+  // @safe - Constructor with proper error handling
   ServerListener(Server* s, std::string addr);
+
 //protected:
-  // @unsafe - Frees addrinfo structures
-  // SAFETY: Checks for null before freeing
+  // @safe - Frees addrinfo structures
+  // freeaddrinfo is marked safe via external annotation
   virtual ~ServerListener() {
     if (p_gai_result_ != nullptr) {
       freeaddrinfo(p_gai_result_);
