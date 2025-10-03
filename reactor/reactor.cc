@@ -62,24 +62,23 @@ Reactor::CreateRunCoroutine(const std::function<void()> func) {
   } else {
     sp_coro = std::make_shared<Coroutine>(func);
   }
-  coros_.insert(sp_coro);
-  ContinueCoro(sp_coro);
-  Loop();
-  return sp_coro;
-//  __debug_set_all_coro_.insert(sp_coro.get());
-//  verify(!curr_coro_); // Create a coroutine from another?
-//  verify(!sp_running_coro_th_); // disallows nested coroutines
+  
+  // Save old coroutine context
   auto sp_old_coro = sp_running_coro_th_;
   sp_running_coro_th_ = sp_coro;
+  
   verify(sp_coro);
   auto pair = coros_.insert(sp_coro);
   verify(pair.second);
   verify(coros_.size() > 0);
+  
   sp_coro->Run();
   if (sp_coro->Finished()) {
     coros_.erase(sp_coro);
   }
+  
   Loop();
+  
   // yielded or finished, reset to old coro.
   sp_running_coro_th_ = sp_old_coro;
   return sp_coro;
@@ -222,8 +221,8 @@ class PollMgr::PollThread {
   // @unsafe - Creates pthread with raw pointer passing
   // SAFETY: 'this' remains valid throughout thread lifetime
   void start(PollMgr* poll_mgr) {
-    pthread_setname_np(th_, "Follower server thread"); 
     Pthread_create(&th_, nullptr, PollMgr::PollThread::start_poll_loop, this);
+    pthread_setname_np(th_, "Follower server thread"); 
   }
 
   // @unsafe - Triggers ready jobs in coroutines

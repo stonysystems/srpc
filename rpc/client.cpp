@@ -43,7 +43,7 @@ void Future::timed_wait(double sec) {
       abstime.tv_nsec -= 1000 * 1000 * 1000;
       abstime.tv_sec += 1;
     }
-    Log::debug("wait for %lf", sec);
+    // Log::debug("wait for %lf", sec);  // Commented out - causes abort due to nullptr file
     int ret = pthread_cond_timedwait(&ready_cond_, &ready_m_, &abstime);
     if (ret == ETIMEDOUT) {
       timed_out_ = true;
@@ -67,7 +67,8 @@ void Future::notify_ready() {
   if (!timed_out_) {
     ready_ = true;
   }
-  Pthread_cond_signal(&ready_cond_);
+  // Use broadcast instead of signal to wake up ALL waiting threads
+  Pthread_cond_broadcast(&ready_cond_);
   Pthread_mutex_unlock(&ready_m_);
   if (ready_ && attr_.callback != nullptr) {
     // Warning: make sure memory is safe!
