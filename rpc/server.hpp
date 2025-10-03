@@ -3,6 +3,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <pthread.h>
+#include <memory>
+#include <chrono>
 
 #include <sys/socket.h>
 #include <netdb.h>
@@ -97,13 +99,22 @@ class ServerListener: public Pollable {
   int poll_mode() {
     return Pollable::READ;
   }
+  size_t content_size() {
+    verify(0);
+    return 0;
+  }
   
   // @safe - Not implemented, will abort if called
   void handle_write() {verify(0);}
   
   // @unsafe - Calls unsafe Log::debug for connection logging
   // SAFETY: Thread-safe with server connection lock
-  void handle_read();
+  bool handle_read_one() override { return handle_read(); }
+  bool handle_read_two() {
+    verify(0);
+    return true;
+  }
+  bool handle_read();
   
   // @safe - Not implemented, will abort if called
   void handle_error() {verify(0);}
@@ -163,17 +174,21 @@ class ServerConnection: public Pollable {
     static std::unordered_set<i32> rpc_id_missing_s;
     static SpinLock rpc_id_missing_l_s;
 
-protected:
-
-    // Protected destructor as required by RefCounted.
-    // @safe - Simple destructor updating counter
-    ~ServerConnection();
 
 public:
+	int count = 0;
+	
+  // Protected destructor as required by RefCounted.
+    // @safe - Simple destructor updating counter
+  ~ServerConnection();
 
     // @unsafe - Initializes connection with socket
     // SAFETY: Increments server connection counter
-    ServerConnection(Server* server, int socket);
+  ServerConnection(Server* server, int socket);
+
+  bool connected() {
+    return status_ == CONNECTED;
+  }
 
     /**
      * Start a reply message. Must be paired with end_reply().
@@ -217,37 +232,52 @@ public:
 
     // @safe - Returns poll mode based on output buffer
     int poll_mode();
+    size_t content_size() {
+      verify(0);
+      return 0;
+    }
     // @unsafe - Writes buffered data to socket
     // SAFETY: Protected by output spinlock
     void handle_write();
     // @unsafe - Reads and processes RPC requests
     // SAFETY: Creates coroutines for handlers
-    void handle_read();
+    bool handle_read_one() override { return handle_read(); }
+    bool handle_read_two() {
+      verify(0);
+      return true;
+    }
+    bool handle_read();
     // @safe - Error handler
     void handle_error();
+		void handle_free() {verify(0);}
 };
 
 // @safe - RAII wrapper for deferred RPC replies
 class DeferredReply: public NoCopy {
     rrr::Request* req_;
-    rrr::ServerConnection* sconn_;
+    ServerConnection* sconn_; // cannot delete this because of legacy reasons: need to modify the rpc compiler.
     std::function<void()> marshal_reply_;
     std::function<void()> cleanup_;
+//    std::weak_ptr<ServerConnection> wp_sconn_;
+    std::shared_ptr<ServerConnection> sp_sconn_{};
 
-public:
+ public:
 
-    DeferredReply(rrr::Request* req, rrr::ServerConnection* sconn,
+    DeferredReply(rrr::Request* req, ServerConnection* sconn,
                   const std::function<void()>& marshal_reply, const std::function<void()>& cleanup)
-        : req_(req), sconn_(sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
+        : req_(req), sconn_(sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {
+      sp_sconn_ = std::dynamic_pointer_cast<ServerConnection>(sconn->shared_from_this());
+      auto x = sp_sconn_;
+      verify(x);
+    }
 
     // @unsafe - Cleanup destructor
     // SAFETY: Proper cleanup order and null checks
     ~DeferredReply() {
         cleanup_();
         delete req_;
-        sconn_->release();
         req_ = nullptr;
-        sconn_ = nullptr;
+        sp_sconn_.reset();
     }
 
     int run_async(const std::function<void()>& f) {
@@ -259,10 +289,21 @@ public:
     // @unsafe - Sends reply and self-deletes
     // SAFETY: Ensures single use with delete this
     void reply() {
-        sconn_->begin_reply(req_);
+//      auto sconn = wp_sconn_.lock();
+      verify(sp_sconn_);
+      auto sconn = sp_sconn_;
+      if (sconn && sconn->connected()) {
+        sconn->begin_reply(req_);
         marshal_reply_();
-        sconn_->end_reply();
-        delete this;
+        sconn->end_reply();
+      } else {
+        // server connection has close. What would happen if no reply?
+      }
+			
+			// move to client
+      // CHECK
+      // BUG here, this is deleted twice????
+      delete this;
     }
 };
 
@@ -279,8 +320,8 @@ class Server: public NoCopy {
     Counter sconns_ctr_;
 
     SpinLock sconns_l_;
-    std::unordered_set<ServerConnection*> sconns_{};
-    std::unique_ptr<ServerListener> up_server_listener_{};
+    std::unordered_set<shared_ptr<ServerConnection>> sconns_{};
+    std::shared_ptr<ServerListener> sp_server_listener_{};
 
     enum {
         NEW, RUNNING, STOPPING, STOPPED

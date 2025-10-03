@@ -1,6 +1,7 @@
 #include <Python.h>
 
 #include <string>
+#include <memory>
 
 #include "rpc/server.hpp"
 #include "rpc/client.hpp"
@@ -119,7 +120,6 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
 
         // cleanup as required by simple-rpc
         delete req;
-        sconn->release();
     });
 
     return Py_BuildValue("i", ret);
@@ -131,14 +131,18 @@ static PyObject* _pyrpc_init_poll_mgr(PyObject* self, PyObject* args) {
     return Py_BuildValue("k", poll);
 }
 
+vector<shared_ptr<Client>> clients = {};
+
 static PyObject* _pyrpc_init_client(PyObject* self, PyObject* args) {
     GILHelper gil_helper;
     unsigned long u;
     if (!PyArg_ParseTuple(args, "k", &u))
         return NULL;
     PollMgr* poll = (PollMgr*) u;
-    Client* clnt = new Client(poll);
-    return Py_BuildValue("k", clnt);
+    auto x = std::make_shared<Client>(poll);
+  clients.push_back(x);
+  Client* clnt = x.get();
+  return Py_BuildValue("k", clnt);
 }
 
 static PyObject* _pyrpc_fini_client(PyObject* self, PyObject* args) {
@@ -180,6 +184,7 @@ static PyObject* _pyrpc_client_async_call(PyObject* self, PyObject* args) {
         //       client side buffer. Here is the only place that we are using Marshal's
         //       read_from_marshal function with non-empty Marshal object.
         *clnt << *m;
+				clnt->set_valid(m->valid_id);
     }
     clnt->end_request();
 
@@ -428,8 +433,11 @@ static PyObject* _pyrpc_marshal_write_str(PyObject* self, PyObject* args) {
     GILHelper gil_helper;
     unsigned long u;
     PyObject* str_obj;
-    if (!PyArg_ParseTuple(args, "kO", &u, &str_obj))
+    if (!PyArg_ParseTuple(args, "kO", &u, &str_obj)){
         return NULL;
+		}
+		
+		//Log_info("writing string: %d", u);
     Marshal* m = (Marshal*) u;
     std::string str(PyBytes_AsString(str_obj), PyBytes_Size(str_obj));
     *m << str;

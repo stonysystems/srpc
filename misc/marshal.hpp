@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <limits>
+#include <chrono>
 #include<iostream>
 #include <inttypes.h>
 #include <string.h>
@@ -88,7 +89,15 @@ class MarshallDeputy {
       CMD_SYNCREQ_PXS=10,
       CMD_SYNCRESP_PXS=11,
       CMD_SYNCNOOP_PXS=12,
-      CMD_PREP_PXS=13
+      CMD_PREP_PXS=13,
+      CMD_TPC_EMPTY=14,
+      CMD_NOOP=15,
+      CMD_TPC_BATCH=16,
+      CMD_TPC_PREPARE_CAROUSEL=17,
+      CMD_MULTI_STRING=18,
+      CMD_REC_VEC=19,
+      CMD_VIEW_DATA=20,
+      CMD_KV=21
     };
     /**
      * This should be called by the rpc layer.
@@ -231,6 +240,7 @@ class Marshal: public NoCopy {
 
     // NOTE: This function is only intended for Marshal::read_from_marshal.
     chunk *shared_copy() const {
+      //if(read_idx != 0 && write_idx != 0) Log_info("read_idx: %d and write_idx: %d", read_idx, write_idx);
       return new chunk(data, read_idx, write_idx);
     }
 
@@ -318,6 +328,9 @@ class Marshal: public NoCopy {
 
     int write_to_fd(int fd) {
       assert(write_idx <= data->size);
+			struct timespec begin2, begin2_cpu, end2, end2_cpu;
+			/*clock_gettime(CLOCK_MONOTONIC, &begin2);		
+			clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &begin2_cpu);*/
       int cnt;
       if(data->shared_data){
         cnt = data->marshallable_entity.WriteToFd(fd, data->written_to_socket);
@@ -336,6 +349,12 @@ class Marshal: public NoCopy {
 #endif // RPC_STATISTICS
       //if(cnt == -1)verify(0);
       if (cnt > 0) {
+				/*clock_gettime(CLOCK_MONOTONIC, &end2);
+				clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end2_cpu);
+				long total_cpu2 = (end2_cpu.tv_sec - begin2_cpu.tv_sec)*1000000000 + (end2_cpu.tv_nsec - begin2_cpu.tv_nsec);
+				long total_time2 = (end2.tv_sec - begin2.tv_sec)*1000000000 + (end2.tv_nsec - begin2.tv_nsec);
+				double util2 = (double) total_cpu2/total_time2;
+				Log_info("elapsed CPU time (fd write of %d): %f", write_idx - read_idx, util2);*/
         read_idx += cnt;
       }
 
@@ -398,7 +417,10 @@ class Marshal: public NoCopy {
 
  public:
 
-  struct bookmark: public NoCopy {
+	bool found_dep;
+  bool valid_id;
+
+	struct bookmark: public NoCopy {
     size_t size;
     char **ptr;
 
@@ -486,7 +508,23 @@ inline rrr::Marshal &operator<<(rrr::Marshal &m, const rrr::i32 &v) {
 }
 
 inline rrr::Marshal &operator<<(rrr::Marshal &m, const rrr::i64 &v) {
+  //Log_info("The sizeof v is: %d", sizeof(v));
+  //auto start = std::chrono::steady_clock::now();
   verify(m.write(&v, sizeof(v)) == sizeof(v));
+  //auto end = std::chrono::steady_clock::now();
+  //auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end-start).count();
+  //Log_info("Time of << for int64 is: %d", duration);
+	
+	if (m.found_dep) {
+		if (v != -1) {
+			//Log_info("valid id: %d and %d", m.found_dep, v);
+			m.valid_id = true;
+		} else {
+			//Log_info("invalid id: %d and %d", m.found_dep, v);
+		}
+		m.found_dep = false;
+	}
+
   return m;
 }
 
@@ -520,7 +558,13 @@ inline rrr::Marshal &operator<<(rrr::Marshal &m, const uint32_t &u) {
 }
 
 inline rrr::Marshal &operator<<(rrr::Marshal &m, const uint64_t &u) {
+  //Log_info("The sizeof u is: %d", sizeof(u));
+  //auto start = std::chrono::steady_clock::now();
   verify(m.write(&u, sizeof(u)) == sizeof(u));
+  //auto end = std::chrono::steady_clock::now();
+  //auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end-start).count();
+  //Log_info("Time of << for uint64 is: %d", duration);
+  
   return m;
 }
 
@@ -535,6 +579,17 @@ inline rrr::Marshal &operator<<(rrr::Marshal &m, const std::string &v) {
   if (v_len.get() > 0) {
     verify(m.write(v.c_str(), v_len.get()) == (size_t) v_len.get());
   }
+
+	if (v == "dep") {
+		// Log_info("dep: %s", v.c_str());
+		m.found_dep = true;
+	} else if (v == "hb") { 
+		m.valid_id = true;
+	} else {
+    m.valid_id = true;
+		// Log_info("not dep: %s", v.c_str());
+	}
+
   return m;
 }
 
@@ -630,6 +685,16 @@ inline rrr::Marshal &operator>>(rrr::Marshal &m, rrr::i32 &v) {
 
 inline rrr::Marshal &operator>>(rrr::Marshal &m, rrr::i64 &v) {
   verify(m.read(&v, sizeof(v)) == sizeof(v));
+	/*if (m.found_dep) {
+		if (v != -1) {
+			Log_info("valid id: %d", v);
+			m.valid_id = true;
+		} else {
+			Log_info("invalid id: %d", v);
+			m.valid_id = false;
+		}
+		m.found_dep = false;
+	}*/
   return m;
 }
 
@@ -655,6 +720,7 @@ inline rrr::Marshal &operator>>(rrr::Marshal &m, rrr::v64 &v) {
   v.set(val);
   return m;
 }
+
 
 inline rrr::Marshal &operator>>(rrr::Marshal &m, uint8_t &u) {
   verify(m.read(&u, sizeof(u)) == sizeof(u));
@@ -688,6 +754,12 @@ inline rrr::Marshal &operator>>(rrr::Marshal &m, std::string &v) {
   if (v_len.get() > 0) {
     verify(m.read(&v[0], v_len.get()) == (size_t) v_len.get());
   }
+	/*if (v == "dep") {
+		Log_info("dep: %s", v.c_str());
+		m.found_dep = true;
+	} else {
+		Log_info("not dep: %s", v.c_str());
+	}*/
   return m;
 }
 

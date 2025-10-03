@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_map>
+#include <chrono>
 
 #include "misc/marshal.hpp"
 #include "reactor/epoll_wrapper.h"
@@ -44,6 +45,7 @@ class Future: public RefCounted {
 
     bool ready_;
     bool timed_out_;
+    uint64_t timeout_{1000000}; // default timeout 1s
     pthread_cond_t ready_cond_;
     pthread_mutex_t ready_m_;
 
@@ -95,8 +97,18 @@ public:
     }
 
     i32 get_error_code() {
-        wait();
+        if (timeout_ > 0) {
+            double x = timeout_;
+            x = x / 1000000;
+            timed_wait(x);
+        } else {
+            wait();
+        }
         return error_code_;
+    }
+
+    i64 get_xid() const {
+        return xid_;
     }
 
     // @safe - Null-safe release helper
@@ -135,27 +147,39 @@ public:
     }
 };
 
-// @unsafe - RPC client with socket management and marshaling
+ // @unsafe - RPC client with socket management and marshaling
 // SAFETY: Proper socket lifecycle and thread-safe pending futures
 class Client: public Pollable {
     Marshal in_, out_;
+    uint64_t cnt_;
 
     /**
      * NOT a refcopy! This is intended to avoid circular reference, which prevents everything from being released correctly.
      */
     PollMgr* pollmgr_;
-
+    
+    std::string host_;
     int sock_;
+		long times[100];
+		long total_time;
+		int index = 0;
+		int count_ = 0;
+		struct timespec begin;
     enum {
         NEW, CONNECTED, CLOSED
     } status_;
 
+		uint64_t packets;
+		bool clean;
+    bool paused_{false};
     Marshal::bookmark* bmark_;
 
     Counter xid_counter_;
     std::unordered_map<i64, Future*> pending_fu_;
+		std::unordered_map<i64, struct timespec> rpc_starts;
 
     SpinLock pending_fu_l_;
+		SpinLock read_l_;
     SpinLock out_l_;
 
     // reentrant, could be called multiple times before releasing
@@ -167,17 +191,21 @@ class Client: public Pollable {
     // SAFETY: Protected by spinlock
     void invalidate_pending_futures();
 
-protected:
+
+public:
+	 bool client_;
+	 long time_;
+    uint64_t timeout_{0};
+	 int count;
+	 i32 rpc_id_;
 
     // @unsafe - Cleanup destructor
     // SAFETY: Ensures all futures are invalidated
-    virtual ~Client() {
-        invalidate_pending_futures();
-    }
+   virtual ~Client() {
+     invalidate_pending_futures();
+   }
 
-public:
-
-    Client(PollMgr* pollmgr): pollmgr_(pollmgr), sock_(-1), status_(NEW), bmark_(nullptr) { }
+   Client(PollMgr* pollmgr): pollmgr_(pollmgr), sock_(-1), status_(NEW), bmark_(nullptr) { }
 
     /**
      * Start a new request. Must be paired with end_request(), even if nullptr returned.
@@ -194,9 +222,13 @@ public:
 
     template<class T>
     Client& operator <<(const T& v) {
+	//auto start = std::chrono::steady_clock::now();
         if (status_ == CONNECTED) {
             this->out_ << v;
         }
+	//auto end = std::chrono::steady_clock::now();
+	//auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end-start).count();
+	//Log_info("Time of << is: %d", duration);
         return *this;
     }
 
@@ -208,29 +240,40 @@ public:
         return *this;
     }
 
+		void set_valid(bool valid);
     // @unsafe - Establishes TCP connection
     // SAFETY: Proper socket creation and cleanup on failure
-    int connect(const char* addr);
+    int connect(const char* addr, bool client = true);
+
+    void pause();
+    void resume();
 
     void close_and_release() {
         close();
-        release();
     }
 
     int fd() {
         return sock_;
     }
 
+		std::string host() {
+			return host_;
+		}
+
     // @safe - Returns current poll mode based on output buffer
     int poll_mode();
     // @unsafe - Processes incoming data
     // SAFETY: Protected by spinlock for pending futures
-    void handle_read();
+    size_t content_size();
+    bool handle_read_one();
+    bool handle_read_two();
+    bool handle_read();
     // @unsafe - Sends buffered data
     // SAFETY: Protected by output spinlock
     void handle_write();
     // @safe - Error handler that closes connection
     void handle_error();
+    void handle_free(i64 xid);
 
 };
 
@@ -243,7 +286,7 @@ class ClientPool: public NoCopy {
 
     // guard cache_
     SpinLock l_;
-    std::map<std::string, rrr::Client**> cache_;
+    std::map<std::string, std::vector<std::shared_ptr<rrr::Client>>> cache_;
     int parallel_connections_;
 
 public:

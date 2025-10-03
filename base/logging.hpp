@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string.h>
+#include <iostream>
 #include "threading.hpp"
 
 // External safety annotations for system functions used in this module
@@ -29,6 +30,7 @@ namespace rrr {
 class Log {
     static int level_s;
     static FILE* fp_s;
+    static std::ostream* stm_s;
 
     // have to use pthread mutex because Mutex class cannot be init'ed correctly as static var
     static pthread_mutex_t m_s;
