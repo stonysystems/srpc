@@ -1,9 +1,12 @@
 
 #pragma once
 
-#include <memory>
 #include <algorithm>
+#include <functional>
+#include <memory>
+#include <vector>
 #include "../base/all.hpp"
+#include <rusty/rusty.hpp>
 
 namespace rrr {
 using std::shared_ptr;
@@ -18,7 +21,6 @@ class Event : public std::enable_shared_from_this<Event> {
   int __debug_creator{0};
   enum EventStatus { INIT = 0, WAIT = 1, READY = 2, DONE = 3, TIMEOUT = 4, DEBUG};
   EventStatus status_{INIT};
-  void* _dbg_p_scheduler_{nullptr};
   uint64_t type_{0};
   function<bool(int)> test_{};
   uint64_t wakeup_time_; // calculated by timeout, unit: microsecond
@@ -27,7 +29,7 @@ class Event : public std::enable_shared_from_this<Event> {
   //   shared_ptr to the coroutine it is.
   // In this case there is no shared pointer to the event.
   // When the stack that contains the event frees, the event frees.
-  std::weak_ptr<Coroutine> wp_coro_{};
+  std::weak_ptr<Coroutine> wp_coro_{}; 
 
   virtual void Wait(uint64_t timeout=0) final;
 
@@ -167,4 +169,4 @@ class AndEvent : public Event {
   }
 };
 
-}
+} // namespace rrr

@@ -290,22 +290,22 @@ class PollMgr::PollThread {
 PollMgr::PollMgr(int n_threads /* =... */)
     : n_threads_(n_threads), poll_threads_() {
   verify(n_threads_ > 0);
-  poll_threads_ = new PollThread[n_threads_];
+  poll_threads_.reserve(n_threads_);
   for (int i = 0; i < n_threads_; i++) {
-    poll_threads_[i].start(this);
+    poll_threads_.push(rusty::make_box<PollThread>());
+    poll_threads_[i]->start(this);
   }
 }
 
 // @unsafe - Returns raw pointer to pthread handle
 // SAFETY: Valid as long as PollMgr exists and i < n_threads_
 pthread_t* PollMgr::GetPthreads(int i) {
-  return &poll_threads_[i].th_;
+  return &poll_threads_[i]->th_;
 }
 
-// @unsafe - Deletes raw array
-// SAFETY: Matches allocation in constructor; threads already joined
+// @safe - Vec automatically cleans up
 PollMgr::~PollMgr() {
-  delete[] poll_threads_;
+  // Vec destructor handles cleanup automatically
   //Log_debug("rrr::PollMgr: destroyed");
 }
 
@@ -442,7 +442,7 @@ void PollMgr::add(Pollable* poll) {
   int fd = poll->fd();
   if (fd >= 0) {
     int tid = hash_fd(fd) % n_threads_;
-    poll_threads_[tid].add(poll);
+    poll_threads_[tid]->add(poll);
   }
 }
 
@@ -452,7 +452,7 @@ void PollMgr::remove(Pollable* poll) {
   int fd = poll->fd();
   if (fd >= 0) {
     int tid = hash_fd(fd) % n_threads_;
-    poll_threads_[tid].remove(poll);
+    poll_threads_[tid]->remove(poll);
   }
 }
 
@@ -462,20 +462,20 @@ void PollMgr::update_mode(Pollable* poll, int new_mode) {
   int fd = poll->fd();
   if (fd >= 0) {
     int tid = hash_fd(fd) % n_threads_;
-    poll_threads_[tid].update_mode(poll, new_mode);
+    poll_threads_[tid]->update_mode(poll, new_mode);
   }
 }
 
 // @safe - Adds job to first poll thread
 void PollMgr::add(std::shared_ptr<Job> fjob) {
   int tid = 0;
-  poll_threads_[tid].add(fjob);
+  poll_threads_[tid]->add(fjob);
 }
 
 // @safe - Removes job from first poll thread
 void PollMgr::remove(std::shared_ptr<Job> fjob) {
   int tid = 0;
-  poll_threads_[tid].remove(fjob);
+  poll_threads_[tid]->remove(fjob);
 }
 
 } // namespace rrr

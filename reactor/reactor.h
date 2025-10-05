@@ -1,9 +1,12 @@
 #pragma once
-#include <set>
 #include <algorithm>
-#include <unordered_map>
 #include <list>
+#include <memory>
+#include <set>
 #include <thread>
+#include <unordered_map>
+#include <vector>
+#include <rusty/rusty.hpp>
 #include "base/misc.hpp"
 #include "event.h"
 #include "quorum_event.h"
@@ -95,7 +98,7 @@ class PollMgr: public rrr::RefCounted {
  public:
     class PollThread;
 
-    PollThread* poll_threads_;
+    rusty::Vec<rusty::Box<PollThread>> poll_threads_;
     const int n_threads_;
 
 protected:
