@@ -127,8 +127,8 @@ class Epoll {
   // @unsafe - Updates poll mode for file descriptor
   // SAFETY: Uses system calls with proper event flag handling
   // userdata is raw Pollable* for lookup
-  int Update(std::shared_ptr<Pollable> poll, void* userdata, int new_mode, int old_mode) {
-    auto fd = poll->fd();
+  int Update(Pollable& poll, void* userdata, int new_mode, int old_mode) {
+    auto fd = poll.fd();
 #ifdef USE_KQUEUE
     struct kevent ev;
     if ((new_mode & Pollable::READ) && !(old_mode & Pollable::READ)) {

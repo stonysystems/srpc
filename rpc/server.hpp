@@ -135,6 +135,7 @@ class ServerListener: public Pollable {
 class ServerConnection: public Pollable {
 
     friend class Server;
+    friend class ServerListener;
 
     Marshal in_, out_;
     SpinLock out_l_;
@@ -149,6 +150,10 @@ class ServerConnection: public Pollable {
     enum {
         CONNECTED, CLOSED
     } status_;
+
+    // Weak pointer to self, initialized after creation
+    // Used to pass weak reference to async handlers
+    std::weak_ptr<ServerConnection> weak_self_;
 
     // get_shared() is now inherited from Pollable base class
 
@@ -231,37 +236,43 @@ public:
 // @safe - RAII wrapper for deferred RPC replies
 class DeferredReply: public NoCopy {
     rrr::Request* req_;
-    std::shared_ptr<rrr::ServerConnection> sconn_;
+    std::weak_ptr<rrr::ServerConnection> weak_sconn_;
     std::function<void()> marshal_reply_;
     std::function<void()> cleanup_;
 
 public:
 
-    DeferredReply(rrr::Request* req, std::shared_ptr<rrr::ServerConnection> sconn,
+    DeferredReply(rrr::Request* req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
                   const std::function<void()>& marshal_reply, const std::function<void()>& cleanup)
-        : req_(req), sconn_(sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
+        : req_(req), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
 
-    // @safe - Cleanup destructor with automatic shared_ptr release
+    // @safe - Cleanup destructor with automatic cleanup
     // SAFETY: Proper cleanup order and null checks
     ~DeferredReply() {
         cleanup_();
         delete req_;
         req_ = nullptr;
-        // sconn_ automatically released by shared_ptr
     }
 
     int run_async(const std::function<void()>& f) {
       // TODO disable threadpool run in RPCs.
-//        return sconn_->run_async(f);
+//        auto sconn = weak_sconn_.lock();
+//        if (sconn) return sconn->run_async(f);
       return 0;
     }
 
     // @unsafe - Sends reply and self-deletes
-    // SAFETY: Ensures single use with delete this
+    // SAFETY: Locks weak_ptr before use, gracefully handles closed connections
     void reply() {
-        sconn_->begin_reply(req_);
-        marshal_reply_();
-        sconn_->end_reply();
+        auto sconn = weak_sconn_.lock();
+        if (sconn) {
+            sconn->begin_reply(req_);
+            marshal_reply_();
+            sconn->end_reply();
+        } else {
+            // Connection closed, silently drop reply
+            Log_debug("Connection closed before reply sent, dropping reply");
+        }
         delete this;
     }
 };
@@ -271,7 +282,7 @@ public:
 class Server: public NoCopy {
     friend class ServerConnection;
  public:
-    std::unordered_map<i32, std::function<void(Request*, std::shared_ptr<ServerConnection>)>> handlers_;
+    std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
     PollMgr* pollmgr_;
     ThreadPool* threadpool_;
     int server_sock_;
@@ -328,17 +339,17 @@ public:
      *  }
      */
     // @safe - Registers RPC handler function
-    int reg(i32 rpc_id, const std::function<void(Request*, std::shared_ptr<ServerConnection>)>& func);
+    int reg(i32 rpc_id, const std::function<void(Request*, std::weak_ptr<ServerConnection>)>& func);
 
     template<class S>
-    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(Request*, std::shared_ptr<ServerConnection>)) {
+    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(Request*, std::weak_ptr<ServerConnection>)) {
 
         // disallow duplicate rpc_id
         if (handlers_.find(rpc_id) != handlers_.end()) {
             return EEXIST;
         }
 
-        handlers_[rpc_id] = [svc, svc_func] (Request* req, std::shared_ptr<ServerConnection> sconn) {
+        handlers_[rpc_id] = [svc, svc_func] (Request* req, std::weak_ptr<ServerConnection> sconn) {
             (svc->*svc_func)(req, sconn);
         };
 

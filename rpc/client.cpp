@@ -106,12 +106,7 @@ void Client::invalidate_pending_futures() {
 // SAFETY: Idempotent, proper cleanup sequence
 void Client::close() {
   if (status_ == CONNECTED) {
-    try {
-      auto self = shared_from_this();
-      pollmgr_->remove(self);
-    } catch (const std::bad_weak_ptr&) {
-      // Object is being destroyed, shared_ptr no longer exists
-    }
+    pollmgr_->remove(*this);
     ::close(sock_);
   }
   status_ = CLOSED;
@@ -210,11 +205,7 @@ void Client::handle_write() {
   out_.write_to_fd(sock_);
   if (out_.empty()) {
     //Log_info("Client handle_write setting read mode here...");
-    try {
-      pollmgr_->update_mode(shared_from_this(), Pollable::READ);
-    } catch (const std::bad_weak_ptr&) {
-      // Object is being destroyed, skip mode update
-    }
+    pollmgr_->update_mode(*this, Pollable::READ);
   }
   out_l_.unlock();
 }
@@ -337,11 +328,7 @@ void Client::end_request() {
   // always enable write events since the code above gauranteed there
   // will be some data to send
   //Log_info("Client end_request setting write mode here....");
-  try {
-    pollmgr_->update_mode(shared_from_this(), Pollable::READ | Pollable::WRITE);
-  } catch (const std::bad_weak_ptr&) {
-    // Object is being destroyed, skip mode update
-  }
+  pollmgr_->update_mode(*this, Pollable::READ | Pollable::WRITE);
 
   out_l_.unlock();
 }

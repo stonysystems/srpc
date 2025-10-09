@@ -270,14 +270,14 @@ class PollMgr::PollThread {
 
     // when stopping, remove anything registered in pollmgr
     for (auto& pair : fd_to_pollable_) {
-      this->remove(pair.second);
+      this->remove(*pair.second);
     }
     // shared_ptrs automatically cleaned up
   }
 
   void add(std::shared_ptr<Pollable> poll);
-  void remove(std::shared_ptr<Pollable> poll);
-  void update_mode(std::shared_ptr<Pollable> poll, int new_mode);
+  void remove(Pollable& poll);
+  void update_mode(Pollable& poll, int new_mode);
 
   void add(std::shared_ptr<Job>);
   void remove(std::shared_ptr<Job>);
@@ -404,8 +404,8 @@ void PollMgr::PollThread::add(std::shared_ptr<Pollable> sp_poll) {
 
 // @unsafe - Removes pollable with deferred cleanup
 // SAFETY: Deferred removal ensures safe cleanup
-void PollMgr::PollThread::remove(std::shared_ptr<Pollable> sp_poll) {
-  int fd = sp_poll->fd();
+void PollMgr::PollThread::remove(Pollable& poll) {
+  int fd = poll.fd();
 
   l_.lock();
   if (fd_to_pollable_.find(fd) == fd_to_pollable_.end()) {
@@ -422,11 +422,11 @@ void PollMgr::PollThread::remove(std::shared_ptr<Pollable> sp_poll) {
 
 // @unsafe - Updates poll mode
 // SAFETY: Protected by spinlock, validates poll existence
-void PollMgr::PollThread::update_mode(std::shared_ptr<Pollable> sp_poll, int new_mode) {
-  int fd = sp_poll->fd();
-
+void PollMgr::PollThread::update_mode(Pollable& poll, int new_mode) {
+  int fd = poll.fd();
   l_.lock();
 
+  // Verify the pollable is registered
   if (fd_to_pollable_.find(fd) == fd_to_pollable_.end()) {
     l_.unlock();
     return;
@@ -438,8 +438,8 @@ void PollMgr::PollThread::update_mode(std::shared_ptr<Pollable> sp_poll, int new
   mode_it->second = new_mode;
 
   if (new_mode != old_mode) {
-    void* userdata = sp_poll.get();  // Raw pointer
-    poll_.Update(sp_poll, userdata, new_mode, old_mode);
+    void* userdata = &poll;  // Use address of reference
+    poll_.Update(poll, userdata, new_mode, old_mode);
   }
 
   l_.unlock();
@@ -468,8 +468,8 @@ void PollMgr::add(std::shared_ptr<Pollable> poll) {
 
 // @safe - Routes removal to correct thread
 // SAFETY: Uses same hash as add() for consistency
-void PollMgr::remove(std::shared_ptr<Pollable> poll) {
-  int fd = poll->fd();
+void PollMgr::remove(Pollable& poll) {
+  int fd = poll.fd();
   if (fd >= 0) {
     int tid = hash_fd(fd) % n_threads_;
     poll_threads_[tid]->remove(poll);
@@ -478,8 +478,8 @@ void PollMgr::remove(std::shared_ptr<Pollable> poll) {
 
 // @safe - Routes mode update to correct thread
 // SAFETY: Uses same hash as add() for consistency
-void PollMgr::update_mode(std::shared_ptr<Pollable> poll, int new_mode) {
-  int fd = poll->fd();
+void PollMgr::update_mode(Pollable& poll, int new_mode) {
+  int fd = poll.fd();
   if (fd >= 0) {
     int tid = hash_fd(fd) % n_threads_;
     poll_threads_[tid]->update_mode(poll, new_mode);

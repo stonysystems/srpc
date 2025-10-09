@@ -85,7 +85,7 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
     // This reference count will be decreased when shutting down server
     Py_XINCREF(func);
 
-    int ret = svr->reg(rpc_id, [func](Request* req, std::shared_ptr<ServerConnection> sconn) {
+    int ret = svr->reg(rpc_id, [func](Request* req, std::weak_ptr<ServerConnection> weak_sconn) {
         Marshal* output_m = NULL;
         int error_code = 0;
         {
@@ -107,11 +107,14 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
             }
         }
 
-        sconn->begin_reply(req, error_code);
-        if (output_m != NULL) {
-            *sconn << *output_m;
+        auto sconn = weak_sconn.lock();
+        if (sconn) {
+            sconn->begin_reply(req, error_code);
+            if (output_m != NULL) {
+                *sconn << *output_m;
+            }
+            sconn->end_reply();
         }
-        sconn->end_reply();
 
         if (output_m != NULL) {
             delete output_m;
