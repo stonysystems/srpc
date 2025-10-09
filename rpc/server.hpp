@@ -160,7 +160,7 @@ class ServerConnection: public Pollable {
     /**
      * Only to be called by:
      * 1: ~Server(), which is called when destroying Server
-     * 2: handle_error(), which is called by PollMgr
+     * 2: handle_error(), which is called by PollThread
      */
     // @unsafe - Closes connection and cleans up
     // SAFETY: Thread-safe with server connection lock
@@ -283,7 +283,7 @@ class Server: public NoCopy {
     friend class ServerConnection;
  public:
     std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
-    PollMgr* pollmgr_;
+    PollThread* pollmgr_;
     ThreadPool* threadpool_;
     int server_sock_;
 
@@ -305,9 +305,9 @@ class Server: public NoCopy {
 public:
     std::string addr_;
 
-    // @unsafe - Creates server with optional PollMgr
-    // SAFETY: Proper refcounting of PollMgr
-    Server(PollMgr* pollmgr = nullptr, ThreadPool* thrpool = nullptr);
+    // @unsafe - Creates server with optional PollThread
+    // SAFETY: Proper refcounting of PollThread
+    Server(PollThread* pollmgr = nullptr, ThreadPool* thrpool = nullptr);
     // @unsafe - Destroys server and all connections
     // SAFETY: Waits for all connections to close
     virtual ~Server();

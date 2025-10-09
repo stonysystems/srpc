@@ -5,6 +5,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <rusty/rusty.hpp>
 #include "base/misc.hpp"
@@ -93,29 +94,55 @@ class Reactor {
   }
 };
 
-// @safe - Thread-safe polling manager with reference counting
-class PollMgr: public rrr::RefCounted {
- public:
-    class PollThread;
+// @safe - Thread-safe polling thread with reference counting
+class PollThread: public rrr::RefCounted {
+private:
+    Epoll poll_{};
 
-    rusty::Vec<rusty::Box<PollThread>> poll_threads_;
-    const int n_threads_;
+    SpinLock l_;
+    // Authoritative storage: fd -> shared_ptr<Pollable>
+    std::unordered_map<int, std::shared_ptr<Pollable>> fd_to_pollable_;
+    std::unordered_map<int, int> mode_; // fd->mode
+
+    std::set<std::shared_ptr<Job>> set_sp_jobs_;
+
+    std::unordered_set<int> pending_remove_;  // Store fds to remove
+    SpinLock pending_remove_l_;
+    SpinLock lock_job_;
+
+    pthread_t th_;
+    bool stop_flag_;
+
+    // @unsafe - C-style thread entry point with raw pointer cast
+    // SAFETY: arg is always valid PollThread* from start()
+    static void* start_poll_loop(void* arg);
+
+    void poll_loop();
+
+    // @unsafe - Creates pthread with raw pointer passing
+    // SAFETY: 'this' remains valid throughout thread lifetime
+    void start();
+
+    // @unsafe - Triggers ready jobs in coroutines
+    // SAFETY: Uses spinlock for thread safety
+    void TriggerJob();
 
 protected:
-
     // RefCounted object uses protected dtor to prevent accidental deletion
-    ~PollMgr();
+    ~PollThread();
 
 public:
-
-    // @unsafe - Creates threads and manages raw pthread handles
+    // @unsafe - Creates thread and manages raw pthread handle
     // SAFETY: Proper thread lifecycle management
-    PollMgr(int n_threads = 1);
-    PollMgr(const PollMgr&) = delete;
-    PollMgr& operator=(const PollMgr&) = delete;
+    // Note: n_threads parameter ignored (kept for backward compatibility)
+    PollThread(int n_threads = 1);
+    PollThread(const PollThread&) = delete;
+    PollThread& operator=(const PollThread&) = delete;
+
     // @unsafe - Returns raw pthread handle
-    // SAFETY: Valid as long as PollMgr exists
-    pthread_t* GetPthreads(int);
+    // SAFETY: Valid as long as PollThread exists
+    // Note: Parameter i is ignored (kept for backward compatibility)
+    pthread_t* GetPthreads(int i);
 
     // @safe - Thread-safe addition of pollable object
     void add(std::shared_ptr<Pollable> poll);
@@ -123,7 +150,7 @@ public:
     void remove(Pollable& poll);
     // @safe - Thread-safe mode update
     void update_mode(Pollable& poll, int new_mode);
-    
+
     // Frequent Job
     // @safe - Thread-safe job management
     void add(std::shared_ptr<Job> sp_job);

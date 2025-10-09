@@ -143,7 +143,7 @@ class Client: public Pollable, public std::enable_shared_from_this<Client> {
     /**
      * NOT a refcopy! This is intended to avoid circular reference, which prevents everything from being released correctly.
      */
-    PollMgr* pollmgr_;
+    PollThread* pollmgr_;
 
     int sock_;
     enum {
@@ -171,10 +171,10 @@ public:
     }
 
 
-    Client(PollMgr* pollmgr): pollmgr_(pollmgr), sock_(-1), status_(NEW), bmark_(nullptr) { }
+    Client(PollThread* pollmgr): pollmgr_(pollmgr), sock_(-1), status_(NEW), bmark_(nullptr) { }
 
     // Factory method to create Client with shared_ptr and add to pollmgr
-    static std::shared_ptr<Client> create(PollMgr* pollmgr) {
+    static std::shared_ptr<Client> create(PollThread* pollmgr) {
         auto client = std::make_shared<Client>(pollmgr);
         // Note: Client is added to pollmgr when connect() is called
         return client;
@@ -240,7 +240,7 @@ class ClientPool: public NoCopy {
     rrr::Rand rand_;
 
     // refcopy
-    rrr::PollMgr* pollmgr_;
+    rrr::PollThread* pollmgr_;
 
     // guard cache_
     SpinLock l_;
@@ -249,11 +249,11 @@ class ClientPool: public NoCopy {
 
 public:
 
-    // @unsafe - Creates pool with optional PollMgr
-    // SAFETY: Proper refcounting of PollMgr
-    ClientPool(rrr::PollMgr* pollmgr = nullptr, int parallel_connections = 1);
+    // @unsafe - Creates pool with optional PollThread
+    // SAFETY: Proper refcounting of PollThread
+    ClientPool(rrr::PollThread* pollmgr = nullptr, int parallel_connections = 1);
     // @unsafe - Closes all cached connections
-    // SAFETY: Properly releases all clients and PollMgr
+    // SAFETY: Properly releases all clients and PollThread
     ~ClientPool();
 
     // return cached client connection

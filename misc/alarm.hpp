@@ -25,7 +25,7 @@ class Alarm: public FrequentJob {
   uint64_t next_id_ = 1;
 
   // either a thread_loop_holder or a epoll holder.
-  rrr::PollMgr *holder = NULL;
+  rrr::PollThread *holder = NULL;
 
 
   // id -> <alarm_time, func>;
@@ -50,7 +50,7 @@ class Alarm: public FrequentJob {
   ~Alarm() {
   }
 
-  void set_holder(rrr::PollMgr *mgr) {
+  void set_holder(rrr::PollThread *mgr) {
   }
 
   bool exe_next() {

@@ -333,22 +333,22 @@ void Client::end_request() {
   out_l_.unlock();
 }
 
-// @unsafe - Constructs pool with PollMgr ownership
-// SAFETY: Proper refcounting of PollMgr
-ClientPool::ClientPool(PollMgr* pollmgr /* =? */,
+// @unsafe - Constructs pool with PollThread ownership
+// SAFETY: Proper refcounting of PollThread
+ClientPool::ClientPool(PollThread* pollmgr /* =? */,
                        int parallel_connections /* =? */)
     : parallel_connections_(parallel_connections) {
 
   verify(parallel_connections_ > 0);
   if (pollmgr == nullptr) {
-    pollmgr_ = new PollMgr;
+    pollmgr_ = new PollThread;
   } else {
-    pollmgr_ = (PollMgr*) pollmgr->ref_copy();
+    pollmgr_ = (PollThread*) pollmgr->ref_copy();
   }
 }
 
 // @unsafe - Destroys pool and all cached connections
-// SAFETY: Closes all clients and releases PollMgr
+// SAFETY: Closes all clients and releases PollThread
 ClientPool::~ClientPool() {
   for (auto& it : cache_) {
     for (auto& client : it.second) {

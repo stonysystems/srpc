@@ -25,7 +25,7 @@ static PyObject* _pyrpc_init_server(PyObject* self, PyObject* args) {
     unsigned long n_threads;
     if (!PyArg_ParseTuple(args, "k", &n_threads))
         return NULL;
-    PollMgr* poll_mgr = new PollMgr(1);
+    PollThread* poll_mgr = new PollThread(1);
     ThreadPool* thrpool = new ThreadPool(n_threads);
     Log_debug("created rrr::Server with %d worker threads", n_threads);
     Server* svr = new Server(poll_mgr, thrpool);
@@ -130,7 +130,7 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
 
 static PyObject* _pyrpc_init_poll_mgr(PyObject* self, PyObject* args) {
     GILHelper gil_helper;
-    PollMgr* poll = new PollMgr;
+    PollThread* poll = new PollThread;
     return Py_BuildValue("k", poll);
 }
 
@@ -139,7 +139,7 @@ static PyObject* _pyrpc_init_client(PyObject* self, PyObject* args) {
     unsigned long u;
     if (!PyArg_ParseTuple(args, "k", &u))
         return NULL;
-    PollMgr* poll = (PollMgr*) u;
+    PollThread* poll = (PollThread*) u;
     Client* clnt = new Client(poll);
     return Py_BuildValue("k", clnt);
 }

@@ -312,18 +312,18 @@ int ServerConnection::poll_mode() {
     return mode;
 }
 
-// @unsafe - Constructs server with PollMgr
-// SAFETY: Proper refcounting of PollMgr
-Server::Server(PollMgr* pollmgr /* =... */, ThreadPool* thrpool /* =? */)
+// @unsafe - Constructs server with PollThread
+// SAFETY: Proper refcounting of PollThread
+Server::Server(PollThread* pollmgr /* =... */, ThreadPool* thrpool /* =? */)
         : server_sock_(-1), status_(NEW) {
 
     // get rid of eclipse warning
     memset(&loop_th_, 0, sizeof(loop_th_));
 
     if (pollmgr == nullptr) {
-        pollmgr_ = new PollMgr;
+        pollmgr_ = new PollThread;
     } else {
-        pollmgr_ = (PollMgr *) pollmgr->ref_copy();
+        pollmgr_ = (PollThread *) pollmgr->ref_copy();
     }
 
 //    if (thrpool == nullptr) {
@@ -383,7 +383,7 @@ Server::~Server() {
             Log_debug("waiting for %d alive connections to shutdown", new_alive_connection_count);
         }
         alive_connection_count = new_alive_connection_count;
-        // sleep 0.05 sec because this is the timeout for PollMgr's epoll()
+        // sleep 0.05 sec because this is the timeout for PollThread's epoll()
         usleep(50 * 1000);
     }
     verify(sconns_ctr_.peek_next() == 0);
