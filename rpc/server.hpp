@@ -283,7 +283,8 @@ class Server: public NoCopy {
     friend class ServerConnection;
  public:
     std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
-    PollThread* pollmgr_;
+    PollThread* pollmgr_;  // Non-owning pointer (to avoid circular references)
+    std::shared_ptr<PollThread> owned_pollmgr_;  // Owned instance (only if created by Server)
     ThreadPool* threadpool_;
     int server_sock_;
 

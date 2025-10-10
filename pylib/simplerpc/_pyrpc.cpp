@@ -30,7 +30,7 @@ static PyObject* _pyrpc_init_server(PyObject* self, PyObject* args) {
     Log_debug("created rrr::Server with %d worker threads", n_threads);
     Server* svr = new Server(poll_mgr, thrpool);
     thrpool->release();
-    poll_mgr->release();
+    // poll_mgr is now managed by Server's shared_ptr
     return Py_BuildValue("k", svr);
 }
 

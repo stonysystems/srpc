@@ -141,7 +141,7 @@ class Client: public Pollable, public std::enable_shared_from_this<Client> {
     Marshal in_, out_;
 
     /**
-     * NOT a refcopy! This is intended to avoid circular reference, which prevents everything from being released correctly.
+     * Non-owning pointer to avoid circular reference (PollThread holds shared_ptr<Pollable>)
      */
     PollThread* pollmgr_;
 
@@ -239,8 +239,8 @@ public:
 class ClientPool: public NoCopy {
     rrr::Rand rand_;
 
-    // refcopy
-    rrr::PollThread* pollmgr_;
+    // owns a shared reference to PollThread
+    std::shared_ptr<rrr::PollThread> pollmgr_;
 
     // guard cache_
     SpinLock l_;
@@ -250,8 +250,8 @@ class ClientPool: public NoCopy {
 public:
 
     // @unsafe - Creates pool with optional PollThread
-    // SAFETY: Proper refcounting of PollThread
-    ClientPool(rrr::PollThread* pollmgr = nullptr, int parallel_connections = 1);
+    // SAFETY: Shared ownership of PollThread
+    ClientPool(std::shared_ptr<rrr::PollThread> pollmgr = nullptr, int parallel_connections = 1);
     // @unsafe - Closes all cached connections
     // SAFETY: Properly releases all clients and PollThread
     ~ClientPool();

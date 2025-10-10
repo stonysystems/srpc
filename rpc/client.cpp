@@ -334,16 +334,16 @@ void Client::end_request() {
 }
 
 // @unsafe - Constructs pool with PollThread ownership
-// SAFETY: Proper refcounting of PollThread
-ClientPool::ClientPool(PollThread* pollmgr /* =? */,
+// SAFETY: Shared ownership of PollThread
+ClientPool::ClientPool(std::shared_ptr<PollThread> pollmgr /* =? */,
                        int parallel_connections /* =? */)
     : parallel_connections_(parallel_connections) {
 
   verify(parallel_connections_ > 0);
   if (pollmgr == nullptr) {
-    pollmgr_ = new PollThread;
+    pollmgr_ = std::make_shared<PollThread>();
   } else {
-    pollmgr_ = (PollThread*) pollmgr->ref_copy();
+    pollmgr_ = pollmgr;
   }
 }
 
@@ -355,8 +355,7 @@ ClientPool::~ClientPool() {
       client->close();
     }
   }
-  // shared_ptr handles cleanup automatically
-  pollmgr_->release();
+  // pollmgr_ shared_ptr automatically released
 }
 
 // @unsafe - Gets cached or creates new client connections
@@ -371,7 +370,7 @@ std::shared_ptr<Client> ClientPool::get_client(const string& addr) {
     std::vector<std::shared_ptr<Client>> parallel_clients;
     bool ok = true;
     for (int i = 0; i < parallel_connections_; i++) {
-      auto client = std::make_shared<Client>(this->pollmgr_);
+      auto client = std::make_shared<Client>(this->pollmgr_.get());
       if (client->connect(addr.c_str()) != 0) {
         ok = false;
         break;

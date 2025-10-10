@@ -211,19 +211,12 @@ PollThread::PollThread(int n_threads /* =... */)
   start();
 }
 
-// @unsafe - Returns raw pointer to pthread handle
-// SAFETY: Valid as long as PollThread exists
-pthread_t* PollThread::GetPthreads(int i) {
-  if (i != 0) {
-    Log_warn("PollThread::GetPthreads: index %d ignored, returning main thread", i);
-  }
-  return &th_;
-}
-
 // @safe - Stops thread and cleans up resources
 PollThread::~PollThread() {
   stop_flag_ = true;
-  Pthread_join(th_, nullptr);
+  if (join_handle_.is_some()) {
+    join_handle_.take().unwrap().join();
+  }
 
   // when stopping, remove anything registered in pollthread
   for (auto& pair : fd_to_pollable_) {
@@ -233,20 +226,11 @@ PollThread::~PollThread() {
   //Log_debug("rrr::PollThread: destroyed");
 }
 
-// @unsafe - C-style thread entry point with raw pointer cast
-// SAFETY: arg is always valid PollThread* from start()
-void* PollThread::start_poll_loop(void* arg) {
-  PollThread* thiz = (PollThread*) arg;
-  thiz->poll_loop();
-  pthread_exit(nullptr);
-  return nullptr;
-}
-
-// @unsafe - Creates pthread with raw pointer passing
-// SAFETY: 'this' remains valid throughout thread lifetime
+// @safe - Launches polling thread using rusty::thread (no raw pointers, RAII)
 void PollThread::start() {
-  Pthread_create(&th_, nullptr, PollThread::start_poll_loop, this);
-  pthread_setname_np(th_, "PollThread");
+  join_handle_ = rusty::Some(rusty::thread::spawn([this]() {
+    this->poll_loop();
+  }));
 }
 
 // @unsafe - Triggers ready jobs in coroutines

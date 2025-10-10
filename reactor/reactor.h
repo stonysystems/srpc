@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <vector>
 #include <rusty/rusty.hpp>
+#include <rusty/thread.hpp>
 #include "base/misc.hpp"
 #include "event.h"
 #include "quorum_event.h"
@@ -94,8 +95,8 @@ class Reactor {
   }
 };
 
-// @safe - Thread-safe polling thread with reference counting
-class PollThread: public rrr::RefCounted {
+// @safe - Thread-safe polling thread with automatic memory management
+class PollThread {
 private:
     Epoll poll_{};
 
@@ -110,39 +111,25 @@ private:
     SpinLock pending_remove_l_;
     SpinLock lock_job_;
 
-    pthread_t th_;
+    rusty::Option<rusty::thread::JoinHandle<void>> join_handle_;
     bool stop_flag_;
-
-    // @unsafe - C-style thread entry point with raw pointer cast
-    // SAFETY: arg is always valid PollThread* from start()
-    static void* start_poll_loop(void* arg);
 
     void poll_loop();
 
-    // @unsafe - Creates pthread with raw pointer passing
-    // SAFETY: 'this' remains valid throughout thread lifetime
+    // @safe - Launches polling thread using rusty::thread
     void start();
 
     // @unsafe - Triggers ready jobs in coroutines
     // SAFETY: Uses spinlock for thread safety
     void TriggerJob();
 
-protected:
-    // RefCounted object uses protected dtor to prevent accidental deletion
-    ~PollThread();
-
 public:
-    // @unsafe - Creates thread and manages raw pthread handle
-    // SAFETY: Proper thread lifecycle management
+    ~PollThread();
+    // @safe - Creates thread using rusty::thread for memory safety
     // Note: n_threads parameter ignored (kept for backward compatibility)
     PollThread(int n_threads = 1);
     PollThread(const PollThread&) = delete;
     PollThread& operator=(const PollThread&) = delete;
-
-    // @unsafe - Returns raw pthread handle
-    // SAFETY: Valid as long as PollThread exists
-    // Note: Parameter i is ignored (kept for backward compatibility)
-    pthread_t* GetPthreads(int i);
 
     // @safe - Thread-safe addition of pollable object
     void add(std::shared_ptr<Pollable> poll);

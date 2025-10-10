@@ -313,7 +313,7 @@ int ServerConnection::poll_mode() {
 }
 
 // @unsafe - Constructs server with PollThread
-// SAFETY: Proper refcounting of PollThread
+// SAFETY: Shared ownership if created, non-owning pointer otherwise
 Server::Server(PollThread* pollmgr /* =... */, ThreadPool* thrpool /* =? */)
         : server_sock_(-1), status_(NEW) {
 
@@ -321,9 +321,10 @@ Server::Server(PollThread* pollmgr /* =... */, ThreadPool* thrpool /* =? */)
     memset(&loop_th_, 0, sizeof(loop_th_));
 
     if (pollmgr == nullptr) {
-        pollmgr_ = new PollThread;
+        owned_pollmgr_ = std::make_shared<PollThread>();
+        pollmgr_ = owned_pollmgr_.get();
     } else {
-        pollmgr_ = (PollThread *) pollmgr->ref_copy();
+        pollmgr_ = pollmgr;
     }
 
 //    if (thrpool == nullptr) {
@@ -389,7 +390,7 @@ Server::~Server() {
     verify(sconns_ctr_.peek_next() == 0);
 
 //    threadpool_->release();
-    pollmgr_->release();
+    // owned_pollmgr_ automatically released by shared_ptr
 
     //Log_debug("rrr::Server: destroyed");
 }
