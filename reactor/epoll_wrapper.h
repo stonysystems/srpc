@@ -46,6 +46,8 @@ public:
 // SAFETY: Proper file descriptor management and error checking
 class Epoll {
  public:
+  // For testing: track number of Remove() calls (static for persistence)
+  static inline std::atomic<int> remove_count_{0};
 
   // @unsafe - Creates epoll/kqueue file descriptor
   // SAFETY: Verifies creation succeeded
@@ -101,6 +103,7 @@ class Epoll {
   // @unsafe - Removes file descriptor from epoll/kqueue
   // SAFETY: Uses system calls, ignores errors for already removed fds
   int Remove(std::shared_ptr<Pollable> poll) {
+    remove_count_++;  // Track Remove() calls for testing
     auto fd = poll->fd();
 #ifdef USE_KQUEUE
     struct kevent ev;

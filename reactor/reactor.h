@@ -142,6 +142,9 @@ public:
     // @safe - Thread-safe job management
     void add(std::shared_ptr<Job> sp_job);
     void remove(std::shared_ptr<Job> sp_job);
+
+    // For testing: get number of epoll Remove() calls
+    int get_remove_count() const { return poll_.remove_count_.load(); }
 };
 
 } // namespace rrr

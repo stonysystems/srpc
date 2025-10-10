@@ -213,15 +213,20 @@ PollThread::PollThread(int n_threads /* =... */)
 
 // @safe - Stops thread and cleans up resources
 PollThread::~PollThread() {
+  // FIXED: Remove pollables BEFORE setting stop flag
+  // This adds them to pending_remove_ while the thread is still running
+  for (auto& pair : fd_to_pollable_) {
+    this->remove(*pair.second);
+  }
+
+  // Now set stop flag - thread will process pending_remove_ on next iteration before exiting
   stop_flag_ = true;
+
+  // Join the thread - it will process pending_remove_ before exiting
   if (join_handle_.is_some()) {
     join_handle_.take().unwrap().join();
   }
 
-  // when stopping, remove anything registered in pollthread
-  for (auto& pair : fd_to_pollable_) {
-    this->remove(*pair.second);
-  }
   // shared_ptrs automatically cleaned up
   //Log_debug("rrr::PollThread: destroyed");
 }
@@ -292,8 +297,8 @@ void PollThread::poll_loop() {
 
       auto sp_poll = it->second;
 
-      // Check if fd was reused
-      if (mode_.find(fd) == mode_.end()) {
+      // Check if fd was NOT reused (still in mode_ map)
+      if (mode_.find(fd) != mode_.end()) {
         poll_.Remove(sp_poll);
       }
 
@@ -305,6 +310,37 @@ void PollThread::poll_loop() {
     }
     TriggerJob();
     Reactor::GetReactor()->Loop();
+  }
+
+  // Process any final pending removals after stop_flag_ is set
+  // This ensures destructor cleanup is processed even if the thread
+  // exits the loop before processing the last batch
+  pending_remove_l_.lock();
+  std::unordered_set<int> remove_fds = std::move(pending_remove_);
+  pending_remove_.clear();
+  pending_remove_l_.unlock();
+
+  for (int fd : remove_fds) {
+    l_.lock();
+
+    auto it = fd_to_pollable_.find(fd);
+    if (it == fd_to_pollable_.end()) {
+      l_.unlock();
+      continue;
+    }
+
+    auto sp_poll = it->second;
+
+    // Check if fd was NOT reused (still in mode_ map)
+    if (mode_.find(fd) != mode_.end()) {
+      poll_.Remove(sp_poll);
+    }
+
+    // Remove from map - object may be destroyed here
+    fd_to_pollable_.erase(it);
+    mode_.erase(fd);
+
+    l_.unlock();
   }
 }
 
