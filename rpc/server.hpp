@@ -1,4 +1,5 @@
 #pragma once
+#include <rusty/arc.hpp>
 
 #include <unordered_map>
 #include <unordered_set>
@@ -283,8 +284,7 @@ class Server: public NoCopy {
     friend class ServerConnection;
  public:
     std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
-    PollThread* pollmgr_;  // Non-owning pointer (to avoid circular references)
-    std::shared_ptr<PollThread> owned_pollmgr_;  // Owned instance (only if created by Server)
+    rusty::Arc<PollThreadWorker> poll_thread_worker_;  // Shared ownership via Arc<Mutex<>>
     ThreadPool* threadpool_;
     int server_sock_;
 
@@ -306,9 +306,9 @@ class Server: public NoCopy {
 public:
     std::string addr_;
 
-    // @unsafe - Creates server with optional PollThread
-    // SAFETY: Proper refcounting of PollThread
-    Server(PollThread* pollmgr = nullptr, ThreadPool* thrpool = nullptr);
+    // @unsafe - Creates server with optional PollThreadWorker
+    // SAFETY: Shared ownership of PollThreadWorker via Arc<Mutex<>>
+    Server(rusty::Arc<PollThreadWorker> poll_thread_worker = rusty::Arc<PollThreadWorker>(), ThreadPool* thrpool = nullptr);
     // @unsafe - Destroys server and all connections
     // SAFETY: Waits for all connections to close
     virtual ~Server();

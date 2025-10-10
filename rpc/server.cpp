@@ -139,7 +139,7 @@ void ServerConnection::end_reply() {
     // only update poll mode if connection is still active
     // (connection might have closed while handler was running)
     if (status_ == CONNECTED) {
-        server_->pollmgr_->update_mode(*this, Pollable::READ | Pollable::WRITE);
+        server_->poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
     }
 
     out_l_.unlock();
@@ -265,7 +265,7 @@ void ServerConnection::handle_write() {
     out_l_.lock();
     out_.write_to_fd(socket_);
     if (out_.empty()) {
-        server_->pollmgr_->update_mode(*this, Pollable::READ);
+        server_->poll_thread_worker_->update_mode(*this, Pollable::READ);
     }
     out_l_.unlock();
 }
@@ -293,7 +293,7 @@ void ServerConnection::close() {
         server_->sconns_l_.unlock();
 
         if (self) {
-            server_->pollmgr_->remove(*self);
+            server_->poll_thread_worker_->remove(*self);
             status_ = CLOSED;
             ::close(socket_);
             Log_debug("server@%s close ServerConnection at fd=%d", server_->addr_.c_str(), socket_);
@@ -312,19 +312,18 @@ int ServerConnection::poll_mode() {
     return mode;
 }
 
-// @unsafe - Constructs server with PollThread
-// SAFETY: Shared ownership if created, non-owning pointer otherwise
-Server::Server(PollThread* pollmgr /* =... */, ThreadPool* thrpool /* =? */)
+// @unsafe - Constructs server with PollThreadWorker
+// SAFETY: Shared ownership via Arc<Mutex<>>, creates one if not provided
+Server::Server(rusty::Arc<PollThreadWorker> poll_thread_worker /* =... */, ThreadPool* thrpool /* =? */)
         : server_sock_(-1), status_(NEW) {
 
     // get rid of eclipse warning
     memset(&loop_th_, 0, sizeof(loop_th_));
 
-    if (pollmgr == nullptr) {
-        owned_pollmgr_ = std::make_shared<PollThread>();
-        pollmgr_ = owned_pollmgr_.get();
+    if (!poll_thread_worker) {  // Check if Arc<Mutex<>> is empty
+        poll_thread_worker_ = PollThreadWorker::create();
     } else {
-        pollmgr_ = pollmgr;
+        poll_thread_worker_ = poll_thread_worker;
     }
 
 //    if (thrpool == nullptr) {
@@ -358,12 +357,12 @@ Server::~Server() {
 
     for (auto& it: sconns) {
         it->close();
-        pollmgr_->remove(*it);
+        poll_thread_worker_->remove(*it);
     }
 
     if (sp_server_listener_) {
         sp_server_listener_->close();
-        pollmgr_->remove(*sp_server_listener_);
+        poll_thread_worker_->remove(*sp_server_listener_);
         sp_server_listener_.reset();
     }
 
@@ -384,13 +383,13 @@ Server::~Server() {
             Log_debug("waiting for %d alive connections to shutdown", new_alive_connection_count);
         }
         alive_connection_count = new_alive_connection_count;
-        // sleep 0.05 sec because this is the timeout for PollThread's epoll()
+        // sleep 0.05 sec because this is the timeout for PollThreadWorker's epoll()
         usleep(50 * 1000);
     }
     verify(sconns_ctr_.peek_next() == 0);
 
 //    threadpool_->release();
-    // owned_pollmgr_ automatically released by shared_ptr
+    // owned_poll_thread_worker_ automatically released by shared_ptr
 
     //Log_debug("rrr::Server: destroyed");
 }
@@ -454,7 +453,7 @@ void Server::server_loop(struct addrinfo* svr_addr) {
             sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
             sconns_.insert(sconn);  // Insert shared_ptr into set
             sconns_l_.unlock();
-            pollmgr_->add(sconn);
+            poll_thread_worker_->add(sconn);
         }
     }
 
@@ -488,7 +487,7 @@ void ServerListener::handle_read() {
       server_->sconns_l_.lock();
       server_->sconns_.insert(sconn);  // Insert shared_ptr into set
       server_->sconns_l_.unlock();
-      server_->pollmgr_->add(sconn);
+      server_->poll_thread_worker_->add(sconn);
     } else {
       break;
     }
@@ -590,7 +589,7 @@ ServerListener::ServerListener(Server* server, string addr) {
 int Server::start(const char* bind_addr) {
   string addr(bind_addr,strlen(bind_addr));
   sp_server_listener_ = std::make_shared<ServerListener>(this, addr);
-  pollmgr_->add(sp_server_listener_);
+  poll_thread_worker_->add(sp_server_listener_);
   return 0;
 }
 

@@ -60,6 +60,27 @@ class Epoll {
     verify(poll_fd_ != -1);
   }
 
+  // Move constructor - transfers ownership of poll_fd
+  Epoll(Epoll&& other) noexcept : poll_fd_(other.poll_fd_) {
+    other.poll_fd_ = -1;  // Prevent double-close
+  }
+
+  // Move assignment - transfers ownership of poll_fd
+  Epoll& operator=(Epoll&& other) noexcept {
+    if (this != &other) {
+      if (poll_fd_ != -1) {
+        close(poll_fd_);
+      }
+      poll_fd_ = other.poll_fd_;
+      other.poll_fd_ = -1;  // Prevent double-close
+    }
+    return *this;
+  }
+
+  // Delete copy constructor and copy assignment
+  Epoll(const Epoll&) = delete;
+  Epoll& operator=(const Epoll&) = delete;
+
   // @unsafe - Adds file descriptor to epoll/kqueue
   // SAFETY: Uses system calls with proper error checking
   // userdata is raw Pollable* for lookup
@@ -248,7 +269,9 @@ class Epoll {
   }
 
   ~Epoll() {
-    close(poll_fd_);
+    if (poll_fd_ != -1) {
+      close(poll_fd_);
+    }
   }
 
  private:

@@ -7,6 +7,15 @@
 
 using namespace rrr;
 
+// Wrapper to hold Arc<Mutex<>> for Python binding
+struct PollThreadWorkerWrapper {
+    rusty::Arc<PollThreadWorker> arc;
+
+    PollThreadWorkerWrapper() {
+        arc = PollThreadWorker::create();
+    }
+};
+
 class GILHelper {
     PyGILState_STATE gil_state;
 
@@ -25,12 +34,12 @@ static PyObject* _pyrpc_init_server(PyObject* self, PyObject* args) {
     unsigned long n_threads;
     if (!PyArg_ParseTuple(args, "k", &n_threads))
         return NULL;
-    PollThread* poll_mgr = new PollThread(1);
+    auto poll_arc = PollThreadWorker::create();
     ThreadPool* thrpool = new ThreadPool(n_threads);
     Log_debug("created rrr::Server with %d worker threads", n_threads);
-    Server* svr = new Server(poll_mgr, thrpool);
+    Server* svr = new Server(poll_arc, thrpool);
     thrpool->release();
-    // poll_mgr is now managed by Server's shared_ptr
+    // poll_thread_worker is now managed by Server's Arc
     return Py_BuildValue("k", svr);
 }
 
@@ -128,10 +137,12 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
     return Py_BuildValue("i", ret);
 }
 
-static PyObject* _pyrpc_init_poll_mgr(PyObject* self, PyObject* args) {
+static PyObject* _pyrpc_init_poll_thread_worker(PyObject* self, PyObject* args) {
     GILHelper gil_helper;
-    PollThread* poll = new PollThread;
-    return Py_BuildValue("k", poll);
+    // Create wrapper that holds Arc<PollThreadWorker>
+    // Python will manage this wrapper's lifetime
+    auto* wrapper = new PollThreadWorkerWrapper();
+    return Py_BuildValue("k", wrapper);
 }
 
 static PyObject* _pyrpc_init_client(PyObject* self, PyObject* args) {
@@ -139,8 +150,8 @@ static PyObject* _pyrpc_init_client(PyObject* self, PyObject* args) {
     unsigned long u;
     if (!PyArg_ParseTuple(args, "k", &u))
         return NULL;
-    PollThread* poll = (PollThread*) u;
-    Client* clnt = new Client(poll);
+    auto* wrapper = (PollThreadWorkerWrapper*) u;
+    Client* clnt = new Client(wrapper->arc);
     return Py_BuildValue("k", clnt);
 }
 
@@ -529,7 +540,7 @@ static PyMethodDef _pyrpcMethods[] = {
     {"server_unreg", _pyrpc_server_unreg, METH_VARARGS, NULL},
     {"server_reg", _pyrpc_server_reg, METH_VARARGS, NULL},
 
-    {"init_poll_mgr", _pyrpc_init_poll_mgr, METH_VARARGS, NULL},
+    {"init_poll_thread_worker", _pyrpc_init_poll_thread_worker, METH_VARARGS, NULL},
 
     {"init_client", _pyrpc_init_client, METH_VARARGS, NULL},
     {"fini_client", _pyrpc_fini_client, METH_VARARGS, NULL},

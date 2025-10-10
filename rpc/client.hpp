@@ -1,4 +1,5 @@
 #pragma once
+#include <rusty/arc.hpp>
 
 #include <unordered_map>
 
@@ -141,9 +142,9 @@ class Client: public Pollable, public std::enable_shared_from_this<Client> {
     Marshal in_, out_;
 
     /**
-     * Non-owning pointer to avoid circular reference (PollThread holds shared_ptr<Pollable>)
+     * Shared Arc<Mutex<>> to PollThreadWorker - thread-safe access
      */
-    PollThread* pollmgr_;
+    rusty::Arc<PollThreadWorker> poll_thread_worker_;
 
     int sock_;
     enum {
@@ -171,12 +172,12 @@ public:
     }
 
 
-    Client(PollThread* pollmgr): pollmgr_(pollmgr), sock_(-1), status_(NEW), bmark_(nullptr) { }
+    Client(rusty::Arc<PollThreadWorker> poll_thread_worker): poll_thread_worker_(poll_thread_worker), sock_(-1), status_(NEW), bmark_(nullptr) { }
 
-    // Factory method to create Client with shared_ptr and add to pollmgr
-    static std::shared_ptr<Client> create(PollThread* pollmgr) {
-        auto client = std::make_shared<Client>(pollmgr);
-        // Note: Client is added to pollmgr when connect() is called
+    // Factory method to create Client with shared_ptr and add to poll_thread_worker
+    static std::shared_ptr<Client> create(rusty::Arc<PollThreadWorker> poll_thread_worker) {
+        auto client = std::make_shared<Client>(poll_thread_worker);
+        // Note: Client is added to poll_thread_worker when connect() is called
         return client;
     }
 
@@ -239,8 +240,8 @@ public:
 class ClientPool: public NoCopy {
     rrr::Rand rand_;
 
-    // owns a shared reference to PollThread
-    std::shared_ptr<rrr::PollThread> pollmgr_;
+    // owns a shared reference to PollThreadWorker
+    rusty::Arc<rrr::PollThreadWorker> poll_thread_worker_;
 
     // guard cache_
     SpinLock l_;
@@ -249,11 +250,11 @@ class ClientPool: public NoCopy {
 
 public:
 
-    // @unsafe - Creates pool with optional PollThread
-    // SAFETY: Shared ownership of PollThread
-    ClientPool(std::shared_ptr<rrr::PollThread> pollmgr = nullptr, int parallel_connections = 1);
+    // @unsafe - Creates pool with optional PollThreadWorker
+    // SAFETY: Shared ownership of PollThreadWorker
+    ClientPool(rusty::Arc<rrr::PollThreadWorker> poll_thread_worker = rusty::Arc<rrr::PollThreadWorker>(), int parallel_connections = 1);
     // @unsafe - Closes all cached connections
-    // SAFETY: Properly releases all clients and PollThread
+    // SAFETY: Properly releases all clients and PollThreadWorker
     ~ClientPool();
 
     // return cached client connection

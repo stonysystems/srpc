@@ -9,6 +9,8 @@
 #include <vector>
 #include <rusty/rusty.hpp>
 #include <rusty/thread.hpp>
+#include <rusty/arc.hpp>
+#include <rusty/mutex.hpp>
 #include "base/misc.hpp"
 #include "event.h"
 #include "quorum_event.h"
@@ -96,55 +98,107 @@ class Reactor {
 };
 
 // @safe - Thread-safe polling thread with automatic memory management
-class PollThread {
+class PollThreadWorker {
+    // Friend Arc to allow make_in_place access to private constructor
+    friend class rusty::Arc<PollThreadWorker>;
+
 private:
-    Epoll poll_{};
+    // All members are mutable to allow const methods with interior mutability
+    mutable Epoll poll_{};
 
-    SpinLock l_;
+    // Wrap non-movable SpinLocks in unique_ptr to make class movable
+    mutable std::unique_ptr<SpinLock> l_;
     // Authoritative storage: fd -> shared_ptr<Pollable>
-    std::unordered_map<int, std::shared_ptr<Pollable>> fd_to_pollable_;
-    std::unordered_map<int, int> mode_; // fd->mode
+    mutable std::unordered_map<int, std::shared_ptr<Pollable>> fd_to_pollable_;
+    mutable std::unordered_map<int, int> mode_; // fd->mode
 
-    std::set<std::shared_ptr<Job>> set_sp_jobs_;
+    mutable std::set<std::shared_ptr<Job>> set_sp_jobs_;
 
-    std::unordered_set<int> pending_remove_;  // Store fds to remove
-    SpinLock pending_remove_l_;
-    SpinLock lock_job_;
+    mutable std::unordered_set<int> pending_remove_;  // Store fds to remove
+    mutable std::unique_ptr<SpinLock> pending_remove_l_;
+    mutable std::unique_ptr<SpinLock> lock_job_;
 
-    rusty::Option<rusty::thread::JoinHandle<void>> join_handle_;
-    bool stop_flag_;
+    mutable rusty::Option<rusty::thread::JoinHandle<void>> join_handle_;
+    mutable std::unique_ptr<std::atomic<bool>> stop_flag_;  // Wrap atomic to make movable
 
-    void poll_loop();
-
-    // @safe - Launches polling thread using rusty::thread
-    void start();
+    // Private constructor - use create() factory
+    PollThreadWorker();
 
     // @unsafe - Triggers ready jobs in coroutines
     // SAFETY: Uses spinlock for thread safety
-    void TriggerJob();
+    void TriggerJob() const;
 
 public:
-    ~PollThread();
-    // @safe - Creates thread using rusty::thread for memory safety
-    // Note: n_threads parameter ignored (kept for backward compatibility)
-    PollThread(int n_threads = 1);
-    PollThread(const PollThread&) = delete;
-    PollThread& operator=(const PollThread&) = delete;
+    ~PollThreadWorker();
+
+    // Factory method returns Arc<PollThreadWorker>
+    static rusty::Arc<PollThreadWorker> create();
+
+    // Member function for thread - not static!
+    void poll_loop() const;
+
+    // Explicit shutdown (replaces RAII)
+    void shutdown() const;
+
+    PollThreadWorker(const PollThreadWorker&) = delete;
+    PollThreadWorker& operator=(const PollThreadWorker&) = delete;
+
+    // Explicit move constructors
+    PollThreadWorker(PollThreadWorker&& other) noexcept
+        : poll_(std::move(other.poll_)),
+          l_(std::move(other.l_)),
+          fd_to_pollable_(std::move(other.fd_to_pollable_)),
+          mode_(std::move(other.mode_)),
+          set_sp_jobs_(std::move(other.set_sp_jobs_)),
+          pending_remove_(std::move(other.pending_remove_)),
+          pending_remove_l_(std::move(other.pending_remove_l_)),
+          lock_job_(std::move(other.lock_job_)),
+          join_handle_(std::move(other.join_handle_)),
+          stop_flag_(std::move(other.stop_flag_)) {}
+
+    PollThreadWorker& operator=(PollThreadWorker&& other) noexcept {
+        if (this != &other) {
+            poll_ = std::move(other.poll_);
+            l_ = std::move(other.l_);
+            fd_to_pollable_ = std::move(other.fd_to_pollable_);
+            mode_ = std::move(other.mode_);
+            set_sp_jobs_ = std::move(other.set_sp_jobs_);
+            pending_remove_ = std::move(other.pending_remove_);
+            pending_remove_l_ = std::move(other.pending_remove_l_);
+            lock_job_ = std::move(other.lock_job_);
+            join_handle_ = std::move(other.join_handle_);
+            stop_flag_ = std::move(other.stop_flag_);
+        }
+        return *this;
+    }
 
     // @safe - Thread-safe addition of pollable object
-    void add(std::shared_ptr<Pollable> poll);
+    void add(std::shared_ptr<Pollable> poll) const;
     // @safe - Thread-safe removal of pollable object
-    void remove(Pollable& poll);
+    void remove(Pollable& poll) const;
     // @safe - Thread-safe mode update
-    void update_mode(Pollable& poll, int new_mode);
+    void update_mode(Pollable& poll, int new_mode) const;
 
     // Frequent Job
     // @safe - Thread-safe job management
-    void add(std::shared_ptr<Job> sp_job);
-    void remove(std::shared_ptr<Job> sp_job);
+    void add(std::shared_ptr<Job> sp_job) const;
+    void remove(std::shared_ptr<Job> sp_job) const;
 
     // For testing: get number of epoll Remove() calls
     int get_remove_count() const { return poll_.remove_count_.load(); }
 };
 
 } // namespace rrr
+
+// Trait specializations for PollThreadWorker
+// PollThreadWorker is Send + Sync because:
+// - All methods are const with interior mutability via internal SpinLocks
+// - All members are mutable
+// - Designed for thread-safe concurrent access
+namespace rusty {
+template<>
+struct is_send<rrr::PollThreadWorker> : std::true_type {};
+
+template<>
+struct is_sync<rrr::PollThreadWorker> : std::true_type {};
+} // namespace rusty

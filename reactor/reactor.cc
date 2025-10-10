@@ -199,52 +199,71 @@ void Reactor::ContinueCoro(std::shared_ptr<Coroutine> sp_coro) {
   sp_running_coro_th_ = sp_old_coro;
 }
 
-// TODO PollThread -> Reactor
+// TODO PollThreadWorker -> Reactor
 
-// @unsafe - Creates single polling thread
-// SAFETY: Thread properly joined in destructor
-PollThread::PollThread(int n_threads /* =... */)
-    : stop_flag_(false) {
-  if (n_threads > 1) {
-    Log_warn("PollThread: n_threads=%d ignored, using single thread", n_threads);
-  }
-  start();
+// Private constructor - doesn't start thread
+PollThreadWorker::PollThreadWorker()
+    : l_(std::make_unique<SpinLock>()),
+      pending_remove_l_(std::make_unique<SpinLock>()),
+      lock_job_(std::make_unique<SpinLock>()),
+      stop_flag_(std::make_unique<std::atomic<bool>>(false)) {
+  // Don't start thread here - factory will do it
 }
 
-// @safe - Stops thread and cleans up resources
-PollThread::~PollThread() {
-  // FIXED: Remove pollables BEFORE setting stop flag
-  // This adds them to pending_remove_ while the thread is still running
+// Factory method creates Arc<PollThreadWorker> and starts thread
+rusty::Arc<PollThreadWorker> PollThreadWorker::create() {
+  // Create Arc directly (methods are const, so no need for Mutex)
+  auto arc = rusty::Arc<PollThreadWorker>::new_(PollThreadWorker());
+
+  // Clone Arc for thread
+  auto thread_arc = arc.clone();
+
+  // Spawn thread with explicit parameter passing (enforces Send trait checking)
+  // This properly validates that Arc<PollThreadWorker> is Send
+  auto handle = rusty::thread::spawn(
+    [](rusty::Arc<PollThreadWorker> arc) {
+      arc->poll_loop();
+    },
+    thread_arc
+  );
+
+  // Store handle (using const method)
+  arc->join_handle_ = rusty::Some(std::move(handle));
+
+  return arc;
+}
+
+// Explicit shutdown method
+void PollThreadWorker::shutdown() const {
+  // Remove pollables before stopping
   for (auto& pair : fd_to_pollable_) {
     this->remove(*pair.second);
   }
 
-  // Now set stop flag - thread will process pending_remove_ on next iteration before exiting
-  stop_flag_ = true;
+  // Signal thread to stop
+  stop_flag_->store(true);
 
-  // Join the thread - it will process pending_remove_ before exiting
+  // Join thread
   if (join_handle_.is_some()) {
     join_handle_.take().unwrap().join();
   }
-
-  // shared_ptrs automatically cleaned up
-  //Log_debug("rrr::PollThread: destroyed");
 }
 
-// @safe - Launches polling thread using rusty::thread (no raw pointers, RAII)
-void PollThread::start() {
-  join_handle_ = rusty::Some(rusty::thread::spawn([this]() {
-    this->poll_loop();
-  }));
+// Destructor just warns if not shut down
+PollThreadWorker::~PollThreadWorker() {
+  // Check if stop_flag_ is not null (it may be null if object was moved)
+  if (stop_flag_ && !stop_flag_->load()) {
+    Log_error("PollThreadWorker destroyed without shutdown() - thread may leak!");
+  }
 }
 
 // @unsafe - Triggers ready jobs in coroutines
 // SAFETY: Uses spinlock for thread safety
-void PollThread::TriggerJob() {
-  lock_job_.lock();
+void PollThreadWorker::TriggerJob() const {
+  lock_job_->lock();
   auto jobs_exec = set_sp_jobs_;
   set_sp_jobs_.clear();
-  lock_job_.unlock();
+  lock_job_->unlock();
   auto it = jobs_exec.begin();
   while (it != jobs_exec.end()) {
     auto sp_job = *it;
@@ -260,38 +279,38 @@ void PollThread::TriggerJob() {
 
 // @unsafe - Main polling loop with complex synchronization
 // SAFETY: Uses spinlocks and proper synchronization primitives
-void PollThread::poll_loop() {
-  while (!stop_flag_) {
+void PollThreadWorker::poll_loop() const {
+  while (!stop_flag_->load()) {
     TriggerJob();
     // Pass lookup lambda: userdata is Pollable*, lookup shared_ptr by fd
     poll_.Wait([this](void* userdata) -> std::shared_ptr<Pollable> {
         Pollable* poll_ptr = reinterpret_cast<Pollable*>(userdata);
         int fd = poll_ptr->fd();  // Safe - object still in map
 
-        l_.lock();
+        l_->lock();
         auto it = fd_to_pollable_.find(fd);
         std::shared_ptr<Pollable> result;
         if (it != fd_to_pollable_.end()) {
           result = it->second;
         }
-        l_.unlock();
+        l_->unlock();
 
         return result;
     });
     TriggerJob();
 
     // Process deferred removals AFTER all events handled
-    pending_remove_l_.lock();
+    pending_remove_l_->lock();
     std::unordered_set<int> remove_fds = std::move(pending_remove_);
     pending_remove_.clear();
-    pending_remove_l_.unlock();
+    pending_remove_l_->unlock();
 
     for (int fd : remove_fds) {
-      l_.lock();
+      l_->lock();
 
       auto it = fd_to_pollable_.find(fd);
       if (it == fd_to_pollable_.end()) {
-        l_.unlock();
+        l_->unlock();
         continue;
       }
 
@@ -306,7 +325,7 @@ void PollThread::poll_loop() {
       fd_to_pollable_.erase(it);
       mode_.erase(fd);
 
-      l_.unlock();
+      l_->unlock();
     }
     TriggerJob();
     Reactor::GetReactor()->Loop();
@@ -315,17 +334,17 @@ void PollThread::poll_loop() {
   // Process any final pending removals after stop_flag_ is set
   // This ensures destructor cleanup is processed even if the thread
   // exits the loop before processing the last batch
-  pending_remove_l_.lock();
+  pending_remove_l_->lock();
   std::unordered_set<int> remove_fds = std::move(pending_remove_);
   pending_remove_.clear();
-  pending_remove_l_.unlock();
+  pending_remove_l_->unlock();
 
   for (int fd : remove_fds) {
-    l_.lock();
+    l_->lock();
 
     auto it = fd_to_pollable_.find(fd);
     if (it == fd_to_pollable_.end()) {
-      l_.unlock();
+      l_->unlock();
       continue;
     }
 
@@ -340,35 +359,35 @@ void PollThread::poll_loop() {
     fd_to_pollable_.erase(it);
     mode_.erase(fd);
 
-    l_.unlock();
+    l_->unlock();
   }
 }
 
 // @safe - Thread-safe job addition with spinlock
-void PollThread::add(std::shared_ptr<Job> sp_job) {
-  lock_job_.lock();
+void PollThreadWorker::add(std::shared_ptr<Job> sp_job) const {
+  lock_job_->lock();
   set_sp_jobs_.insert(sp_job);
-  lock_job_.unlock();
+  lock_job_->unlock();
 }
 
 // @safe - Thread-safe job removal with spinlock
-void PollThread::remove(std::shared_ptr<Job> sp_job) {
-  lock_job_.lock();
+void PollThreadWorker::remove(std::shared_ptr<Job> sp_job) const {
+  lock_job_->lock();
   set_sp_jobs_.erase(sp_job);
-  lock_job_.unlock();
+  lock_job_->unlock();
 }
 
 // @safe - Adds pollable with shared_ptr ownership
 // SAFETY: Stores shared_ptr in map, passes raw pointer to epoll
-void PollThread::add(std::shared_ptr<Pollable> sp_poll) {
+void PollThreadWorker::add(std::shared_ptr<Pollable> sp_poll) const {
   int fd = sp_poll->fd();
   int poll_mode = sp_poll->poll_mode();
 
-  l_.lock();
+  l_->lock();
 
   // Check if already exists
   if (fd_to_pollable_.find(fd) != fd_to_pollable_.end()) {
-    l_.unlock();
+    l_->unlock();
     return;
   }
 
@@ -381,36 +400,36 @@ void PollThread::add(std::shared_ptr<Pollable> sp_poll) {
 
   poll_.Add(sp_poll, userdata);
 
-  l_.unlock();
+  l_->unlock();
 }
 
 // @unsafe - Removes pollable with deferred cleanup
 // SAFETY: Deferred removal ensures safe cleanup
-void PollThread::remove(Pollable& poll) {
+void PollThreadWorker::remove(Pollable& poll) const {
   int fd = poll.fd();
 
-  l_.lock();
+  l_->lock();
   if (fd_to_pollable_.find(fd) == fd_to_pollable_.end()) {
-    l_.unlock();
+    l_->unlock();
     return;  // Not found
   }
-  l_.unlock();
+  l_->unlock();
 
   // Add to pending_remove (actual removal happens after epoll_wait)
-  pending_remove_l_.lock();
+  pending_remove_l_->lock();
   pending_remove_.insert(fd);
-  pending_remove_l_.unlock();
+  pending_remove_l_->unlock();
 }
 
 // @unsafe - Updates poll mode
 // SAFETY: Protected by spinlock, validates poll existence
-void PollThread::update_mode(Pollable& poll, int new_mode) {
+void PollThreadWorker::update_mode(Pollable& poll, int new_mode) const {
   int fd = poll.fd();
-  l_.lock();
+  l_->lock();
 
   // Verify the pollable is registered
   if (fd_to_pollable_.find(fd) == fd_to_pollable_.end()) {
-    l_.unlock();
+    l_->unlock();
     return;
   }
 
@@ -424,7 +443,7 @@ void PollThread::update_mode(Pollable& poll, int new_mode) {
     poll_.Update(poll, userdata, new_mode, old_mode);
   }
 
-  l_.unlock();
+  l_->unlock();
 }
 
 } // namespace rrr

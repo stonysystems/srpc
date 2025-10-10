@@ -106,7 +106,7 @@ void Client::invalidate_pending_futures() {
 // SAFETY: Idempotent, proper cleanup sequence
 void Client::close() {
   if (status_ == CONNECTED) {
-    pollmgr_->remove(*this);
+    poll_thread_worker_->remove(*this);
     ::close(sock_);
   }
   status_ = CLOSED;
@@ -184,7 +184,7 @@ int Client::connect(const char* addr) {
   Log_debug("rrr::Client: connected to %s", addr);
 
   status_ = CONNECTED;
-  pollmgr_->add(shared_from_this());
+  poll_thread_worker_->add(shared_from_this());
 
   return 0;
 }
@@ -205,7 +205,7 @@ void Client::handle_write() {
   out_.write_to_fd(sock_);
   if (out_.empty()) {
     //Log_info("Client handle_write setting read mode here...");
-    pollmgr_->update_mode(*this, Pollable::READ);
+    poll_thread_worker_->update_mode(*this, Pollable::READ);
   }
   out_l_.unlock();
 }
@@ -328,34 +328,38 @@ void Client::end_request() {
   // always enable write events since the code above gauranteed there
   // will be some data to send
   //Log_info("Client end_request setting write mode here....");
-  pollmgr_->update_mode(*this, Pollable::READ | Pollable::WRITE);
+  poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
 
   out_l_.unlock();
 }
 
-// @unsafe - Constructs pool with PollThread ownership
-// SAFETY: Shared ownership of PollThread
-ClientPool::ClientPool(std::shared_ptr<PollThread> pollmgr /* =? */,
+// @unsafe - Constructs pool with PollThreadWorker ownership
+// SAFETY: Shared ownership of PollThreadWorker
+ClientPool::ClientPool(rusty::Arc<PollThreadWorker> poll_thread_worker /* =? */,
                        int parallel_connections /* =? */)
     : parallel_connections_(parallel_connections) {
 
   verify(parallel_connections_ > 0);
-  if (pollmgr == nullptr) {
-    pollmgr_ = std::make_shared<PollThread>();
+  if (!poll_thread_worker) {
+    poll_thread_worker_ = PollThreadWorker::create();
   } else {
-    pollmgr_ = pollmgr;
+    poll_thread_worker_ = poll_thread_worker;
   }
 }
 
 // @unsafe - Destroys pool and all cached connections
-// SAFETY: Closes all clients and releases PollThread
+// SAFETY: Closes all clients and releases PollThreadWorker
 ClientPool::~ClientPool() {
   for (auto& it : cache_) {
     for (auto& client : it.second) {
       client->close();
     }
   }
-  // pollmgr_ shared_ptr automatically released
+
+  // Shutdown PollThreadWorker if we own it
+  if (poll_thread_worker_) {
+    poll_thread_worker_->shutdown();
+  }
 }
 
 // @unsafe - Gets cached or creates new client connections
@@ -370,7 +374,7 @@ std::shared_ptr<Client> ClientPool::get_client(const string& addr) {
     std::vector<std::shared_ptr<Client>> parallel_clients;
     bool ok = true;
     for (int i = 0; i < parallel_connections_; i++) {
-      auto client = std::make_shared<Client>(this->pollmgr_.get());
+      auto client = std::make_shared<Client>(this->poll_thread_worker_);
       if (client->connect(addr.c_str()) != 0) {
         ok = false;
         break;
