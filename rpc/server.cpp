@@ -163,7 +163,7 @@ void ServerConnection::handle_read() {
        }
     }
 
-    list<std::unique_ptr<Request>> complete_requests;
+    list<rusty::Box<Request>> complete_requests;
     n_peek = block_read_in.peek(&packet_size, sizeof(i32));
     if(n_peek == sizeof(i32)){
       int pckt_bytes = block_read_in.chnk_read_from_fd(socket_, packet_size + sizeof(i32) - block_read_in.content_size());
@@ -171,7 +171,7 @@ void ServerConnection::handle_read() {
         return;
       }
       verify(block_read_in.read(&packet_size, sizeof(i32)) == sizeof(i32));
-      auto req = std::make_unique<Request>();
+      auto req = rusty::Box<Request>(new Request());
       verify(req->m.read_reuse_chnk(block_read_in, packet_size) == (size_t) packet_size);
       //Log_info("server handle read: packet size %d and packet bytes %d and content size %d", packet_size, pckt_bytes, block_read_in.content_size());
       v64 v_xid;
@@ -212,7 +212,7 @@ void ServerConnection::handle_read() {
             // rpc id not provided
             begin_reply(*req, EINVAL);
             end_reply();
-            // req automatically cleaned up by unique_ptr
+            // req automatically cleaned up by rusty::Box
             continue;
         }
 
@@ -225,14 +225,19 @@ void ServerConnection::handle_read() {
 
         auto it = server_->handlers_.find(rpc_id);
         if (it != server_->handlers_.end()) {
-            // Use weak_self_ directly - no map lookup needed!
-            // Extract raw pointer for lambda capture (std::function requires copyability)
+            // CONSTRAINT: Coroutine::CreateRun uses std::function, which requires copyable callables.
+            // Lambdas with rusty::Box captures (even using [req=std::move(req)]) are move-only.
+            // WORKAROUND: Use raw pointer. This is SAFE from double-delete because:
+            //   1. release() transfers ownership OUT of the original rusty::Box
+            //   2. Lambda wraps it back into rusty::Box, which then owns it exclusively
+            // RISK: Memory leak if lambda never executes (unlikely - CreateRun rarely throws)
             Request* req_raw = req.release();
             auto weak_this = weak_self_;
             Coroutine::CreateRun([it, req_raw, weak_this] () {
-                // Immediately wrap in unique_ptr for automatic cleanup and ownership transfer
-                std::unique_ptr<Request> req(req_raw);
+                // Take ownership immediately with rusty::Box
+                rusty::Box<Request> req(req_raw);
                 it->second(std::move(req), weak_this);
+
                 // Lock weak_ptr to access block_read_in
                 auto sconn = weak_this.lock();
                 if (sconn) {
@@ -253,7 +258,7 @@ void ServerConnection::handle_read() {
             }
             begin_reply(*req, ENOENT);
             end_reply();
-            // req automatically cleaned up by unique_ptr
+            // req automatically cleaned up by rusty::Box
         }
     }
 }

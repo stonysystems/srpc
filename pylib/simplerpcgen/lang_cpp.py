@@ -51,14 +51,14 @@ def emit_service_and_proxy(service, f, rpc_table):
             f.writeln("return ret;")
         f.writeln("}")
         f.writeln("// these RPC handler functions need to be implemented by user")
-        f.writeln("// for 'raw' handlers, req is unique_ptr (auto-cleaned); weak_ptr requires lock() before use")
+        f.writeln("// for 'raw' handlers, req is rusty::Box (auto-cleaned); weak_ptr requires lock() before use")
         for func in service.functions:
             if service.abstract or func.abstract:
                 postfix = " = 0"
             else:
                 postfix = ""
             if func.attr == "raw":
-                f.writeln("virtual void %s(std::unique_ptr<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn)%s;" % (func.name, postfix))
+                f.writeln("virtual void %s(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn)%s;" % (func.name, postfix))
             else:
                 func_args = []
                 for in_arg in func.input:
@@ -79,7 +79,7 @@ def emit_service_and_proxy(service, f, rpc_table):
         for func in service.functions:
             if func.attr == "raw":
                 continue
-            f.writeln("void __%s__wrapper__(std::unique_ptr<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {" % func.name)
+            f.writeln("void __%s__wrapper__(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {" % func.name)
             with f.indent():
                 if func.attr == "defer":
                     invoke_with = []
@@ -142,7 +142,7 @@ def emit_service_and_proxy(service, f, rpc_table):
                             f.writeln("*sconn << out_%d;" % i)
                         f.writeln("sconn->end_reply();")
                     f.writeln("}")
-                    f.writeln("// req automatically cleaned up by unique_ptr")
+                    f.writeln("// req automatically cleaned up by rusty::Box")
             f.writeln("}")
     f.writeln("};")
     f.writeln()

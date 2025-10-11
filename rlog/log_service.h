@@ -10,8 +10,8 @@ namespace rlog {
 class RLogService: public rrr::Service {
 public:
     enum {
-        LOG = 0x69dbc7ca,
-        AGGREGATE_QPS = 0x50ca8677,
+        LOG = 0x5c3c7d74,
+        AGGREGATE_QPS = 0x4d46f510,
     };
     int __reg_to__(rrr::Server* svr) {
         int ret = 0;
@@ -28,11 +28,11 @@ public:
         return ret;
     }
     // these RPC handler functions need to be implemented by user
-    // for 'raw' handlers, req is unique_ptr (auto-cleaned); weak_ptr requires lock() before use
+    // for 'raw' handlers, req is rusty::Box (auto-cleaned); weak_ptr requires lock() before use
     virtual void log(const rrr::i32& level, const std::string& source, const rrr::i64& msg_id, const std::string& message) = 0;
     virtual void aggregate_qps(const std::string& metric_name, const rrr::i32& increment) = 0;
 private:
-    void __log__wrapper__(std::unique_ptr<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {
+    void __log__wrapper__(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {
         rrr::i32 in_0;
         req->m >> in_0;
         std::string in_1;
@@ -47,9 +47,9 @@ private:
             sconn->begin_reply(*req);
             sconn->end_reply();
         }
-        // req automatically cleaned up by unique_ptr
+        // req automatically cleaned up by rusty::Box
     }
-    void __aggregate_qps__wrapper__(std::unique_ptr<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {
+    void __aggregate_qps__wrapper__(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {
         std::string in_0;
         req->m >> in_0;
         rrr::i32 in_1;
@@ -60,7 +60,7 @@ private:
             sconn->begin_reply(*req);
             sconn->end_reply();
         }
-        // req automatically cleaned up by unique_ptr
+        // req automatically cleaned up by rusty::Box
     }
 };
 
