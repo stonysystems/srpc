@@ -282,21 +282,9 @@ void PollThreadWorker::TriggerJob() const {
 void PollThreadWorker::poll_loop() const {
   while (!stop_flag_->load()) {
     TriggerJob();
-    // Pass lookup lambda: userdata is Pollable*, lookup shared_ptr by fd
-    poll_.Wait([this](void* userdata) -> std::shared_ptr<Pollable> {
-        Pollable* poll_ptr = reinterpret_cast<Pollable*>(userdata);
-        int fd = poll_ptr->fd();  // Safe - object still in map
-
-        l_->lock();
-        auto it = fd_to_pollable_.find(fd);
-        std::shared_ptr<Pollable> result;
-        if (it != fd_to_pollable_.end()) {
-          result = it->second;
-        }
-        l_->unlock();
-
-        return result;
-    });
+    // Wait() now directly casts userdata to Pollable* and calls handlers
+    // Safe because deferred removal guarantees object stays in fd_to_pollable_ map
+    poll_.Wait();
     TriggerJob();
 
     // Process deferred removals AFTER all events handled

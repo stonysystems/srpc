@@ -208,11 +208,10 @@ class Epoll {
     return 0;
   }
 
-  // @unsafe - Waits for events and dispatches to handlers via callback
-  // SAFETY: Uses system calls with timeout, callback receives safe shared_ptrs
-  // lookup_fn: Converts Pollable* (void*) to shared_ptr<Pollable> via fd lookup
-  template<typename LookupFn>
-  void Wait(LookupFn&& lookup_fn) {
+  // @unsafe - Waits for events and dispatches to handlers directly
+  // SAFETY: Uses system calls with timeout, raw pointer safe due to deferred removal
+  // userdata is Pollable* - safe to use directly because object remains in fd_to_pollable_ map
+  void Wait() {
     const int max_nev = 100;
 #ifdef USE_KQUEUE
     struct kevent evlist[max_nev];
@@ -224,8 +223,7 @@ class Epoll {
 
     for (int i = 0; i < nev; i++) {
       void* userdata = evlist[i].udata;
-      auto poll = lookup_fn(userdata);  // Get shared_ptr via lookup
-      if (!poll) continue;
+      Pollable* poll = reinterpret_cast<Pollable*>(userdata);  // Direct cast - safe!
 
       if (evlist[i].filter == EVFILT_READ) {
         poll->handle_read();
@@ -251,8 +249,7 @@ class Epoll {
     for (int i = 0; i < nev; i++) {
       //Log_info("number of events are %d", nev);
       void* userdata = evlist[i].data.ptr;
-      auto poll = lookup_fn(userdata);  // Get shared_ptr via lookup
-      if (!poll) continue;
+      Pollable* poll = reinterpret_cast<Pollable*>(userdata);  // Direct cast - safe!
 
       if (evlist[i].events & EPOLLIN) {
           poll->handle_read();
