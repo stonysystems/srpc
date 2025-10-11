@@ -198,7 +198,7 @@ public:
      */
     // @unsafe - Starts reply marshaling
     // SAFETY: Protected by output spinlock
-    void begin_reply(Request* req, i32 error_code = 0);
+    void begin_reply(const Request& req, i32 error_code = 0);
 
     // @unsafe - Completes reply packet
     // SAFETY: Protected by output spinlock
@@ -236,22 +236,22 @@ public:
 
 // @safe - RAII wrapper for deferred RPC replies
 class DeferredReply: public NoCopy {
-    rusty::Box<rrr::Request> req_;
+    std::unique_ptr<rrr::Request> req_;
     std::weak_ptr<rrr::ServerConnection> weak_sconn_;
     std::function<void()> marshal_reply_;
     std::function<void()> cleanup_;
 
 public:
 
-    DeferredReply(rrr::Request* req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
+    DeferredReply(std::unique_ptr<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
                   const std::function<void()>& marshal_reply, const std::function<void()>& cleanup)
-        : req_(rusty::Box<rrr::Request>(req)), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
+        : req_(std::move(req)), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
 
     // @safe - Cleanup destructor with automatic cleanup
-    // SAFETY: Proper cleanup order, Box automatically deletes req_
+    // SAFETY: Proper cleanup order, unique_ptr automatically deletes req_
     ~DeferredReply() {
         cleanup_();
-        // req_ automatically cleaned up by Box destructor
+        // req_ automatically cleaned up by unique_ptr destructor
     }
 
     int run_async(const std::function<void()>& f) {
@@ -266,7 +266,7 @@ public:
     void reply() {
         auto sconn = weak_sconn_.lock();
         if (sconn) {
-            sconn->begin_reply(req_.get());
+            sconn->begin_reply(*req_);
             marshal_reply_();
             sconn->end_reply();
         } else {
@@ -282,7 +282,8 @@ public:
 class Server: public NoCopy {
     friend class ServerConnection;
  public:
-    std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
+    using RequestHandler = std::function<void(std::unique_ptr<Request>, std::weak_ptr<ServerConnection>)>;
+    std::unordered_map<i32, RequestHandler> handlers_;
     rusty::Arc<PollThreadWorker> poll_thread_worker_;  // Shared ownership via Arc<Mutex<>>
     ThreadPool* threadpool_;
     int server_sock_;
@@ -329,28 +330,27 @@ public:
      *     ..
      *
      *     // send reply
-     *     server_connection->begin_reply();
+     *     server_connection->begin_reply(*req);
      *     *server_connection << {reply_content};
      *     server_connection->end_reply();
      *
-     *     // cleanup resource
-     *     delete request;
-     *     // No need to release, shared_ptr handles it
+     *     // cleanup resource - automatic via unique_ptr
+     *     // No need to release, shared_ptr handles connection
      *  }
      */
     // @safe - Registers RPC handler function
-    int reg(i32 rpc_id, const std::function<void(Request*, std::weak_ptr<ServerConnection>)>& func);
+    int reg(i32 rpc_id, const RequestHandler& func);
 
     template<class S>
-    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(Request*, std::weak_ptr<ServerConnection>)) {
+    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(std::unique_ptr<Request>, std::weak_ptr<ServerConnection>)) {
 
         // disallow duplicate rpc_id
         if (handlers_.find(rpc_id) != handlers_.end()) {
             return EEXIST;
         }
 
-        handlers_[rpc_id] = [svc, svc_func] (Request* req, std::weak_ptr<ServerConnection> sconn) {
-            (svc->*svc_func)(req, sconn);
+        handlers_[rpc_id] = [svc, svc_func] (std::unique_ptr<Request> req, std::weak_ptr<ServerConnection> sconn) {
+            (svc->*svc_func)(std::move(req), sconn);
         };
 
         return 0;
