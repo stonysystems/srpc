@@ -146,7 +146,7 @@ class ServerConnection: public Pollable {
     Server* server_;
     int socket_;
 
-    Marshal::bookmark* bmark_;
+    rusty::Box<Marshal::bookmark> bmark_;
 
     enum {
         CONNECTED, CLOSED
@@ -236,7 +236,7 @@ public:
 
 // @safe - RAII wrapper for deferred RPC replies
 class DeferredReply: public NoCopy {
-    rrr::Request* req_;
+    rusty::Box<rrr::Request> req_;
     std::weak_ptr<rrr::ServerConnection> weak_sconn_;
     std::function<void()> marshal_reply_;
     std::function<void()> cleanup_;
@@ -245,14 +245,13 @@ public:
 
     DeferredReply(rrr::Request* req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
                   const std::function<void()>& marshal_reply, const std::function<void()>& cleanup)
-        : req_(req), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
+        : req_(rusty::Box<rrr::Request>(req)), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
 
     // @safe - Cleanup destructor with automatic cleanup
-    // SAFETY: Proper cleanup order and null checks
+    // SAFETY: Proper cleanup order, Box automatically deletes req_
     ~DeferredReply() {
         cleanup_();
-        delete req_;
-        req_ = nullptr;
+        // req_ automatically cleaned up by Box destructor
     }
 
     int run_async(const std::function<void()>& f) {
@@ -267,7 +266,7 @@ public:
     void reply() {
         auto sconn = weak_sconn_.lock();
         if (sconn) {
-            sconn->begin_reply(req_);
+            sconn->begin_reply(req_.get());
             marshal_reply_();
             sconn->end_reply();
         } else {

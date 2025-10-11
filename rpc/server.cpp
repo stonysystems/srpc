@@ -90,7 +90,7 @@ SpinLock ServerConnection::rpc_id_missing_l_s;
 // @unsafe - Initializes connection and updates counter
 // SAFETY: Counter operations are thread-safe
 ServerConnection::ServerConnection(Server* server, int socket)
-        : server_(server), socket_(socket), bmark_(nullptr), status_(CONNECTED) {
+        : server_(server), socket_(socket), status_(CONNECTED) {
     // increase number of open connections
     server_->sconns_ctr_.next(1);
     block_read_in.init_block_read(100000000);
@@ -119,7 +119,7 @@ void ServerConnection::begin_reply(Request* req, i32 error_code /* =... */) {
     v32 v_error_code = error_code;
     v64 v_reply_xid = req->xid;
 
-    bmark_ = this->out_.set_bookmark(sizeof(i32)); // will write reply size later
+    bmark_ = rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32))); // will write reply size later
 
     *this << v_reply_xid;
     *this << v_error_code;
@@ -129,11 +129,10 @@ void ServerConnection::begin_reply(Request* req, i32 error_code /* =... */) {
 // SAFETY: Protected by output spinlock, enables write polling
 void ServerConnection::end_reply() {
     // set reply size in packet
-    if (bmark_ != nullptr) {
+    if (bmark_.get() != nullptr) {
         i32 reply_size = out_.get_and_reset_write_cnt();
-        out_.write_bookmark(bmark_, &reply_size);
-        delete bmark_;
-        bmark_ = nullptr;
+        out_.write_bookmark(bmark_.get(), &reply_size);
+        bmark_ = rusty::Box<Marshal::bookmark>();  // Reset to empty Box (automatically deletes old value)
     }
 
     // only update poll mode if connection is still active
@@ -559,7 +558,7 @@ ServerListener::ServerListener(Server* server, string addr) {
     if (::bind(server_sock_, rp->ai_addr, rp->ai_addrlen) == 0) {
       break;
     } else {
-      Log_error("port bind error: %s:%s", host.c_str(), port.c_str());
+      Log_error("port bind error: %s:%s, errno: %d (%s)", host.c_str(), port.c_str(), errno, strerror(errno));
       verify(0);
     }
     ::close(server_sock_);

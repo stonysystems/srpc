@@ -151,7 +151,7 @@ class Client: public Pollable, public std::enable_shared_from_this<Client> {
         NEW, CONNECTED, CLOSED
     } status_;
 
-    Marshal::bookmark* bmark_;
+    rusty::Box<Marshal::bookmark> bmark_;
 
     Counter xid_counter_;
     std::unordered_map<i64, Future*> pending_fu_;
@@ -172,7 +172,7 @@ public:
     }
 
 
-    Client(rusty::Arc<PollThreadWorker> poll_thread_worker): poll_thread_worker_(poll_thread_worker), sock_(-1), status_(NEW), bmark_(nullptr) { }
+    Client(rusty::Arc<PollThreadWorker> poll_thread_worker): poll_thread_worker_(poll_thread_worker), sock_(-1), status_(NEW) { }
 
     // Factory method to create Client with shared_ptr and add to poll_thread_worker
     static std::shared_ptr<Client> create(rusty::Arc<PollThreadWorker> poll_thread_worker) {
