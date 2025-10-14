@@ -90,7 +90,7 @@ SpinLock ServerConnection::rpc_id_missing_l_s;
 // @unsafe - Initializes connection and updates counter
 // SAFETY: Counter operations are thread-safe
 ServerConnection::ServerConnection(Server* server, int socket)
-        : server_(server), socket_(socket), bmark_(nullptr), status_(CONNECTED) {
+        : server_(server), socket_(socket), status_(CONNECTED) {
     // increase number of open connections
     server_->sconns_ctr_.next(1);
     block_read_in.init_block_read(100000000);
@@ -101,6 +101,8 @@ ServerConnection::~ServerConnection() {
     // decrease number of open connections
     server_->sconns_ctr_.next(-1);
 }
+
+// get_shared() is now inherited from Pollable base class
 
 // @safe - Delegates to thread pool
 int ServerConnection::run_async(const std::function<void()>& f) {
@@ -118,7 +120,7 @@ void ServerConnection::begin_reply(Request* req, i32 error_code /* =... */) {
     v32 v_error_code = error_code;
     v64 v_reply_xid = req->xid;
 
-    bmark_ = this->out_.set_bookmark(sizeof(i32)); // will write reply size later
+    bmark_ = rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32))); // will write reply size later
 
     *this << v_reply_xid;
     *this << v_error_code;
@@ -130,16 +132,17 @@ void ServerConnection::end_reply() {
   verify (status_ == CONNECTED);
 
     // set reply size in packet
-    if (bmark_ != nullptr) {
+    if (bmark_.get() != nullptr) {
         i32 reply_size = out_.get_and_reset_write_cnt();
-        out_.write_bookmark(bmark_, &reply_size);
-        delete bmark_;
-        bmark_ = nullptr;
+        out_.write_bookmark(bmark_.get(), &reply_size);
+        bmark_ = rusty::Box<Marshal::bookmark>();  // Reset to empty Box (automatically deletes old value)
     }
 
-    // always enable write events since the code above gauranteed there
-    // will be some data to send
-    server_->pollmgr_->update_mode(shared_from_this(), Pollable::READ | Pollable::WRITE);
+    // only update poll mode if connection is still active
+    // (connection might have closed while handler was running)
+    if (status_ == CONNECTED) {
+        server_->poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
+    }
 
     out_l_.unlock();
 }
@@ -238,14 +241,12 @@ bool ServerConnection::handle_read() {
         auto it = server_->handlers_.find(rpc_id);
 	//Log_info("RPC ID is: %d", rpc_id);
         if (it != server_->handlers_.end()) {
-            // the handler should delete req, and release server_connection refcopy.
-            auto x = dynamic_pointer_cast<ServerConnection>(shared_from_this());
-            auto y = it->second;
-						//Log_info("CreateRunning: %x", rpc_id);
-            Coroutine::CreateRun([y, req, x, this, rpc_id] () {
-//              verify(x);
-              verify(x->connected());
-
+            // Use weak_self_ directly - no map lookup needed!
+            auto weak_this = weak_self_;
+            //Log_info("CreateRunning: %x", rpc_id);
+            Coroutine::CreateRun([it, req, weak_this, rpc_id, this] () {
+                auto sconn = weak_this.lock();
+                if (sconn && sconn->connected()) {
 //#ifdef SIMULATE_WAN
 	      /*if(this->server_->addr_ == "0.0.0.0:10001"){
                   //Log_info("SLOWING DOWN");
@@ -254,7 +255,7 @@ bool ServerConnection::handle_read() {
                   //ev->Wait(1); // timeout after 100 ms
 	      }*/
 //#endif
-              y(req, x.get());
+                    it->second(req, weak_this);
 							/*if (req != nullptr && !req->m.valid_id) {
 								if (count % 100000 == 0) {
 									if (req->m.found_dep) {
@@ -266,22 +267,11 @@ bool ServerConnection::handle_read() {
 									count++;
 								}
 							}*/
-              // this line of code actually relies on the stack outside.
-//              auto f = it->second;
-//              auto r = req;
-//              auto c = (ServerConnection*)this->ref_copy();
-//#ifdef SIMULATE_WAN
-	      	//auto ev = Reactor::CreateSpEvent<NeverEvent>();
-                //ev->Wait(100 * 1000); // timeout after 100 ms
-                //ev->Wait(1); // timeout after 100 ms
-//#endif
-//              f(r, c);
+
+                    // Lock weak_ptr to access block_read_in
+                    sconn->block_read_in.reset();
+                }
             }, __FILE__, it->first);
-            // if (!coro) {
-            //     begin_reply(req, EBUSY);
-            //     end_reply();
-            //     delete req;
-            // }
         } else {
             rpc_id_missing_l_s.lock();
             bool surpress_warning = false;
@@ -322,7 +312,7 @@ void ServerConnection::handle_write() {
     out_l_.lock();
     out_.write_to_fd(socket_);
     if (out_.empty()) {
-        server_->pollmgr_->update_mode(shared_from_this(), Pollable::READ);
+        server_->poll_thread_worker_->update_mode(*this, Pollable::READ);
     }
     out_l_.unlock();
 		/*clock_gettime(CLOCK_MONOTONIC, &end2);
@@ -343,18 +333,24 @@ void ServerConnection::handle_error() {
 void ServerConnection::close() {
     if (status_ == CONNECTED) {
         server_->sconns_l_.lock();
-        auto it = server_->sconns_.find(dynamic_pointer_cast<ServerConnection>(shared_from_this()));
-        if (it == server_->sconns_.end()) {
-            // another thread has already calling close()
-            server_->sconns_l_.unlock();
-            return;
+
+        // Find our shared_ptr in server's connection set
+        std::shared_ptr<ServerConnection> self;
+        for (auto it = server_->sconns_.begin(); it != server_->sconns_.end(); ++it) {
+            if (it->get() == this) {
+                self = *it;
+                server_->sconns_.erase(it);
+                break;
+            }
         }
-        server_->sconns_.erase(it);
-        server_->pollmgr_->remove(shared_from_this());
         server_->sconns_l_.unlock();
 
-        status_ = CLOSED;
-        ::close(socket_);
+        if (self) {
+            server_->poll_thread_worker_->remove(*self);
+            status_ = CLOSED;
+            ::close(socket_);
+            Log_debug("server@%s close ServerConnection at fd=%d", server_->addr_.c_str(), socket_);
+        }
     }
 }
 
@@ -368,18 +364,18 @@ int ServerConnection::poll_mode() {
     return mode;
 }
 
-// @unsafe - Constructs server with PollMgr
-// SAFETY: Proper refcounting of PollMgr
-Server::Server(PollMgr* pollmgr /* =... */, ThreadPool* thrpool /* =? */)
+// @unsafe - Constructs server with PollThreadWorker
+// SAFETY: Shared ownership via Arc<Mutex<>>, creates one if not provided
+Server::Server(rusty::Arc<PollThreadWorker> poll_thread_worker /* =... */, ThreadPool* thrpool /* =? */)
         : server_sock_(-1), status_(NEW) {
 
     // get rid of eclipse warning
     memset(&loop_th_, 0, sizeof(loop_th_));
 
-    if (pollmgr == nullptr) {
-        pollmgr_ = new PollMgr;
+    if (!poll_thread_worker) {  // Check if Arc<Mutex<>> is empty
+        poll_thread_worker_ = PollThreadWorker::create();
     } else {
-        pollmgr_ = (PollMgr *) pollmgr->ref_copy();
+        poll_thread_worker_ = poll_thread_worker;
     }
 
 //    if (thrpool == nullptr) {
@@ -401,18 +397,32 @@ Server::~Server() {
     }
 
     sconns_l_.lock();
-    vector<shared_ptr<ServerConnection>> sconns(sconns_.begin(), sconns_.end());
+    vector<std::shared_ptr<ServerConnection>> sconns;
+    sconns.reserve(sconns_.size());
+    for (auto& sconn : sconns_) {
+        sconns.push_back(sconn);  // Copy shared_ptr from set
+    }
     // NOTE: do NOT clear sconns_ here, because when running the following
-    // it->close(), the ServerConnection object will check the sconns_ to
+    // sp_conn->close(), the ServerConnection object will check the sconns_ to
     // ensure it still resides in sconns_
     sconns_l_.unlock();
 
     for (auto& it: sconns) {
         it->close();
+        poll_thread_worker_->remove(*it);
     }
-    sconns.clear();
-    sp_server_listener_->close();
 
+    if (sp_server_listener_) {
+        sp_server_listener_->close();
+        poll_thread_worker_->remove(*sp_server_listener_);
+        sp_server_listener_.reset();
+    }
+
+    // Now clear sconns_ and the local copy to release shared_ptrs
+    sconns_l_.lock();
+    sconns_.clear();
+    sconns_l_.unlock();
+    sconns.clear();  // Release local shared_ptrs
 
     // make sure all open connections are closed
     int alive_connection_count = -1;
@@ -421,17 +431,17 @@ Server::~Server() {
         if (new_alive_connection_count <= 0) {
             break;
         }
-//        if (alive_connection_count == -1 || new_alive_connection_count < alive_connection_count) {
+        if (alive_connection_count == -1 || new_alive_connection_count < alive_connection_count) {
             Log_debug("waiting for %d alive connections to shutdown", new_alive_connection_count);
-//        }
-//        alive_connection_count = new_alive_connection_count;
-        // sleep 0.05 sec because this is the timeout for PollMgr's epoll()
+        }
+        alive_connection_count = new_alive_connection_count;
+        // sleep 0.05 sec because this is the timeout for PollThreadWorker's epoll()
         usleep(50 * 1000);
     }
     verify(sconns_ctr_.peek_next() == 0);
 
 //    threadpool_->release();
-    pollmgr_->release();
+    // owned_poll_thread_worker_ automatically released by shared_ptr
 
     //Log_debug("rrr::Server: destroyed");
 }
@@ -492,10 +502,10 @@ void Server::server_loop(struct addrinfo* svr_addr) {
             setsockopt(clnt_socket, SOL_SOCKET, SO_SNDBUF, &buf_len, sizeof(buf_len));
             sconns_l_.lock();
             auto sconn = std::make_shared<ServerConnection>(this, clnt_socket);
-
-            sconns_.insert(sconn);
-            pollmgr_->add(sconn);
+            sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
+            sconns_.insert(sconn);  // Insert shared_ptr into set
             sconns_l_.unlock();
+            poll_thread_worker_->add(sconn);
         }
     }
 
@@ -525,10 +535,11 @@ bool ServerListener::handle_read() {
       verify(set_nonblocking(clnt_socket, true) == 0);
 
       auto sconn = std::make_shared<ServerConnection>(server_, clnt_socket);
+      sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
       server_->sconns_l_.lock();
-      server_->sconns_.insert(sconn);
-      server_->pollmgr_->add(sconn);
+      server_->sconns_.insert(sconn);  // Insert shared_ptr into set
       server_->sconns_l_.unlock();
+      server_->poll_thread_worker_->add(sconn);
     } else {
       break;
     }
@@ -601,7 +612,7 @@ ServerListener::ServerListener(Server* server, string addr) {
     if (::bind(server_sock_, rp->ai_addr, rp->ai_addrlen) == 0) {
       break;
     } else {
-      Log_fatal("cannot bind to: %s", addr.c_str());
+      Log_error("port bind error: %s:%s, errno: %d (%s)", host.c_str(), port.c_str(), errno, strerror(errno));
       verify(0);
     }
     ::close(server_sock_);
@@ -629,97 +640,14 @@ ServerListener::ServerListener(Server* server, string addr) {
 // @unsafe - Starts server listening on specified address
 // SAFETY: Creates listener with proper socket setup
 int Server::start(const char* bind_addr) {
-  string addr(bind_addr);
-  Log_info("bind address is: %s", bind_addr);
-  addr_ = addr;
-  sp_server_listener_ = std::make_unique<ServerListener>(this, addr);
-  pollmgr_->add(sp_server_listener_);
+  string addr(bind_addr,strlen(bind_addr));
+  sp_server_listener_ = std::make_shared<ServerListener>(this, addr);
+  poll_thread_worker_->add(sp_server_listener_);
   return 0;
-
-  addr_ = addr;
-  size_t idx = addr.find(":");
-  if (idx == string::npos) {
-        Log_error("rrr::Server: bad bind address: %s", bind_addr);
-        return EINVAL;
-    }
-    string host = addr.substr(0, idx);
-    string port = addr.substr(idx + 1);
-
-  start_server_loop_args_type* start_server_loop_args = new start_server_loop_args_type();
-#ifdef USE_IPC
-  struct sockaddr_un saun;
-  if ((server_sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-    perror("server: socket");
-    exit(1);
-  }
-  saun.sun_family = AF_UNIX;
-  string ipc_addr = "rsock" + port;
-  strcpy(saun.sun_path, ipc_addr.data());
-  auto len = sizeof(saun.sun_family) + strlen(saun.sun_path)+1;
-  ::unlink(ipc_addr.data());
-  if (::bind(server_sock_, (struct sockaddr*)&saun, len) != 0) {
-    perror("server: socket bind");
-    exit(1);
-  }
-
-#else
-  struct addrinfo hints, *result, *rp;
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_INET; // ipv4
-    hints.ai_socktype = SOCK_STREAM; // tcp
-    hints.ai_flags = AI_PASSIVE; // server side
-
-    int r = getaddrinfo((host == "0.0.0.0") ? nullptr : host.c_str(), port.c_str(), &hints, &result);
-    if (r != 0) {
-        Log_error("rrr::Server: getaddrinfo(): %s", gai_strerror(r));
-        return EINVAL;
-    }
-
-    for (rp = result; rp != nullptr; rp = rp->ai_next) {
-      server_sock_ = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (server_sock_ == -1) {
-            continue;
-        }
-
-        const int yes = 1;
-        verify(setsockopt(server_sock_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
-        verify(setsockopt(server_sock_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == 0);
-
-        if (::bind(server_sock_, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break;
-        } else {
-          verify(0);
-        }
-        close(server_sock_);
-        server_sock_ = -1;
-    }
-
-    if (rp == nullptr) {
-        // failed to bind
-        Log_error("rrr::Server: bind(): %s", strerror(errno));
-        freeaddrinfo(result);
-        return EINVAL;
-    }
-  start_server_loop_args->gai_result = result;
-  start_server_loop_args->svr_addr = rp;
-#endif
-  start_server_loop_args->server = this;
-
-    // about backlog: http://www.linuxjournal.com/files/linuxjournal.com/linuxjournal/articles/023/2333/2333s2.html
-    const int backlog = SOMAXCONN;
-    verify(listen(server_sock_, backlog) == 0);
-    verify(set_nonblocking(server_sock_, true) == 0);
-
-    status_ = RUNNING;
-    Log_info("rrr::Server: started on %s", bind_addr);
-
-    Pthread_create(&loop_th_, nullptr, Server::start_server_loop, start_server_loop_args);
-
-    return 0;
 }
 
 // @safe - Registers RPC handler
-int Server::reg(i32 rpc_id, const std::function<void(Request*, ServerConnection*)>& func) {
+int Server::reg(i32 rpc_id, const std::function<void(Request*, std::weak_ptr<ServerConnection>)>& func) {
     // disallow duplicate rpc_id
     if (handlers_.find(rpc_id) != handlers_.end()) {
         return EEXIST;

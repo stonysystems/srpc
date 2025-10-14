@@ -1,7 +1,6 @@
 
 #pragma once
 
-#include <memory>
 #include <algorithm>
 #include <fstream>
 #include <unordered_set>
@@ -12,7 +11,11 @@
 #include <unistd.h>
 #include <string.h>
 //#include "../../deptran/client_worker.h"
+#include <functional>
+#include <memory>
+#include <vector>
 #include "../base/all.hpp"
+#include <rusty/rusty.hpp>
 
 #define SUCCESS (0)
 #define REPEAT (-5)
@@ -45,7 +48,7 @@ class Event : public std::enable_shared_from_this<Event> {
   bool __debug_timeout_{false};
 #endif
   EventStatus status_{INIT};
-  void* _dbg_p_scheduler_{nullptr};
+  void* _dbg_p_scheduler_{nullptr};  // Jetpack: for debugging
   uint64_t type_{0};
   function<bool(int)> test_{};
 	bool needs_finalize_{false};
@@ -57,7 +60,7 @@ class Event : public std::enable_shared_from_this<Event> {
   //   shared_ptr to the coroutine it is.
   // In this case there is no shared pointer to the event.
   // When the stack that contains the event frees, the event frees.
-  std::weak_ptr<Coroutine> wp_coro_{};
+  std::weak_ptr<Coroutine> wp_coro_{}; 
 
   virtual void Wait(uint64_t timeout=0) final;
 
@@ -286,7 +289,7 @@ class OrEvent : public Event {
     AddEvent(args...);
   }
 
-  bool IsReady() {
+  bool IsReady() override {
     return std::any_of(events_.begin(), events_.end(), [](shared_ptr<Event> e){return e->IsReady();});
   }
 };
@@ -295,19 +298,25 @@ class AndEvent : public Event {
  public:
   vector<shared_ptr<Event>> events_;
 
+  // Default constructor (mako-dev)
+  AndEvent() {}
+
+  // Constructor for vector of events (mako-dev)
+  explicit AndEvent(const vector<shared_ptr<Event>>& evs) : events_(evs) {}
+
   void AddEvent() {
     // empty func for recursive variadic parameters
   }
 
-  template<typename X, typename... Args>
-  void AddEvent(X& x, Args&... rest) {
-    events_.push_back(std::dynamic_pointer_cast<Event>(x));
+  template<typename... Args>
+  void AddEvent(shared_ptr<Event> x, Args... rest) {
+    events_.push_back(x);
     AddEvent(rest...);
   }
 
   template<typename... Args>
-  AndEvent(Args&&... args) {
-    AddEvent(args...);
+  AndEvent(shared_ptr<Event> first, Args... rest) {
+    AddEvent(first, rest...);
   }
   
   void log() {
@@ -316,8 +325,12 @@ class AndEvent : public Event {
     }
   }
 
-  bool IsReady() {
-    return std::all_of(events_.begin(), events_.end(), [](shared_ptr<Event> e){return e->IsReady();});
+  bool IsReady() override {
+    // Mako-dev improvement: check for DONE status too
+    return std::all_of(events_.begin(), events_.end(),
+                       [](shared_ptr<Event> e) {
+                         return e && (e->IsReady() || e->status_ == Event::DONE);
+                       });
   }
 };
 
@@ -330,15 +343,15 @@ class NEvent : public Event {
     // empty func for recursive variadic parameters
   }
 
-  template<typename X, typename... Args>
-  void AddEvent(X& x, Args&... rest) {
-    events_.push_back(std::dynamic_pointer_cast<Event>(x));
+  template<typename... Args>
+  void AddEvent(shared_ptr<Event> x, Args... rest) {
+    events_.push_back(x);
     AddEvent(rest...);
   }
 
   template<typename... Args>
-  NEvent(Args&&... args) {
-    AddEvent(args...);
+  NEvent(shared_ptr<Event> first, Args... rest) {
+    AddEvent(first, rest...);
   }
 
   bool IsReady() {
@@ -455,4 +468,4 @@ class ThreadSafeIntEvent : public Event {
   }
 };
 
-}
+} // namespace rrr

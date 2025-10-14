@@ -43,7 +43,7 @@ void Future::timed_wait(double sec) {
       abstime.tv_nsec -= 1000 * 1000 * 1000;
       abstime.tv_sec += 1;
     }
-    Log::debug("wait for %lf", sec);
+    // Log::debug("wait for %lf", sec);  // Commented out - causes abort due to nullptr file
     int ret = pthread_cond_timedwait(&ready_cond_, &ready_m_, &abstime);
     if (ret == ETIMEDOUT) {
       timed_out_ = true;
@@ -67,7 +67,8 @@ void Future::notify_ready() {
   if (!timed_out_) {
     ready_ = true;
   }
-  Pthread_cond_signal(&ready_cond_);
+  // Use broadcast instead of signal to wake up ALL waiting threads
+  Pthread_cond_broadcast(&ready_cond_);
   Pthread_mutex_unlock(&ready_m_);
   if (ready_ && attr_.callback != nullptr) {
     // Warning: make sure memory is safe!
@@ -110,7 +111,7 @@ void Client::invalidate_pending_futures() {
 void Client::close() {
   //Log_info("CLOSING");
   if (status_ == CONNECTED) {
-    pollmgr_->remove(shared_from_this());
+    poll_thread_worker_->remove(*this);
     ::close(sock_);
   }
   status_ = CLOSED;
@@ -210,7 +211,7 @@ int Client::connect(const char* addr, bool client) {
   Log_debug("rrr::Client: connected to %s", addr);
 
   status_ = CONNECTED;
-  pollmgr_->add(shared_from_this());
+  poll_thread_worker_->add(shared_from_this());
 
   return 0;
 }
@@ -238,7 +239,7 @@ void Client::handle_write() {
 	
   if (out_.empty()) {
     //Log_info("Client handle_write setting read mode here...");
-    pollmgr_->update_mode(shared_from_this(), Pollable::READ);
+    poll_thread_worker_->update_mode(*this, Pollable::READ);
   }
   out_l_.unlock();
 	/*clock_gettime(CLOCK_MONOTONIC, &end2);
@@ -545,7 +546,7 @@ Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr) {
     return nullptr;
   }
 
-  bmark_ = out_.set_bookmark(sizeof(i32)); // will fill packet size later
+  bmark_ = rusty::Box<Marshal::bookmark>(out_.set_bookmark(sizeof(i32))); // will fill packet size later
 
   *this << v64(fu->xid_);
   *this << rpc_id;
@@ -564,12 +565,11 @@ Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr) {
 void Client::end_request() {
   //auto start = chrono::steady_clock::now();
   // set reply size in packet
-  if (bmark_ != nullptr) {
+  if (bmark_.get() != nullptr) {
     i32 request_size = out_.get_and_reset_write_cnt();
     //Log_info("client request size is %d", request_size);
-    out_.write_bookmark(bmark_, &request_size);
-    delete bmark_;
-    bmark_ = nullptr;
+    out_.write_bookmark(bmark_.get(), &request_size);
+    bmark_ = rusty::Box<Marshal::bookmark>();  // Reset to empty Box (automatically deletes old value)
   }
 
 	out_.found_dep = false;
@@ -578,7 +578,7 @@ void Client::end_request() {
   // always enable write events since the code above gauranteed there
   // will be some data to send
   //Log_info("Client end_request setting write mode here....");
-  pollmgr_->update_mode(shared_from_this(), Pollable::READ | Pollable::WRITE);
+  poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
 
   out_l_.unlock();
 			
@@ -588,45 +588,49 @@ void Client::end_request() {
   //Log_info("The Time for end_request is: %d");
 }
 
-// @unsafe - Constructs pool with PollMgr ownership
-// SAFETY: Proper refcounting of PollMgr
-ClientPool::ClientPool(PollMgr* pollmgr,
-                       int parallel_connections)
+// @unsafe - Constructs pool with PollThreadWorker ownership
+// SAFETY: Shared ownership of PollThreadWorker
+ClientPool::ClientPool(rusty::Arc<PollThreadWorker> poll_thread_worker /* =? */,
+                       int parallel_connections /* =? */)
     : parallel_connections_(parallel_connections) {
 
   verify(parallel_connections_ > 0);
-  if (pollmgr == nullptr) {
-    pollmgr_ = new PollMgr;
+  if (!poll_thread_worker) {
+    poll_thread_worker_ = PollThreadWorker::create();
   } else {
-    pollmgr_ = (PollMgr*) pollmgr->ref_copy();
+    poll_thread_worker_ = poll_thread_worker;
   }
 }
 
 // @unsafe - Destroys pool and all cached connections
-// SAFETY: Closes all clients and releases PollMgr
+// SAFETY: Closes all clients and releases PollThreadWorker
 ClientPool::~ClientPool() {
   for (auto& it : cache_) {
     for (auto& client : it.second) {
-      client->close_and_release();
+      client->close();
     }
   }
-  pollmgr_->release();
+
+  // Shutdown PollThreadWorker if we own it
+  if (poll_thread_worker_) {
+    poll_thread_worker_->shutdown();
+  }
 }
 
 // @unsafe - Gets cached or creates new client connections
 // SAFETY: Protected by spinlock, handles connection failures gracefully
-Client* ClientPool::get_client(const string& addr) {
-  Client* cl = nullptr;
+std::shared_ptr<Client> ClientPool::get_client(const string& addr) {
+  std::shared_ptr<Client> sp_cl = nullptr;
   l_.lock();
   auto it = cache_.find(addr);
   if (it != cache_.end()) {
-    cl = it->second[rand_() % parallel_connections_].get();
+    sp_cl = it->second[rand_() % parallel_connections_];
   } else {
     std::vector<std::shared_ptr<Client>> parallel_clients;
-    parallel_clients.reserve(parallel_connections_);
     bool ok = true;
     for (int i = 0; i < parallel_connections_; i++) {
-      auto client = std::make_shared<Client>(this->pollmgr_);
+      auto client = std::make_shared<Client>(this->poll_thread_worker_);
+      client->client_ = true;  // Jetpack: mark as client
       if (client->connect(addr.c_str()) != 0) {
         ok = false;
         // Already created clients will be automatically closed when parallel_clients goes out of scope
@@ -635,13 +639,13 @@ Client* ClientPool::get_client(const string& addr) {
       parallel_clients.push_back(client);
     }
     if (ok) {
-      cl = parallel_clients[rand_() % parallel_connections_].get();
-      cache_[addr] = parallel_clients;
+      sp_cl = parallel_clients[rand_() % parallel_connections_];
+      cache_[addr] = std::move(parallel_clients);
     }
-    // If not ok, parallel_clients vector destructor will handle cleanup
+    // If not ok, parallel_clients automatically cleaned up by shared_ptr
   }
   l_.unlock();
-  return cl;
+  return sp_cl;
 }
 
 } // namespace rrr

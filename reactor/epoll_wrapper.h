@@ -25,9 +25,9 @@ namespace rrr {
 using std::shared_ptr;
 
 // @safe - Abstract interface for pollable file descriptors
-class Pollable: public std::enable_shared_from_this<Pollable> {
-
+class Pollable {
 public:
+    virtual ~Pollable() {}
 
     enum {
         READ = 0x1, WRITE = 0x2
@@ -62,6 +62,10 @@ class Epoll {
   long total_have_time = 0;
   long total_no_time = 0;
  public:
+  // For testing: track number of Remove() calls (static for persistence)
+  static inline std::atomic<int> remove_count_{0};
+
+  // Control flags for pause/stop functionality (jetpack)
   volatile bool* pause;
   volatile bool* stop;
 
@@ -76,13 +80,36 @@ class Epoll {
     verify(poll_fd_ != -1);
   }
 
+  // Move constructor - transfers ownership of poll_fd
+  Epoll(Epoll&& other) noexcept : poll_fd_(other.poll_fd_) {
+    other.poll_fd_ = -1;  // Prevent double-close
+  }
+
+  // Move assignment - transfers ownership of poll_fd
+  Epoll& operator=(Epoll&& other) noexcept {
+    if (this != &other) {
+      if (poll_fd_ != -1) {
+        close(poll_fd_);
+      }
+      poll_fd_ = other.poll_fd_;
+      other.poll_fd_ = -1;  // Prevent double-close
+    }
+    return *this;
+  }
+
+  // Delete copy constructor and copy assignment
+  Epoll(const Epoll&) = delete;
+  Epoll& operator=(const Epoll&) = delete;
+
+  // Jetpack split-phase event processing methods
   std::vector<struct timespec> Wait_One(int& num_ev, bool& slow);
   void Wait_Two();
   void Wait();
 
   // @unsafe - Adds file descriptor to epoll/kqueue
   // SAFETY: Uses system calls with proper error checking
-  int Add(shared_ptr<Pollable> poll) {
+  // userdata is raw Pollable* for lookup
+  int Add(std::shared_ptr<Pollable> poll, void* userdata) {
     auto poll_mode = poll->poll_mode();
     auto fd = poll->fd();
 #ifdef USE_KQUEUE
@@ -92,7 +119,7 @@ class Epoll {
       ev.ident = fd;
       ev.flags = EV_ADD;
       ev.filter = EVFILT_READ;
-      ev.udata = poll.get();
+      ev.udata = userdata;  // Store slot index instead of raw pointer
       verify(kevent(poll_fd_, &ev, 1, nullptr, 0, nullptr) == 0);
     }
     if (poll_mode & Pollable::WRITE) {
@@ -100,7 +127,7 @@ class Epoll {
       ev.ident = fd;
       ev.flags = EV_ADD;
       ev.filter = EVFILT_WRITE;
-      ev.udata = poll.get();
+      ev.udata = userdata;  // Store slot index instead of raw pointer
       verify(kevent(poll_fd_, &ev, 1, nullptr, 0, nullptr) == 0);
     }
 
@@ -108,7 +135,7 @@ class Epoll {
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
 
-    ev.data.ptr = poll.get();
+    ev.data.ptr = userdata;  // Store slot index instead of raw pointer
     ev.events = EPOLLET | EPOLLIN | EPOLLRDHUP; // EPOLLERR and EPOLLHUP are included by default
 
     if (poll_mode & Pollable::WRITE) {
@@ -121,7 +148,8 @@ class Epoll {
 
   // @unsafe - Removes file descriptor from epoll/kqueue
   // SAFETY: Uses system calls, ignores errors for already removed fds
-  int Remove(shared_ptr<Pollable> poll) {
+  int Remove(std::shared_ptr<Pollable> poll) {
+    remove_count_++;  // Track Remove() calls for testing
     auto fd = poll->fd();
 #ifdef USE_KQUEUE
     struct kevent ev;
@@ -147,15 +175,16 @@ class Epoll {
 
   // @unsafe - Updates poll mode for file descriptor
   // SAFETY: Uses system calls with proper event flag handling
-  int Update(shared_ptr<Pollable> poll, int new_mode, int old_mode) {
-    auto fd = poll->fd();
+  // userdata is raw Pollable* for lookup
+  int Update(Pollable& poll, void* userdata, int new_mode, int old_mode) {
+    auto fd = poll.fd();
 #ifdef USE_KQUEUE
     struct kevent ev;
     if ((new_mode & Pollable::READ) && !(old_mode & Pollable::READ)) {
       // add READ
       bzero(&ev, sizeof(ev));
       ev.ident = fd;
-      ev.udata = poll.get();
+      ev.udata = userdata;  // Store slot index instead of raw pointer
       ev.flags = EV_ADD;
       ev.filter = EVFILT_READ;
       verify(kevent(poll_fd_, &ev, 1, nullptr, 0, nullptr) == 0);
@@ -164,7 +193,7 @@ class Epoll {
       // del READ
       bzero(&ev, sizeof(ev));
       ev.ident = fd;
-      ev.udata = poll.get();
+      ev.udata = userdata;  // Store slot index instead of raw pointer
       ev.flags = EV_DELETE;
       ev.filter = EVFILT_READ;
       verify(kevent(poll_fd_, &ev, 1, nullptr, 0, nullptr) == 0);
@@ -173,7 +202,7 @@ class Epoll {
       // add WRITE
       bzero(&ev, sizeof(ev));
       ev.ident = fd;
-      ev.udata = poll.get();
+      ev.udata = userdata;  // Store slot index instead of raw pointer
       ev.flags = EV_ADD;
       ev.filter = EVFILT_WRITE;
       verify(kevent(poll_fd_, &ev, 1, nullptr, 0, nullptr) == 0);
@@ -182,7 +211,7 @@ class Epoll {
       // del WRITE
       bzero(&ev, sizeof(ev));
       ev.ident = fd;
-      ev.udata = poll.get();
+      ev.udata = userdata;  // Store slot index instead of raw pointer
       ev.flags = EV_DELETE;
       ev.filter = EVFILT_WRITE;
       verify(kevent(poll_fd_, &ev, 1, nullptr, 0, nullptr) == 0);
@@ -191,7 +220,7 @@ class Epoll {
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
 
-    ev.data.ptr = poll.get();
+    ev.data.ptr = userdata;  // Store slot index instead of raw pointer
     ev.events = EPOLLET | EPOLLRDHUP;
     if (new_mode & Pollable::READ) {
         ev.events |= EPOLLIN;
@@ -204,9 +233,70 @@ class Epoll {
     return 0;
   }
 
+  // @unsafe - Waits for events and dispatches to handlers via callback
+  // SAFETY: Uses system calls with timeout, callback receives safe shared_ptrs
+  // lookup_fn: Converts Pollable* (void*) to shared_ptr<Pollable> via fd lookup
+  template<typename LookupFn>
+  void Wait(LookupFn&& lookup_fn) {
+    const int max_nev = 100;
+#ifdef USE_KQUEUE
+    struct kevent evlist[max_nev];
+    struct timespec timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_nsec = 50 * 1000 * 1000; // 0.05 sec
+
+    int nev = kevent(poll_fd_, nullptr, 0, evlist, max_nev, &timeout);
+
+    for (int i = 0; i < nev; i++) {
+      void* userdata = evlist[i].udata;
+      auto poll = lookup_fn(userdata);  // Get shared_ptr via lookup
+      if (!poll) continue;
+
+      if (evlist[i].filter == EVFILT_READ) {
+        poll->handle_read();
+      }
+      if (evlist[i].filter == EVFILT_WRITE) {
+        poll->handle_write();
+      }
+
+      // handle error after handle IO, so that we can at least process something
+      if (evlist[i].flags & EV_EOF) {
+        poll->handle_error();
+      }
+    }
+
+#else
+    struct epoll_event evlist[max_nev];
+    int timeout = 1; // milli, 0.001 sec
+//    int timeout = 0; // busy loop
+    //Log_info("epoll::wait entering here....");
+    int nev = epoll_wait(poll_fd_, evlist, max_nev, timeout);
+    //Log_info("epoll::wait exiting here.....");
+    //Log_info("number of events are %d", nev);
+    for (int i = 0; i < nev; i++) {
+      //Log_info("number of events are %d", nev);
+      void* userdata = evlist[i].data.ptr;
+      auto poll = lookup_fn(userdata);  // Get shared_ptr via lookup
+      if (!poll) continue;
+
+      if (evlist[i].events & EPOLLIN) {
+          poll->handle_read();
+      }
+      if (evlist[i].events & EPOLLOUT) {
+          poll->handle_write();
+      }
+      // handle error after handle IO, so that we can at least process something
+      if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+          poll->handle_error();
+      }
+    }
+#endif
+  }
 
   ~Epoll() {
-    close(poll_fd_);
+    if (poll_fd_ != -1) {
+      close(poll_fd_);
+    }
   }
 
  private:

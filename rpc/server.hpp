@@ -1,4 +1,5 @@
 #pragma once
+#include <rusty/arc.hpp>
 
 #include <unordered_map>
 #include <unordered_set>
@@ -142,10 +143,11 @@ class ServerListener: public Pollable {
 };
 
 // @unsafe - Handles individual client connections
-// SAFETY: Thread-safe with spinlocks, proper refcounting
+// SAFETY: Thread-safe with spinlocks, proper shared_ptr lifetime management
 class ServerConnection: public Pollable {
 
     friend class Server;
+    friend class ServerListener;
 
     Marshal in_, out_;
     SpinLock out_l_;
@@ -155,16 +157,22 @@ class ServerConnection: public Pollable {
     Server* server_;
     int socket_;
 
-    Marshal::bookmark* bmark_;
+    rusty::Box<Marshal::bookmark> bmark_;
 
     enum {
         CONNECTED, CLOSED
     } status_;
 
+    // Weak pointer to self, initialized after creation
+    // Used to pass weak reference to async handlers
+    std::weak_ptr<ServerConnection> weak_self_;
+
+    // get_shared() is now inherited from Pollable base class
+
     /**
      * Only to be called by:
      * 1: ~Server(), which is called when destroying Server
-     * 2: handle_error(), which is called by PollMgr
+     * 2: handle_error(), which is called by PollThread
      */
     // @unsafe - Closes connection and cleans up
     // SAFETY: Thread-safe with server connection lock
@@ -174,13 +182,13 @@ class ServerConnection: public Pollable {
     static std::unordered_set<i32> rpc_id_missing_s;
     static SpinLock rpc_id_missing_l_s;
 
-
 public:
+    // Jetpack-specific member
 	int count = 0;
-	
-  // Protected destructor as required by RefCounted.
+
+    // Public destructor for shared_ptr compatibility
     // @safe - Simple destructor updating counter
-  ~ServerConnection();
+    ~ServerConnection();
 
     // @unsafe - Initializes connection with socket
     // SAFETY: Increments server connection counter
@@ -254,56 +262,46 @@ public:
 
 // @safe - RAII wrapper for deferred RPC replies
 class DeferredReply: public NoCopy {
-    rrr::Request* req_;
-    ServerConnection* sconn_; // cannot delete this because of legacy reasons: need to modify the rpc compiler.
+    rusty::Box<rrr::Request> req_;
+    std::weak_ptr<rrr::ServerConnection> weak_sconn_;
     std::function<void()> marshal_reply_;
     std::function<void()> cleanup_;
-//    std::weak_ptr<ServerConnection> wp_sconn_;
     std::shared_ptr<ServerConnection> sp_sconn_{};
 
  public:
 
-    DeferredReply(rrr::Request* req, ServerConnection* sconn,
+    DeferredReply(rrr::Request* req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
                   const std::function<void()>& marshal_reply, const std::function<void()>& cleanup)
-        : req_(req), sconn_(sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {
-      sp_sconn_ = std::dynamic_pointer_cast<ServerConnection>(sconn->shared_from_this());
-      auto x = sp_sconn_;
-      verify(x);
-    }
+        : req_(rusty::Box<rrr::Request>(req)), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
 
-    // @unsafe - Cleanup destructor
-    // SAFETY: Proper cleanup order and null checks
+    // @safe - Cleanup destructor with automatic cleanup
+    // SAFETY: Proper cleanup order, Box automatically deletes req_
     ~DeferredReply() {
         cleanup_();
-        delete req_;
-        req_ = nullptr;
+        // req_ automatically cleaned up by Box destructor
         sp_sconn_.reset();
     }
 
     int run_async(const std::function<void()>& f) {
       // TODO disable threadpool run in RPCs.
-//        return sconn_->run_async(f);
+//        auto sconn = weak_sconn_.lock();
+//        if (sconn) return sconn->run_async(f);
       return 0;
     }
 
     // @unsafe - Sends reply and self-deletes
-    // SAFETY: Ensures single use with delete this
+    // SAFETY: Locks weak_ptr before use, gracefully handles closed connections
     void reply() {
-//      auto sconn = wp_sconn_.lock();
-      verify(sp_sconn_);
-      auto sconn = sp_sconn_;
-      if (sconn && sconn->connected()) {
-        sconn->begin_reply(req_);
-        marshal_reply_();
-        sconn->end_reply();
-      } else {
-        // server connection has close. What would happen if no reply?
-      }
-			
-			// move to client
-      // CHECK
-      // BUG here, this is deleted twice????
-      delete this;
+        auto sconn = weak_sconn_.lock();
+        if (sconn && sconn->connected()) {
+            sconn->begin_reply(req_.get());
+            marshal_reply_();
+            sconn->end_reply();
+        } else {
+            // Connection closed, silently drop reply
+            Log_debug("Connection closed before reply sent, dropping reply");
+        }
+        delete this;
     }
 };
 
@@ -312,15 +310,15 @@ class DeferredReply: public NoCopy {
 class Server: public NoCopy {
     friend class ServerConnection;
  public:
-    std::unordered_map<i32, std::function<void(Request*, ServerConnection*)>> handlers_;
-    PollMgr* pollmgr_;
+    std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
+    rusty::Arc<PollThreadWorker> poll_thread_worker_;  // Shared ownership via Arc<Mutex<>>
     ThreadPool* threadpool_;
     int server_sock_;
 
     Counter sconns_ctr_;
 
     SpinLock sconns_l_;
-    std::unordered_set<shared_ptr<ServerConnection>> sconns_{};
+    std::unordered_set<std::shared_ptr<ServerConnection>> sconns_{};
     std::shared_ptr<ServerListener> sp_server_listener_{};
 
     enum {
@@ -335,9 +333,9 @@ class Server: public NoCopy {
 public:
     std::string addr_;
 
-    // @unsafe - Creates server with optional PollMgr
-    // SAFETY: Proper refcounting of PollMgr
-    Server(PollMgr* pollmgr = nullptr, ThreadPool* thrpool = nullptr);
+    // @unsafe - Creates server with optional PollThreadWorker
+    // SAFETY: Shared ownership of PollThreadWorker via Arc<Mutex<>>
+    Server(rusty::Arc<PollThreadWorker> poll_thread_worker = rusty::Arc<PollThreadWorker>(), ThreadPool* thrpool = nullptr);
     // @unsafe - Destroys server and all connections
     // SAFETY: Waits for all connections to close
     virtual ~Server();
@@ -365,21 +363,21 @@ public:
      *
      *     // cleanup resource
      *     delete request;
-     *     server_connection->release();
+     *     // No need to release, shared_ptr handles it
      *  }
      */
     // @safe - Registers RPC handler function
-    int reg(i32 rpc_id, const std::function<void(Request*, ServerConnection*)>& func);
+    int reg(i32 rpc_id, const std::function<void(Request*, std::weak_ptr<ServerConnection>)>& func);
 
     template<class S>
-    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(Request*, ServerConnection*)) {
+    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(Request*, std::weak_ptr<ServerConnection>)) {
 
         // disallow duplicate rpc_id
         if (handlers_.find(rpc_id) != handlers_.end()) {
             return EEXIST;
         }
 
-        handlers_[rpc_id] = [svc, svc_func] (Request* req, ServerConnection* sconn) {
+        handlers_[rpc_id] = [svc, svc_func] (Request* req, std::weak_ptr<ServerConnection> sconn) {
             (svc->*svc_func)(req, sconn);
         };
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <rusty/arc.hpp>
 
 #include <unordered_map>
 #include <chrono>
@@ -149,15 +150,15 @@ public:
 
  // @unsafe - RPC client with socket management and marshaling
 // SAFETY: Proper socket lifecycle and thread-safe pending futures
-class Client: public Pollable {
+class Client: public Pollable, public std::enable_shared_from_this<Client> {
     Marshal in_, out_;
     uint64_t cnt_;
 
     /**
-     * NOT a refcopy! This is intended to avoid circular reference, which prevents everything from being released correctly.
+     * Shared Arc<Mutex<>> to PollThreadWorker - thread-safe access
      */
-    PollMgr* pollmgr_;
-    
+    rusty::Arc<PollThreadWorker> poll_thread_worker_;
+
     std::string host_;
     int sock_;
 		long times[100];
@@ -169,10 +170,13 @@ class Client: public Pollable {
         NEW, CONNECTED, CLOSED
     } status_;
 
+    // Jetpack-specific members
 		uint64_t packets;
 		bool clean;
     bool paused_{false};
-    Marshal::bookmark* bmark_;
+
+    // Mako-dev uses rusty::Box for safer memory management
+    rusty::Box<Marshal::bookmark> bmark_;
 
     Counter xid_counter_;
     std::unordered_map<i64, Future*> pending_fu_;
@@ -182,17 +186,12 @@ class Client: public Pollable {
 		SpinLock read_l_;
     SpinLock out_l_;
 
-    // reentrant, could be called multiple times before releasing
-    // @unsafe - Closes socket and cleans up
-    // SAFETY: Idempotent, properly invalidates futures
-    void close();
-
     // @unsafe - Cancels all pending futures
     // SAFETY: Protected by spinlock
     void invalidate_pending_futures();
 
-
 public:
+    // Jetpack-specific public members
 	 bool client_;
 	 long time_;
     uint64_t timeout_{0};
@@ -205,7 +204,14 @@ public:
      invalidate_pending_futures();
    }
 
-   Client(PollMgr* pollmgr): pollmgr_(pollmgr), sock_(-1), status_(NEW), bmark_(nullptr) { }
+    Client(rusty::Arc<PollThreadWorker> poll_thread_worker): poll_thread_worker_(poll_thread_worker), sock_(-1), status_(NEW) { }
+
+    // Factory method to create Client with shared_ptr and add to poll_thread_worker
+    static std::shared_ptr<Client> create(rusty::Arc<PollThreadWorker> poll_thread_worker) {
+        auto client = std::make_shared<Client>(poll_thread_worker);
+        // Note: Client is added to poll_thread_worker when connect() is called
+        return client;
+    }
 
     /**
      * Start a new request. Must be paired with end_request(), even if nullptr returned.
@@ -248,6 +254,12 @@ public:
     void pause();
     void resume();
 
+    // reentrant, could be called multiple times
+    // @unsafe - Closes socket and cleans up
+    // SAFETY: Idempotent, properly invalidates futures
+    void close();
+
+    // Jetpack compatibility wrapper
     void close_and_release() {
         close();
     }
@@ -281,28 +293,28 @@ public:
 class ClientPool: public NoCopy {
     rrr::Rand rand_;
 
-    // refcopy
-    rrr::PollMgr* pollmgr_;
+    // owns a shared reference to PollThreadWorker
+    rusty::Arc<rrr::PollThreadWorker> poll_thread_worker_;
 
     // guard cache_
     SpinLock l_;
-    std::map<std::string, std::vector<std::shared_ptr<rrr::Client>>> cache_;
+    std::map<std::string, std::vector<std::shared_ptr<Client>>> cache_;
     int parallel_connections_;
 
 public:
 
-    // @unsafe - Creates pool with optional PollMgr
-    // SAFETY: Proper refcounting of PollMgr
-    ClientPool(rrr::PollMgr* pollmgr = nullptr, int parallel_connections = 1);
+    // @unsafe - Creates pool with optional PollThreadWorker
+    // SAFETY: Shared ownership of PollThreadWorker
+    ClientPool(rusty::Arc<rrr::PollThreadWorker> poll_thread_worker = rusty::Arc<rrr::PollThreadWorker>(), int parallel_connections = 1);
     // @unsafe - Closes all cached connections
-    // SAFETY: Properly releases all clients and PollMgr
+    // SAFETY: Properly releases all clients and PollThreadWorker
     ~ClientPool();
 
     // return cached client connection
     // on error, return nullptr
     // @unsafe - Gets or creates client connection
     // SAFETY: Protected by spinlock, handles connection failures
-    rrr::Client* get_client(const std::string& addr);
+    std::shared_ptr<rrr::Client> get_client(const std::string& addr);
 
 };
 

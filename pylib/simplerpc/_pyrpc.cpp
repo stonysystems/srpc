@@ -8,6 +8,15 @@
 
 using namespace rrr;
 
+// Wrapper to hold Arc<Mutex<>> for Python binding
+struct PollThreadWorkerWrapper {
+    rusty::Arc<PollThreadWorker> arc;
+
+    PollThreadWorkerWrapper() {
+        arc = PollThreadWorker::create();
+    }
+};
+
 class GILHelper {
     PyGILState_STATE gil_state;
 
@@ -26,12 +35,12 @@ static PyObject* _pyrpc_init_server(PyObject* self, PyObject* args) {
     unsigned long n_threads;
     if (!PyArg_ParseTuple(args, "k", &n_threads))
         return NULL;
-    PollMgr* poll_mgr = new PollMgr(1);
+    auto poll_arc = PollThreadWorker::create();
     ThreadPool* thrpool = new ThreadPool(n_threads);
     Log_debug("created rrr::Server with %d worker threads", n_threads);
-    Server* svr = new Server(poll_mgr, thrpool);
+    Server* svr = new Server(poll_arc, thrpool);
     thrpool->release();
-    poll_mgr->release();
+    // poll_thread_worker is now managed by Server's Arc
     return Py_BuildValue("k", svr);
 }
 
@@ -86,7 +95,7 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
     // This reference count will be decreased when shutting down server
     Py_XINCREF(func);
 
-    int ret = svr->reg(rpc_id, [func](Request* req, ServerConnection* sconn) {
+    int ret = svr->reg(rpc_id, [func](Request* req, std::weak_ptr<ServerConnection> weak_sconn) {
         Marshal* output_m = NULL;
         int error_code = 0;
         {
@@ -108,11 +117,14 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
             }
         }
 
-        sconn->begin_reply(req, error_code);
-        if (output_m != NULL) {
-            *sconn << *output_m;
+        auto sconn = weak_sconn.lock();
+        if (sconn) {
+            sconn->begin_reply(req, error_code);
+            if (output_m != NULL) {
+                *sconn << *output_m;
+            }
+            sconn->end_reply();
         }
-        sconn->end_reply();
 
         if (output_m != NULL) {
             delete output_m;
@@ -120,29 +132,28 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
 
         // cleanup as required by simple-rpc
         delete req;
+        // sconn automatically released by shared_ptr
     });
 
     return Py_BuildValue("i", ret);
 }
 
-static PyObject* _pyrpc_init_poll_mgr(PyObject* self, PyObject* args) {
+static PyObject* _pyrpc_init_poll_thread_worker(PyObject* self, PyObject* args) {
     GILHelper gil_helper;
-    PollMgr* poll = new PollMgr;
-    return Py_BuildValue("k", poll);
+    // Create wrapper that holds Arc<PollThreadWorker>
+    // Python will manage this wrapper's lifetime
+    auto* wrapper = new PollThreadWorkerWrapper();
+    return Py_BuildValue("k", wrapper);
 }
-
-vector<shared_ptr<Client>> clients = {};
 
 static PyObject* _pyrpc_init_client(PyObject* self, PyObject* args) {
     GILHelper gil_helper;
     unsigned long u;
     if (!PyArg_ParseTuple(args, "k", &u))
         return NULL;
-    PollMgr* poll = (PollMgr*) u;
-    auto x = std::make_shared<Client>(poll);
-  clients.push_back(x);
-  Client* clnt = x.get();
-  return Py_BuildValue("k", clnt);
+    auto* wrapper = (PollThreadWorkerWrapper*) u;
+    Client* clnt = new Client(wrapper->arc);
+    return Py_BuildValue("k", clnt);
 }
 
 static PyObject* _pyrpc_fini_client(PyObject* self, PyObject* args) {
@@ -151,7 +162,8 @@ static PyObject* _pyrpc_fini_client(PyObject* self, PyObject* args) {
     if (!PyArg_ParseTuple(args, "k", &u))
         return NULL;
     Client* clnt = (Client*) u;
-    clnt->close_and_release();
+    clnt->close();  // shared_ptr handles cleanup
+    delete clnt;    // Python owns the Client object
     Py_RETURN_NONE;
 }
 
@@ -533,7 +545,7 @@ static PyMethodDef _pyrpcMethods[] = {
     {"server_unreg", _pyrpc_server_unreg, METH_VARARGS, NULL},
     {"server_reg", _pyrpc_server_reg, METH_VARARGS, NULL},
 
-    {"init_poll_mgr", _pyrpc_init_poll_mgr, METH_VARARGS, NULL},
+    {"init_poll_thread_worker", _pyrpc_init_poll_thread_worker, METH_VARARGS, NULL},
 
     {"init_client", _pyrpc_init_client, METH_VARARGS, NULL},
     {"fini_client", _pyrpc_fini_client, METH_VARARGS, NULL},

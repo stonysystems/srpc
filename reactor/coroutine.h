@@ -64,4 +64,4 @@ class Coroutine {
   bool Finished();
 	void DoFinalize();
 };
-}
+} // namespace rrr

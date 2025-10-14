@@ -142,10 +142,6 @@ bool Event::Test() {
       auto sp_coro = wp_coro_.lock();
       verify(sp_coro);
       verify(status_ != DEBUG);
-//      auto sched = Reactor::GetReactor();
-//      verify(sched.get() == _dbg_p_scheduler_);
-//      verify(sched->__debug_set_all_coro_.count(sp_coro.get()) > 0);
-//      verify(sched->coros_.count(sp_coro) > 0);
       status_ = READY;
       if (rcd_wait_) {
         auto& waiting_events = Reactor::GetReactor()->waiting_events_;
