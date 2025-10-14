@@ -104,7 +104,6 @@ class Epoll {
   // Jetpack split-phase event processing methods
   std::vector<struct timespec> Wait_One(int& num_ev, bool& slow);
   void Wait_Two();
-  void Wait();
 
   // @unsafe - Adds file descriptor to epoll/kqueue
   // SAFETY: Uses system calls with proper error checking
@@ -233,65 +232,7 @@ class Epoll {
     return 0;
   }
 
-  // @unsafe - Waits for events and dispatches to handlers via callback
-  // SAFETY: Uses system calls with timeout, callback receives safe shared_ptrs
-  // lookup_fn: Converts Pollable* (void*) to shared_ptr<Pollable> via fd lookup
-  template<typename LookupFn>
-  void Wait(LookupFn&& lookup_fn) {
-    const int max_nev = 100;
-#ifdef USE_KQUEUE
-    struct kevent evlist[max_nev];
-    struct timespec timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_nsec = 50 * 1000 * 1000; // 0.05 sec
-
-    int nev = kevent(poll_fd_, nullptr, 0, evlist, max_nev, &timeout);
-
-    for (int i = 0; i < nev; i++) {
-      void* userdata = evlist[i].udata;
-      auto poll = lookup_fn(userdata);  // Get shared_ptr via lookup
-      if (!poll) continue;
-
-      if (evlist[i].filter == EVFILT_READ) {
-        poll->handle_read();
-      }
-      if (evlist[i].filter == EVFILT_WRITE) {
-        poll->handle_write();
-      }
-
-      // handle error after handle IO, so that we can at least process something
-      if (evlist[i].flags & EV_EOF) {
-        poll->handle_error();
-      }
-    }
-
-#else
-    struct epoll_event evlist[max_nev];
-    int timeout = 1; // milli, 0.001 sec
-//    int timeout = 0; // busy loop
-    //Log_info("epoll::wait entering here....");
-    int nev = epoll_wait(poll_fd_, evlist, max_nev, timeout);
-    //Log_info("epoll::wait exiting here.....");
-    //Log_info("number of events are %d", nev);
-    for (int i = 0; i < nev; i++) {
-      //Log_info("number of events are %d", nev);
-      void* userdata = evlist[i].data.ptr;
-      auto poll = lookup_fn(userdata);  // Get shared_ptr via lookup
-      if (!poll) continue;
-
-      if (evlist[i].events & EPOLLIN) {
-          poll->handle_read();
-      }
-      if (evlist[i].events & EPOLLOUT) {
-          poll->handle_write();
-      }
-      // handle error after handle IO, so that we can at least process something
-      if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-          poll->handle_error();
-      }
-    }
-#endif
-  }
+  void Wait();
 
   ~Epoll() {
     if (poll_fd_ != -1) {

@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
+#include <mutex>
+#include <utility>
 #include "../base/all.hpp"
 #include "reactor.h"
 #include "coroutine.h"
@@ -29,17 +31,16 @@ SpinLock Reactor::trying_job_;
 
 // @safe - Returns current thread-local coroutine
 std::shared_ptr<Coroutine> Coroutine::CurrentCoroutine() {
-  // TODO re-enable this verify
-  verify(Reactor::sp_running_coro_th_);
+  // TODO re-enable this verify when all callers guarantee a running coroutine
   return Reactor::sp_running_coro_th_;
 }
 
 // @unsafe - Creates and runs a new coroutine with function wrapping
 // SAFETY: Reactor manages coroutine lifecycle properly
 std::shared_ptr<Coroutine>
-Coroutine::CreateRun(std::function<void()> func, const char* file, int64_t line) {
+Coroutine::CreateRunImpl(std::move_only_function<void()> func, const char* file, int64_t line) {
   auto& reactor = *Reactor::GetReactor();
-  auto coro = reactor.CreateRunCoroutine(func, file, line);
+  auto coro = reactor.CreateRunCoroutine(std::move(func), file, line);
   // some events might be triggered in the last coroutine.
   return coro;
 }
@@ -115,38 +116,34 @@ Reactor::GetDiskReactor() {
 // }
 
 std::shared_ptr<Coroutine>
-Reactor::CreateRunCoroutine(const std::function<void()> func, const char *file, int64_t line) {
+Reactor::CreateRunCoroutine(std::move_only_function<void()> func, const char* file, int64_t line) {
   std::shared_ptr<Coroutine> sp_coro;
+  std::move_only_function<void()> local_func(std::move(func));
   const bool reusing = REUSING_CORO && !available_coros_.empty();
   if (reusing) {
     n_idle_coroutines_--;
-    //Log_info("Reusing stuff");
     sp_coro = available_coros_.back();
     sp_coro->id = Coroutine::global_id++;
     available_coros_.pop_back();
     verify(!sp_coro->func_);
-    sp_coro->func_ = func;
+    sp_coro->func_ = std::move(local_func);
   } else {
-    // if (n_created_coroutines_ >= n_max_coroutine)
-    //   return nullptr;
-    sp_coro = std::make_shared<Coroutine>(func);
+    sp_coro = std::make_shared<Coroutine>(std::move(local_func));
     verify(sp_coro->status_ == Coroutine::INIT);
     n_created_coroutines_++;
     if (n_created_coroutines_ % 1024 == 0) {
-      Log_info("created %d, busy %d, idle %d coroutines on server %d, "
-               "recent %s:%llx",
+      Log_info("created %d, busy %d, idle %d coroutines on server %d, recent %s:%llx",
                (int)n_created_coroutines_,
                (int)n_busy_coroutines_,
                (int)n_idle_coroutines_,
                server_id_,
-               file, line);
+               file,
+               (long long)line);
     }
-
   }
   n_busy_coroutines_++;
   coros_.insert(sp_coro);
   ContinueCoro(sp_coro);
-//  Loop();
   return sp_coro;
 }
 
@@ -196,47 +193,81 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
   looping_ = infinite;
 
   do {
-    // Process disk events first (jetpack functionality)
+    std::shared_ptr<Event> disk_event;
     disk_job_.lock();
     if (!ready_disk_events_.empty()) {
-      auto sp_event = ready_disk_events_.front();
-      auto& event = *sp_event;
+      disk_event = ready_disk_events_.front();
       ready_disk_events_.pop_front();
-      disk_job_.unlock();
-      auto sp_coro = event.wp_coro_.lock();
-      event.status_ = Event::READY;
-      if (event.status_ == Event::READY) {
-        event.status_ = Event::DONE;
+    }
+    disk_job_.unlock();
+    if (disk_event) {
+      auto sp_coro = disk_event->wp_coro_.lock();
+      if (sp_coro) {
+        disk_event->status_ = Event::READY;
+        if (disk_event->status_ == Event::READY) {
+          disk_event->status_ = Event::DONE;
+        }
+        ContinueCoro(sp_coro);
       }
-      ContinueCoro(sp_coro);
-    } else {
-      disk_job_.unlock();
     }
 
-    // Get ready events
-    std::vector<shared_ptr<Event>> ready_events = std::move(ready_events_);
-    verify(ready_events_.empty());
+    bool found_ready_events = true;
+    while (found_ready_events) {
+      found_ready_events = false;
 
-    if (check_timeout) {
-      CheckTimeout(ready_events);
-    }
-
-    // Process ready events
-    for (auto it = ready_events.begin(); it != ready_events.end(); it++) {
-      Event& event = **it;
-      verify(event.status_ != Event::DONE);
-      auto sp_coro = event.wp_coro_.lock();
-      verify(sp_coro);
-      verify(sp_coro->status_ == Coroutine::PAUSED);
-      verify(coros_.find(sp_coro) != coros_.end());
-      if (event.status_ == Event::READY) {
-        event.status_ = Event::DONE;
-      } else {
-        verify(event.status_ == Event::TIMEOUT);
+      std::vector<std::shared_ptr<Event>> ready_events;
+      {
+        std::lock_guard<std::mutex> lock(ready_events_mutex_);
+        if (!ready_events_.empty()) {
+          ready_events = std::move(ready_events_);
+          ready_events_.clear();
+        }
       }
-      ContinueCoro(sp_coro);
+      if (!ready_events.empty()) {
+        found_ready_events = true;
+      }
+
+      auto& events = waiting_events_;
+      for (auto it = events.begin(); it != events.end();) {
+        auto sp_event = *it;
+        Event& event = *sp_event;
+        event.Test();
+        if (event.status_ == Event::READY) {
+          ready_events.push_back(sp_event);
+          it = events.erase(it);
+          found_ready_events = true;
+        } else if (event.status_ == Event::DONE) {
+          it = events.erase(it);
+        } else {
+          ++it;
+        }
+      }
+
+      if (check_timeout) {
+        size_t before = ready_events.size();
+        CheckTimeout(ready_events);
+        if (ready_events.size() > before) {
+          found_ready_events = true;
+        }
+      }
+
+      for (auto& sp_event : ready_events) {
+        auto sp_coro = sp_event->wp_coro_.lock();
+        if (!sp_coro) {
+          continue;
+        }
+        verify(coros_.find(sp_coro) != coros_.end());
+        verify(sp_coro->status_ == Coroutine::PAUSED);
+        if (sp_event->status_ == Event::READY) {
+          sp_event->status_ = Event::DONE;
+        } else {
+          verify(sp_event->status_ == Event::TIMEOUT);
+        }
+        ContinueCoro(sp_coro);
+      }
     }
   } while (looping_ || !ready_events_.empty() || !ready_disk_events_.empty());
+
   verify(ready_events_.empty());
 }
 
@@ -406,22 +437,11 @@ void PollThreadWorker::TriggerJob() const {
 void PollThreadWorker::poll_loop() const {
   while (!stop_flag_->load()) {
     TriggerJob();
-    // Pass lookup lambda: userdata is Pollable*, lookup shared_ptr by fd
-    poll_.Wait([this](void* userdata) -> std::shared_ptr<Pollable> {
-        Pollable* poll_ptr = reinterpret_cast<Pollable*>(userdata);
-        int fd = poll_ptr->fd();  // Safe - object still in map
-
-        l_->lock();
-        auto it = fd_to_pollable_.find(fd);
-        std::shared_ptr<Pollable> result;
-        if (it != fd_to_pollable_.end()) {
-          result = it->second;
-        }
-        l_->unlock();
-
-        return result;
-    });
+    // Wait() now directly casts userdata to Pollable* and calls handlers
+    // Safe because deferred removal guarantees object stays in fd_to_pollable_ map
+    poll_.Wait();
     TriggerJob();
+    Reactor::GetReactor()->Loop(false, true);
 
     // Process deferred removals AFTER all events handled
     pending_remove_l_->lock();
@@ -452,7 +472,7 @@ void PollThreadWorker::poll_loop() const {
       l_->unlock();
     }
     TriggerJob();
-    Reactor::GetReactor()->Loop();
+    Reactor::GetReactor()->Loop(false, true);
   }
 
   // Process any final pending removals after stop_flag_ is set

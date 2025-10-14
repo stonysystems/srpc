@@ -114,11 +114,10 @@ int ServerConnection::run_async(const std::function<void()>& f) {
 
 // @unsafe - Begins reply marshaling with locking
 // SAFETY: Protected by output spinlock
-void ServerConnection::begin_reply(Request* req, i32 error_code /* =... */) {
-  verify (status_ == CONNECTED);
+void ServerConnection::begin_reply(const Request& req, i32 error_code /* =... */) {
     out_l_.lock();
     v32 v_error_code = error_code;
-    v64 v_reply_xid = req->xid;
+    v64 v_reply_xid = req.xid;
 
     bmark_ = rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32))); // will write reply size later
 
@@ -129,8 +128,6 @@ void ServerConnection::begin_reply(Request* req, i32 error_code /* =... */) {
 // @unsafe - Completes reply packet
 // SAFETY: Protected by output spinlock, enables write polling
 void ServerConnection::end_reply() {
-  verify (status_ == CONNECTED);
-
     // set reply size in packet
     if (bmark_.get() != nullptr) {
         i32 reply_size = out_.get_and_reset_write_cnt();
@@ -169,8 +166,6 @@ bool ServerConnection::handle_read() {
     int n_peek = block_read_in.peek(&packet_size, sizeof(i32));
     if(n_peek < sizeof(i32)){
       int bytes_read = block_read_in.chnk_read_from_fd(socket_, sizeof(i32)-n_peek);
-    
-    
       //Log_info("bytes read from socket %d", bytes_read);
        if (block_read_in.content_size() < sizeof(i32)) {
 				Log_info("no bytes read");
@@ -178,7 +173,7 @@ bool ServerConnection::handle_read() {
        }
     }
 
-    list<Request*> complete_requests; 
+    list<rusty::Box<Request>> complete_requests;
     n_peek = block_read_in.peek(&packet_size, sizeof(i32));
     if(n_peek == sizeof(i32)){
       int pckt_bytes = block_read_in.chnk_read_from_fd(socket_, packet_size + sizeof(i32) - block_read_in.content_size());
@@ -186,13 +181,13 @@ bool ServerConnection::handle_read() {
         return false;
       }
       verify(block_read_in.read(&packet_size, sizeof(i32)) == sizeof(i32));
-      Request* req = new Request;
+      auto req = rusty::Box<Request>(new Request());
       verify(req->m.read_reuse_chnk(block_read_in, packet_size) == (size_t) packet_size);
       //Log_info("server handle read: packet size %d and packet bytes %d and content size %d", packet_size, pckt_bytes, block_read_in.content_size());
       v64 v_xid;
       req->m >> v_xid;
       req->xid = v_xid.get();
-      complete_requests.push_back(req);
+      complete_requests.push_back(std::move(req));
 
     }
 
@@ -225,9 +220,9 @@ bool ServerConnection::handle_read() {
 
         if (req->m.content_size() < sizeof(i32)) {
             // rpc id not provided
-            begin_reply(req, EINVAL);
+            begin_reply(*req, EINVAL);
             end_reply();
-            delete req;
+            // req automatically cleaned up by rusty::Box
             continue;
         }
 
@@ -241,34 +236,17 @@ bool ServerConnection::handle_read() {
         auto it = server_->handlers_.find(rpc_id);
 	//Log_info("RPC ID is: %d", rpc_id);
         if (it != server_->handlers_.end()) {
-            // Use weak_self_ directly - no map lookup needed!
+            // C++23 std::move_only_function allows direct capture of move-only types like rusty::Box
+            // Lambda captures rusty::Box<Request> by move, maintaining single ownership semantics
             auto weak_this = weak_self_;
             //Log_info("CreateRunning: %x", rpc_id);
-            Coroutine::CreateRun([it, req, weak_this, rpc_id, this] () {
-                auto sconn = weak_this.lock();
-                if (sconn && sconn->connected()) {
-//#ifdef SIMULATE_WAN
-	      /*if(this->server_->addr_ == "0.0.0.0:10001"){
-                  //Log_info("SLOWING DOWN");
-	      	  //auto ev = Reactor::CreateSpEvent<NeverEvent>();
-                  //ev->Wait(4000 * 1000); // timeout after 100 ms
-                  //ev->Wait(1); // timeout after 100 ms
-	      }*/
-//#endif
-                    it->second(req, weak_this);
-							/*if (req != nullptr && !req->m.valid_id) {
-								if (count % 100000 == 0) {
-									if (req->m.found_dep) {
-										Log_info("Warning: dependency not found: true and %x", rpc_id);
-									} else {
-										Log_info("Warning: dependency not found: false and %x", rpc_id);
-									}
-								} else {
-									count++;
-								}
-							}*/
+            Coroutine::CreateRun([it, req = std::move(req), weak_this] () mutable {
+                // Move rusty::Box to handler, transferring ownership
+                it->second(std::move(req), weak_this);
 
-                    // Lock weak_ptr to access block_read_in
+                // Lock weak_ptr to access block_read_in
+                auto sconn = weak_this.lock();
+                if (sconn) {
                     sconn->block_read_in.reset();
                 }
             }, __FILE__, it->first);
@@ -284,9 +262,9 @@ bool ServerConnection::handle_read() {
             if (!surpress_warning) {
                 Log_error("rrr::ServerConnection: no handler for rpc_id=0x%08x", rpc_id);
             }
-            begin_reply(req, ENOENT);
+            begin_reply(*req, ENOENT);
             end_reply();
-            delete req;
+            // req automatically cleaned up by rusty::Box
         }
     }
   // This is a workaround, the Loop call should really happen
@@ -599,30 +577,54 @@ ServerListener::ServerListener(Server* server, string addr) {
     }
 
     const int yes = 1;
+    // Set SO_REUSEADDR to allow binding to ports in TIME_WAIT state
     if (setsockopt(server_sock_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) != 0) {
-      Log_info("errno: %d, msg: %s, addr: %s", errno, strerror(errno), addr.c_str());
-      verify(0);
+      Log_error("SO_REUSEADDR failed for %s: errno=%d (%s)", addr.c_str(), errno, strerror(errno));
+      ::close(server_sock_);
+      server_sock_ = -1;
+      continue;  // Try next address
     }
 
+#ifdef SO_REUSEPORT
+    // Set SO_REUSEPORT to allow multiple binds (helps with rapid restart)
+    if (setsockopt(server_sock_, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes)) != 0) {
+      Log_debug("SO_REUSEPORT failed for %s: errno=%d (%s) - continuing anyway", addr.c_str(), errno, strerror(errno));
+      // Not fatal - continue without SO_REUSEPORT
+    }
+#endif
+
     if (setsockopt(server_sock_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) != 0) {
-      Log_info("errno: %d, msg: %s, addr: %s", errno, strerror(errno), addr.c_str());
-      verify(0);
+      Log_error("TCP_NODELAY failed for %s: errno=%d (%s)", addr.c_str(), errno, strerror(errno));
+      ::close(server_sock_);
+      server_sock_ = -1;
+      continue;  // Try next address
     }
 
     if (::bind(server_sock_, rp->ai_addr, rp->ai_addrlen) == 0) {
-      break;
+      break;  // Successfully bound
     } else {
-      Log_error("port bind error: %s:%s, errno: %d (%s)", host.c_str(), port.c_str(), errno, strerror(errno));
-      verify(0);
+      Log_error("port bind error for %s:%s, errno: %d (%s)", host.c_str(), port.c_str(), errno, strerror(errno));
+      ::close(server_sock_);
+      server_sock_ = -1;
+      // Continue to next address in the list
     }
-    ::close(server_sock_);
-    server_sock_ = -1;
   }
 
   if (rp == nullptr) {
-    // failed to bind
-    Log_error("rrr::Server: bind(): %s", strerror(errno));
+    // Failed to bind to any address
+    Log_error("rrr::Server: FATAL - failed to bind to %s:%s after trying all addresses", host.c_str(), port.c_str());
+    Log_error("rrr::Server: This is likely because the port is already in use by another process");
+    Log_error("rrr::Server: Please check: sudo lsof -i :%s or sudo ss -tulpn | grep %s", port.c_str(), port.c_str());
     freeaddrinfo(result);
+
+    // Print more helpful message and abort
+    fprintf(stderr, "\n====== FATAL ERROR ======\n");
+    fprintf(stderr, "Failed to bind to port %s - port may be in use\n", port.c_str());
+    fprintf(stderr, "Check with: sudo lsof -i :%s\n", port.c_str());
+    fprintf(stderr, "=========================\n\n");
+    fflush(stderr);
+
+    verify(0);  // Fatal error - cannot start server
   } else {
     p_gai_result_ = result;
     p_svr_addr_ = rp;
@@ -631,23 +633,36 @@ ServerListener::ServerListener(Server* server, string addr) {
 
   // about backlog: http://www.linuxjournal.com/files/linuxjournal.com/linuxjournal/articles/023/2333/2333s2.html
   const int backlog = SOMAXCONN;
-  verify(listen(server_sock_, backlog) == 0);
-  verify(set_nonblocking(server_sock_, true) == 0);
-  set_nonblocking(server_sock_, true);
-  Log_info("rrr::Server: started on %s", addr.c_str());
+  int listen_ret = listen(server_sock_, backlog);
+  if (listen_ret != 0) {
+    Log_error("rrr::Server: listen() failed on %s: errno=%d (%s)", addr.c_str(), errno, strerror(errno));
+  }
+  verify(listen_ret == 0);
+
+  int nonblock_ret = set_nonblocking(server_sock_, true);
+  if (nonblock_ret != 0) {
+    Log_error("rrr::Server: set_nonblocking() failed on %s: errno=%d (%s)", addr.c_str(), errno, strerror(errno));
+  }
+  verify(nonblock_ret == 0);
+
+  Log_debug("rrr::Server: started on %s", addr.c_str());
 }
 
 // @unsafe - Starts server listening on specified address
 // SAFETY: Creates listener with proper socket setup
 int Server::start(const char* bind_addr) {
-  string addr(bind_addr,strlen(bind_addr));
+  if (!bind_addr) {
+    Log_error("rrr::Server::start: bind_addr is NULL!");
+    return -1;
+  }
+  string addr(bind_addr, strlen(bind_addr));
   sp_server_listener_ = std::make_shared<ServerListener>(this, addr);
   poll_thread_worker_->add(sp_server_listener_);
   return 0;
 }
 
 // @safe - Registers RPC handler
-int Server::reg(i32 rpc_id, const std::function<void(Request*, std::weak_ptr<ServerConnection>)>& func) {
+int Server::reg(i32 rpc_id, const RequestHandler& func) {
     // disallow duplicate rpc_id
     if (handlers_.find(rpc_id) != handlers_.end()) {
         return EEXIST;

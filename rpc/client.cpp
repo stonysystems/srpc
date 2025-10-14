@@ -255,63 +255,27 @@ size_t Client::content_size() {
 }
 
 bool Client::handle_read(){
-	struct timespec begin2, begin2_cpu, end2, end2_cpu;
-  /*clock_gettime(CLOCK_MONOTONIC, &begin2);		
-	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &begin2_cpu);*/
-  if (status_ != CONNECTED) {
+  if (!handle_read_one()) {
     return false;
   }
 
-  int bytes_read = in_.read_from_fd(sock_);
-  if (bytes_read == 0) {
-    return false;
-  }
-
-  for (;;) {
-    //Log_info("stuck in client handle_read loop");
-    i32 packet_size;
-    int n_peek = in_.peek(&packet_size, sizeof(i32));
-    if (n_peek == sizeof(i32)
-        && in_.content_size() >= packet_size + sizeof(i32)) {
-      // consume the packet size
-      verify(in_.read(&packet_size, sizeof(i32)) == sizeof(i32));
-
-      v64 v_reply_xid;
-      v32 v_error_code;
-
-      in_ >> v_reply_xid >> v_error_code;
-
-      pending_fu_l_.lock();
-      unordered_map<i64, Future*>::iterator
-          it = pending_fu_.find(v_reply_xid.get());
-      if (it != pending_fu_.end()) {
-        Future* fu = it->second;
-        verify(fu->xid_ == v_reply_xid.get());
-        pending_fu_.erase(it);
-        pending_fu_l_.unlock();
-
-        fu->error_code_ = v_error_code.get();
-        fu->reply_.read_from_marshal(in_,
-                                     packet_size - v_reply_xid.val_size()
-                                         - v_error_code.val_size());
-
-        fu->notify_ready();
-
-        // since we removed it from pending_fu_
-        fu->release();
-      } else {
-        // the future might timed out
-        pending_fu_l_.unlock();
-      }
-
-    } else {
-      // packet incomplete or no more packets to process
+  while (true) {
+    bool done = handle_read_two();
+    if (!done) {
+      Log_info("Client::handle_read_two signaled more data; continuing");
+    }
+    if (done) {
+      Log_info("Client::handle_read_two completed batch");
       break;
     }
+    if (status_ != CONNECTED) {
+      return false;
+    }
   }
-  // This is a workaround, the Loop call should really happen
-  // between handle_read and handle_write in the epoll loop
+
+  // Ensure any ready futures wake their waiting coroutines (Jetpack + mako compatibility)
   Reactor::GetReactor()->Loop();
+
   return true;
 }
 
@@ -437,67 +401,6 @@ iters = 5;
 	return done;
 }
 
-#if 0  // Duplicate function - already defined above
-bool Client::handle_read() {
-  if (status_ != CONNECTED) {
-    Log_info("DCed");
-    return false;
-  }
-
-  int bytes_read = in_.read_from_fd(sock_);
-  //Log_info("The bytes read is: %d", bytes_read);
-  Log_info("the socket is: %d", sock_);
-  if (bytes_read == 0) {
-    Log_info("sure");
-  }
-
-
-  //auto start = chrono::steady_clock::now();
-  for (;;) {
-    //Log_info("stuck in client handle_read loop");
-    i32 packet_size;
-    int n_peek = in_.peek(&packet_size, sizeof(i32));
-    if (n_peek == sizeof(i32)
-        && in_.content_size() >= packet_size + sizeof(i32)) {
-      // consume the packet size
-      verify(in_.read(&packet_size, sizeof(i32)) == sizeof(i32));
-
-      v64 v_reply_xid;
-      v32 v_error_code;
-
-      in_ >> v_reply_xid >> v_error_code;
-
-      pending_fu_l_.lock();
-      unordered_map<i64, Future*>::iterator
-          it = pending_fu_.find(v_reply_xid.get());
-      if (it != pending_fu_.end()) {
-        Future* fu = it->second;
-        verify(fu->xid_ == v_reply_xid.get());
-        pending_fu_.erase(it);
-        pending_fu_l_.unlock();
-
-        fu->error_code_ = v_error_code.get();
-        fu->reply_.read_from_marshal(in_,
-                                     packet_size - v_reply_xid.val_size()
-                                         - v_error_code.val_size());
-
-        fu->notify_ready();
-
-        // since we removed it from pending_fu_
-        fu->release();
-      } else {
-        // the future might timed out
-        pending_fu_l_.unlock();
-      }
-
-    } else {
-      // packet incomplete or no more packets to process
-      break;
-    }
-  }
-  return true;
-}
-#endif  // End duplicate handle_read
 
 // @safe - Determines polling mode based on output buffer
 int Client::poll_mode() {

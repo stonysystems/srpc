@@ -103,7 +103,9 @@ class Reactor {
    * @param ev. is usually allocated on coroutine stack. memory managed by user.
    */
   // @safe - Creates and runs a new coroutine
-  std::shared_ptr<Coroutine> CreateRunCoroutine(std::function<void()> func, const char *file="", int64_t line=0);
+  std::shared_ptr<Coroutine> CreateRunCoroutine(std::move_only_function<void()> func,
+                                                const char* file = "",
+                                                int64_t line = 0);
   // @safe - Main event loop
   void Loop(bool infinite = false, bool check_timeout = false);
 	void DiskLoop();

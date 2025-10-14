@@ -27,15 +27,12 @@
 //   operator!=: [safe, (auto, auto) -> bool]
 //   operator==: [safe, (auto, auto) -> bool]
 //   std::*::find: [safe, (auto) -> auto]
-//   std::*::end: [safe, () -> auto]
+//   std::*::end: [safe, (auto) -> auto]
 //   std::*::begin: [safe, () -> auto]
 //   std::*::insert: [safe, (auto) -> auto]
 //   std::*::operator[]: [safe, (auto) -> auto]
 //   std::*::erase: [safe, (auto) -> auto]
 // }
-
-// for getaddrinfo() used in Server::start()
-//struct addrinfo;
 
 namespace rrr {
 
@@ -64,30 +61,10 @@ public:
 
 // @unsafe - Server listener handling incoming connections
 // SAFETY: Manages socket lifecycle and address info properly
-// External annotations for socket operations
-// @external: {
-//   accept: [safe, (int, sockaddr*, socklen_t*) -> int]
-//   socket: [safe, (int, int, int) -> int]
-//   bind: [safe, (int, const sockaddr*, socklen_t) -> int]
-//   listen: [safe, (int, int) -> int]
-//   close: [safe, (int) -> int]
-//   getaddrinfo: [safe, (const char*, const char*, const addrinfo*, addrinfo**) -> int]
-//   freeaddrinfo: [safe, (addrinfo*) -> void]
-//   setsockopt: [safe, (int, int, int, const void*, socklen_t) -> int]
-//   set_nonblocking: [safe, (int, bool) -> int]
-//   unlink: [safe, (const char*) -> int]
-//   strcpy: [safe, (char*, const char*) -> char*]
-//   strlen: [safe, (const char*) -> size_t]
-//   gai_strerror: [safe, (int) -> const char*]
-//   memset: [safe, (void*, int, size_t) -> void*]
-// }
-
-// @unsafe - Contains unsafe handle_read() method that calls Log functions
-// SAFETY: Thread-safe server listener with proper socket lifecycle management
 class ServerListener: public Pollable {
   friend class Server;
  public:
-  std:: string addr_;
+  std::string addr_;
   Server* server_;  // Non-owning pointer to parent server
   // cannot use smart pointers for memory management because this pointer
   // needs to be freed by freeaddrinfo.
@@ -97,35 +74,33 @@ class ServerListener: public Pollable {
   int server_sock_{0};
   
   // @safe - Returns constant poll mode
-  int poll_mode() {
+  int poll_mode() override {
     return Pollable::READ;
   }
-  size_t content_size() {
+
+  size_t content_size() override {
     verify(0);
     return 0;
   }
   
   // @safe - Not implemented, will abort if called
-  void handle_write() {verify(0);}
+  void handle_write() override {verify(0);}
   
   // @unsafe - Calls unsafe Log::debug for connection logging
   // SAFETY: Thread-safe with server connection lock
   bool handle_read_one() override { return handle_read(); }
-  bool handle_read_two() {
-    verify(0);
-    return true;
-  }
-  bool handle_read();
+  bool handle_read_two() override { verify(0); return true; }
+  bool handle_read() override;
   
   // @safe - Not implemented, will abort if called
-  void handle_error() {verify(0);}
+  void handle_error() override {verify(0);}
   
   // @safe - Closes server socket
   // Close is marked safe via external annotation
   void close();
   
   // @safe - Returns file descriptor
-  int fd() {return server_sock_;}
+  int fd() override {return server_sock_;}
   
   // @safe - Constructor with proper error handling
   ServerListener(Server* s, std::string addr);
@@ -184,7 +159,7 @@ class ServerConnection: public Pollable {
 
 public:
     // Jetpack-specific member
-	int count = 0;
+    int count = 0;
 
     // Public destructor for shared_ptr compatibility
     // @safe - Simple destructor updating counter
@@ -192,11 +167,11 @@ public:
 
     // @unsafe - Initializes connection with socket
     // SAFETY: Increments server connection counter
-  ServerConnection(Server* server, int socket);
+    ServerConnection(Server* server, int socket);
 
-  bool connected() {
-    return status_ == CONNECTED;
-  }
+    bool connected() {
+      return status_ == CONNECTED;
+    }
 
     /**
      * Start a reply message. Must be paired with end_reply().
@@ -214,7 +189,7 @@ public:
      */
     // @unsafe - Starts reply marshaling
     // SAFETY: Protected by output spinlock
-    void begin_reply(Request* req, i32 error_code = 0);
+    void begin_reply(const Request& req, i32 error_code = 0);
 
     // @unsafe - Completes reply packet
     // SAFETY: Protected by output spinlock
@@ -234,30 +209,27 @@ public:
         return *this;
     }
 
-    int fd() {
+    int fd() override {
         return socket_;
     }
 
     // @safe - Returns poll mode based on output buffer
-    int poll_mode();
-    size_t content_size() {
-      verify(0);
-      return 0;
+    int poll_mode() override;
+    size_t content_size() override {
+        verify(0);
+        return 0;
     }
     // @unsafe - Writes buffered data to socket
     // SAFETY: Protected by output spinlock
-    void handle_write();
+    void handle_write() override;
     // @unsafe - Reads and processes RPC requests
     // SAFETY: Creates coroutines for handlers
+    bool handle_read() override;
     bool handle_read_one() override { return handle_read(); }
-    bool handle_read_two() {
-      verify(0);
-      return true;
-    }
-    bool handle_read();
+    bool handle_read_two() override { verify(0); return true; }
     // @safe - Error handler
-    void handle_error();
-		void handle_free() {verify(0);}
+    void handle_error() override;
+    void handle_free() {verify(0);}
 };
 
 // @safe - RAII wrapper for deferred RPC replies
@@ -266,20 +238,18 @@ class DeferredReply: public NoCopy {
     std::weak_ptr<rrr::ServerConnection> weak_sconn_;
     std::function<void()> marshal_reply_;
     std::function<void()> cleanup_;
-    std::shared_ptr<ServerConnection> sp_sconn_{};
 
- public:
+public:
 
-    DeferredReply(rrr::Request* req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
+    DeferredReply(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn,
                   const std::function<void()>& marshal_reply, const std::function<void()>& cleanup)
-        : req_(rusty::Box<rrr::Request>(req)), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
+        : req_(std::move(req)), weak_sconn_(weak_sconn), marshal_reply_(marshal_reply), cleanup_(cleanup) {}
 
     // @safe - Cleanup destructor with automatic cleanup
-    // SAFETY: Proper cleanup order, Box automatically deletes req_
+    // SAFETY: Proper cleanup order, rusty::Box automatically deletes req_
     ~DeferredReply() {
         cleanup_();
-        // req_ automatically cleaned up by Box destructor
-        sp_sconn_.reset();
+        // req_ automatically cleaned up by rusty::Box destructor
     }
 
     int run_async(const std::function<void()>& f) {
@@ -293,8 +263,8 @@ class DeferredReply: public NoCopy {
     // SAFETY: Locks weak_ptr before use, gracefully handles closed connections
     void reply() {
         auto sconn = weak_sconn_.lock();
-        if (sconn && sconn->connected()) {
-            sconn->begin_reply(req_.get());
+        if (sconn) {
+            sconn->begin_reply(*req_);
             marshal_reply_();
             sconn->end_reply();
         } else {
@@ -310,7 +280,8 @@ class DeferredReply: public NoCopy {
 class Server: public NoCopy {
     friend class ServerConnection;
  public:
-    std::unordered_map<i32, std::function<void(Request*, std::weak_ptr<ServerConnection>)>> handlers_;
+    using RequestHandler = std::function<void(rusty::Box<Request>, std::weak_ptr<ServerConnection>)>;
+    std::unordered_map<i32, RequestHandler> handlers_;
     rusty::Arc<PollThreadWorker> poll_thread_worker_;  // Shared ownership via Arc<Mutex<>>
     ThreadPool* threadpool_;
     int server_sock_;
@@ -357,28 +328,27 @@ public:
      *     ..
      *
      *     // send reply
-     *     server_connection->begin_reply();
+     *     server_connection->begin_reply(*req);
      *     *server_connection << {reply_content};
      *     server_connection->end_reply();
      *
-     *     // cleanup resource
-     *     delete request;
-     *     // No need to release, shared_ptr handles it
+     *     // cleanup resource - automatic via unique_ptr
+     *     // No need to release, shared_ptr handles connection
      *  }
      */
     // @safe - Registers RPC handler function
-    int reg(i32 rpc_id, const std::function<void(Request*, std::weak_ptr<ServerConnection>)>& func);
+    int reg(i32 rpc_id, const RequestHandler& func);
 
     template<class S>
-    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(Request*, std::weak_ptr<ServerConnection>)) {
+    int reg(i32 rpc_id, S* svc, void (S::*svc_func)(rusty::Box<Request>, std::weak_ptr<ServerConnection>)) {
 
         // disallow duplicate rpc_id
         if (handlers_.find(rpc_id) != handlers_.end()) {
             return EEXIST;
         }
 
-        handlers_[rpc_id] = [svc, svc_func] (Request* req, std::weak_ptr<ServerConnection> sconn) {
-            (svc->*svc_func)(req, sconn);
+        handlers_[rpc_id] = [svc, svc_func] (rusty::Box<Request> req, std::weak_ptr<ServerConnection> sconn) {
+            (svc->*svc_func)(std::move(req), sconn);
         };
 
         return 0;
@@ -389,4 +359,3 @@ public:
 };
 
 } // namespace rrr
-

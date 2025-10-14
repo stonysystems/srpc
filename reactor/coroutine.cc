@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <boost/coroutine2/protected_fixedsize_stack.hpp>
 #include "../base/all.hpp"
 #include "coroutine.h"
@@ -12,12 +13,12 @@
 namespace rrr {
 uint64_t Coroutine::global_id = 0;
 
-Coroutine::Coroutine(std::function<void()> func) : func_(func), status_(INIT), id(Coroutine::global_id++) {
-
+Coroutine::Coroutine(std::move_only_function<void()> func)
+    : func_(std::move(func)), status_(INIT), id(Coroutine::global_id++) {
 }
 
 Coroutine::~Coroutine() {
-  verify(up_boost_coro_task_);
+  verify(up_boost_coro_task_ != nullptr);
   up_boost_coro_task_.reset();
 //  verify(0);
 }
@@ -32,12 +33,12 @@ void Coroutine::BoostRunWrapper(boost_coro_yield_t& yield) {
     verify(sz > 0);
     verify(func_);
     func_();
-//    func_ = nullptr; // Can be swapped out here?
-		status_ = FINISHED;
-		if (needs_finalize_) {
-			Log_info("Warning: We did not deal with backlog issues");
-			needs_finalize_ = false;
-		}
+    func_ = {};
+    status_ = FINISHED;
+    if (needs_finalize_) {
+      Log_info("Warning: We did not deal with backlog issues");
+      needs_finalize_ = false;
+    }
     Reactor::GetReactor()->n_active_coroutines_--;
     yield();
   }
@@ -51,22 +52,18 @@ void Coroutine::Run() {
 //  reactor->coros_;
   auto sz = reactor->coros_.size();
   verify(sz > 0);
-//  up_boost_coro_task_ = make_shared<boost_coro_task_t>(
 
-  const auto x = new boost_coro_task_t(
 #ifdef USE_PROTECTED_STACK
+  up_boost_coro_task_ = std::make_unique<boost_coro_task_t>(
       boost::coroutines2::protected_fixedsize_stack(boost::context::stack_traits::default_size() * 2),
-      // ATTENTION: STACK MEMORY IS PRECIOUS, AVOID EXCESSIVE RECURSION CALL
-#else
-      boost::coroutines2::default_stack(boost::context::stack_traits::default_size() * 2),
-#endif
       std::bind(&Coroutine::BoostRunWrapper, this, std::placeholders::_1)
-//    [this] (boost_coro_yield_t& yield) {
-//      this->BoostRunWrapper(yield);
-//    }
       );
-  verify(up_boost_coro_task_ == nullptr);
-  up_boost_coro_task_.reset(x);
+#else
+  up_boost_coro_task_ = std::make_unique<boost_coro_task_t>(
+      boost::coroutines2::default_stack(boost::context::stack_traits::default_size() * 2),
+      std::bind(&Coroutine::BoostRunWrapper, this, std::placeholders::_1)
+      );
+#endif
 #ifdef USE_BOOST_COROUTINE1
   (*up_boost_coro_task_)();
 #endif
@@ -84,9 +81,7 @@ void Coroutine::Continue() {
   verify(status_ == PAUSED || status_ == RECYCLED);
   verify(up_boost_coro_task_);
   status_ = RESUMED;
-  auto& r = *up_boost_coro_task_;
-  verify(r);
-  r();
+  (*up_boost_coro_task_)();
   // some events might have been triggered from last coroutine,
   // but you have to manually call the scheduler to loop.
 }
