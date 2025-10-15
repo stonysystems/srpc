@@ -262,10 +262,10 @@ bool Client::handle_read(){
   while (true) {
     bool done = handle_read_two();
     if (!done) {
-      Log_info("Client::handle_read_two signaled more data; continuing");
+      // Log_info("Client::handle_read_two signaled more data; continuing");
     }
     if (done) {
-      Log_info("Client::handle_read_two completed batch");
+      // Log_info("Client::handle_read_two completed batch");
       break;
     }
     if (status_ != CONNECTED) {
