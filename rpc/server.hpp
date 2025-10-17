@@ -222,9 +222,13 @@ public:
     // @unsafe - Writes buffered data to socket
     // SAFETY: Protected by output spinlock
     void handle_write() override;
+
     // @unsafe - Reads and processes RPC requests
     // SAFETY: Creates coroutines for handlers
-    bool handle_read() override;
+    bool handle_read() override;  // Default: uses sequential/single mode (Paxos-compatible)
+    bool handle_read_single();    // Sequential mode: ONE request at a time (for Paxos)
+    bool handle_read_batch();     // Batching mode: MULTIPLE requests (for Raft)
+
     bool handle_read_one() override { return handle_read(); }
     bool handle_read_two() override { verify(0); return true; }
     // @safe - Error handler
