@@ -7,6 +7,8 @@
 #include <functional>
 #include <mutex>
 #include <utility>
+#include <cstdlib>
+#include <atomic>
 #include "../base/all.hpp"
 #include "reactor.h"
 #include "coroutine.h"
@@ -28,6 +30,10 @@ thread_local std::unordered_map<std::string, std::vector<std::shared_ptr<rrr::Po
 thread_local std::unordered_set<std::string> Reactor::dangling_ips_{};
 SpinLock Reactor::disk_job_;
 SpinLock Reactor::trying_job_;
+static std::atomic<bool> g_rrr_track_waiting_events{[]() {
+  const char* env = getenv("RAFT_BATCH_MODE");
+  return !(env && strcmp(env, "1") == 0);
+}()};
 
 // @safe - Returns current thread-local coroutine
 std::shared_ptr<Coroutine> Coroutine::CurrentCoroutine() {
@@ -62,6 +68,14 @@ Reactor::GetReactor() {
     sp_reactor_th_->thread_id_ = std::this_thread::get_id();
   }
   return sp_reactor_th_;
+}
+
+bool Reactor::ShouldTrackWaitingEvents() {
+  return g_rrr_track_waiting_events.load(std::memory_order_relaxed);
+}
+
+void Reactor::SetTrackWaitingEvents(bool track) {
+  g_rrr_track_waiting_events.store(track, std::memory_order_relaxed);
 }
 
 std::shared_ptr<Reactor>
@@ -144,6 +158,7 @@ Reactor::CreateRunCoroutine(std::move_only_function<void()> func, const char* fi
   n_busy_coroutines_++;
   coros_.insert(sp_coro);
   ContinueCoro(sp_coro);
+  Loop(false, true);  // Process events AND check timeouts (match original mako behavior)
   return sp_coro;
 }
 
@@ -166,6 +181,13 @@ void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) {
             event.status_ = Event::READY;
           } else {
             event.status_ = Event::TIMEOUT;
+          }
+          // RAFT PATH: Remove from waiting_events_ using stored iterator
+          // PAXOS PATH: Will be removed when reactor loop scans waiting_events_
+          if (!ShouldTrackWaitingEvents() && event.in_waiting_list_) {
+            waiting_events_.erase(event.waiting_iter_);
+            event.in_waiting_list_ = false;
+            event.waiting_iter_ = {};
           }
           ready_events.push_back(*it);
           it = timeout_events_.erase(it);
@@ -227,19 +249,21 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         found_ready_events = true;
       }
 
-      auto& events = waiting_events_;
-      for (auto it = events.begin(); it != events.end();) {
-        auto sp_event = *it;
-        Event& event = *sp_event;
-        event.Test();
-        if (event.status_ == Event::READY) {
-          ready_events.push_back(sp_event);
-          it = events.erase(it);
-          found_ready_events = true;
-        } else if (event.status_ == Event::DONE) {
-          it = events.erase(it);
-        } else {
-          ++it;
+      // PAXOS PATH (mako): Always scan waiting_events_ and move ready ones
+      if (ShouldTrackWaitingEvents()) {
+        auto& events = waiting_events_;
+        for (auto it = events.begin(); it != events.end();) {
+          Event& event = **it;
+          event.Test();
+          if (event.status_ == Event::READY) {
+            ready_events.push_back(std::move(*it));
+            it = events.erase(it);
+            found_ready_events = true;
+          } else if (event.status_ == Event::DONE) {
+            it = events.erase(it);
+          } else {
+            ++it;
+          }
         }
       }
 
@@ -256,7 +280,10 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         if (!sp_coro) {
           continue;
         }
-        verify(coros_.find(sp_coro) != coros_.end());
+        // Check if coroutine still exists (might have finished already)
+        if (coros_.find(sp_coro) == coros_.end()) {
+          continue;
+        }
         verify(sp_coro->status_ == Coroutine::PAUSED);
         if (sp_event->status_ == Event::READY) {
           sp_event->status_ = Event::DONE;
@@ -266,7 +293,7 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         ContinueCoro(sp_coro);
       }
     }
-  } while (looping_ || !ready_events_.empty() || !ready_disk_events_.empty());
+  } while (looping_);
 
   verify(ready_events_.empty());
 }
@@ -437,11 +464,11 @@ void PollThreadWorker::TriggerJob() const {
 void PollThreadWorker::poll_loop() const {
   while (!stop_flag_->load()) {
     TriggerJob();
+    Reactor::GetReactor()->Loop(false, true);
     // Wait() now directly casts userdata to Pollable* and calls handlers
     // Safe because deferred removal guarantees object stays in fd_to_pollable_ map
     poll_.Wait();
     TriggerJob();
-    Reactor::GetReactor()->Loop(false, true);
 
     // Process deferred removals AFTER all events handled
     pending_remove_l_->lock();

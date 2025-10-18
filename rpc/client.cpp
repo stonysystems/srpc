@@ -73,9 +73,9 @@ void Future::notify_ready() {
   if (ready_ && attr_.callback != nullptr) {
     // Warning: make sure memory is safe!
     const auto x = attr_.callback;
-//    Coroutine::CreateRun([x, this]() {
+    Coroutine::CreateRun([x, this]() {
       x(this);
-//    }, __FILE__, __LINE__);
+    }, __FILE__, __LINE__);
 //        attr_.callback(this);
   }
 }

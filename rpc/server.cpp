@@ -11,6 +11,7 @@
 #include <netinet/tcp.h>
 
 #include "reactor/coroutine.h"
+#include "reactor/reactor.h"
 #include "server.hpp"
 #include "utils.hpp"
 
@@ -332,6 +333,7 @@ bool ServerConnection::handle_read() {
         return (env_val != nullptr && strcmp(env_val, "1") == 0);
     }();
 
+    Reactor::SetTrackWaitingEvents(!use_batch_mode);
     if (use_batch_mode) {
         return handle_read_batch();  // Raft mode: high throughput batching
     } else {

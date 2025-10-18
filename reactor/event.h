@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <fstream>
+#include <list>
+#include <set>
 #include <unordered_set>
 #include <map>
 #include <sys/types.h>
@@ -55,6 +57,8 @@ class Event : public std::enable_shared_from_this<Event> {
   uint64_t wakeup_time_; // calculated by timeout, unit: microsecond
   bool rcd_wait_ = false;
   std::string wait_place_{"not recorded"};
+  bool in_waiting_list_{false};
+  std::list<std::shared_ptr<Event>>::iterator waiting_iter_;
 
   // An event is usually allocated on a coroutine stack, thus it cannot own a
   //   shared_ptr to the coroutine it is.
@@ -77,7 +81,7 @@ class Event : public std::enable_shared_from_this<Event> {
   virtual bool ThreadSafeTest();
 	virtual bool IsSlow();
   virtual bool IsReady() {
-    verify(test_);
+    if (!test_) return false;
     return test_(0);
   }
 

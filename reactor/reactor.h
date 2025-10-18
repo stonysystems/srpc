@@ -63,7 +63,7 @@ class Reactor {
    * in case it is freed by the caller after a yield.
    */
   std::list<std::shared_ptr<Event>> all_events_{};
-  std::set<std::shared_ptr<Event>> waiting_events_{};
+  std::list<std::shared_ptr<Event>> waiting_events_{};
   std::vector<std::shared_ptr<Event>> ready_events_{};
   std::list<std::shared_ptr<Event>> timeout_events_{};
   std::vector<std::shared_ptr<Event>> disk_events_{};
@@ -107,7 +107,7 @@ class Reactor {
                                                 const char* file = "",
                                                 int64_t line = 0);
   // @safe - Main event loop
-  void Loop(bool infinite = false, bool check_timeout = false);
+  void Loop(bool infinite = false, bool check_timeout = true);
 	void DiskLoop();
   // @safe - Continues execution of a paused coroutine
   void ContinueCoro(std::shared_ptr<Coroutine> sp_coro);
@@ -138,6 +138,9 @@ class Reactor {
     auto sp_ev = CreateSpEvent<Ev>(args...);
     return *sp_ev;
   }
+
+  static bool ShouldTrackWaitingEvents();
+  static void SetTrackWaitingEvents(bool track);
 };
 
 // @safe - Thread-safe polling thread with automatic memory management

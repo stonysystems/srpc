@@ -52,19 +52,10 @@ void Event::Wait(uint64_t timeout) {
   verify(Reactor::sp_reactor_th_->thread_id_ == std::this_thread::get_id());
   if (status_ == DONE) return; // TODO: yidawu add for the second use the event.
   // verify(status_ == INIT);
-  if (status_ == DONE) return; // TODO: yidawu add for the second use the event.
-  // verify(status_ == INIT);
   if (IsReady()) {
-    status_ = DONE; // no need to wait.
     status_ = DONE; // no need to wait.
     return;
   } else {
-//    if (status_ == WAIT) {
-//      // this does not look right, fix later
-//      Log_fatal("multiple waits on the same event; no support at the moment");
-//    }
-//    verify(status_ == INIT); // does not support multiple wait so far. maybe we can support it in the future.
-//    status_= DEBUG;
 //    if (status_ == WAIT) {
 //      // this does not look right, fix later
 //      Log_fatal("multiple waits on the same event; no support at the moment");
@@ -78,10 +69,24 @@ void Event::Wait(uint64_t timeout) {
     verify(sp_coro);
 //    verify(_dbg_p_scheduler_ == nullptr);
 //    _dbg_p_scheduler_ = Reactor::GetReactor().get();
-    if (rcd_wait_) {
-      auto& waiting_events =
-          Reactor::GetReactor()->waiting_events_;  // Timeout???
-      waiting_events.insert(shared_from_this());
+    auto self = shared_from_this();
+    // PAXOS PATH (mako): Always add to waiting_events_ (reactor loop scans it)
+    // RAFT PATH (jetpack): Only add if rcd_wait_ is true (for debugging)
+    if (Reactor::ShouldTrackWaitingEvents()) {
+      // Mako behavior: unconditionally add to waiting_events_
+      auto& waiting_events = Reactor::GetReactor()->waiting_events_;
+      waiting_events.push_back(self);
+    } else if (rcd_wait_) {
+      // Jetpack behavior: only add if rcd_wait_ (for debugging)
+      if (in_waiting_list_) {
+        auto& waiting_events = Reactor::GetReactor()->waiting_events_;
+        waiting_events.erase(waiting_iter_);
+        waiting_iter_ = {};
+        in_waiting_list_ = false;
+      }
+      auto& waiting_events = Reactor::GetReactor()->waiting_events_;
+      waiting_iter_ = waiting_events.insert(waiting_events.end(), self);
+      in_waiting_list_ = true;
     }
 #ifdef EVENT_TIMEOUT_CHECK
     if (timeout == 0) {
@@ -98,7 +103,7 @@ void Event::Wait(uint64_t timeout) {
       //Log_info("WAITING: %p", shared_from_this());
       // Log_info("wake up %lld, now %lld", wakeup_time_, now);
       auto& timeout_events = Reactor::GetReactor()->timeout_events_;
-      timeout_events.push_back(shared_from_this());
+      timeout_events.push_back(self);
     }
     // TODO optimize timeout_events, sort by wakeup time.
 //      auto it = timeout_events.end();
@@ -138,30 +143,42 @@ bool Event::Test() {
   if (IsReady()) {
     if (status_ == INIT) {
       // wait has not been called, do nothing until wait happens.
+      status_ = DONE;
     } else if (status_ == WAIT) {
       auto sp_coro = wp_coro_.lock();
       verify(sp_coro);
       verify(status_ != DEBUG);
       status_ = READY;
-      if (rcd_wait_) {
-        auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-        auto it = waiting_events.find(shared_from_this());
-        if (it != waiting_events.end()) waiting_events.erase(it);
+      // PAXOS PATH (mako): Reactor loop scans waiting_events_ and moves to ready_events_
+      // RAFT PATH (jetpack): Test() pushes directly to thread-safe ready_events_ queue
+      if (Reactor::ShouldTrackWaitingEvents()) {
+        // Mako: reactor loop will handle moving from waiting_events_ to ready_events_
+        // Do nothing here
+      } else {
+        // Jetpack: remove from waiting_events_ if present, then push to ready queue
+        if (in_waiting_list_) {
+          auto& waiting_events = Reactor::GetReactor()->waiting_events_;
+          waiting_events.erase(waiting_iter_);
+          in_waiting_list_ = false;
+          waiting_iter_ = {};
+        }
+        Reactor::GetReactor()->ReadyEventsThreadSafePushBack(shared_from_this());
       }
-      Reactor::GetReactor()->ready_events_.push_back(shared_from_this());
     } else if (status_ == READY) {
       // This could happen for a quorum event.
-      Log_info("event status ready, triggered?");
+      Log_debug("event status ready, triggered?");
     } else if (status_ == DONE) {
       // do nothing
     } else if (status_ == TIMEOUT) {
-      // do nothing
+      // Jetpack behavior: ignore late triggers after timeout
     } else {
       verify(0);
     }
     return true;
-  } else {
-    if(status_ == DONE){
+  }
+  else {
+    // Jetpack: reset DONE status to INIT for event reuse
+    if (status_ == DONE) {
       status_ = INIT;
     }
   }
@@ -328,19 +345,21 @@ bool Event::ThreadSafeTest() {
 //      verify(sched->__debug_set_all_coro_.count(sp_coro.get()) > 0);
 //      verify(sched->coros_.count(sp_coro) > 0);
       status_ = READY;
-      if (rcd_wait_) {
+      if (in_waiting_list_) {
         auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-        auto it = waiting_events.find(shared_from_this());
-        if (it != waiting_events.end()) waiting_events.erase(it);
+        waiting_events.erase(waiting_iter_);
+        in_waiting_list_ = false;
+        waiting_iter_ = {};
       }
       verify(current_reactor_);
-      // current_reactor_->ready_events_.push_back(shared_from_this());
       current_reactor_->ReadyEventsThreadSafePushBack(shared_from_this());
     } else if (status_ == READY) {
       // This could happen for a quorum event.
       Log_info("event status ready, triggered?");
     } else if (status_ == DONE) {
       // do nothing
+    } else if (status_ == TIMEOUT) {
+      // Jetpack behavior: ignore late triggers after timeout
     } else {
       verify(0);
     }
