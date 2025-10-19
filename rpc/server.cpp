@@ -94,7 +94,6 @@ ServerConnection::ServerConnection(Server* server, int socket)
         : server_(server), socket_(socket), status_(CONNECTED) {
     // increase number of open connections
     server_->sconns_ctr_.next(1);
-    block_read_in.init_block_read(100000000);
 }
 
 // @safe - Updates connection counter
@@ -147,101 +146,7 @@ void ServerConnection::end_reply() {
 
 // @unsafe - Reads requests and dispatches to handlers
 // SAFETY: Creates coroutines for concurrent handling
-
-// ========================================
-// SEQUENTIAL MODE (Paxos): Process ONE request at a time
-// Used by: Paxos, any protocol needing strict request ordering
-// ========================================
-bool ServerConnection::handle_read_single() {
-    if (status_ == CLOSED) {
-        return false;
-    }
-
-    list<rusty::Box<Request>> complete_requests;
-
-    // Read packet size first
-    i32 packet_size;
-    int n_peek = block_read_in.peek(&packet_size, sizeof(i32));
-    if(n_peek < sizeof(i32)){
-      int bytes_read = block_read_in.chnk_read_from_fd(socket_, sizeof(i32)-n_peek);
-       if (block_read_in.content_size() < sizeof(i32)) {
-          return false;
-       }
-    }
-
-    // Read exactly ONE complete packet
-    n_peek = block_read_in.peek(&packet_size, sizeof(i32));
-    if(n_peek == sizeof(i32)){
-      int pckt_bytes = block_read_in.chnk_read_from_fd(socket_, packet_size + sizeof(i32) - block_read_in.content_size());
-      if(block_read_in.content_size() < packet_size + sizeof(i32)){
-        return false;
-      }
-      verify(block_read_in.read(&packet_size, sizeof(i32)) == sizeof(i32));
-      auto req = rusty::Box<Request>(new Request());
-      verify(req->m.read_reuse_chnk(block_read_in, packet_size) == (size_t) packet_size);
-      v64 v_xid;
-      req->m >> v_xid;
-      req->xid = v_xid.get();
-      complete_requests.push_back(std::move(req));
-    }
-
-#ifdef RPC_STATISTICS
-    stat_server_batching(complete_requests.size());
-#endif // RPC_STATISTICS
-
-    for (auto& req: complete_requests) {
-        if (req->m.content_size() < sizeof(i32)) {
-            begin_reply(*req, EINVAL);
-            end_reply();
-            continue;
-        }
-
-        i32 rpc_id;
-        req->m >> rpc_id;
-
-#ifdef RPC_STATISTICS
-        stat_server_rpc_counting(rpc_id);
-#endif // RPC_STATISTICS
-
-        auto it = server_->handlers_.find(rpc_id);
-        if (it != server_->handlers_.end()) {
-            auto weak_this = weak_self_;
-            Coroutine::CreateRun([it, req = std::move(req), weak_this] () mutable {
-                it->second(std::move(req), weak_this);
-
-                // Lock weak_ptr to access block_read_in
-                auto sconn = weak_this.lock();
-                if (sconn) {
-                    sconn->block_read_in.reset();
-                }
-            }, __FILE__, it->first);
-        } else {
-            rpc_id_missing_l_s.lock();
-            bool surpress_warning = false;
-            if (rpc_id_missing_s.find(rpc_id) == rpc_id_missing_s.end()) {
-                rpc_id_missing_s.insert(rpc_id);
-            } else {
-                surpress_warning = true;
-            }
-            rpc_id_missing_l_s.unlock();
-            if (!surpress_warning) {
-                Log_error("rrr::ServerConnection: no handler for rpc_id=0x%08x", rpc_id);
-            }
-            begin_reply(*req, ENOENT);
-            end_reply();
-        }
-    }
-
-    // Pump reactor to start coroutines immediately
-    Reactor::GetReactor()->Loop();
-    return false;
-}
-
-// ========================================
-// BATCHING MODE (Raft): Process MULTIPLE requests in one batch
-// Used by: Raft, high-throughput scenarios
-// ========================================
-bool ServerConnection::handle_read_batch() {
+bool ServerConnection::handle_read() {
     if (status_ == CLOSED) {
         return false;
     }
@@ -256,6 +161,7 @@ bool ServerConnection::handle_read_batch() {
 
     std::list<rusty::Box<Request>> complete_requests;
 
+    // Read all available complete packets in one batch
     for (;;) {
         i32 packet_size;
         int n_peek = in_.peek(&packet_size, sizeof(i32));
@@ -316,29 +222,10 @@ bool ServerConnection::handle_read_batch() {
         }
     }
 
-    // Jetpack compatibility: pump reactor after processing batch
+    // Pump reactor after processing batch
     Reactor::GetReactor()->Loop();
 
     return false;
-}
-
-// ========================================
-// Default handle_read: Chooses between SEQUENTIAL (Paxos) or BATCHING (Raft)
-// This is called by the epoll loop for all protocols
-// ========================================
-bool ServerConnection::handle_read() {
-    // Check environment variable to determine which mode to use
-    static bool use_batch_mode = []() {
-        const char* env_val = getenv("RAFT_BATCH_MODE");
-        return (env_val != nullptr && strcmp(env_val, "1") == 0);
-    }();
-
-    Reactor::SetTrackWaitingEvents(!use_batch_mode);
-    if (use_batch_mode) {
-        return handle_read_batch();  // Raft mode: high throughput batching
-    } else {
-        return handle_read_single();  // Paxos mode: sequential ordering
-    }
 }
 
 void ServerConnection::handle_write() {

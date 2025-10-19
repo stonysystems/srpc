@@ -127,8 +127,6 @@ class ServerConnection: public Pollable {
     Marshal in_, out_;
     SpinLock out_l_;
 
-    Marshal block_read_in;
-
     Server* server_;
     int socket_;
 
@@ -225,9 +223,7 @@ public:
 
     // @unsafe - Reads and processes RPC requests
     // SAFETY: Creates coroutines for handlers
-    bool handle_read() override;  // Default: uses sequential/single mode (Paxos-compatible)
-    bool handle_read_single();    // Sequential mode: ONE request at a time (for Paxos)
-    bool handle_read_batch();     // Batching mode: MULTIPLE requests (for Raft)
+    bool handle_read() override;  // Batching mode: reads ALL available requests
 
     bool handle_read_one() override { return handle_read(); }
     bool handle_read_two() override { verify(0); return true; }
