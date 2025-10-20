@@ -69,25 +69,10 @@ void Event::Wait(uint64_t timeout) {
     verify(sp_coro);
 //    verify(_dbg_p_scheduler_ == nullptr);
 //    _dbg_p_scheduler_ = Reactor::GetReactor().get();
-    auto self = shared_from_this();
-    // PAXOS PATH (mako): Always add to waiting_events_ (reactor loop scans it)
-    // RAFT PATH (jetpack): Only add if rcd_wait_ is true (for debugging)
-    if (Reactor::ShouldTrackWaitingEvents()) {
-      // Mako behavior: unconditionally add to waiting_events_
-      auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-      waiting_events.push_back(self);
-    } else if (rcd_wait_) {
-      // Jetpack behavior: only add if rcd_wait_ (for debugging)
-      if (in_waiting_list_) {
-        auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-        waiting_events.erase(waiting_iter_);
-        waiting_iter_ = {};
-        in_waiting_list_ = false;
-      }
-      auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-      waiting_iter_ = waiting_events.insert(waiting_events.end(), self);
-      in_waiting_list_ = true;
-    }
+
+    // All events are now self-notifying via Test() calls
+    // No need for waiting_events_ list or scanning
+
 #ifdef EVENT_TIMEOUT_CHECK
     if (timeout == 0) {
       __debug_timeout_ = true;
@@ -103,7 +88,7 @@ void Event::Wait(uint64_t timeout) {
       //Log_info("WAITING: %p", shared_from_this());
       // Log_info("wake up %lld, now %lld", wakeup_time_, now);
       auto& timeout_events = Reactor::GetReactor()->timeout_events_;
-      timeout_events.push_back(self);
+      timeout_events.push_back(shared_from_this());
     }
     // TODO optimize timeout_events, sort by wakeup time.
 //      auto it = timeout_events.end();
@@ -149,21 +134,11 @@ bool Event::Test() {
       verify(sp_coro);
       verify(status_ != DEBUG);
       status_ = READY;
-      // PAXOS PATH (mako): Reactor loop scans waiting_events_ and moves to ready_events_
-      // RAFT PATH (jetpack): Test() pushes directly to thread-safe ready_events_ queue
-      if (Reactor::ShouldTrackWaitingEvents()) {
-        // Mako: reactor loop will handle moving from waiting_events_ to ready_events_
-        // Do nothing here
-      } else {
-        // Jetpack: remove from waiting_events_ if present, then push to ready queue
-        if (in_waiting_list_) {
-          auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-          waiting_events.erase(waiting_iter_);
-          in_waiting_list_ = false;
-          waiting_iter_ = {};
-        }
-        Reactor::GetReactor()->ReadyEventsThreadSafePushBack(shared_from_this());
-      }
+
+      // Push to ready queue for immediate notification
+      // Both Paxos and Raft call Test() explicitly when events become ready
+      // (e.g., VoteYes/VoteNo for quorum events, RPC callbacks, etc.)
+      Reactor::GetReactor()->ReadyEventsThreadSafePushBack(shared_from_this());
     } else if (status_ == READY) {
       // This could happen for a quorum event.
       Log_debug("event status ready, triggered?");
@@ -345,12 +320,8 @@ bool Event::ThreadSafeTest() {
 //      verify(sched->__debug_set_all_coro_.count(sp_coro.get()) > 0);
 //      verify(sched->coros_.count(sp_coro) > 0);
       status_ = READY;
-      if (in_waiting_list_) {
-        auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-        waiting_events.erase(waiting_iter_);
-        in_waiting_list_ = false;
-        waiting_iter_ = {};
-      }
+
+      // Thread-safe push to ready queue for cross-thread event notification
       verify(current_reactor_);
       current_reactor_->ReadyEventsThreadSafePushBack(shared_from_this());
     } else if (status_ == READY) {

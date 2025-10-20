@@ -138,9 +138,6 @@ class Reactor {
     auto sp_ev = CreateSpEvent<Ev>(args...);
     return *sp_ev;
   }
-
-  static bool ShouldTrackWaitingEvents();
-  static void SetTrackWaitingEvents(bool track);
 };
 
 // @safe - Thread-safe polling thread with automatic memory management

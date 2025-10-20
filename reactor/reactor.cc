@@ -30,10 +30,6 @@ thread_local std::unordered_map<std::string, std::vector<std::shared_ptr<rrr::Po
 thread_local std::unordered_set<std::string> Reactor::dangling_ips_{};
 SpinLock Reactor::disk_job_;
 SpinLock Reactor::trying_job_;
-static std::atomic<bool> g_rrr_track_waiting_events{[]() {
-  const char* env = getenv("RAFT_BATCH_MODE");
-  return !(env && strcmp(env, "1") == 0);
-}()};
 
 // @safe - Returns current thread-local coroutine
 std::shared_ptr<Coroutine> Coroutine::CurrentCoroutine() {
@@ -68,14 +64,6 @@ Reactor::GetReactor() {
     sp_reactor_th_->thread_id_ = std::this_thread::get_id();
   }
   return sp_reactor_th_;
-}
-
-bool Reactor::ShouldTrackWaitingEvents() {
-  return g_rrr_track_waiting_events.load(std::memory_order_relaxed);
-}
-
-void Reactor::SetTrackWaitingEvents(bool track) {
-  g_rrr_track_waiting_events.store(track, std::memory_order_relaxed);
 }
 
 std::shared_ptr<Reactor>
@@ -182,13 +170,8 @@ void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) {
           } else {
             event.status_ = Event::TIMEOUT;
           }
-          // RAFT PATH: Remove from waiting_events_ using stored iterator
-          // PAXOS PATH: Will be removed when reactor loop scans waiting_events_
-          if (!ShouldTrackWaitingEvents() && event.in_waiting_list_) {
-            waiting_events_.erase(event.waiting_iter_);
-            event.in_waiting_list_ = false;
-            event.waiting_iter_ = {};
-          }
+
+          // Add to ready_events local vector for processing
           ready_events.push_back(*it);
           it = timeout_events_.erase(it);
         } else {
@@ -249,23 +232,12 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         found_ready_events = true;
       }
 
-      // PAXOS PATH (mako): Always scan waiting_events_ and move ready ones
-      if (ShouldTrackWaitingEvents()) {
-        auto& events = waiting_events_;
-        for (auto it = events.begin(); it != events.end();) {
-          Event& event = **it;
-          event.Test();
-          if (event.status_ == Event::READY) {
-            ready_events.push_back(std::move(*it));
-            it = events.erase(it);
-            found_ready_events = true;
-          } else if (event.status_ == Event::DONE) {
-            it = events.erase(it);
-          } else {
-            ++it;
-          }
-        }
-      }
+      // NO SCANNING NEEDED: All events are now self-notifying!
+      // - Paxos: PaxosAcceptQuorumEvent::FeedResponse() calls Test()
+      // - Raft: QuorumEvent::VoteYes/VoteNo() calls Test()
+      // - IntEvent::Set() calls Test()
+      // - Composite events (AndEvent): Need parent notification (future work)
+      // All events push to ready_events_ queue when they become ready
 
       if (check_timeout) {
         size_t before = ready_events.size();
