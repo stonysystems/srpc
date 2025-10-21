@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <list>
 #include <set>
 #include <unordered_set>
@@ -226,8 +227,7 @@ class IntEvent : public Event {
   int Set(int n) {
     int t = value_;
     value_ = n;
-//    TestTrigger();
-    Test();
+    TestTrigger();
     return t;
   };
 
@@ -235,7 +235,7 @@ class IntEvent : public Event {
     if (test_) {
       return test_(value_);
     } else {
-      return (value_ >= target_);
+      return (value_ == target_);
     }
   }
 };

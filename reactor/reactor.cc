@@ -170,8 +170,7 @@ void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) {
           } else {
             event.status_ = Event::TIMEOUT;
           }
-
-          // Add to ready_events local vector for processing
+          // Event will be removed from waiting_events_ when reactor loop scans it
           ready_events.push_back(*it);
           it = timeout_events_.erase(it);
         } else {
@@ -193,19 +192,20 @@ void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) {
 //  be careful this could be called from different coroutines.
 // @unsafe - Main event loop with complex event processing
 // SAFETY: Thread-safe via thread_id verification
+// Merged implementation supporting both Paxos (mako) and Raft (jetpack) paths
 void Reactor::Loop(bool infinite, bool check_timeout) {
   verify(std::this_thread::get_id() == thread_id_);
   looping_ = infinite;
 
   do {
-    std::shared_ptr<Event> disk_event;
+    // Process disk events (jetpack path)
     disk_job_.lock();
-    if (!ready_disk_events_.empty()) {
-      disk_event = ready_disk_events_.front();
+    bool has_disk_events = !ready_disk_events_.empty();
+    if (has_disk_events) {
+      auto disk_event = ready_disk_events_.front();
       ready_disk_events_.pop_front();
-    }
-    disk_job_.unlock();
-    if (disk_event) {
+      disk_job_.unlock();
+
       auto sp_coro = disk_event->wp_coro_.lock();
       if (sp_coro) {
         disk_event->status_ = Event::READY;
@@ -214,31 +214,43 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         }
         ContinueCoro(sp_coro);
       }
+    } else {
+      disk_job_.unlock();
     }
 
+    // Keep processing events until no new ready events are found
     bool found_ready_events = true;
     while (found_ready_events) {
       found_ready_events = false;
-
       std::vector<std::shared_ptr<Event>> ready_events;
+
+      // Get thread-safe ready events (jetpack/raft path)
       {
         std::lock_guard<std::mutex> lock(ready_events_mutex_);
         if (!ready_events_.empty()) {
           ready_events = std::move(ready_events_);
           ready_events_.clear();
+          found_ready_events = true;
         }
       }
-      if (!ready_events.empty()) {
-        found_ready_events = true;
+
+      // Scan waiting_events_ and move ready ones (paxos/mako path)
+      auto& events = waiting_events_;
+      for (auto it = events.begin(); it != events.end();) {
+        Event& event = **it;
+        event.Test();
+        if (event.status_ == Event::READY) {
+          ready_events.push_back(std::move(*it));
+          it = events.erase(it);
+          found_ready_events = true;
+        } else if (event.status_ == Event::DONE) {
+          it = events.erase(it);
+        } else {
+          ++it;
+        }
       }
 
-      // NO SCANNING NEEDED: All events are now self-notifying!
-      // - Paxos: PaxosAcceptQuorumEvent::FeedResponse() calls Test()
-      // - Raft: QuorumEvent::VoteYes/VoteNo() calls Test()
-      // - IntEvent::Set() calls Test()
-      // - Composite events (AndEvent): Need parent notification (future work)
-      // All events push to ready_events_ queue when they become ready
-
+      // Check timeouts if requested
       if (check_timeout) {
         size_t before = ready_events.size();
         CheckTimeout(ready_events);
@@ -247,7 +259,12 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         }
       }
 
+      // Process all ready events
       for (auto& sp_event : ready_events) {
+        // Event might already be DONE (processed by another thread in multi-threaded Raft)
+        if (sp_event->status_ == Event::DONE) {
+          continue;
+        }
         auto sp_coro = sp_event->wp_coro_.lock();
         if (!sp_coro) {
           continue;
@@ -264,10 +281,14 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         }
         ContinueCoro(sp_coro);
       }
-    }
-  } while (looping_);
 
-  verify(ready_events_.empty());
+      // If not in infinite mode and no events found, stop inner loop
+      if (!infinite && !found_ready_events) {
+        break;
+      }
+    }
+
+  } while (looping_);
 }
 
 // @unsafe - Continues execution of paused coroutine
@@ -277,7 +298,7 @@ void Reactor::ContinueCoro(std::shared_ptr<Coroutine> sp_coro) {
   verify(sp_running_coro_th_ != sp_coro);
   auto sp_old_coro = sp_running_coro_th_;
   sp_running_coro_th_ = sp_coro;
-  verify(!sp_running_coro_th_->Finished());
+  verify(sp_running_coro_th_->status_ != Coroutine::FINISHED);
   n_active_coroutines_++;
 
   struct timespec begin_marshal, begin_marshal_cpu, end_marshal, end_marshal_cpu;

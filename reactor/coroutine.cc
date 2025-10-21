@@ -87,7 +87,7 @@ void Coroutine::Continue() {
 }
 
 bool Coroutine::Finished() {
-  return status_ == FINISHED;
+  return status_ == FINISHED || status_ == RECYCLED;
 }
 
 } // namespace rrr

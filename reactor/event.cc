@@ -1,6 +1,7 @@
 
 #include <functional>
 #include <thread>
+#include <iostream>
 #include "coroutine.h"
 #include "event.h"
 #include "reactor.h"
@@ -70,8 +71,10 @@ void Event::Wait(uint64_t timeout) {
 //    verify(_dbg_p_scheduler_ == nullptr);
 //    _dbg_p_scheduler_ = Reactor::GetReactor().get();
 
-    // All events are now self-notifying via Test() calls
-    // No need for waiting_events_ list or scanning
+    // Always add to waiting_events_ - the reactor loop will scan and process it
+    // This supports both Paxos (scans all waiting events) and Raft (events marked ready by RPCs)
+    auto& waiting_events = Reactor::GetReactor()->waiting_events_;
+    waiting_events.push_back(shared_from_this());
 
 #ifdef EVENT_TIMEOUT_CHECK
     if (timeout == 0) {
@@ -134,25 +137,23 @@ bool Event::Test() {
       verify(sp_coro);
       verify(status_ != DEBUG);
       status_ = READY;
-
-      // Push to ready queue for immediate notification
-      // Both Paxos and Raft call Test() explicitly when events become ready
-      // (e.g., VoteYes/VoteNo for quorum events, RPC callbacks, etc.)
-      Reactor::GetReactor()->ReadyEventsThreadSafePushBack(shared_from_this());
+      // NOTE: We do NOT push to ready_events_ here!
+      // The reactor loop scans waiting_events_ and will move ready events to ready_events.
+      // Pushing here would cause double-queueing (once by Test(), once by loop scan).
     } else if (status_ == READY) {
       // This could happen for a quorum event.
       Log_debug("event status ready, triggered?");
     } else if (status_ == DONE) {
       // do nothing
     } else if (status_ == TIMEOUT) {
-      // Jetpack behavior: ignore late triggers after timeout
+      // Ignore late triggers after timeout (from Jetpack)
     } else {
       verify(0);
     }
     return true;
   }
   else {
-    // Jetpack: reset DONE status to INIT for event reuse
+    // Reset DONE status to INIT for event reuse (from Jetpack)
     if (status_ == DONE) {
       status_ = INIT;
     }
@@ -218,10 +219,7 @@ int DiskEvent::Write_Spec() {
 
 
 bool IntEvent::TestTrigger() {
-  if (status_ > WAIT) {
-    Log_debug("Event already triggered!");
-    return false;
-  }
+  verify(status_ <= WAIT);
   if (value_ == target_) {
     if (status_ == INIT) {
       // do nothing until wait happens.
