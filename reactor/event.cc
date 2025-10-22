@@ -71,10 +71,13 @@ void Event::Wait(uint64_t timeout) {
 //    verify(_dbg_p_scheduler_ == nullptr);
 //    _dbg_p_scheduler_ = Reactor::GetReactor().get();
 
-    // Always add to waiting_events_ - the reactor loop will scan and process it
-    // This supports both Paxos (scans all waiting events) and Raft (events marked ready by RPCs)
-    auto& waiting_events = Reactor::GetReactor()->waiting_events_;
-    waiting_events.push_back(shared_from_this());
+    // Composite events (AndEvent, OrEvent, QuorumEvent) need periodic polling
+    // Add them to a separate queue that gets scanned (much smaller than all events)
+    // Regular RPC events (Raft) self-notify via Test() - zero overhead!
+    if (IsCompositeEvent()) {
+      auto& composite_events = Reactor::GetReactor()->composite_events_;
+      composite_events.push_back(shared_from_this());
+    }
 
 #ifdef EVENT_TIMEOUT_CHECK
     if (timeout == 0) {
@@ -137,9 +140,15 @@ bool Event::Test() {
       verify(sp_coro);
       verify(status_ != DEBUG);
       status_ = READY;
-      // NOTE: We do NOT push to ready_events_ here!
-      // The reactor loop scans waiting_events_ and will move ready events to ready_events.
-      // Pushing here would cause double-queueing (once by Test(), once by loop scan).
+      // TESTING: Push to ready_events_ since we disabled waiting_events_ scanning
+      auto reactor = Reactor::GetReactor();
+      if (std::this_thread::get_id() == reactor->thread_id_) {
+        // Same thread - direct push
+        reactor->ready_events_.push_back(shared_from_this());
+      } else {
+        // Different thread - thread-safe push
+        reactor->ReadyEventsThreadSafePushBack(shared_from_this());
+      }
     } else if (status_ == READY) {
       // This could happen for a quorum event.
       Log_debug("event status ready, triggered?");

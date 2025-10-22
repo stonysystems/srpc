@@ -86,6 +86,10 @@ class Event : public std::enable_shared_from_this<Event> {
     return test_(0);
   }
 
+  // Composite events (AndEvent, OrEvent, QuorumEvent) need periodic polling
+  // Added at END to preserve vtable layout for binary compatibility
+  virtual bool IsCompositeEvent() { return false; }
+
   friend Reactor;
 // protected:
   Event();
@@ -227,7 +231,8 @@ class IntEvent : public Event {
   int Set(int n) {
     int t = value_;
     value_ = n;
-    TestTrigger();
+    // TestTrigger();
+    Test();
     return t;
   };
 
@@ -235,7 +240,7 @@ class IntEvent : public Event {
     if (test_) {
       return test_(value_);
     } else {
-      return (value_ == target_);
+      return (value_ >= target_);
     }
   }
 };
@@ -296,6 +301,9 @@ class OrEvent : public Event {
   bool IsReady() override {
     return std::any_of(events_.begin(), events_.end(), [](shared_ptr<Event> e){return e->IsReady();});
   }
+
+  // Mark as composite event - will be polled in reactor loop
+  bool IsCompositeEvent() override { return true; }
 };
 
 class AndEvent : public Event {
@@ -336,6 +344,9 @@ class AndEvent : public Event {
                          return e && (e->IsReady() || e->status_ == Event::DONE);
                        });
   }
+
+  // Mark as composite event - will be polled in reactor loop
+  bool IsCompositeEvent() override { return true; }
 };
 
 class NEvent : public Event {

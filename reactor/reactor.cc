@@ -234,17 +234,19 @@ void Reactor::Loop(bool infinite, bool check_timeout) {
         }
       }
 
-      // Scan waiting_events_ and move ready ones (paxos/mako path)
-      auto& events = waiting_events_;
-      for (auto it = events.begin(); it != events.end();) {
+      // Scan ONLY composite events (AndEvent, OrEvent, QuorumEvent)
+      // Raft has zero composite events → this loop does nothing → zero overhead!
+      // Paxos has a few QuorumEvents → small list → minimal overhead
+      auto& composite_events = composite_events_;
+      for (auto it = composite_events.begin(); it != composite_events.end();) {
         Event& event = **it;
         event.Test();
         if (event.status_ == Event::READY) {
           ready_events.push_back(std::move(*it));
-          it = events.erase(it);
+          it = composite_events.erase(it);
           found_ready_events = true;
         } else if (event.status_ == Event::DONE) {
-          it = events.erase(it);
+          it = composite_events.erase(it);
         } else {
           ++it;
         }

@@ -66,6 +66,7 @@ class Reactor {
   std::list<std::shared_ptr<Event>> waiting_events_{};
   std::vector<std::shared_ptr<Event>> ready_events_{};
   std::list<std::shared_ptr<Event>> timeout_events_{};
+  std::list<std::shared_ptr<Event>> composite_events_{}; // AndEvent, OrEvent, QuorumEvent - polled separately
   std::vector<std::shared_ptr<Event>> disk_events_{};
   std::list<std::shared_ptr<Event>> ready_disk_events_{};
   std::vector<std::shared_ptr<Event>> network_events_{};
