@@ -267,11 +267,11 @@ class TimeoutEvent : public Event {
   uint64_t wakeup_time_{0};
   uint64_t wait_us_{0};
   TimeoutEvent(uint64_t wait_us)
-      : wakeup_time_{Time::now() + wait_us}, wait_us_(wait_us) {}
+      : wakeup_time_{Time::now(true) + wait_us}, wait_us_(wait_us) {}
 
   bool IsReady() override {
 //    Log_debug("test timeout");
-    return (Time::now() > wakeup_time_);
+    return (Time::now(true) > wakeup_time_);
   }
 
   void Wait() {
