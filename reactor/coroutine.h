@@ -38,6 +38,7 @@ class Coroutine {
  public:
   static std::shared_ptr<Coroutine> CurrentCoroutine();
   template <typename Func>
+  // @safe
   static std::shared_ptr<Coroutine> CreateRun(Func&& func, const char* file = "", int64_t line = 0) {
     return CreateRunImpl(std::move_only_function<void()>(std::forward<Func>(func)), file, line);
   }

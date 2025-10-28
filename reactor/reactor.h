@@ -122,7 +122,6 @@ class Reactor {
   friend Event;
 
   
-  // @safe - Creates shared_ptr event with perfect forwarding
   template <typename Ev, typename... Args>
   static shared_ptr<Ev> CreateSpEvent(Args&&... args) {
     auto sp_ev = make_shared<Ev>(args...);
@@ -134,7 +133,6 @@ class Reactor {
     return sp_ev;
   }
 
-  // @safe - Creates event and returns reference
   template <typename Ev, typename... Args>
   static Ev& CreateEvent(Args&&... args) {
     auto sp_ev = CreateSpEvent<Ev>(args...);

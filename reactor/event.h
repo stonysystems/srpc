@@ -67,6 +67,7 @@ class Event : public std::enable_shared_from_this<Event> {
   // When the stack that contains the event frees, the event frees.
   std::weak_ptr<Coroutine> wp_coro_{}; 
 
+  // @unsafe
   virtual void Wait(uint64_t timeout=0) final;
 
   void Wait(function<bool(int)> f) {
@@ -274,6 +275,7 @@ class TimeoutEvent : public Event {
     return (Time::now(true) > wakeup_time_);
   }
 
+  // @unsafe
   void Wait() {
     Event::Wait(wait_us_);
   }
