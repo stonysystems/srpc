@@ -175,8 +175,8 @@ class Client: public Pollable, public std::enable_shared_from_this<Client> {
 		bool clean;
     bool paused_{false};
 
-    // Mako-dev uses rusty::Box for safer memory management
-    rusty::Box<Marshal::bookmark> bmark_;
+    // Mako-dev uses rusty::Option<rusty::Box> for nullable Box (Rust idiom)
+    rusty::Option<rusty::Box<Marshal::bookmark>> bmark_;
 
     Counter xid_counter_;
     std::unordered_map<i64, Future*> pending_fu_;

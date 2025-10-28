@@ -61,6 +61,8 @@ public:
     static void error(int line, const char* file, const char* fmt, ...);
     static void warn(int line, const char* file, const char* fmt, ...);
     static void info(int line, const char* file, const char* fmt, ...);
+    // @unsafe Variadic logging helper invoked by macros
+    // SAFETY: Uses mutex-protected formatting and ensures va_end
     static void debug(int line, const char* file, const char* fmt, ...);
 
     // @unsafe - Variadic logging functions without file/line
@@ -69,6 +71,8 @@ public:
     static void error(const char* fmt, ...);
     static void warn(const char* fmt, ...);
     static void info(const char* fmt, ...);
+    // @unsafe Variadic logging helper without file/line metadata
+    // SAFETY: Uses mutex-protected formatting and ensures va_end
     static void debug(const char* fmt, ...);
 };
 
