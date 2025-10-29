@@ -122,6 +122,7 @@ class Reactor {
   friend Event;
 
   
+  // @unsafe
   template <typename Ev, typename... Args>
   static shared_ptr<Ev> CreateSpEvent(Args&&... args) {
     auto sp_ev = make_shared<Ev>(args...);

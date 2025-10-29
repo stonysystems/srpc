@@ -229,6 +229,7 @@ class IntEvent : public Event {
     return value_;
   }
 
+  // @unsafe
   int Set(int n) {
     int t = value_;
     value_ = n;
