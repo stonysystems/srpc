@@ -304,7 +304,7 @@ Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr /* =... */) {
     return nullptr;
   }
 
-  bmark_ = rusty::Box<Marshal::bookmark>(out_.set_bookmark(sizeof(i32))); // will fill packet size later
+  bmark_ = rusty::Some(rusty::Box<Marshal::bookmark>(out_.set_bookmark(sizeof(i32)))); // will fill packet size later
 
   *this << v64(fu->xid_);
   *this << rpc_id;
@@ -317,11 +317,11 @@ Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr /* =... */) {
 // SAFETY: Updates bookmark, enables write polling
 void Client::end_request() {
   // set reply size in packet
-  if (bmark_.get() != nullptr) {
+  if (bmark_.is_some()) {
     i32 request_size = out_.get_and_reset_write_cnt();
     //Log_info("client request size is %d", request_size);
-    out_.write_bookmark(bmark_.get(), &request_size);
-    bmark_ = rusty::Box<Marshal::bookmark>();  // Reset to empty Box (automatically deletes old value)
+    out_.write_bookmark(bmark_.unwrap_ref().get(), &request_size);
+    bmark_ = rusty::None;  // Reset to None (automatically deletes old value)
   }
 
   // always enable write events since the code above gauranteed there

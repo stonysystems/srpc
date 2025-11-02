@@ -119,7 +119,7 @@ void ServerConnection::begin_reply(const Request& req, i32 error_code /* =... */
     v32 v_error_code = error_code;
     v64 v_reply_xid = req.xid;
 
-    bmark_ = rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32))); // will write reply size later
+    bmark_ = rusty::Some(rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32)))); // will write reply size later
 
     *this << v_reply_xid;
     *this << v_error_code;
@@ -129,10 +129,10 @@ void ServerConnection::begin_reply(const Request& req, i32 error_code /* =... */
 // SAFETY: Protected by output spinlock, enables write polling
 void ServerConnection::end_reply() {
     // set reply size in packet
-    if (bmark_.get() != nullptr) {
+    if (bmark_.is_some()) {
         i32 reply_size = out_.get_and_reset_write_cnt();
-        out_.write_bookmark(bmark_.get(), &reply_size);
-        bmark_ = rusty::Box<Marshal::bookmark>();  // Reset to empty Box (automatically deletes old value)
+        out_.write_bookmark(bmark_.unwrap_ref().get(), &reply_size);
+        bmark_ = rusty::None;  // Reset to None (automatically deletes old value)
     }
 
     // only update poll mode if connection is still active

@@ -1,5 +1,6 @@
 #pragma once
 #include <rusty/arc.hpp>
+#include <rusty/option.hpp>
 
 #include <unordered_map>
 #include <unordered_set>
@@ -146,7 +147,7 @@ class ServerConnection: public Pollable {
     Server* server_;
     int socket_;
 
-    rusty::Box<Marshal::bookmark> bmark_;
+    rusty::Option<rusty::Box<Marshal::bookmark>> bmark_;
 
     enum {
         CONNECTED, CLOSED

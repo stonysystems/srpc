@@ -1,5 +1,6 @@
 #pragma once
 #include <rusty/arc.hpp>
+#include <rusty/option.hpp>
 
 #include <unordered_map>
 
@@ -151,7 +152,7 @@ class Client: public Pollable, public std::enable_shared_from_this<Client> {
         NEW, CONNECTED, CLOSED
     } status_;
 
-    rusty::Box<Marshal::bookmark> bmark_;
+    rusty::Option<rusty::Box<Marshal::bookmark>> bmark_;
 
     Counter xid_counter_;
     std::unordered_map<i64, Future*> pending_fu_;
