@@ -6,6 +6,7 @@
 #include "base/all.hpp"
 #include <unistd.h>
 #include <array>
+#include <cerrno>
 
 #ifdef __APPLE__
 #define USE_KQUEUE
@@ -203,7 +204,17 @@ class Epoll {
     if (new_mode & Pollable::WRITE) {
         ev.events |= EPOLLOUT;
     }
-    verify(epoll_ctl(poll_fd_, EPOLL_CTL_MOD, fd, &ev) == 0);
+    int rc = epoll_ctl(poll_fd_, EPOLL_CTL_MOD, fd, &ev);
+    if (rc != 0) {
+      int err = errno;
+      // When a transport closes a socket in a different thread (e.g. during shutdown),
+      // the poller may still try to update its mode. Treat a missing or already-closed
+      // descriptor as a benign race so shutdown can proceed without aborting.
+      if (err == ENOENT || err == EBADF) {
+        return 0;
+      }
+      verify(rc == 0);
+    }
 #endif
     return 0;
   }
