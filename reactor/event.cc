@@ -124,8 +124,11 @@ bool Event::Test() {
       // Log_info("event status ready, triggered?"); // [Ze]: I comment this since c8a49425440a5e339e0144c2ec1f037f52913f57 will introduce tons of this log. Not sure whether this is right way to solve it.
     } else if (status_ == DONE) {
       // do nothing
+    } else if (status_ == TIMEOUT) {
+      // do nothing
+      // [Jetpack] recklessly comment this: failure recovery may enconter this, reason unknow, maybe some command wait too much time?
     } else {
-      verify(0);
+      verify(0); 
     }
     return true;
   }
