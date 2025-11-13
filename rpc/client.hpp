@@ -91,6 +91,15 @@ public:
     // SAFETY: Proper pthread timed wait usage
     void timed_wait(double sec);
 
+    // @unsafe - Thread-safe timed_out check (non-blocking)
+    // SAFETY: Protected by mutex
+    bool timed_out() {
+        Pthread_mutex_lock(&ready_m_);
+        bool t = timed_out_;
+        Pthread_mutex_unlock(&ready_m_);
+        return t;
+    }
+
     Marshal& get_reply() {
         wait();
         return reply_;
