@@ -94,7 +94,7 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
     // This reference count will be decreased when shutting down server
     Py_XINCREF(func);
 
-    int ret = svr->reg(rpc_id, [func](rusty::Box<Request> req, std::weak_ptr<ServerConnection> weak_sconn) {
+    int ret = svr->reg(rpc_id, [func](rusty::Box<Request> req, WeakServerConnection weak_sconn) {
         Marshal* output_m = NULL;
         int error_code = 0;
         {
@@ -116,13 +116,14 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
             }
         }
 
-        auto sconn = weak_sconn.lock();
-        if (sconn) {
-            sconn->begin_reply(*req, error_code);
+        auto sconn_opt = weak_sconn.upgrade();
+        if (sconn_opt.is_some()) {
+            auto sconn = sconn_opt.unwrap();
+            const_cast<ServerConnection&>(*sconn).begin_reply(*req, error_code);
             if (output_m != NULL) {
-                *sconn << *output_m;
+                const_cast<ServerConnection&>(*sconn) << *output_m;
             }
-            sconn->end_reply();
+            const_cast<ServerConnection&>(*sconn).end_reply();
         }
 
         if (output_m != NULL) {
@@ -130,7 +131,7 @@ static PyObject* _pyrpc_server_reg(PyObject* self, PyObject* args) {
         }
 
         // cleanup automatic via rusty::Box
-        // sconn automatically released by shared_ptr
+        // sconn automatically released by Arc
     });
 
     return Py_BuildValue("i", ret);

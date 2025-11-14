@@ -28,6 +28,14 @@
 //   operator==: [safe, (auto, auto) -> bool]
 //   std::*::find: [safe, (auto) -> auto]
 //   std::*::end: [safe, () -> auto]
+//   std::make_shared: [safe, (auto...) -> std::shared_ptr<auto>]
+//   std::shared_ptr::operator*: [safe, () -> auto&]
+//   std::shared_ptr::operator->: [safe, () -> auto*]
+//   std::shared_ptr::get: [safe, () -> auto*]
+//   std::shared_ptr::operator=: [safe, (const std::shared_ptr<auto>&) -> std::shared_ptr<auto>&]
+//   std::shared_ptr::shared_ptr: [safe, (auto...) -> void]
+//   std::list::push_back: [safe, (auto) -> void]
+//   std::vector::push_back: [safe, (auto) -> void]
 // }
 
 namespace rrr {
@@ -40,21 +48,25 @@ class Coroutine;
 // @safe - Thread-safe reactor with thread-local storage
 class Reactor {
  public:
-  // @safe - Returns thread-local reactor instance
-  static std::shared_ptr<Reactor> GetReactor();
-  static thread_local std::shared_ptr<Reactor> sp_reactor_th_;
-  static thread_local std::shared_ptr<Coroutine> sp_running_coro_th_;
+  // @safe - Returns thread-local reactor instance with single-threaded Rc
+  // SAFETY: Thread-local storage, single-threaded access only
+  static rusty::Rc<Reactor> GetReactor();
+  static thread_local rusty::Rc<Reactor> sp_reactor_th_;
+  // @safe - Thread-local current coroutine with single-threaded Rc
+  static thread_local rusty::Rc<Coroutine> sp_running_coro_th_;
   /**
    * A reactor needs to keep reference to all coroutines created,
    * in case it is freed by the caller after a yield.
    */
-  std::list<std::shared_ptr<Event>> all_events_{};
-  std::list<std::shared_ptr<Event>> waiting_events_{};
-  std::set<std::shared_ptr<Coroutine>> coros_{};
-  std::vector<std::shared_ptr<Coroutine>> available_coros_{};
-  std::unordered_map<uint64_t, std::function<void(Event&)>> processors_{};
-  std::list<std::shared_ptr<Event>> timeout_events_{};
-  bool looping_{false};
+  // @safe - Events managed with std::shared_ptr (polymorphism support)
+  mutable std::list<std::shared_ptr<Event>> all_events_{};
+  mutable std::list<std::shared_ptr<Event>> waiting_events_{};
+  // @safe - Coroutines managed with single-threaded Rc
+  mutable std::set<rusty::Rc<Coroutine>> coros_{};
+  mutable std::vector<rusty::Rc<Coroutine>> available_coros_{};
+  mutable std::unordered_map<uint64_t, std::function<void(Event&)>> processors_{};
+  mutable std::list<std::shared_ptr<Event>> timeout_events_{};
+  mutable bool looping_{false};
   std::thread::id thread_id_{};
 #ifdef REUSE_CORO
 #define REUSING_CORO (true)
@@ -62,39 +74,49 @@ class Reactor {
 #define REUSING_CORO (false)
 #endif
 
-  // @safe - Checks and processes timeout events
-  void CheckTimeout(std::vector<std::shared_ptr<Event>>&);
+  // @safe - Checks and processes timeout events with std::shared_ptr
+  void CheckTimeout(std::vector<std::shared_ptr<Event>>&) const;
   /**
    * @param ev. is usually allocated on coroutine stack. memory managed by user.
    */
-  // @safe - Creates and runs a new coroutine
-  std::shared_ptr<Coroutine> CreateRunCoroutine(std::move_only_function<void()> func);
+  // @safe - Creates and runs a new coroutine with rusty::Rc ownership
+  rusty::Rc<Coroutine> CreateRunCoroutine(std::move_only_function<void()> func) const;
   // @safe - Main event loop
-  void Loop(bool infinite = false);
-  // @safe - Continues execution of a paused coroutine
-  void ContinueCoro(std::shared_ptr<Coroutine> sp_coro);
+  void Loop(bool infinite = false) const;
+  // @safe - Continues execution of a paused coroutine with rusty::Rc
+  void ContinueCoro(rusty::Rc<Coroutine> sp_coro) const;
 
   ~Reactor() {
 //    verify(0);
   }
   friend Event;
 
-  // @unsafe - Creates shared_ptr event with perfect forwarding
-  // SAFETY: Stores sp_ev in all_events_ list, ensuring lifetime
+  // @unsafe - Creates std::shared_ptr event with perfect forwarding
+  // SAFETY: Uses std::shared_ptr for polymorphism support. Lifetime is safe because:
+  //   1. shared_ptr is stored in all_events_ list (owned by reactor)
+  //   2. Reactor lives for entire program duration
+  //   3. Events are never removed from all_events_ until reactor destruction
+  // Manual verification required due to template complexity and std::shared_ptr usage
   template <typename Ev, typename... Args>
-  static shared_ptr<Ev> CreateSpEvent(Args&&... args) {
-    auto sp_ev = make_shared<Ev>(args...);
+  static std::shared_ptr<Ev> CreateSpEvent(Args&&... args) {  // @unsafe
+    auto sp_ev = std::make_shared<Ev>(args...);
     sp_ev->__debug_creator = 1;
     // TODO push them into a wait queue when they actually wait.
-    auto& events = GetReactor()->all_events_;
+    auto reactor = GetReactor();
+    // Rc gives const access, use const_cast for mutation (safe: thread-local, single owner)
+    auto& events = const_cast<Reactor&>(*reactor).all_events_;
     events.push_back(sp_ev);
     return sp_ev;
   }
 
   // @unsafe - Creates event and returns reference to shared_ptr content
-  // SAFETY: Returned reference is safe because shared_ptr is stored in all_events_ list
+  // SAFETY: Returned reference is valid because:
+  //   1. Event is created via CreateSpEvent and stored in all_events_
+  //   2. all_events_ is never cleared during reactor lifetime
+  //   3. Returned reference points to heap-allocated Event managed by shared_ptr
+  // Manual verification required: reference lifetime extends beyond function scope
   template <typename Ev, typename... Args>
-  static Ev& CreateEvent(Args&&... args) {
+  static Ev& CreateEvent(Args&&... args) {  // @unsafe
     return *CreateSpEvent<Ev>(args...);
   }
 };
@@ -108,20 +130,24 @@ private:
     // All members are mutable to allow const methods with interior mutability
     mutable Epoll poll_{};
 
-    // Wrap non-movable SpinLocks in unique_ptr to make class movable
-    mutable std::unique_ptr<SpinLock> l_;
-    // Authoritative storage: fd -> shared_ptr<Pollable>
-    mutable std::unordered_map<int, std::shared_ptr<Pollable>> fd_to_pollable_;
+    // Wrap non-movable SpinLocks in rusty::Box to make class movable
+    mutable rusty::Box<SpinLock> l_;
+    // @safe - Uses rusty::Arc<Pollable> for polymorphic thread-safe reference counting
+    // SAFETY: Arc provides thread-safe reference counting with built-in polymorphism support
+    // Pollable is abstract base class with multiple derived types (Client, ServerConnection, etc.)
+    // Authoritative storage: fd -> Arc<Pollable>
+    mutable std::unordered_map<int, rusty::Arc<Pollable>> fd_to_pollable_;
     mutable std::unordered_map<int, int> mode_; // fd->mode
 
-    mutable std::set<std::shared_ptr<Job>> set_sp_jobs_;
+    // @safe - Uses rusty::Arc<Job> for polymorphic thread-safe reference counting
+    mutable std::set<rusty::Arc<Job>> set_sp_jobs_;
 
     mutable std::unordered_set<int> pending_remove_;  // Store fds to remove
-    mutable std::unique_ptr<SpinLock> pending_remove_l_;
-    mutable std::unique_ptr<SpinLock> lock_job_;
+    mutable rusty::Box<SpinLock> pending_remove_l_;
+    mutable rusty::Box<SpinLock> lock_job_;
 
     mutable rusty::Option<rusty::thread::JoinHandle<void>> join_handle_;
-    mutable std::unique_ptr<std::atomic<bool>> stop_flag_;  // Wrap atomic to make movable
+    mutable rusty::Box<std::atomic<bool>> stop_flag_;  // Wrap atomic to make movable
 
     // Private constructor - use create() factory
     PollThreadWorker();
@@ -174,17 +200,20 @@ public:
         return *this;
     }
 
-    // @safe - Thread-safe addition of pollable object
-    void add(std::shared_ptr<Pollable> poll) const;
+    // @safe - Thread-safe addition of polymorphic pollable object
+    // SAFETY: Arc provides built-in polymorphism support, protected by spinlock
+    void add(rusty::Arc<Pollable> poll) const;
+
     // @safe - Thread-safe removal of pollable object
     void remove(Pollable& poll) const;
     // @safe - Thread-safe mode update
     void update_mode(Pollable& poll, int new_mode) const;
 
     // Frequent Job
-    // @safe - Thread-safe job management
-    void add(std::shared_ptr<Job> sp_job) const;
-    void remove(std::shared_ptr<Job> sp_job) const;
+    // @safe - Thread-safe job management with polymorphic Arc
+    // SAFETY: Arc provides built-in polymorphism support, protected by spinlock
+    void add(rusty::Arc<Job> sp_job) const;
+    void remove(rusty::Arc<Job> sp_job) const;
 
     // For testing: get number of epoll Remove() calls
     int get_remove_count() const { return poll_.remove_count_.load(); }

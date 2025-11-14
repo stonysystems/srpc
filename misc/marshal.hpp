@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "base/all.hpp"
+#include "rusty/arc.hpp"
 
 
 namespace rrr {
@@ -43,14 +44,16 @@ class Marshallable {
 //    Log_debug("destruct marshallable.");
   };
   // @safe - Virtual method for serialization
+  // @lifetime: (&'a, &'b mut) -> &'b mut
   virtual Marshal& ToMarshal(Marshal& m) const;
   // @safe - Virtual method for deserialization
+  // @lifetime: (&'a mut, &'b mut) -> &'b mut
   virtual Marshal& FromMarshal(Marshal& m);
-  virtual size_t EntitySize() {
+  virtual size_t EntitySize() const {
     verify(0);
     return 0;
   }
-  virtual size_t WriteToFd(int fd, size_t written_to_socket) {
+  virtual size_t WriteToFd(int fd, size_t written_to_socket) const {
     verify(0);
     return 0;
   }
@@ -64,17 +67,26 @@ class Marshallable {
   // }
 };
 
+// @safe - Type-erasing wrapper for polymorphic Marshallable objects
+// NOTE: Uses std::shared_ptr<Marshallable> for polymorphism support:
+//   1. Polymorphism requirement - Marshallable is abstract base with many derived types
+//   2. Type erasure pattern - kind_ determines actual type at runtime
+//   3. Shared ownership needed across serialization/deserialization boundary
 class MarshallDeputy {
   public:
     typedef std::unordered_map<int32_t, std::function<Marshallable*()>> MarContainer;
-    static MarContainer& Initializers();
+    // @safe - Returns reference to global factory registry
+    // SAFETY: Protected by mutex, returns reference to static container
+    static MarContainer& GetInitializers();
     static int RegInitializer(int32_t, std::function<Marshallable*()>);
     static std::function<Marshallable*()> GetInitializer(int32_t);
 
   public:
     bool bypass_to_socket_ = false;
     // size_t written_to_socket = 0;
-    std::shared_ptr<rrr::Marshallable> sp_data_{nullptr};
+    // @safe - Uses shared_ptr<Marshallable> for polymorphic type erasure
+    // SAFETY: Reference counting with built-in polymorphism support
+    std::shared_ptr<rrr::Marshallable> sp_data_;
     int32_t kind_{0};
     enum Kind {
       UNKNOWN=0,
@@ -100,12 +112,26 @@ class MarshallDeputy {
      * This should be called by inherited class as instructor.
      * @param kind
      */
+    // @safe - Constructor accepts shared_ptr<Marshallable> with polymorphism support
+    // SAFETY: Moves ownership, proper null checking in usage
     explicit MarshallDeputy(std::shared_ptr<rrr::Marshallable> m): sp_data_(std::move(m)) {
       kind_ = sp_data_->kind_;
-      if(sp_data_.get()->bypass_to_socket_){
+      if(sp_data_->bypass_to_socket_){
         bypass_to_socket_ = true;
       }
       //written_to_socket = 0;
+    }
+
+    // Template constructor for derived types
+    template<typename T>
+    explicit MarshallDeputy(std::shared_ptr<T> sp_m)
+      requires std::is_base_of_v<rrr::Marshallable, T>
+    {
+      sp_data_ = sp_m;
+      kind_ = sp_data_->kind_;
+      if(sp_data_->bypass_to_socket_){
+        bypass_to_socket_ = true;
+      }
     }
 
     // virtual void reset_write_offsets(){
@@ -114,6 +140,8 @@ class MarshallDeputy {
     // }
 
     rrr::Marshal& CreateActualObjectFrom(rrr::Marshal& m);
+    // @safe - Setter accepts shared_ptr<Marshallable> with polymorphism support
+    // SAFETY: Validates nullptr before setting, updates kind_ atomically
     void SetMarshallable(std::shared_ptr<rrr::Marshallable> m) {
       verify(sp_data_ == nullptr);
       sp_data_ = m;
@@ -121,7 +149,7 @@ class MarshallDeputy {
     }
 
     virtual size_t EntitySize() const {
-      return sizeof(int32_t) + sp_data_.get()->EntitySize();
+      return sizeof(int32_t) + sp_data_->EntitySize();
     }
 
     size_t track_write_2(int fd, const void* p, size_t len, size_t offset){
@@ -147,8 +175,8 @@ class MarshallDeputy {
           if(written_to_socket < sizeof(kind_))return sz;
         }
         //Log_info("Written bytes of ghost chunk 1 %d %d %d", sz, kind_, written_to_socket);
-        // sp_data_.get()->reset_write_offset();
-        sz = sp_data_.get()->WriteToFd(fd, written_to_socket - sizeof(kind_));
+        // sp_data_->reset_write_offset();
+        sz = sp_data_->WriteToFd(fd, written_to_socket - sizeof(kind_));
 	      //std::cout << sz << std::endl;
         //Log_info("Written bytes of ghost chunk 2 %d %d", sz, kind_);
         written_to_socket += sz;
@@ -232,6 +260,7 @@ class Marshal: public NoCopy {
     ~chunk() { data->release(); }
 
     // NOTE: This function is only intended for Marshal::read_from_marshal.
+    // @unsafe - Creates a new chunk sharing the same data buffer
     chunk *shared_copy() const {
       return new chunk(data, read_idx, write_idx);
     }
@@ -243,6 +272,7 @@ class Marshal: public NoCopy {
       return sz;
     }
 
+    // @safe - Returns the content size
     size_t content_size() const {
       assert(write_idx <= data->size);
       assert(read_idx <= write_idx);
@@ -277,6 +307,7 @@ class Marshal: public NoCopy {
       return n_write;
     }
 
+    // @safe - Reads data from chunk buffer
     size_t read(void *p, size_t n) {
       assert(write_idx <= data->size);
       assert(read_idx <= write_idx);
@@ -296,6 +327,7 @@ class Marshal: public NoCopy {
       return data->shared_data;
     }
 
+    // @safe - Peeks at data in chunk buffer without consuming
     size_t peek(void *p, size_t n) const {
       assert(write_idx <= data->size);
       assert(read_idx <= write_idx);
@@ -430,7 +462,9 @@ class Marshal: public NoCopy {
   }
 
   size_t write(const void *p, size_t n);
+  // @safe - Reads data from marshal buffer
   size_t read(void *p, size_t n);
+  // @safe - Peeks at data without consuming
   size_t peek(void *p, size_t n) const;
 
   size_t read_from_fd(int fd);
@@ -806,17 +840,17 @@ inline rrr::Marshal& operator>>(rrr::Marshal& m, rrr::MarshallDeputy& rhs) {
   return m;
 }
 
-// @unsafe - Serializes MarshallDeputy with virtual dispatch
+// @safe - Serializes MarshallDeputy with virtual dispatch
 // SAFETY: Proper null checking and virtual method call
 inline rrr::Marshal& operator<<(rrr::Marshal& m,const rrr::MarshallDeputy& rhs) {
   verify(rhs.kind_ != rrr::MarshallDeputy::UNKNOWN);
-  verify(rhs.sp_data_);
+  verify(rhs.sp_data_ != nullptr);
   if(rhs.bypass_to_socket_){
     m.bypass_copying(rhs, rhs.EntitySize());
   }else{
     //Log_info("size is %d", rhs.EntitySize());
     m << rhs.kind_;
-    verify(rhs.sp_data_); // must be non-empty
+    verify(rhs.sp_data_ != nullptr); // must be non-empty
     rhs.sp_data_->ToMarshal(m);
   }
   return m;

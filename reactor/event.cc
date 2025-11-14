@@ -56,8 +56,11 @@ void Event::Wait(uint64_t timeout) {
     // for now only one coroutine can wait on an event.
     auto sp_coro = Coroutine::CurrentCoroutine();
     verify(sp_coro);
-    auto& waiting_events =
-          Reactor::GetReactor()->waiting_events_;  // Timeout???
+
+    // Rc gives const access, use const_cast for mutation (safe: thread-local)
+    auto reactor_rc = Reactor::GetReactor();
+    auto& reactor = const_cast<Reactor&>(*reactor_rc);
+    auto& waiting_events = reactor.waiting_events_;
     waiting_events.push_back(shared_from_this());
 
     if (timeout > 0) {
@@ -65,12 +68,12 @@ void Event::Wait(uint64_t timeout) {
       wakeup_time_ = now + timeout;
       //Log_info("WAITING: %p", shared_from_this());
       // Log_info("wake up %lld, now %lld", wakeup_time_, now);
-      auto& timeout_events = Reactor::GetReactor()->timeout_events_;
+      auto& timeout_events = reactor.timeout_events_;
       timeout_events.push_back(shared_from_this());
     }
     // TODO optimize timeout_events, sort by wakeup time.
 //      auto it = timeout_events.end();
-//      timeout_events.push_back(shared_from_this());
+//      timeout_events.push_back(rc_this_event);
 //      while (it != events.begin()) {
 //        it--;
 //        auto& it_event = *it;
@@ -79,7 +82,7 @@ void Event::Wait(uint64_t timeout) {
 //          break;
 //        }
 //      }
-//      events.insert(it, shared_from_this());
+//      events.insert(it, rc_this_event);
     wp_coro_ = sp_coro;
     status_ = WAIT;
     sp_coro->Yield();

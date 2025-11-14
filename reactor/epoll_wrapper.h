@@ -31,9 +31,9 @@ public:
     };
 
     // @safe - Returns file descriptor
-    virtual int fd() = 0;
+    virtual int fd() const = 0;
     // @safe - Returns current poll mode (READ/WRITE flags)
-    virtual int poll_mode() = 0;
+    virtual int poll_mode() const = 0;
     // @unsafe - Handles read events (implementation-specific)
     virtual void handle_read() = 0;
     // @unsafe - Handles write events (implementation-specific)
@@ -82,10 +82,10 @@ class Epoll {
   Epoll(const Epoll&) = delete;
   Epoll& operator=(const Epoll&) = delete;
 
-  // @unsafe - Adds file descriptor to epoll/kqueue
-  // SAFETY: Uses system calls with proper error checking
+  // @safe - Adds file descriptor to epoll/kqueue
+  // SAFETY: Uses system calls with proper error checking, Arc for polymorphism
   // userdata is raw Pollable* for lookup
-  int Add(std::shared_ptr<Pollable> poll, void* userdata) {
+  int Add(const rusty::Arc<Pollable>& poll, void* userdata) {
     auto poll_mode = poll->poll_mode();
     auto fd = poll->fd();
 #ifdef USE_KQUEUE
@@ -122,9 +122,10 @@ class Epoll {
     return 0;
   }
 
-  // @unsafe - Removes file descriptor from epoll/kqueue
-  // SAFETY: Uses system calls, ignores errors for already removed fds
-  int Remove(std::shared_ptr<Pollable> poll) {
+
+  // @safe - Removes file descriptor from epoll/kqueue
+  // SAFETY: Uses system calls, ignores errors for already removed fds, Arc for polymorphism
+  int Remove(const rusty::Arc<Pollable>& poll) {
     remove_count_++;  // Track Remove() calls for testing
     auto fd = poll->fd();
 #ifdef USE_KQUEUE
@@ -148,6 +149,7 @@ class Epoll {
 #endif
     return 0;
   }
+
 
   // @unsafe - Updates poll mode for file descriptor
   // SAFETY: Uses system calls with proper event flag handling

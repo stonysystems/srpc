@@ -51,14 +51,14 @@ def emit_service_and_proxy(service, f, rpc_table):
             f.writeln("return ret;")
         f.writeln("}")
         f.writeln("// these RPC handler functions need to be implemented by user")
-        f.writeln("// for 'raw' handlers, req is rusty::Box (auto-cleaned); weak_ptr requires lock() before use")
+        f.writeln("// for 'raw' handlers, req is rusty::Box (auto-cleaned); weak_sconn requires lock() before use")
         for func in service.functions:
             if service.abstract or func.abstract:
                 postfix = " = 0"
             else:
                 postfix = ""
             if func.attr == "raw":
-                f.writeln("virtual void %s(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn)%s;" % (func.name, postfix))
+                f.writeln("virtual void %s(rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn)%s;" % (func.name, postfix))
             else:
                 func_args = []
                 for in_arg in func.input:
@@ -79,7 +79,7 @@ def emit_service_and_proxy(service, f, rpc_table):
         for func in service.functions:
             if func.attr == "raw":
                 continue
-            f.writeln("void __%s__wrapper__(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {" % func.name)
+            f.writeln("void __%s__wrapper__(rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {" % func.name)
             with f.indent():
                 if func.attr == "defer":
                     invoke_with = []
@@ -96,12 +96,13 @@ def emit_service_and_proxy(service, f, rpc_table):
                         out_counter += 1
                     f.writeln("auto __marshal_reply__ = [=] {");
                     with f.indent():
-                        f.writeln("auto sconn = weak_sconn.lock();")
-                        f.writeln("if (sconn) {")
+                        f.writeln("auto sconn_opt = weak_sconn.upgrade();")
+                        f.writeln("if (sconn_opt.is_some()) {")
                         with f.indent():
+                            f.writeln("auto sconn = sconn_opt.unwrap();")
                             out_counter = 0
                             for out_arg in func.output:
-                                f.writeln("*sconn << *out_%d;" % out_counter)
+                                f.writeln("const_cast<rrr::ServerConnection&>(*sconn) << *out_%d;" % out_counter)
                                 out_counter += 1
                         f.writeln("}")
                     f.writeln("};");
@@ -134,13 +135,14 @@ def emit_service_and_proxy(service, f, rpc_table):
                         invoke_with += "&out_%d" % out_counter,
                         out_counter += 1
                     f.writeln("this->%s(%s);" % (func.name, ", ".join(invoke_with)))
-                    f.writeln("auto sconn = weak_sconn.lock();")
-                    f.writeln("if (sconn) {")
+                    f.writeln("auto sconn_opt = weak_sconn.upgrade();")
+                    f.writeln("if (sconn_opt.is_some()) {")
                     with f.indent():
-                        f.writeln("sconn->begin_reply(*req);")
+                        f.writeln("auto sconn = sconn_opt.unwrap();")
+                        f.writeln("const_cast<rrr::ServerConnection&>(*sconn).begin_reply(*req);")
                         for i in range(out_counter):
-                            f.writeln("*sconn << out_%d;" % i)
-                        f.writeln("sconn->end_reply();")
+                            f.writeln("const_cast<rrr::ServerConnection&>(*sconn) << out_%d;" % i)
+                        f.writeln("const_cast<rrr::ServerConnection&>(*sconn).end_reply();")
                     f.writeln("}")
                     f.writeln("// req automatically cleaned up by rusty::Box")
             f.writeln("}")

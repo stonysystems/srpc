@@ -10,8 +10,8 @@ namespace rlog {
 class RLogService: public rrr::Service {
 public:
     enum {
-        LOG = 0x5c3c7d74,
-        AGGREGATE_QPS = 0x4d46f510,
+        LOG = 0x3d1e2eb1,
+        AGGREGATE_QPS = 0x4ad318da,
     };
     int __reg_to__(rrr::Server* svr) {
         int ret = 0;
@@ -28,11 +28,11 @@ public:
         return ret;
     }
     // these RPC handler functions need to be implemented by user
-    // for 'raw' handlers, req is rusty::Box (auto-cleaned); weak_ptr requires lock() before use
+    // for 'raw' handlers, req is rusty::Box (auto-cleaned); weak_sconn requires lock() before use
     virtual void log(const rrr::i32& level, const std::string& source, const rrr::i64& msg_id, const std::string& message) = 0;
     virtual void aggregate_qps(const std::string& metric_name, const rrr::i32& increment) = 0;
 private:
-    void __log__wrapper__(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {
+    void __log__wrapper__(rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {
         rrr::i32 in_0;
         req->m >> in_0;
         std::string in_1;
@@ -42,23 +42,25 @@ private:
         std::string in_3;
         req->m >> in_3;
         this->log(in_0, in_1, in_2, in_3);
-        auto sconn = weak_sconn.lock();
-        if (sconn) {
-            sconn->begin_reply(*req);
-            sconn->end_reply();
+        auto sconn_opt = weak_sconn.upgrade();
+        if (sconn_opt.is_some()) {
+            auto sconn = sconn_opt.unwrap();
+            const_cast<rrr::ServerConnection&>(*sconn).begin_reply(*req);
+            const_cast<rrr::ServerConnection&>(*sconn).end_reply();
         }
         // req automatically cleaned up by rusty::Box
     }
-    void __aggregate_qps__wrapper__(rusty::Box<rrr::Request> req, std::weak_ptr<rrr::ServerConnection> weak_sconn) {
+    void __aggregate_qps__wrapper__(rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {
         std::string in_0;
         req->m >> in_0;
         rrr::i32 in_1;
         req->m >> in_1;
         this->aggregate_qps(in_0, in_1);
-        auto sconn = weak_sconn.lock();
-        if (sconn) {
-            sconn->begin_reply(*req);
-            sconn->end_reply();
+        auto sconn_opt = weak_sconn.upgrade();
+        if (sconn_opt.is_some()) {
+            auto sconn = sconn_opt.unwrap();
+            const_cast<rrr::ServerConnection&>(*sconn).begin_reply(*req);
+            const_cast<rrr::ServerConnection&>(*sconn).end_reply();
         }
         // req automatically cleaned up by rusty::Box
     }

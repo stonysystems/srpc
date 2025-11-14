@@ -94,6 +94,7 @@ static void stat_server_rpc_counting(i32 rpc_id) {
 #endif // RPC_STATISTICS
 
 
+// Static member definitions for missing RPC ID tracking
 std::unordered_set<i32> ServerConnection::rpc_id_missing_s;
 SpinLock ServerConnection::rpc_id_missing_l_s;
 
@@ -243,13 +244,15 @@ void ServerConnection::handle_read() {
                 // Move rusty::Box to handler, transferring ownership
                 it->second(std::move(req), weak_this);
 
-                // Lock weak_ptr to access block_read_in
-                auto sconn = weak_this.lock();
-                if (sconn) {
-                    sconn->block_read_in.reset();
+                // Upgrade weak reference to access block_read_in
+                auto sconn_opt = weak_this.upgrade();
+                if (sconn_opt.is_some()) {
+                    auto sconn = sconn_opt.unwrap();
+                    const_cast<ServerConnection&>(*sconn).block_read_in.reset();
                 }
             });
         } else {
+            // Track missing RPC IDs and suppress duplicate warnings
             rpc_id_missing_l_s.lock();
             bool surpress_warning = false;
             if (rpc_id_missing_s.find(rpc_id) == rpc_id_missing_s.end()) {
@@ -294,11 +297,11 @@ void ServerConnection::close() {
     if (status_ == CONNECTED) {
         server_->sconns_l_.lock();
 
-        // Find our shared_ptr in server's connection set
-        std::shared_ptr<ServerConnection> self;
+        // Find our Arc in server's connection set
+        rusty::Arc<ServerConnection> self;
         for (auto it = server_->sconns_.begin(); it != server_->sconns_.end(); ++it) {
             if (it->get() == this) {
-                self = *it;
+                self = it->clone();
                 server_->sconns_.erase(it);
                 break;
             }
@@ -306,7 +309,9 @@ void ServerConnection::close() {
         server_->sconns_l_.unlock();
 
         if (self) {
-            server_->poll_thread_worker_->remove(*self);
+            // Arc gives const access, need to cast to call remove()
+            auto& conn = const_cast<ServerConnection&>(*self);
+            server_->poll_thread_worker_->remove(conn);
             status_ = CLOSED;
             ::close(socket_);
             Log_debug("server@%s close ServerConnection at fd=%d", server_->addr_.c_str(), socket_);
@@ -315,7 +320,7 @@ void ServerConnection::close() {
 }
 
 // @safe - Returns poll mode based on output buffer
-int ServerConnection::poll_mode() {
+int ServerConnection::poll_mode() const {
     int mode = Pollable::READ;
     out_l_.lock();
     if (!out_.empty()) {
@@ -358,32 +363,34 @@ Server::~Server() {
     }
 
     sconns_l_.lock();
-    vector<std::shared_ptr<ServerConnection>> sconns;
+    vector<rusty::Arc<ServerConnection>> sconns;
     sconns.reserve(sconns_.size());
     for (auto& sconn : sconns_) {
-        sconns.push_back(sconn);  // Copy shared_ptr from set
+        sconns.push_back(sconn.clone());  // Clone Arc from set
     }
     // NOTE: do NOT clear sconns_ here, because when running the following
-    // sp_conn->close(), the ServerConnection object will check the sconns_ to
+    // arc_conn->close(), the ServerConnection object will check the sconns_ to
     // ensure it still resides in sconns_
     sconns_l_.unlock();
 
     for (auto& it: sconns) {
-        it->close();
-        poll_thread_worker_->remove(*it);
+        auto& conn = const_cast<ServerConnection&>(*it);
+        conn.close();
+        poll_thread_worker_->remove(conn);
     }
 
     if (sp_server_listener_) {
-        sp_server_listener_->close();
-        poll_thread_worker_->remove(*sp_server_listener_);
-        sp_server_listener_.reset();
+        auto& listener = const_cast<ServerListener&>(*sp_server_listener_);
+        listener.close();
+        poll_thread_worker_->remove(listener);
+        sp_server_listener_ = rusty::Arc<ServerListener>();  // Reset to empty Arc
     }
 
-    // Now clear sconns_ and the local copy to release shared_ptrs
+    // Now clear sconns_ and the local copy to release Arcs
     sconns_l_.lock();
     sconns_.clear();
     sconns_l_.unlock();
-    sconns.clear();  // Release local shared_ptrs
+    sconns.clear();  // Release local Arcs
 
     // make sure all open connections are closed
     int alive_connection_count = -1;
@@ -462,9 +469,9 @@ void Server::server_loop(struct addrinfo* svr_addr) {
             setsockopt(clnt_socket, SOL_SOCKET, SO_RCVBUF, &buf_len, sizeof(buf_len));
             setsockopt(clnt_socket, SOL_SOCKET, SO_SNDBUF, &buf_len, sizeof(buf_len));
             sconns_l_.lock();
-            auto sconn = std::make_shared<ServerConnection>(this, clnt_socket);
-            sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
-            sconns_.insert(sconn);  // Insert shared_ptr into set
+            auto sconn = rusty::Arc<ServerConnection>::make_in_place(this, clnt_socket);
+            const_cast<ServerConnection&>(*sconn).weak_self_ = sconn;  // Initialize weak to self
+            sconns_.insert(sconn.clone());  // Insert Arc into set
             sconns_l_.unlock();
             poll_thread_worker_->add(sconn);
         }
@@ -495,10 +502,10 @@ void ServerListener::handle_read() {
       Log_debug("server@%s got new client, fd=%d", this->addr_.c_str(), clnt_socket);
       verify(set_nonblocking(clnt_socket, true) == 0);
 
-      auto sconn = std::make_shared<ServerConnection>(server_, clnt_socket);
-      sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
+      auto sconn = rusty::Arc<ServerConnection>::make_in_place(server_, clnt_socket);
+      const_cast<ServerConnection&>(*sconn).weak_self_ = sconn;  // Initialize weak to self
       server_->sconns_l_.lock();
-      server_->sconns_.insert(sconn);  // Insert shared_ptr into set
+      server_->sconns_.insert(sconn.clone());  // Insert Arc into set
       server_->sconns_l_.unlock();
       server_->poll_thread_worker_->add(sconn);
     } else {
@@ -638,7 +645,7 @@ int Server::start(const char* bind_addr) {
     return -1;
   }
   string addr(bind_addr, strlen(bind_addr));
-  sp_server_listener_ = std::make_shared<ServerListener>(this, addr);
+  sp_server_listener_ = rusty::Arc<ServerListener>::make_in_place(this, addr);
   poll_thread_worker_->add(sp_server_listener_);
   return 0;
 }

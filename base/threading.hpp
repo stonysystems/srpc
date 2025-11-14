@@ -1,5 +1,7 @@
 #pragma once
 
+#include <rusty/box.hpp>
+
 #include <list>
 #include <queue>
 #include <functional>
@@ -73,11 +75,17 @@ class SpinLock: public Lockable {
 public:
     // @safe - Initializes to unlocked state
     SpinLock(): locked_(false) { }
-    
+
+    // Delete copy and move constructors (atomic is not copyable)
+    SpinLock(const SpinLock&) = delete;
+    SpinLock& operator=(const SpinLock&) = delete;
+    SpinLock(SpinLock&&) = delete;
+    SpinLock& operator=(SpinLock&&) = delete;
+
     // @unsafe - Uses address-of operator for nanosleep call
     // SAFETY: Only takes address of stack-allocated timespec which remains valid
     void lock();
-    
+
     // @unsafe - Calls std::atomic::store (external unsafe)
     // SAFETY: Thread-safe atomic store operation
     void unlock() {
@@ -250,19 +258,19 @@ private:
 
 
 /**
- * Thread safe queue using unique_ptr for automatic memory management.
+ * Thread safe queue using rusty::Box for automatic memory management.
  * @unsafe - Uses raw pthread primitives for performance
  * SAFETY: All public methods are thread-safe through mutex protection
  */
 template<class T>
 class Queue: public NoCopy {
-    std::unique_ptr<std::list<T>> q_;
+    rusty::Box<std::list<T>> q_;
     pthread_cond_t not_empty_;
     pthread_mutex_t m_;
 
 public:
     // @unsafe - Initializes pthread primitives
-    Queue(): q_(std::make_unique<std::list<T>>()), not_empty_(), m_() {
+    Queue(): q_(rusty::Box<std::list<T>>::make(std::list<T>())), not_empty_(), m_() {
         Pthread_mutex_init(&m_, nullptr);
         Pthread_cond_init(&not_empty_, nullptr);
     }
@@ -271,7 +279,7 @@ public:
     ~Queue() {
         Pthread_cond_destroy(&not_empty_);
         Pthread_mutex_destroy(&m_);
-        // q_ automatically deleted by unique_ptr
+        // q_ automatically deleted by rusty::Box
     }
 
     // @unsafe - Thread-safe push with mutex protection

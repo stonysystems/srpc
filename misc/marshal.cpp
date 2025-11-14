@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include "marshal.hpp"
+#include <rusty/rc.hpp>
 
 using namespace std;
 
@@ -319,6 +320,7 @@ size_t Marshal::read_reuse_chnk(Marshal& m, size_t n){
         // NOTE: The copied chunk is shared by 2 Marshal objects. Be careful
         //       that only one Marshal should be able to write to it! For the
         //       given 2 use cases, it works.
+        // @unsafe
         chunk* chnk = m.head_->shared_copy();
         if (n_fetch + chnk->content_size() > n) {
             // only fetch enough bytes we need
@@ -354,6 +356,7 @@ size_t Marshal::read_from_marshal(Marshal& m, size_t n) {
             // NOTE: The copied chunk is shared by 2 Marshal objects. Be careful
             //       that only one Marshal should be able to write to it! For the
             //       given 2 use cases, it works.
+            // @unsafe
             chunk* chnk = m.head_->shared_copy();
             if (n_fetch + chnk->content_size() > n) {
                 // only fetch enough bytes we need
@@ -462,40 +465,48 @@ Marshal::bookmark* Marshal::set_bookmark(size_t n) {
 
 std::mutex md_mutex_g;
 std::mutex mdi_mutex_g;
-std::shared_ptr<MarshallDeputy::MarContainer> mc_{nullptr};
-thread_local std::shared_ptr<MarshallDeputy::MarContainer> mc_th_{nullptr};
+// Note: mc_ removed - now using Construct On First Use idiom in GetInitializers()
+// @safe - Thread-local factory registry copy
+// SAFETY: Each thread has its own copy, no locking needed for access
+thread_local MarshallDeputy::MarContainer mc_th_;
+thread_local bool mc_th_initialized_ = false;
 
 int MarshallDeputy::RegInitializer(int32_t cmd_type,
-                                   function<Marshallable * ()> init) {
+                                   function<Marshallable*()> init) {
   md_mutex_g.lock();
-  auto pair = Initializers().insert(std::make_pair(cmd_type, init));
+  auto& container = GetInitializers();
+  auto pair = container.insert(std::make_pair(cmd_type, init));
   verify(pair.second);
   md_mutex_g.unlock();
   return 0;
 }
 
-function<Marshallable * ()>
+function<Marshallable*()>
 MarshallDeputy::GetInitializer(int32_t type) {
-  if (!mc_th_) {
-    mc_th_ = std::make_shared<MarshallDeputy::MarContainer>();
+  if (!mc_th_initialized_) {
     md_mutex_g.lock();
-    *mc_th_ = *mc_;
+    auto& global_container = GetInitializers();
+    // Copy the container into thread-local storage
+    mc_th_ = global_container;
+    mc_th_initialized_ = true;
     md_mutex_g.unlock();
   }
-  auto it = mc_th_->find(type);
-  verify(it != mc_th_->end());
+  auto it = mc_th_.find(type);
+  verify(it != mc_th_.end());
   auto f = it->second;
   return f;
 }
 
+// @safe - Returns reference to global factory registry
+// SAFETY: Protected by mutex, initializes on first access
+// Uses Construct On First Use idiom to avoid static initialization order fiasco
 MarshallDeputy::MarContainer&
-MarshallDeputy::Initializers() {
-  mdi_mutex_g.lock();
-  if (!mc_)
-    mc_ = std::make_shared<MarshallDeputy::MarContainer>();
-  mdi_mutex_g.unlock();
-  return *mc_;
-};
+MarshallDeputy::GetInitializers() {
+  // Note: Caller must hold md_mutex_g
+  // Local static is guaranteed to be initialized on first access
+  static MarshallDeputy::MarContainer mc_;
+  return mc_;
+}
 
 Marshal &Marshallable::FromMarshal(Marshal &m) {
   verify(0);
@@ -511,11 +522,18 @@ Marshal& MarshallDeputy::CreateActualObjectFrom(Marshal& m) {
     default:
       auto func = GetInitializer(kind_);
       verify(func);
-      sp_data_.reset(func());
+      // Call initializer function which returns raw Marshallable*
+      Marshallable* raw_ptr = func();
+      verify(raw_ptr);
+      // Wrap in shared_ptr to take ownership
+      sp_data_ = std::shared_ptr<Marshallable>(raw_ptr);
       break;
   }
-  verify(sp_data_);
-  sp_data_->FromMarshal(m);
+  verify(sp_data_ != nullptr);
+  // Use get() to get pointer access
+  Marshallable* mut_data = sp_data_.get();
+  verify(mut_data);  // Should succeed - we just created it
+  mut_data->FromMarshal(m);
   verify(sp_data_->kind_);
   verify(kind_);
   verify(sp_data_->kind_ == kind_);

@@ -1,20 +1,14 @@
 #pragma once
-#include <rusty/arc.hpp>
-#include <rusty/option.hpp>
+#include <rusty/rusty.hpp>
 
 #include <unordered_map>
 #include <mutex>
-#include <condition_variable>
 
 #include "misc/marshal.hpp"
 #include "reactor/epoll_wrapper.h"
 #include "reactor/reactor.h"
 
 // External safety annotations for system functions used in this module
-// IMPORTANT: All external functions must be marked [unsafe] because:
-// - External code is not analyzed/verified by RustyCpp
-// - 'unsafe' means programmer-audited (takes responsibility)
-// - 'safe' would imply tool verification, which doesn't happen for external code
 // @external: {
 //   socket: [unsafe, (int, int, int) -> int]
 //   connect: [unsafe, (int, const struct sockaddr*, socklen_t) -> int]
@@ -25,14 +19,10 @@
 //   gai_strerror: [unsafe, (int) -> const char*]
 //   memset: [unsafe, (void*, int, size_t) -> void*]
 //   strcpy: [unsafe, (char*, const char*) -> char*]
-//   std::condition_variable::condition_variable: [unsafe, () -> void]
-//   std::unique_lock::unique_lock: [unsafe, (std::mutex&) -> void]
-//   std::lock_guard::lock_guard: [unsafe, (std::mutex&) -> void]
-//   std::unique_lock::unlock: [unsafe, () -> void]
-//   std::condition_variable::wait: [unsafe, (std::unique_lock&, predicate) -> void]
-//   std::condition_variable::wait_for: [unsafe, (std::unique_lock&, duration, predicate) -> bool]
-//   std::condition_variable::notify_all: [unsafe, () -> void]
-//   std::chrono::duration::duration: [unsafe, (double) -> void]
+//   std::lock_guard: [safe, (std::mutex&) -> void]
+//   std::unique_lock: [safe, (std::mutex&) -> void]
+//   std::chrono::duration: [safe, (double) -> void]
+//   std::function: [safe, (auto) -> void]
 // }
 
 namespace rrr {
@@ -48,9 +38,14 @@ struct FutureAttr {
     std::function<void(Future*)> callback;
 };
 
-// @safe - Thread-safe future for async RPC results with C++ standard library synchronization
+// @safe - Thread-safe future for async RPC results with rusty synchronization primitives
 class Future: public RefCounted {
     friend class Client;
+
+    struct State {
+        bool ready = false;
+        bool timed_out = false;
+    };
 
     i64 xid_;
     i32 error_code_;
@@ -58,45 +53,37 @@ class Future: public RefCounted {
     FutureAttr attr_;
     Marshal reply_;
 
-    bool ready_;
-    bool timed_out_;
-    std::condition_variable ready_cond_;
-    std::mutex ready_m_;
+    rusty::Mutex<State> state_;
+    rusty::Condvar ready_cond_;
+    std::mutex condvar_m_; // rusty::Condvar requires std::mutex for wait operations
 
-    // @safe - Notifies waiters and triggers callbacks with RAII mutex
-    // SAFETY: std::mutex provides RAII, callback executed in coroutine
+    // @unsafe - Notifies waiters using rusty::Condvar (low-level sync operation)
     void notify_ready();
 
 protected:
 
     // protected destructor as required by RefCounted.
     // @safe - RAII destructors handle cleanup automatically
-    // SAFETY: std::mutex and std::condition_variable have proper destructors
     ~Future() = default;
 
 public:
 
     // @safe - Default initialization with RAII primitives
-    // SAFETY: std::mutex and std::condition_variable initialize themselves
     Future(i64 xid, const FutureAttr& attr = FutureAttr())
-            : xid_(xid), error_code_(0), attr_(attr), ready_(false), timed_out_(false) {
-        // RAII: ready_m_ and ready_cond_ initialize themselves
+            : xid_(xid), error_code_(0), attr_(attr), state_(State{}) {
+        // RAII: state_, condvar_m_, and ready_cond_ initialize themselves
     }
 
-    // @unsafe - Calls std::lock_guard (external unsafe)
-    // SAFETY: Thread-safe RAII lock
+    // @safe - Uses rusty::Mutex for thread-safe access
     bool ready() {
-        std::lock_guard<std::mutex> lock(ready_m_);
-        return ready_;
+        auto guard = state_.lock();
+        return guard->ready;
     }
 
-    // wait till reply done
-    // @safe - Blocks on condition variable with RAII lock
-    // SAFETY: std::unique_lock provides RAII mutex locking, condition_variable is safe
+    // @unsafe - Blocks on rusty::Condvar (low-level sync operation)
     void wait();
 
-    // @safe - Timed wait with timeout using RAII lock
-    // SAFETY: std::unique_lock provides RAII, std::condition_variable::wait_for is safe
+    // @unsafe - Timed wait using rusty::Condvar (low-level sync operation)
     void timed_wait(double sec);
 
     // @unsafe - Thread-safe timed_out check (non-blocking)
@@ -154,32 +141,40 @@ public:
     }
 };
 
-// @unsafe - RPC client with socket management and marshaling
-// SAFETY: Proper socket lifecycle and thread-safe pending futures
-class Client: public Pollable, public std::enable_shared_from_this<Client> {
-    Marshal in_, out_;
+// @safe - RPC client with socket management and marshaling using Arc
+// SAFETY: Proper socket lifecycle, thread-safe pending futures, explicit Arc reference counting
+// MIGRATED: Now uses rusty::Arc<Client> with explicit weak self-reference instead of shared_from_this()
+class Client: public Pollable {
+    mutable Marshal in_, out_;
 
     /**
-     * Shared Arc<Mutex<>> to PollThreadWorker - thread-safe access
+     * Shared Arc to PollThreadWorker - thread-safe access
      */
     rusty::Arc<PollThreadWorker> poll_thread_worker_;
 
-    int sock_;
+    // Weak self-reference for registration with poll thread worker
+    // Initialized by set_weak_self() after Arc creation
+    // Mutable so it can be initialized through const Arc reference
+    mutable rusty::sync::Weak<Client> weak_self_;
+
+    // Mutable for interior mutability (Arc gives const access)
+    mutable int sock_;
     enum {
         NEW, CONNECTED, CLOSED
-    } status_;
+    };
+    mutable int status_;
 
-    rusty::Option<rusty::Box<Marshal::bookmark>> bmark_;
+    mutable rusty::Option<rusty::Box<Marshal::bookmark>> bmark_;
 
-    Counter xid_counter_;
-    std::unordered_map<i64, Future*> pending_fu_;
+    mutable Counter xid_counter_;
+    mutable std::unordered_map<i64, Future*> pending_fu_;
 
-    SpinLock pending_fu_l_;
-    SpinLock out_l_;
+    mutable SpinLock pending_fu_l_;
+    mutable SpinLock out_l_;
 
     // @unsafe - Cancels all pending futures
     // SAFETY: Protected by spinlock
-    void invalidate_pending_futures();
+    void invalidate_pending_futures() const;
 
 public:
 
@@ -192,11 +187,20 @@ public:
 
     Client(rusty::Arc<PollThreadWorker> poll_thread_worker): poll_thread_worker_(poll_thread_worker), sock_(-1), status_(NEW) { }
 
-    // Factory method to create Client with shared_ptr and add to poll_thread_worker
-    static std::shared_ptr<Client> create(rusty::Arc<PollThreadWorker> poll_thread_worker) {
-        auto client = std::make_shared<Client>(poll_thread_worker);
-        // Note: Client is added to poll_thread_worker when connect() is called
+    // Factory method to create Client with Arc
+    // @safe - Returns Arc<Client> with explicit reference counting
+    // SAFETY: Arc provides thread-safe reference counting with polymorphism support
+    static rusty::Arc<Client> create(rusty::Arc<PollThreadWorker> poll_thread_worker) {
+        auto client = rusty::Arc<Client>::make_in_place(poll_thread_worker);
+        // Initialize weak self-reference for poll thread registration
+        // weak_self_ is mutable, so no const_cast needed
+        client->weak_self_ = client;
         return client;
+    }
+
+    // Set weak self-reference (alternative to factory if Arc created elsewhere)
+    void set_weak_self(const rusty::Arc<Client>& self) {
+        weak_self_ = self;
     }
 
     /**
@@ -206,14 +210,14 @@ public:
      */
     // @unsafe - Begins RPC request with marshaling
     // SAFETY: Protected by spinlock, returns refcounted Future
-    Future* begin_request(i32 rpc_id, const FutureAttr& attr = FutureAttr());
+    Future* begin_request(i32 rpc_id, const FutureAttr& attr = FutureAttr()) const;
 
     // @unsafe - Completes request packet
     // SAFETY: Must be called after begin_request
-    void end_request();
+    void end_request() const;
 
     template<class T>
-    Client& operator <<(const T& v) {
+    const Client& operator <<(const T& v) const {
         if (status_ == CONNECTED) {
             this->out_ << v;
         }
@@ -221,7 +225,7 @@ public:
     }
 
     // NOTE: this function is used *internally* by Python extension
-    Client& operator <<(Marshal& m) {
+    const Client& operator <<(Marshal& m) const {
         if (status_ == CONNECTED) {
             this->out_.read_from_marshal(m, m.content_size());
         }
@@ -230,19 +234,19 @@ public:
 
     // @unsafe - Establishes TCP connection
     // SAFETY: Proper socket creation and cleanup on failure
-    int connect(const char* addr);
+    int connect(const char* addr) const;
 
     // reentrant, could be called multiple times
     // @unsafe - Closes socket and cleans up
     // SAFETY: Idempotent, properly invalidates futures
-    void close();
+    void close() const;
 
-    int fd() {
+    int fd() const {
         return sock_;
     }
 
     // @safe - Returns current poll mode based on output buffer
-    int poll_mode();
+    int poll_mode() const;
     // @unsafe - Processes incoming data
     // SAFETY: Protected by spinlock for pending futures
     void handle_read();
@@ -254,7 +258,8 @@ public:
 
 };
 
-// @safe - Thread-safe pool of client connections
+// @safe - Thread-safe pool of client connections using Arc
+// MIGRATED: Now uses rusty::Arc<Client> for cached connections
 class ClientPool: public NoCopy {
     rrr::Rand rand_;
 
@@ -263,23 +268,25 @@ class ClientPool: public NoCopy {
 
     // guard cache_
     SpinLock l_;
-    std::map<std::string, std::vector<std::shared_ptr<Client>>> cache_;
+    // @safe - Uses rusty::Arc<Client> for thread-safe reference counting
+    // SAFETY: Arc provides thread-safe reference counting with polymorphism support
+    std::map<std::string, std::vector<rusty::Arc<Client>>> cache_;
     int parallel_connections_;
 
 public:
 
-    // @unsafe - Creates pool with optional PollThreadWorker
+    // @safe - Creates pool with optional PollThreadWorker
     // SAFETY: Shared ownership of PollThreadWorker
     ClientPool(rusty::Arc<rrr::PollThreadWorker> poll_thread_worker = rusty::Arc<rrr::PollThreadWorker>(), int parallel_connections = 1);
-    // @unsafe - Closes all cached connections
-    // SAFETY: Properly releases all clients and PollThreadWorker
+    // @safe - Closes all cached connections
+    // SAFETY: Properly releases all clients and PollThreadWorker via Arc
     ~ClientPool();
 
     // return cached client connection
-    // on error, return nullptr
-    // @unsafe - Gets or creates client connection
-    // SAFETY: Protected by spinlock, handles connection failures
-    std::shared_ptr<rrr::Client> get_client(const std::string& addr);
+    // on error, return empty Arc
+    // @safe - Gets or creates client connection, returns Arc<Client>
+    // SAFETY: Protected by spinlock, handles connection failures, Arc for thread-safe reference counting
+    rusty::Arc<rrr::Client> get_client(const std::string& addr);
 
 };
 

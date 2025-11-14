@@ -2,7 +2,6 @@
 #include <memory>
 #include <chrono>
 #include <mutex>
-#include <condition_variable>
 
 #include <errno.h>
 #include <string.h>
@@ -18,58 +17,60 @@
 
 using namespace std;
 
-// External safety annotations for std functions used in this module
-// @external: {
-//   std::unique_lock::unique_lock: [unsafe, (std::mutex&) -> std::unique_lock<std::mutex>]
-//   std::lock_guard::lock_guard: [unsafe, (std::mutex&) -> std::lock_guard<std::mutex>]
-//   std::condition_variable::wait: [unsafe, (std::unique_lock<std::mutex>&, auto) -> void]
-// }
-
 namespace rrr {
 
-// @unsafe - Calls std::unique_lock and std::condition_variable::wait (external unsafe)
-// SAFETY: Thread-safe RAII lock and wait operations
+// @unsafe - Uses rusty::Condvar (low-level sync primitive)
 void Future::wait() {
-  std::unique_lock<std::mutex> lock(ready_m_);
-  ready_cond_.wait(lock, [this]() { return ready_ || timed_out_; });
+  std::unique_lock<std::mutex> lock(condvar_m_);
+  ready_cond_.wait(lock, [this]() {
+    auto guard = state_.lock();
+    return guard->ready || guard->timed_out;
+  });
 }
 
-// @unsafe - Calls std::unique_lock (external unsafe)
-// SAFETY: Thread-safe RAII lock and wait_for operations
+// @unsafe - Uses rusty::Condvar for timed waiting (low-level sync)
 void Future::timed_wait(double sec) {
-  std::unique_lock<std::mutex> lock(ready_m_);
+  std::unique_lock<std::mutex> lock(condvar_m_);
 
   auto duration = std::chrono::duration<double>(sec);
   bool success = ready_cond_.wait_for(lock, duration, [this]() {
-    return ready_ || timed_out_;
+    auto guard = state_.lock();
+    return guard->ready || guard->timed_out;
   });
 
-  if (!success && !ready_) {
-    timed_out_ = true;
-    error_code_ = ETIMEDOUT;
+  bool is_timed_out = false;
+  {
+    auto guard = state_.lock();
+    if (!success && !guard->ready) {
+      guard->timed_out = true;
+      is_timed_out = true;
+      error_code_ = ETIMEDOUT;
+    } else {
+      is_timed_out = guard->timed_out;
+    }
   }
 
   // Release lock before calling callback
   lock.unlock();
 
-  if (timed_out_ && attr_.callback != nullptr) {
+  if (is_timed_out && attr_.callback != nullptr) {
     attr_.callback(this);
   }
 }
 
-// @unsafe - Calls std::lock_guard (external unsafe)
-// SAFETY: Thread-safe RAII lock and notify operations
+// @unsafe - Uses rusty::Condvar for notification (low-level sync)
 void Future::notify_ready() {
   bool should_callback = false;
   {
-    std::lock_guard<std::mutex> lock(ready_m_);
-    if (!timed_out_) {
-      ready_ = true;
+    auto guard = state_.lock();
+    if (!guard->timed_out) {
+      guard->ready = true;
     }
-    should_callback = ready_;
-    // Use notify_all to wake up ALL waiting threads
-    ready_cond_.notify_all();
+    should_callback = guard->ready;
   }
+  // Notify after releasing state lock
+  ready_cond_.notify_all();
+
   // Execute callback outside lock to avoid deadlock
   if (should_callback && attr_.callback != nullptr) {
     // Warning: make sure memory is safe!
@@ -82,7 +83,7 @@ void Future::notify_ready() {
 
 // @unsafe - Cancels all pending futures with error
 // SAFETY: Protected by spinlock, proper refcount management
-void Client::invalidate_pending_futures() {
+void Client::invalidate_pending_futures() const {
   list<Future*> futures;
   pending_fu_l_.lock();
   for (auto& it: pending_fu_) {
@@ -104,9 +105,10 @@ void Client::invalidate_pending_futures() {
 
 // @unsafe - Closes socket and invalidates futures
 // SAFETY: Idempotent, proper cleanup sequence
-void Client::close() {
+void Client::close() const {
   if (status_ == CONNECTED) {
-    poll_thread_worker_->remove(*this);
+    // const_cast needed: Arc gives const access but remove() needs non-const reference
+    poll_thread_worker_->remove(const_cast<Client&>(*this));
     ::close(sock_);
   }
   status_ = CLOSED;
@@ -115,7 +117,7 @@ void Client::close() {
 
 // @unsafe - Establishes TCP/IPC connection to server
 // SAFETY: Proper socket creation, configuration, and error handling
-int Client::connect(const char* addr) {
+int Client::connect(const char* addr) const {
   verify(status_ != CONNECTED);
   string addr_str(addr);
   size_t idx = addr_str.find(":");
@@ -184,7 +186,15 @@ int Client::connect(const char* addr) {
   Log_debug("rrr::Client: connected to %s", addr);
 
   status_ = CONNECTED;
-  poll_thread_worker_->add(shared_from_this());
+
+  // Use weak_self_ instead of shared_from_this()
+  auto self = weak_self_.upgrade();
+  if (self.is_some()) {
+    poll_thread_worker_->add(self.unwrap());
+  } else {
+    Log_error("rrr::Client: weak_self_ upgrade failed - client may not have been created with factory method");
+    return EINVAL;
+  }
 
   return 0;
 }
@@ -267,7 +277,7 @@ void Client::handle_read() {
 }
 
 // @safe - Determines polling mode based on output buffer
-int Client::poll_mode() {
+int Client::poll_mode() const {
   int mode = Pollable::READ;
   out_l_.lock();
   if (!out_.empty()) {
@@ -279,7 +289,7 @@ int Client::poll_mode() {
 
 // @unsafe - Starts new RPC request with marshaling
 // SAFETY: Protected by spinlocks, proper refcounting
-Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr /* =... */) {
+Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr /* =... */) const {
   out_l_.lock();
 
   if (status_ != CONNECTED) {
@@ -315,7 +325,7 @@ Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr /* =... */) {
 
 // @unsafe - Finalizes request packet with size header
 // SAFETY: Updates bookmark, enables write polling
-void Client::end_request() {
+void Client::end_request() const {
   // set reply size in packet
   if (bmark_.is_some()) {
     i32 request_size = out_.get_and_reset_write_cnt();
@@ -327,7 +337,8 @@ void Client::end_request() {
   // always enable write events since the code above gauranteed there
   // will be some data to send
   //Log_info("Client end_request setting write mode here....");
-  poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
+  // const_cast needed: Arc gives const access but update_mode() needs non-const reference
+  poll_thread_worker_->update_mode(const_cast<Client&>(*this), Pollable::READ | Pollable::WRITE);
 
   out_l_.unlock();
 }
@@ -363,17 +374,17 @@ ClientPool::~ClientPool() {
 
 // @unsafe - Gets cached or creates new client connections
 // SAFETY: Protected by spinlock, handles connection failures gracefully
-std::shared_ptr<Client> ClientPool::get_client(const string& addr) {
-  std::shared_ptr<Client> sp_cl = nullptr;
+rusty::Arc<Client> ClientPool::get_client(const string& addr) {
+  rusty::Arc<Client> sp_cl;
   l_.lock();
   auto it = cache_.find(addr);
   if (it != cache_.end()) {
     sp_cl = it->second[rand_() % parallel_connections_];
   } else {
-    std::vector<std::shared_ptr<Client>> parallel_clients;
+    std::vector<rusty::Arc<Client>> parallel_clients;
     bool ok = true;
     for (int i = 0; i < parallel_connections_; i++) {
-      auto client = std::make_shared<Client>(this->poll_thread_worker_);
+      auto client = Client::create(this->poll_thread_worker_);
       if (client->connect(addr.c_str()) != 0) {
         ok = false;
         break;
@@ -384,7 +395,7 @@ std::shared_ptr<Client> ClientPool::get_client(const string& addr) {
       sp_cl = parallel_clients[rand_() % parallel_connections_];
       cache_[addr] = std::move(parallel_clients);
     }
-    // If not ok, parallel_clients automatically cleaned up by shared_ptr
+    // If not ok, parallel_clients automatically cleaned up by Arc
   }
   l_.unlock();
   return sp_cl;

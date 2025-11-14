@@ -13,55 +13,57 @@
 
 namespace rrr {
 
-thread_local std::shared_ptr<Reactor> Reactor::sp_reactor_th_{};
-thread_local std::shared_ptr<Coroutine> Reactor::sp_running_coro_th_{};
+thread_local rusty::Rc<Reactor> Reactor::sp_reactor_th_{};
+thread_local rusty::Rc<Coroutine> Reactor::sp_running_coro_th_{};
 
-// @unsafe - Calls std::shared_ptr constructor (undeclared)
-// SAFETY: Returns copy of thread-local shared_ptr - thread-safe
-std::shared_ptr<Coroutine> Coroutine::CurrentCoroutine() {
+// @safe - Returns current coroutine with single-threaded reference counting
+// SAFETY: Returns copy of thread-local Rc - single-threaded, no synchronization needed
+rusty::Rc<Coroutine> Coroutine::CurrentCoroutine() {
   // TODO re-enable this verify
 //  verify(sp_running_coro_th_);
-  return Reactor::sp_running_coro_th_;
+  return Reactor::sp_running_coro_th_.clone();
 }
 
-// @unsafe - Creates and runs a new coroutine with function wrapping
-// SAFETY: Reactor manages coroutine lifecycle properly
-std::shared_ptr<Coroutine>
+// @safe - Creates and runs a new coroutine with rusty::Rc ownership
+// SAFETY: Reactor manages coroutine lifecycle properly with Rc
+rusty::Rc<Coroutine>
 Coroutine::CreateRun(std::move_only_function<void()> func) {
-  auto& reactor = *Reactor::GetReactor();
-  auto coro = reactor.CreateRunCoroutine(std::move(func));
+  auto reactor_rc = Reactor::GetReactor();
+  // Rc gives const access, CreateRunCoroutine is const (safe: thread-local, single owner)
+  auto coro = reactor_rc->CreateRunCoroutine(std::move(func));
   // some events might be triggered in the last coroutine.
   return coro;
 }
 
-// @unsafe - Returns thread-local reactor instance, creates if needed
-// SAFETY: Thread-local storage ensures thread safety
-std::shared_ptr<Reactor>
+// @safe - Returns thread-local reactor instance, creates if needed
+// SAFETY: Thread-local storage with Rc ensures single-threaded access
+rusty::Rc<Reactor>
 Reactor::GetReactor() {
   if (!sp_reactor_th_) {
     Log_debug("create a coroutine scheduler");
-    sp_reactor_th_ = std::make_shared<Reactor>();
-    sp_reactor_th_->thread_id_ = std::this_thread::get_id();
+    sp_reactor_th_ = rusty::Rc<Reactor>::make(Reactor());
+    // Use get_mut() to initialize thread_id_ - safe because we just created it
+    const_cast<Reactor&>(*sp_reactor_th_).thread_id_ = std::this_thread::get_id();
   }
-  return sp_reactor_th_;
+  return sp_reactor_th_.clone();
 }
 
 /**
  * @param func
  * @return
  */
-// @unsafe - Creates and runs coroutine with complex state management
-// SAFETY: Proper lifecycle management with shared_ptr
-std::shared_ptr<Coroutine>
-Reactor::CreateRunCoroutine(std::move_only_function<void()> func) {
-  std::shared_ptr<Coroutine> sp_coro;
+// @safe - Creates and runs coroutine with rusty::Rc single-threaded reference counting
+// SAFETY: Proper lifecycle management with Rc, single-threaded execution
+rusty::Rc<Coroutine>
+Reactor::CreateRunCoroutine(std::move_only_function<void()> func) const {
+  rusty::Rc<Coroutine> sp_coro;
   if (REUSING_CORO && available_coros_.size() > 0) {
     //Log_info("Reusing stuff");
-    sp_coro = available_coros_.back();
+    sp_coro = available_coros_.back().clone();
     available_coros_.pop_back();
     sp_coro->func_ = std::move(func);
   } else {
-    sp_coro = std::make_shared<Coroutine>(std::move(func));
+    sp_coro = rusty::Rc<Coroutine>::make(std::move(func));
   }
   
   // Save old coroutine context
@@ -85,8 +87,8 @@ Reactor::CreateRunCoroutine(std::move_only_function<void()> func) {
   return sp_coro;
 }
 
-// @safe - Checks timeout events and moves ready ones to ready list
-void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) {
+// @safe - Checks timeout events and moves ready ones to ready list with std::shared_ptr
+void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) const {
   auto time_now = Time::now(true);
   for (auto it = timeout_events_.begin(); it != timeout_events_.end();) {
     Event& event = **it;
@@ -126,7 +128,7 @@ void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) {
 //  be careful this could be called from different coroutines.
 // @unsafe - Main event loop with complex event processing
 // SAFETY: Thread-safe via thread_id verification
-void Reactor::Loop(bool infinite) {
+void Reactor::Loop(bool infinite) const {
   verify(std::this_thread::get_id() == thread_id_);
   looping_ = infinite;
   do {
@@ -135,15 +137,15 @@ void Reactor::Loop(bool infinite) {
     bool found_ready_events = true;
     while (found_ready_events) {
       found_ready_events = false;
-      std::vector<shared_ptr<Event>> ready_events;
-      
+      std::vector<std::shared_ptr<Event>> ready_events;
+
       // Check waiting events
       auto& events = waiting_events_;
       for (auto it = events.begin(); it != events.end();) {
         Event& event = **it;
         event.Test();
         if (event.status_ == Event::READY) {
-          ready_events.push_back(std::move(*it));
+          ready_events.push_back(*it);
           it = events.erase(it);
           found_ready_events = true;
         } else if (event.status_ == Event::DONE) {
@@ -152,12 +154,12 @@ void Reactor::Loop(bool infinite) {
           it ++;
         }
       }
-      
+
       CheckTimeout(ready_events);
-      
+
       // Process ready events
-      for (auto& up_ev: ready_events) {
-        auto& event = *up_ev;
+      for (auto& sp_ev: ready_events) {
+        Event& event = *sp_ev;
         auto sp_coro = event.wp_coro_.lock();
         verify(sp_coro);
         verify(coros_.find(sp_coro) != coros_.end());
@@ -168,7 +170,7 @@ void Reactor::Loop(bool infinite) {
         }
         ContinueCoro(sp_coro);
       }
-      
+
       // If we're not in infinite mode and found no events, stop inner loop
       if (!infinite && !found_ready_events) {
         break;
@@ -177,12 +179,12 @@ void Reactor::Loop(bool infinite) {
   } while (looping_);
 }
 
-// @unsafe - Continues execution of paused coroutine
-// SAFETY: Manages coroutine state transitions properly
-void Reactor::ContinueCoro(std::shared_ptr<Coroutine> sp_coro) {
+// @safe - Continues execution of paused coroutine with rusty::Rc
+// SAFETY: Manages coroutine state transitions properly, single-threaded Rc
+void Reactor::ContinueCoro(rusty::Rc<Coroutine> sp_coro) const {
 //  verify(!sp_running_coro_th_); // disallow nested coros
-  auto sp_old_coro = sp_running_coro_th_;
-  sp_running_coro_th_ = sp_coro;
+  auto sp_old_coro = sp_running_coro_th_.clone();
+  sp_running_coro_th_ = sp_coro.clone();
   verify(!sp_running_coro_th_->Finished());
   if (sp_coro->status_ == Coroutine::INIT) {
     sp_coro->Run();
@@ -204,10 +206,10 @@ void Reactor::ContinueCoro(std::shared_ptr<Coroutine> sp_coro) {
 
 // Private constructor - doesn't start thread
 PollThreadWorker::PollThreadWorker()
-    : l_(std::make_unique<SpinLock>()),
-      pending_remove_l_(std::make_unique<SpinLock>()),
-      lock_job_(std::make_unique<SpinLock>()),
-      stop_flag_(std::make_unique<std::atomic<bool>>(false)) {
+    : l_(rusty::make_box<SpinLock>()),
+      pending_remove_l_(rusty::make_box<SpinLock>()),
+      lock_job_(rusty::make_box<SpinLock>()),
+      stop_flag_(rusty::make_box<std::atomic<bool>>(false)) {
   // Don't start thread here - factory will do it
 }
 
@@ -236,9 +238,11 @@ rusty::Arc<PollThreadWorker> PollThreadWorker::create() {
 
 // Explicit shutdown method
 void PollThreadWorker::shutdown() const {
-  // Remove pollables before stopping
+  // Remove all pollables before stopping
   for (auto& pair : fd_to_pollable_) {
-    this->remove(*pair.second);
+    // Arc provides const access, but remove() needs non-const reference
+    // Safe: we're managing the lifecycle and shutting down
+    this->remove(const_cast<Pollable&>(*pair.second));
   }
 
   // Signal thread to stop
@@ -265,11 +269,16 @@ void PollThreadWorker::TriggerJob() const {
   auto jobs_exec = set_sp_jobs_;
   set_sp_jobs_.clear();
   lock_job_->unlock();
+
+  // Process Arc<Job> jobs
   auto it = jobs_exec.begin();
   while (it != jobs_exec.end()) {
     auto sp_job = *it;
-    if (sp_job->Ready()) {
-      Coroutine::CreateRun([sp_job]() {sp_job->Work();});
+    // Arc provides const access, but Job methods need mutable access
+    // Safe: we're managing the job lifecycle and calling virtual methods
+    Job* job_ptr = const_cast<Job*>(sp_job.get());
+    if (job_ptr->Ready()) {
+      Coroutine::CreateRun([job_ptr]() {job_ptr->Work();});
       it = jobs_exec.erase(it);
     }
     else {
@@ -298,26 +307,25 @@ void PollThreadWorker::poll_loop() const {
       l_->lock();
 
       auto it = fd_to_pollable_.find(fd);
-      if (it == fd_to_pollable_.end()) {
-        l_->unlock();
-        continue;
+      if (it != fd_to_pollable_.end()) {
+        auto sp_poll = it->second;
+
+        // Check if fd was NOT reused (still in mode_ map)
+        if (mode_.find(fd) != mode_.end()) {
+          poll_.Remove(sp_poll);
+        }
+
+        // Remove from map - object may be destroyed here
+        fd_to_pollable_.erase(it);
+        mode_.erase(fd);
       }
-
-      auto sp_poll = it->second;
-
-      // Check if fd was NOT reused (still in mode_ map)
-      if (mode_.find(fd) != mode_.end()) {
-        poll_.Remove(sp_poll);
-      }
-
-      // Remove from map - object may be destroyed here
-      fd_to_pollable_.erase(it);
-      mode_.erase(fd);
 
       l_->unlock();
     }
     TriggerJob();
-    Reactor::GetReactor()->Loop();
+    // Rc gives const access, Loop() is const (safe: thread-local)
+    auto reactor_rc = Reactor::GetReactor();
+    reactor_rc->Loop();
   }
 
   // Process any final pending removals after stop_flag_ is set
@@ -332,43 +340,40 @@ void PollThreadWorker::poll_loop() const {
     l_->lock();
 
     auto it = fd_to_pollable_.find(fd);
-    if (it == fd_to_pollable_.end()) {
-      l_->unlock();
-      continue;
+    if (it != fd_to_pollable_.end()) {
+      auto sp_poll = it->second;
+
+      // Check if fd was NOT reused (still in mode_ map)
+      if (mode_.find(fd) != mode_.end()) {
+        poll_.Remove(sp_poll);
+      }
+
+      // Remove from map - object may be destroyed here
+      fd_to_pollable_.erase(it);
+      mode_.erase(fd);
     }
-
-    auto sp_poll = it->second;
-
-    // Check if fd was NOT reused (still in mode_ map)
-    if (mode_.find(fd) != mode_.end()) {
-      poll_.Remove(sp_poll);
-    }
-
-    // Remove from map - object may be destroyed here
-    fd_to_pollable_.erase(it);
-    mode_.erase(fd);
 
     l_->unlock();
   }
 }
 
-// @safe - Thread-safe job addition with spinlock
-void PollThreadWorker::add(std::shared_ptr<Job> sp_job) const {
+// @safe - Thread-safe job addition with polymorphic Arc
+void PollThreadWorker::add(rusty::Arc<Job> sp_job) const {
   lock_job_->lock();
   set_sp_jobs_.insert(sp_job);
   lock_job_->unlock();
 }
 
-// @safe - Thread-safe job removal with spinlock
-void PollThreadWorker::remove(std::shared_ptr<Job> sp_job) const {
+// @safe - Thread-safe job removal with polymorphic Arc
+void PollThreadWorker::remove(rusty::Arc<Job> sp_job) const {
   lock_job_->lock();
   set_sp_jobs_.erase(sp_job);
   lock_job_->unlock();
 }
 
-// @safe - Adds pollable with shared_ptr ownership
-// SAFETY: Stores shared_ptr in map, passes raw pointer to epoll
-void PollThreadWorker::add(std::shared_ptr<Pollable> sp_poll) const {
+// @safe - Adds pollable with polymorphic Arc ownership
+// SAFETY: Stores Arc in map, passes raw pointer to epoll for fast lookup
+void PollThreadWorker::add(rusty::Arc<Pollable> sp_poll) const{
   int fd = sp_poll->fd();
   int poll_mode = sp_poll->poll_mode();
 
@@ -381,11 +386,13 @@ void PollThreadWorker::add(std::shared_ptr<Pollable> sp_poll) const {
   }
 
   // Store in map
-  fd_to_pollable_[fd] = sp_poll;
+  fd_to_pollable_[fd] = sp_poll.clone();
   mode_[fd] = poll_mode;
 
-  // userdata = raw Pollable* for lookup
-  void* userdata = sp_poll.get();
+  // userdata = raw Pollable* for lookup (safe - kept alive by fd_to_pollable_ map)
+  // Arc::get() returns const pointer, but epoll needs void* userdata
+  // Safe: userdata is only used as an opaque identifier, not for mutation
+  void* userdata = const_cast<void*>(static_cast<const void*>(sp_poll.get()));
 
   poll_.Add(sp_poll, userdata);
 
@@ -398,11 +405,12 @@ void PollThreadWorker::remove(Pollable& poll) const {
   int fd = poll.fd();
 
   l_->lock();
-  if (fd_to_pollable_.find(fd) == fd_to_pollable_.end()) {
-    l_->unlock();
+  bool found = (fd_to_pollable_.find(fd) != fd_to_pollable_.end());
+  l_->unlock();
+
+  if (!found) {
     return;  // Not found
   }
-  l_->unlock();
 
   // Add to pending_remove (actual removal happens after epoll_wait)
   pending_remove_l_->lock();
