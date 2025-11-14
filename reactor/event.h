@@ -39,8 +39,8 @@ class Event : public std::enable_shared_from_this<Event> {
   //   shared_ptr to the coroutine it is.
   // In this case there is no shared pointer to the event.
   // When the stack that contains the event frees, the event frees.
-  // @safe - Weak reference to coroutine using custom WeakCoroutine wrapper
-  WeakCoroutine wp_coro_{}; 
+  // @safe - Weak reference to coroutine using rusty::rc::Weak with proper reference counting
+  rusty::rc::Weak<Coroutine> wp_coro_{}; 
 
   virtual void Wait(uint64_t timeout=0) final;
 

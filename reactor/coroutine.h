@@ -25,44 +25,6 @@ namespace rrr {
 // Forward declaration
 class Coroutine;
 
-// Custom Weak pointer for rusty::Rc<Coroutine>
-// Provides weak reference semantics for single-threaded Rc
-// @safe - Weak reference prevents circular references
-class WeakCoroutine {
-private:
-    Coroutine* raw_ptr_;  // Raw pointer for weak reference
-
-public:
-    WeakCoroutine() : raw_ptr_(nullptr) {}
-
-    // Create from Rc
-    explicit WeakCoroutine(const rusty::Rc<Coroutine>& rc)
-        : raw_ptr_(const_cast<Coroutine*>(rc.get())) {}
-
-    // Assignment from Rc
-    WeakCoroutine& operator=(const rusty::Rc<Coroutine>& rc) {
-        raw_ptr_ = const_cast<Coroutine*>(rc.get());
-        return *this;
-    }
-
-    // Check if still valid (always returns true for raw pointer)
-    // Note: This is a simplified implementation
-    // In production, would need ref counting to know if object is alive
-    bool expired() const {
-        return raw_ptr_ == nullptr;
-    }
-
-    // Try to get Rc (simplified - just wraps in new Rc)
-    // WARNING: This doesn't actually check if object is alive
-    // Only safe if you know the object still exists
-    rusty::Rc<Coroutine> lock() const;
-
-    // Get raw pointer (unsafe but sometimes needed)
-    Coroutine* get() const { return raw_ptr_; }
-
-    void reset() { raw_ptr_ = nullptr; }
-};
-
 #ifdef USE_BOOST_COROUTINE2
 typedef boost::coroutines2::coroutine<void>::pull_type boost_coro_task_t;
 typedef boost::coroutines2::coroutine<void>::push_type boost_coro_yield_t;

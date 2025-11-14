@@ -96,8 +96,8 @@ bool Event::Test() {
       // wait has not been called, do nothing until wait happens.
       status_ = DONE;
     } else if (status_ == WAIT) {
-      auto sp_coro = wp_coro_.lock();
-      verify(sp_coro);
+      auto option_coro = wp_coro_.upgrade();
+      verify(option_coro.is_some());
       verify(status_ != DEBUG);
       status_ = READY;
     } else if (status_ == READY) {

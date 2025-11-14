@@ -65,28 +65,7 @@ void Coroutine::Continue() const {
 }
 
 bool Coroutine::Finished() const {
-  return status_ == FINISHED;
-}
-
-// WeakCoroutine::lock() implementation
-// This is unsafe but necessary for the current architecture
-// The Reactor owns all coroutines, so as long as we're in the reactor thread,
-// the coroutine should still be alive
-rusty::Rc<Coroutine> WeakCoroutine::lock() const {
-  if (!raw_ptr_) {
-    return rusty::Rc<Coroutine>();  // Return empty Rc
-  }
-
-  // Search for the coroutine in the reactor's coros_ set
-  auto reactor = Reactor::GetReactor();
-  for (const auto& rc_coro : reactor->coros_) {
-    if (rc_coro.get() == raw_ptr_) {
-      return rc_coro.clone();
-    }
-  }
-
-  // Not found - return empty Rc
-  return rusty::Rc<Coroutine>();
+  return status_ == FINISHED || status_ == RECYCLED;
 }
 
 } // namespace rrr

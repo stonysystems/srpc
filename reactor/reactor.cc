@@ -62,16 +62,27 @@ Reactor::CreateRunCoroutine(std::move_only_function<void()> func) const {
     sp_coro = available_coros_.back().clone();
     available_coros_.pop_back();
     sp_coro->func_ = std::move(func);
+    // Reset boost_coro_task_ when reusing a recycled coroutine for a new function
+    sp_coro->boost_coro_task_ = rusty::None;
+    sp_coro->status_ = Coroutine::INIT;
   } else {
     sp_coro = rusty::Rc<Coroutine>::make(std::move(func));
   }
-  
+
   // Save old coroutine context
   auto sp_old_coro = sp_running_coro_th_;
   sp_running_coro_th_ = sp_coro;
-  
+
+  if (!sp_coro) {
+    Log_error("[DEBUG] CreateRunCoroutine: sp_coro is null!");
+  }
   verify(sp_coro);
   auto pair = coros_.insert(sp_coro);
+  if (!pair.second) {
+    Log_error("[DEBUG] CreateRunCoroutine: Failed to insert coroutine into coros_ set!");
+    Log_error("[DEBUG] coros_ size before insert: %zu", coros_.size());
+    Log_error("[DEBUG] REUSING_CORO: %d", REUSING_CORO);
+  }
   verify(pair.second);
   verify(coros_.size() > 0);
   
@@ -160,8 +171,9 @@ void Reactor::Loop(bool infinite) const {
       // Process ready events
       for (auto& sp_ev: ready_events) {
         Event& event = *sp_ev;
-        auto sp_coro = event.wp_coro_.lock();
-        verify(sp_coro);
+        auto option_coro = event.wp_coro_.upgrade();
+        verify(option_coro.is_some());
+        auto sp_coro = option_coro.unwrap();
         verify(coros_.find(sp_coro) != coros_.end());
         if (event.status_ == Event::READY) {
           event.status_ = Event::DONE;
