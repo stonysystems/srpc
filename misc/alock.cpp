@@ -13,9 +13,9 @@
 //   std::__atomic_base::fetch_sub: [unsafe]
 //   std::map::erase: [unsafe]
 //   std::list::erase: [unsafe]
-//   std::list::emplace_back: [safe]
-//   std::vector::push_back: [safe]
-//   std::function::function: [safe]
+//   std::list::emplace_back: [unsafe]
+//   std::vector::push_back: [unsafe]
+//   std::function::function: [unsafe]
 // }
 
 

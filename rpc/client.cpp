@@ -21,7 +21,8 @@
 //   std::__atomic_base::store: [unsafe]
 //   std::__atomic_base::fetch_add: [unsafe]
 //   std::__atomic_base::fetch_sub: [unsafe]
-//   std::vector::push_back: [safe]
+//   std::vector::push_back: [unsafe]
+//   rrr::Log::error: [unsafe]
 //   Log_error: [unsafe]
 // }
 

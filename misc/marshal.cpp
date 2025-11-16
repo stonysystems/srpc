@@ -491,6 +491,7 @@ int MarshallDeputy::RegInitializer(int32_t cmd_type,
   return 0;
 }
 
+// @unsafe - Calls std::mutex::lock, std::unordered_map::find, std::function constructor
 function<Marshallable*()>
 MarshallDeputy::GetInitializer(int32_t type) {
   if (!mc_th_initialized_) {
@@ -524,6 +525,8 @@ Marshal &Marshallable::FromMarshal(Marshal &m) {
   return m;
 }
 
+// @unsafe - Calls std::shared_ptr::get and GetInitializer
+// @lifetime: (&'a mut) -> &'a mut
 Marshal& MarshallDeputy::CreateActualObjectFrom(Marshal& m) {
   verify(sp_data_ == nullptr);
   switch (kind_) {

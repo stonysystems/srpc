@@ -96,8 +96,12 @@ public:
         return guard->timed_out;
     }
 
+    // @safe - Returns reference to reply with lifetime tied to Future
+    // @lifetime: (&'a) -> &'a
     Marshal& get_reply() {
+        // @unsafe {
         wait();
+        // }
         return reply_;
     }
 
@@ -121,10 +125,12 @@ private:
     std::vector<Future*> futures_;
 
 public:
-    // @unsafe 
+    // @unsafe - Adds future to group (calls Log_error)
     void add(Future* f) {
         if (f == nullptr) {
+            // @unsafe {
             Log_error("Invalid Future object passed to FutureGroup!");
+            // }
             return;
         }
         futures_.push_back(f);

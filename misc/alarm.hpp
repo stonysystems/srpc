@@ -94,6 +94,7 @@ class Alarm: public FrequentJob {
 //	}
 //    }
 
+  // @unsafe - Adds alarm callback (uses std::map::operator[] and std::make_pair)
   uint64_t add(uint64_t time, std::function<void(void)> func) {
     //	std::lock_guard<std::mutex> guard(lock_);
     //Log::debug("add timeout callback");
@@ -110,9 +111,12 @@ class Alarm: public FrequentJob {
    * and will never be invoked. If not, it is not sure that
    * whether this callback will be invoked or not.
    */
+  // @unsafe - Removes alarm callback (calls std::map::erase)
   bool remove(uint64_t id) {
     //	std::lock_guard<std::mutex> guard(lock_);
+    // @unsafe {
     int n_erased = waiting_.erase(id);
+    // }
     return (n_erased == 1);
   }
 

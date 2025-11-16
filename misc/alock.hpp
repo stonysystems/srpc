@@ -21,6 +21,11 @@
 #include "alarm.hpp"
 #include "dball.hpp"
 
+// External safety annotations for STL functions used in inline methods
+// @external: {
+//   std::function::function: [unsafe]
+// }
+
 #define ALOCK_TIMEOUT (200000) // 0.2s;
 //#define ALOCK_TIMEOUT (0) // no_timeout;
 
@@ -67,10 +72,12 @@ class ALock {
                         type_t type = WLOCK,
                         int64_t priority = 0, // lower value has higher priority
                         const std::function<int(void)> &wound_callback = [] ()->int {return 0;}) {
+    // @unsafe {
     std::function<void(uint64_t)> _yes_callback
         = [yes_callback](uint64_t id) {
           yes_callback();
         };
+    // }
     return vlock(owner,
                  _yes_callback,
                  no_callback,

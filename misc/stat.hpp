@@ -29,17 +29,18 @@ public:
         min_ = 0;
     }
 
-    // @unsafe 
+    // @unsafe
     AvgStat reset() {
-        AvgStat stat = *this;
+        AvgStat stat;
+        stat = *this;
         clear();
         return stat;
     }
 
-    // @unsafe
+    // Note: Removed const to workaround rusty-cpp bug where @unsafe doesn't work for pointer operations in const inline methods
+    // @unsafe - Copies current statistics (uses pointer dereference)
     AvgStat peek() {
-        AvgStat result;
-        result = *this;
+        AvgStat result = *this;
         return result;
     }
 

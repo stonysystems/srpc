@@ -59,6 +59,7 @@ class Marshallable {
     verify(0);
     return 0;
   }
+  // @unsafe
   virtual size_t WriteToFd(int fd, size_t written_to_socket) const {
     verify(0);
     return 0;
@@ -160,9 +161,12 @@ class MarshallDeputy {
       return sizeof(int32_t) + sp_data_->EntitySize();
     }
 
+    // @unsafe
     size_t track_write_2(int fd, const void* p, size_t len, size_t offset){
       const char* x = (const char*)p;
+      // @unsafe {
       size_t sz = ::write(fd, x + offset, len - offset);
+      // }
       if(sz > len - offset || sz <= 0){
          return 0;
       }
@@ -174,6 +178,7 @@ class MarshallDeputy {
     //   return EntitySize() - written_to_socket;
     // }
 
+    // @unsafe
     virtual size_t WriteToFd(int fd, int written_to_socket) {
         size_t sz = 0, prev = written_to_socket;
         if(written_to_socket < sizeof(kind_)){
@@ -184,7 +189,9 @@ class MarshallDeputy {
         }
         //Log_info("Written bytes of ghost chunk 1 %d %d %d", sz, kind_, written_to_socket);
         // sp_data_->reset_write_offset();
+        // @unsafe {
         sz = sp_data_->WriteToFd(fd, written_to_socket - sizeof(kind_));
+        // }
 	      //std::cout << sz << std::endl;
         //Log_info("Written bytes of ghost chunk 2 %d %d", sz, kind_);
         written_to_socket += sz;
