@@ -152,7 +152,7 @@ void ServerConnection::end_reply() {
     // set reply size in packet
     if (bmark_.is_some()) {
         i32 reply_size = out_.get_and_reset_write_cnt();
-        out_.write_bookmark(bmark_.unwrap_ref().get(), &reply_size);
+        out_.write_bookmark(&*bmark_.as_mut().unwrap(), &reply_size);
         bmark_ = rusty::None;  // Reset to None (automatically deletes old value)
     }
 

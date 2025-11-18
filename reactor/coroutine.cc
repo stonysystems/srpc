@@ -61,7 +61,8 @@ void Coroutine::Continue() const {
   verify(status_.get() == PAUSED || status_.get() == RECYCLED);
   verify(boost_coro_task_.borrow()->is_some());
   status_.set(RESUMED);
-  (*boost_coro_task_.borrow_mut()->unwrap())();
+  // Use as_mut().unwrap() to get a mutable reference without moving the value
+  (*boost_coro_task_.borrow_mut()->as_mut().unwrap())();
   // some events might have been triggered from last coroutine,
   // but you have to manually call the scheduler to loop.
 }

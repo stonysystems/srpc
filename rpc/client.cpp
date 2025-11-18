@@ -346,7 +346,7 @@ void Client::end_request() const {
   if (bmark_.borrow()->is_some()) {
     i32 request_size = out_.borrow_mut()->get_and_reset_write_cnt();
     //Log_info("client request size is %d", request_size);
-    out_.borrow_mut()->write_bookmark(bmark_.borrow()->unwrap_ref().get(), &request_size);
+    out_.borrow_mut()->write_bookmark(&*bmark_.borrow_mut()->as_mut().unwrap(), &request_size);
     *bmark_.borrow_mut() = rusty::None;  // Reset to None (automatically deletes old value)
   }
 
