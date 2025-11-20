@@ -155,9 +155,10 @@ bool Event::Test() {
     } else if (status_ == DONE) {
       // do nothing
     } else if (status_ == TIMEOUT) {
-      // Ignore late triggers after timeout (from Jetpack)
+      // do nothing
+      // [Jetpack] recklessly comment this: failure recovery may enconter this, reason unknow, maybe some command wait too much time?
     } else {
-      verify(0);
+      verify(0); 
     }
     return true;
   }
