@@ -262,12 +262,8 @@ rusty::Arc<PollThreadWorker> PollThreadWorker::create() {
 
 // Explicit shutdown method
 void PollThreadWorker::shutdown() const {
-  // Remove all pollables before stopping
-  for (auto& pair : fd_to_pollable_) {
-    // Arc provides const access, but remove() needs non-const reference
-    // Safe: we're managing the lifecycle and shutting down
-    this->remove(const_cast<Pollable&>(*pair.second));
-  }
+  // Don't remove pollables here - pollable operations must happen on the poll thread
+  // The poll_loop will process any pending_remove_ items before exiting
 
   // Signal thread to stop
   (*stop_flag_).store(true);
@@ -279,14 +275,13 @@ void PollThreadWorker::shutdown() const {
       guard->take().unwrap().join();
     }
   }
+
+  // After thread has joined, the poll_loop has completed and all cleanup is done
 }
 
-// Destructor just warns if not shut down
+// Destructor ensures clean shutdown
 PollThreadWorker::~PollThreadWorker() {
-  // Check stop flag value
-  if (!(*stop_flag_).load()) {
-    Log_error("PollThreadWorker destroyed without shutdown() - thread may leak!");
-  }
+  shutdown();
 }
 
 // @unsafe - Triggers ready jobs in coroutines
