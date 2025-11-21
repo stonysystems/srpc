@@ -262,21 +262,16 @@ rusty::Arc<PollThreadWorker> PollThreadWorker::create() {
 
 // Explicit shutdown method
 void PollThreadWorker::shutdown() const {
-  // Don't remove pollables here - pollable operations must happen on the poll thread
-  // The poll_loop will process any pending_remove_ items before exiting
-
   // Signal thread to stop
   (*stop_flag_).store(true);
 
-  // Join thread (using mutex for thread safety)
+  // Join thread - poll_loop will handle cleanup of all registered pollables
   {
     auto guard = join_handle_.lock();
     if (guard->is_some()) {
       guard->take().unwrap().join();
     }
   }
-
-  // After thread has joined, the poll_loop has completed and all cleanup is done
 }
 
 // Destructor ensures clean shutdown
@@ -300,7 +295,14 @@ void PollThreadWorker::TriggerJob() const {
     // Safe: we're managing the job lifecycle and calling virtual methods
     Job* job_ptr = const_cast<Job*>(sp_job.get());
     if (job_ptr->Ready()) {
-      Coroutine::CreateRun([job_ptr]() {job_ptr->Work();});
+      // IMPORTANT: Capture sp_job by value to keep the Arc alive!
+      // If the coroutine yields, we need to keep the Job alive until it resumes.
+      // Previously we captured only job_ptr (raw pointer), which caused use-after-free
+      // when the Arc was erased from jobs_exec below and the Job was destroyed.
+      Coroutine::CreateRun([sp_job]() {
+        Job* job_ptr = const_cast<Job*>(sp_job.get());
+        job_ptr->Work();
+      });
       it = jobs_exec.erase(it);
     }
     else {
@@ -351,15 +353,16 @@ void PollThreadWorker::poll_loop() const {
     Reactor::GetReactor()->Loop();
   }
 
-  // Process any final pending removals after stop_flag_ is set
-  // This ensures destructor cleanup is processed even if the thread
-  // exits the loop before processing the last batch
-  (*pending_remove_l_).lock();
-  std::unordered_set<int> remove_fds = std::move(pending_remove_);
-  pending_remove_.clear();
-  (*pending_remove_l_).unlock();
+  // When shutting down, add ALL remaining registered pollables to pending_remove_
+  // This ensures proper cleanup even if remove() was never explicitly called
+  (*l_).lock();
+  for (auto& [fd, _] : fd_to_pollable_) {
+    pending_remove_.insert(fd);
+  }
+  (*l_).unlock();
 
-  for (int fd : remove_fds) {
+  // Process all pending removals (both explicit and from shutdown)
+  for (int fd : pending_remove_) {
     (*l_).lock();
 
     auto it = fd_to_pollable_.find(fd);
@@ -381,6 +384,7 @@ void PollThreadWorker::poll_loop() const {
 
     (*l_).unlock();
   }
+  pending_remove_.clear();
 }
 
 // @safe - Thread-safe job addition with polymorphic Arc
