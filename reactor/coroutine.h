@@ -5,6 +5,7 @@
 #include <rusty/option.hpp>
 #include <rusty/cell.hpp>
 #include <rusty/refcell.hpp>
+#include <rusty/function.hpp>
 
 #define USE_BOOST_COROUTINE2
 
@@ -47,22 +48,22 @@ class Coroutine {
   // Returns None if called outside of a coroutine context
   static rusty::Option<rusty::Rc<Coroutine>> CurrentCoroutine();
   // the argument cannot be a reference because it could be declared on stack.
-  // Using std::move_only_function to support move-only callables (e.g., lambdas capturing rusty::Box)
+  // Using rusty::Function to support move-only callables (e.g., lambdas capturing rusty::Box)
   // Creates and runs coroutine with rusty::Rc ownership
-  static rusty::Rc<Coroutine> CreateRun(std::move_only_function<void()> func);
+  static rusty::Rc<Coroutine> CreateRun(rusty::Function<void()> func);
 
   enum Status {INIT=0, STARTED, PAUSED, RESUMED, FINISHED, RECYCLED};
 
   // Interior mutability for use with rusty::Rc (const methods need to modify state)
   mutable Status status_ = INIT;
-  mutable std::move_only_function<void()> func_{};
+  mutable rusty::Function<void()> func_{};
 
   // Migrated from std::unique_ptr to rusty::Box with Option for nullable semantics
   mutable rusty::Option<rusty::Box<boost_coro_task_t>> boost_coro_task_{};
   mutable boost::optional<boost_coro_yield_t&> boost_coro_yield_{};
 
   Coroutine() = delete;
-  Coroutine(std::move_only_function<void()> func);
+  Coroutine(rusty::Function<void()> func);
   ~Coroutine();
   // @unsafe - Uses std::bind and function pointers
   void BoostRunWrapper(boost_coro_yield_t& yield);

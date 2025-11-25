@@ -10,13 +10,20 @@
 #include "coroutine.h"
 #include "event.h"
 #include "epoll_wrapper.h"
+#include <std_annotation.hpp>
+
+// @external: {
+//   rrr::Log::debug: [unsafe],
+//   rrr::Log::error: [unsafe],
+//   rrr::Event::Test: [unsafe]
+// }
 
 namespace rrr {
 
 thread_local rusty::Option<rusty::Rc<Reactor>> Reactor::sp_reactor_th_{};
 thread_local rusty::Option<rusty::Rc<Coroutine>> Reactor::sp_running_coro_th_{};
 
-// @unsafe - Returns current coroutine with single-threaded reference counting
+// @safe - Returns current coroutine with single-threaded reference counting
 // SAFETY: Returns copy of thread-local Rc - single-threaded, no synchronization needed
 // Returns None if called outside of a coroutine context
 rusty::Option<rusty::Rc<Coroutine>> Coroutine::CurrentCoroutine() {
@@ -27,9 +34,8 @@ rusty::Option<rusty::Rc<Coroutine>> Coroutine::CurrentCoroutine() {
 }
 
 // @safe - Creates and runs a new coroutine with rusty::Rc ownership
-// SAFETY: Reactor manages coroutine lifecycle properly with Rc
 rusty::Rc<Coroutine>
-Coroutine::CreateRun(std::move_only_function<void()> func) {
+Coroutine::CreateRun(rusty::Function<void()> func) {
   auto reactor_rc = Reactor::GetReactor();
   // Rc gives const access, CreateRunCoroutine is const (safe: thread-local, single owner)
   auto coro = reactor_rc->CreateRunCoroutine(std::move(func));
@@ -55,9 +61,8 @@ Reactor::GetReactor() {
  * @return
  */
 // @safe - Creates and runs coroutine with rusty::Rc single-threaded reference counting
-// SAFETY: Proper lifecycle management with Rc, single-threaded execution
 rusty::Rc<Coroutine>
-Reactor::CreateRunCoroutine(std::move_only_function<void()> func) const {
+Reactor::CreateRunCoroutine(rusty::Function<void()> func) const {
   rusty::Option<rusty::Rc<Coroutine>> sp_coro;
   if (REUSING_CORO && available_coros_.size() > 0) {
     //Log_info("Reusing stuff");
@@ -144,6 +149,8 @@ void Reactor::CheckTimeout(std::vector<std::shared_ptr<Event>>& ready_events ) c
 
 //  be careful this could be called from different coroutines.
 // @unsafe - Main event loop with complex event processing
+// NOTE: Cannot mark @safe because const method modifies mutable fields (looping_, waiting_events_).
+// In RustyCpp, const = &self which doesn't allow mutation. Use @unsafe for interior mutability.
 // SAFETY: Thread-safe via thread_id verification
 void Reactor::Loop(bool infinite) const {
   verify(std::this_thread::get_id() == thread_id_);
@@ -198,7 +205,6 @@ void Reactor::Loop(bool infinite) const {
 }
 
 // @safe - Continues execution of paused coroutine with rusty::Rc
-// SAFETY: Manages coroutine state transitions properly, single-threaded Rc
 void Reactor::ContinueCoro(rusty::Rc<Coroutine> sp_coro) const {
 //  verify(!sp_running_coro_th_.is_none()); // disallow nested coros
   // Clone to avoid moving - must preserve the old value
@@ -330,6 +336,7 @@ void PollThreadWorker::TriggerJob() {
   }
 }
 
+// @unsafe - Uses raw pointer cast for epoll userdata
 void PollThreadWorker::do_add_pollable(rusty::Arc<Pollable> sp_poll) {
   int fd = sp_poll->fd();
   int poll_mode = sp_poll->poll_mode();
@@ -384,8 +391,9 @@ void PollThreadWorker::do_remove_job(rusty::Arc<Job> sp_job) {
 }
 
 void PollThreadWorker::process_pending_removals() {
-  std::unordered_set<int> remove_fds = std::move(pending_remove_);
-  pending_remove_.clear();
+  std::unordered_set<int> remove_fds;
+  remove_fds.swap(pending_remove_);
+  // pending_remove_ is now empty after swap
 
   for (int fd : remove_fds) {
     auto it = fd_to_pollable_.find(fd);

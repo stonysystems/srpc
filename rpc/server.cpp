@@ -248,7 +248,7 @@ void ServerConnection::handle_read() {
 
         auto it = server_->handlers_.find(rpc_id);
         if (it != server_->handlers_.end()) {
-            // C++23 std::move_only_function allows direct capture of move-only types like rusty::Box
+            // rusty::Function allows direct capture of move-only types like rusty::Box
             // Lambda captures rusty::Box<Request> by move, maintaining single ownership semantics
             auto weak_this = weak_self_;
             Coroutine::CreateRun([it, req = std::move(req), weak_this] () mutable {
