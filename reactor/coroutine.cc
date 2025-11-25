@@ -8,7 +8,7 @@
 
 namespace rrr {
 
-Coroutine::Coroutine(std::move_only_function<void()> func)
+Coroutine::Coroutine(rusty::Function<void()> func)
     : status_(INIT),
       func_(std::move(func)),
       boost_coro_task_(rusty::None),
