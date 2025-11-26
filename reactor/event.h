@@ -19,10 +19,22 @@
 #include <vector>
 #include "../base/all.hpp"
 #include <rusty/rusty.hpp>
+#include "coroutine.h"
 
-#define SUCCESS (0)
-#define REPEAT (-5)
-#define REJECT (-10)
+// External safety annotations for std::shared_ptr and Event operations
+// @external: {
+//   std::enable_shared_from_this::shared_from_this: [unsafe, () -> std::shared_ptr<auto>]
+//   std::make_shared: [unsafe, (auto...) -> std::shared_ptr<auto>]
+//   std::shared_ptr::operator*: [unsafe, () -> auto&]
+//   std::shared_ptr::operator->: [unsafe, () -> auto*]
+//   std::shared_ptr::get: [unsafe, () -> auto*]
+//   std::shared_ptr::operator=: [unsafe, (const std::shared_ptr<auto>&) -> std::shared_ptr<auto>&]
+//   std::vector::push_back: [unsafe, (auto) -> void]
+// }
+
+// Note: SUCCESS, REPEAT, REJECT macros removed - they conflict with mako's ErrorCode enum
+// Use ErrorCode::SUCCESS, etc. instead if needed
+
 #define Wait_recordplace(sp_ev, wait_func) do { \
   auto ref_ev = sp_ev; \
   ref_ev->RecordPlace(__FILE__, __LINE__); \
@@ -30,17 +42,16 @@
 } while(0)
 
 namespace rrr {
-using std::shared_ptr;
 using std::function;
 using std::vector;
 using std::list;
 
 class Reactor;
-class Coroutine;
 class Event : public std::enable_shared_from_this<Event> {
   std::mutex status_mtx_; // This is used for ThreadSafeTest
  protected:
-  std::shared_ptr<Reactor> current_reactor_{nullptr}; // This is used for other thread access the reactor of the event
+  // Raw pointer to reactor for cross-thread access (safe: reactor lifetime = thread lifetime)
+  Reactor* current_reactor_{nullptr};
 //class Event {
  public:
   int __debug_creator{0};
@@ -65,7 +76,8 @@ class Event : public std::enable_shared_from_this<Event> {
   //   shared_ptr to the coroutine it is.
   // In this case there is no shared pointer to the event.
   // When the stack that contains the event frees, the event frees.
-  std::weak_ptr<Coroutine> wp_coro_{}; 
+  // @safe - Weak reference to coroutine using rusty::rc::Weak with proper reference counting
+  rusty::rc::Weak<Coroutine> wp_coro_{}; 
 
   // @unsafe
   virtual void Wait(uint64_t timeout=0) final;
@@ -81,7 +93,7 @@ class Event : public std::enable_shared_from_this<Event> {
 
   virtual bool Test();
   virtual bool ThreadSafeTest();
-	virtual bool IsSlow();
+  virtual bool IsSlow();
   virtual bool IsReady() {
     if (!test_) return false;
     return test_(0);
@@ -238,7 +250,7 @@ class IntEvent : public Event {
     return t;
   };
 
-  virtual bool IsReady() override {
+  bool IsReady() override {
     if (test_) {
       return test_(value_);
     } else {
@@ -250,8 +262,10 @@ class IntEvent : public Event {
 class SharedIntEvent {
  public:
   int value_{};
-  list<shared_ptr<IntEvent>> events_{};
+  vector<std::shared_ptr<IntEvent>> events_;
+  // Declaration only - definition in event.cc
   int Set(const int& v);
+
   void Wait(function<bool(int)> f);
   bool WaitUntilGreaterOrEqualThan(int x, int timeout=0);
 };
@@ -284,7 +298,7 @@ class TimeoutEvent : public Event {
 
 class OrEvent : public Event {
  public:
-  vector<shared_ptr<Event>> events_;
+  vector<std::shared_ptr<Event>> events_;
 
   void AddEvent() {
     // empty func for recursive variadic parameters
@@ -292,7 +306,7 @@ class OrEvent : public Event {
 
   template<typename X, typename... Args>
   void AddEvent(X& x, Args&... rest) {
-    events_.push_back(std::dynamic_pointer_cast<Event>(x));
+    events_.push_back(x);
     AddEvent(rest...);
   }
 
@@ -302,7 +316,7 @@ class OrEvent : public Event {
   }
 
   bool IsReady() override {
-    return std::any_of(events_.begin(), events_.end(), [](shared_ptr<Event> e){return e->IsReady();});
+    return std::any_of(events_.begin(), events_.end(), [](const std::shared_ptr<Event>& e){return e->IsReady();});
   }
 
   // Mark as composite event - will be polled in reactor loop
@@ -311,26 +325,26 @@ class OrEvent : public Event {
 
 class AndEvent : public Event {
  public:
-  vector<shared_ptr<Event>> events_;
+  vector<std::shared_ptr<Event>> events_;
 
   // Default constructor (mako-dev)
   AndEvent() {}
 
-  // Constructor for vector of events (mako-dev)
-  explicit AndEvent(const vector<shared_ptr<Event>>& evs) : events_(evs) {}
+  // Constructor for vector of events
+  explicit AndEvent(const vector<std::shared_ptr<Event>>& evs) : events_(evs) {}
 
   void AddEvent() {
     // empty func for recursive variadic parameters
   }
 
   template<typename... Args>
-  void AddEvent(shared_ptr<Event> x, Args... rest) {
+  void AddEvent(std::shared_ptr<Event> x, Args... rest) {
     events_.push_back(x);
     AddEvent(rest...);
   }
 
   template<typename... Args>
-  AndEvent(shared_ptr<Event> first, Args... rest) {
+  AndEvent(std::shared_ptr<Event> first, Args... rest) {
     AddEvent(first, rest...);
   }
   
@@ -341,9 +355,10 @@ class AndEvent : public Event {
   }
 
   bool IsReady() override {
-    // Mako-dev improvement: check for DONE status too
+    // All events must be ready (or DONE) for AndEvent to be ready
+    // Include null check for safety
     return std::all_of(events_.begin(), events_.end(),
-                       [](shared_ptr<Event> e) {
+                       [](const std::shared_ptr<Event>& e) {
                          return e && (e->IsReady() || e->status_ == Event::DONE);
                        });
   }
@@ -354,7 +369,7 @@ class AndEvent : public Event {
 
 class NEvent : public Event {
  public:
-  vector<shared_ptr<Event>> events_;
+  vector<std::shared_ptr<Event>> events_;
   int number;
 
   void AddEvent() {
@@ -362,13 +377,13 @@ class NEvent : public Event {
   }
 
   template<typename... Args>
-  void AddEvent(shared_ptr<Event> x, Args... rest) {
+  void AddEvent(std::shared_ptr<Event> x, Args... rest) {
     events_.push_back(x);
     AddEvent(rest...);
   }
 
   template<typename... Args>
-  NEvent(shared_ptr<Event> first, Args... rest) {
+  NEvent(std::shared_ptr<Event> first, Args... rest) {
     AddEvent(first, rest...);
   }
 
@@ -447,7 +462,8 @@ class SingleRPCEvent: public Event{
       of.close();
     }
     bool IsReady() override{
-      return res_ == SUCCESS || res_ == REJECT;
+      // SUCCESS=0, REJECT=-10 (macros removed to avoid conflict with mako ErrorCode)
+      return res_ == 0 || res_ == -10;
     }
 };
 

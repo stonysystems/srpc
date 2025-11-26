@@ -6,6 +6,7 @@ std::vector<struct timespec> Epoll::Wait_One(int& num_ev, bool& slow) {
 	const int max_nev = 100;
 		bool found = false;
 		std::vector<struct timespec> result{};
+		slow = false;  // Initialize slow output parameter
 	#ifdef USE_KQUEUE
 	struct kevent evlist[max_nev];
 	struct timespec timeout;
@@ -13,6 +14,7 @@ std::vector<struct timespec> Epoll::Wait_One(int& num_ev, bool& slow) {
 	timeout.tv_nsec = 50 * 1000 * 1000; // 0.05 sec
 
 	int nev = kevent(poll_fd_, nullptr, 0, evlist, max_nev, &timeout);
+	num_ev = nev;  // Set num_ev output parameter for kqueue path
 
 	for (int i = 0; i < nev; i++){
 			found = true;

@@ -102,6 +102,9 @@ class QuorumEvent : public Event {
     return false;
   }
 
+  // Mark as composite event - will be polled in reactor loop
+  bool IsCompositeEvent() override { return true; }
+
   void Log();
 
 };

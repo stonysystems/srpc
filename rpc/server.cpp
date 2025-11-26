@@ -15,7 +15,23 @@
 #include "server.hpp"
 #include "utils.hpp"
 
+// External safety annotations for atomic operations
+// @external: {
+//   std::__atomic_base::load: [unsafe]
+//   std::__atomic_base::store: [unsafe]
+//   std::__atomic_base::fetch_add: [unsafe]
+//   std::__atomic_base::fetch_sub: [unsafe]
+// }
+
+
 using namespace std;
+
+// External safety annotations for std functions used in this module
+// @external: {
+//   std::unordered_map::find: [unsafe, (auto) -> auto]
+//   std::unordered_map::erase: [unsafe, (auto) -> void]
+//   std::function::operator=: [unsafe, (auto) -> std::function&]
+// }
 
 namespace rrr {
 
@@ -28,6 +44,8 @@ static int g_stat_server_batching_idx;
 static uint64_t g_stat_server_batching_report_time = 0;
 static const uint64_t g_stat_server_batching_report_interval = 1000 * 1000 * 1000;
 
+// @unsafe - Uses global mutable state and calls Log::info
+// SAFETY: Only called from single-threaded server context
 static void stat_server_batching(size_t batch) {
     g_stat_server_batching_idx = (g_stat_server_batching_idx + 1) % g_stat_server_batching_size;
     g_stat_server_batching[g_stat_server_batching_idx] = batch;
@@ -63,6 +81,8 @@ static unordered_map<i32, pair<Counter, Counter>> g_stat_rpc_counter;
 static uint64_t g_stat_server_rpc_counting_report_time = 0;
 static const uint64_t g_stat_server_rpc_counting_report_interval = 1000 * 1000 * 1000;
 
+// @unsafe - Uses global mutable state and calls Log::info
+// SAFETY: Only called from single-threaded server context
 static void stat_server_rpc_counting(i32 rpc_id) {
     g_stat_rpc_counter[rpc_id].first.next();
 
@@ -84,6 +104,7 @@ static void stat_server_rpc_counting(i32 rpc_id) {
 #endif // RPC_STATISTICS
 
 
+// Static member definitions for missing RPC ID tracking
 std::unordered_set<i32> ServerConnection::rpc_id_missing_s;
 SpinLock ServerConnection::rpc_id_missing_l_s;
 
@@ -119,7 +140,7 @@ void ServerConnection::begin_reply(const Request& req, i32 error_code /* =... */
     v32 v_error_code = error_code;
     v64 v_reply_xid = req.xid;
 
-    bmark_ = rusty::Option(rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32)))); // will write reply size later
+    bmark_ = rusty::Some(rusty::Box<Marshal::bookmark>(this->out_.set_bookmark(sizeof(i32)))); // will write reply size later
 
     *this << v_reply_xid;
     *this << v_error_code;
@@ -131,14 +152,16 @@ void ServerConnection::end_reply() {
     // set reply size in packet
     if (bmark_.is_some()) {
         i32 reply_size = out_.get_and_reset_write_cnt();
-        out_.write_bookmark(bmark_.unwrap_ref().get(), &reply_size);
+        out_.write_bookmark(&*bmark_.as_mut().unwrap(), &reply_size);
         bmark_ = rusty::None;  // Reset to None (automatically deletes old value)
     }
 
     // only update poll mode if connection is still active
     // (connection might have closed while handler was running)
+    // NOTE: end_reply() is called from handler threads, NOT the poll thread.
+    // Must use channel-based update_mode() - always goes through PollThread.
     if (status_ == CONNECTED) {
-        server_->poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
+        server_->poll_thread_worker_.as_ref().unwrap()->update_mode(*this, Pollable::READ | Pollable::WRITE);
     }
 
     out_l_.unlock();
@@ -202,10 +225,12 @@ bool ServerConnection::handle_read() {
         auto it = server_->handlers_.find(rpc_id);
         if (it != server_->handlers_.end()) {
             auto weak_this = weak_self_;
+            // Jetpack: pass file/line for debugging; mako-dev block_read_in not used in this branch
             Coroutine::CreateRun([handler = it->second, req = std::move(req), weak_this]() mutable {
                 handler(std::move(req), weak_this);
-            }, __FILE__, it->first);
+            }, __FILE__, __LINE__);
         } else {
+            // Track missing RPC IDs and suppress duplicate warnings
             rpc_id_missing_l_s.lock();
             bool surpress_warning = false;
             if (rpc_id_missing_s.find(rpc_id) == rpc_id_missing_s.end()) {
@@ -228,26 +253,23 @@ bool ServerConnection::handle_read() {
     return false;
 }
 
-void ServerConnection::handle_write() {
-		struct timespec begin2, begin2_cpu, end2, end2_cpu;
-		/*clock_gettime(CLOCK_MONOTONIC, &begin2);		
-		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &begin2_cpu);*/
+// @unsafe - Writes buffered data to socket
+// SAFETY: Protected by output spinlock
+// Returns new poll mode, or MODE_NO_CHANGE if no update needed
+int ServerConnection::handle_write() {
     if (status_ == CLOSED) {
-        return;
+        return Pollable::MODE_NO_CHANGE;
     }
 
+    int result = Pollable::MODE_NO_CHANGE;
     out_l_.lock();
     out_.write_to_fd(socket_);
     if (out_.empty()) {
-        server_->poll_thread_worker_->update_mode(*this, Pollable::READ);
+        // Return READ-only mode - PollThreadWorker will update epoll
+        result = Pollable::READ;
     }
     out_l_.unlock();
-		/*clock_gettime(CLOCK_MONOTONIC, &end2);
-		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end2_cpu);
-		long total_cpu2 = (end2_cpu.tv_sec - begin2_cpu.tv_sec)*1000000000 + (end2_cpu.tv_nsec - begin2_cpu.tv_nsec);
-		long total_time2 = (end2.tv_sec - begin2.tv_sec)*1000000000 + (end2.tv_nsec - begin2.tv_nsec);
-		double util2 = (double) total_cpu2/total_time2;
-		Log_info("elapsed CPU time (client write): %f", util2);*/
+    return result;
 }
 
 // @safe - Simple error handler
@@ -261,19 +283,21 @@ void ServerConnection::close() {
     if (status_ == CONNECTED) {
         server_->sconns_l_.lock();
 
-        // Find our shared_ptr in server's connection set
-        std::shared_ptr<ServerConnection> self;
+        // Find our Arc in server's connection set
+        rusty::Option<rusty::Arc<ServerConnection>> self;
         for (auto it = server_->sconns_.begin(); it != server_->sconns_.end(); ++it) {
             if (it->get() == this) {
-                self = *it;
+                self = rusty::Some(it->clone());
                 server_->sconns_.erase(it);
                 break;
             }
         }
         server_->sconns_l_.unlock();
 
-        if (self) {
-            server_->poll_thread_worker_->remove(*self);
+        if (self.is_some()) {
+            // Arc gives const access, need to cast to call remove()
+            auto& conn = const_cast<ServerConnection&>(*self.unwrap());
+            server_->poll_thread_worker_.as_ref().unwrap()->remove(conn);
             status_ = CLOSED;
             ::close(socket_);
             Log_debug("server@%s close ServerConnection at fd=%d", server_->addr_.c_str(), socket_);
@@ -281,7 +305,8 @@ void ServerConnection::close() {
     }
 }
 
-int ServerConnection::poll_mode() {
+// @safe - Returns poll mode based on output buffer
+int ServerConnection::poll_mode() const {
     int mode = Pollable::READ;
     out_l_.lock();
     if (!out_.empty()) {
@@ -291,18 +316,18 @@ int ServerConnection::poll_mode() {
     return mode;
 }
 
-// @unsafe - Constructs server with PollThreadWorker
+// @unsafe - Constructs server with PollThread
 // SAFETY: Shared ownership via Arc<Mutex<>>, creates one if not provided
-Server::Server(rusty::Arc<PollThreadWorker> poll_thread_worker /* =... */, ThreadPool* thrpool /* =? */)
+Server::Server(rusty::Option<rusty::Arc<PollThread>> poll_thread_worker /* =... */, ThreadPool* thrpool /* =? */)
         : server_sock_(-1), status_(NEW) {
 
     // get rid of eclipse warning
     memset(&loop_th_, 0, sizeof(loop_th_));
 
-    if (!poll_thread_worker) {  // Check if Arc<Mutex<>> is empty
-        poll_thread_worker_ = PollThreadWorker::create();
+    if (poll_thread_worker.is_none()) {  // Check if Option is None
+        poll_thread_worker_ = rusty::Some(PollThread::create());
     } else {
-        poll_thread_worker_ = poll_thread_worker;
+        poll_thread_worker_ = std::move(poll_thread_worker);
     }
 
 //    if (thrpool == nullptr) {
@@ -324,32 +349,34 @@ Server::~Server() {
     }
 
     sconns_l_.lock();
-    vector<std::shared_ptr<ServerConnection>> sconns;
+    vector<rusty::Arc<ServerConnection>> sconns;
     sconns.reserve(sconns_.size());
     for (auto& sconn : sconns_) {
-        sconns.push_back(sconn);  // Copy shared_ptr from set
+        sconns.push_back(sconn.clone());  // Clone Arc from set
     }
     // NOTE: do NOT clear sconns_ here, because when running the following
-    // sp_conn->close(), the ServerConnection object will check the sconns_ to
+    // arc_conn->close(), the ServerConnection object will check the sconns_ to
     // ensure it still resides in sconns_
     sconns_l_.unlock();
 
     for (auto& it: sconns) {
-        it->close();
-        poll_thread_worker_->remove(*it);
+        auto& conn = const_cast<ServerConnection&>(*it);
+        conn.close();
+        poll_thread_worker_.as_ref().unwrap()->remove(conn);
     }
 
-    if (sp_server_listener_) {
-        sp_server_listener_->close();
-        poll_thread_worker_->remove(*sp_server_listener_);
-        sp_server_listener_.reset();
+    if (sp_server_listener_.is_some()) {
+        auto& listener = const_cast<ServerListener&>(*sp_server_listener_.as_ref().unwrap());
+        listener.close();
+        poll_thread_worker_.as_ref().unwrap()->remove(listener);
+        sp_server_listener_ = rusty::None;  // Reset to None
     }
 
-    // Now clear sconns_ and the local copy to release shared_ptrs
+    // Now clear sconns_ and the local copy to release Arcs
     sconns_l_.lock();
     sconns_.clear();
     sconns_l_.unlock();
-    sconns.clear();  // Release local shared_ptrs
+    sconns.clear();  // Release local Arcs
 
     // make sure all open connections are closed
     int alive_connection_count = -1;
@@ -362,7 +389,7 @@ Server::~Server() {
             Log_debug("waiting for %d alive connections to shutdown", new_alive_connection_count);
         }
         alive_connection_count = new_alive_connection_count;
-        // sleep 0.05 sec because this is the timeout for PollThreadWorker's epoll()
+        // sleep 0.05 sec because this is the timeout for PollThread's epoll()
         usleep(50 * 1000);
     }
     verify(sconns_ctr_.peek_next() == 0);
@@ -428,11 +455,11 @@ void Server::server_loop(struct addrinfo* svr_addr) {
             setsockopt(clnt_socket, SOL_SOCKET, SO_RCVBUF, &buf_len, sizeof(buf_len));
             setsockopt(clnt_socket, SOL_SOCKET, SO_SNDBUF, &buf_len, sizeof(buf_len));
             sconns_l_.lock();
-            auto sconn = std::make_shared<ServerConnection>(this, clnt_socket);
-            sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
-            sconns_.insert(sconn);  // Insert shared_ptr into set
+            auto sconn = rusty::Arc<ServerConnection>::make(this, clnt_socket);
+            const_cast<ServerConnection&>(*sconn).weak_self_ = sconn;  // Initialize weak to self
+            sconns_.insert(sconn.clone());  // Insert Arc into set
             sconns_l_.unlock();
-            poll_thread_worker_->add(sconn);
+            poll_thread_worker_.as_ref().unwrap()->add(sconn);
         }
     }
 
@@ -461,12 +488,12 @@ bool ServerListener::handle_read() {
       Log_debug("server@%s got new client, fd=%d", this->addr_.c_str(), clnt_socket);
       verify(set_nonblocking(clnt_socket, true) == 0);
 
-      auto sconn = std::make_shared<ServerConnection>(server_, clnt_socket);
-      sconn->weak_self_ = sconn;  // Initialize weak_ptr to self
+      auto sconn = rusty::Arc<ServerConnection>::make(server_, clnt_socket);
+      const_cast<ServerConnection&>(*sconn).weak_self_ = sconn;  // Initialize weak to self
       server_->sconns_l_.lock();
-      server_->sconns_.insert(sconn);  // Insert shared_ptr into set
+      server_->sconns_.insert(sconn.clone());  // Insert Arc into set
       server_->sconns_l_.unlock();
-      server_->poll_thread_worker_->add(sconn);
+      server_->poll_thread_worker_.as_ref().unwrap()->add(sconn);
     } else {
       break;
     }
@@ -605,12 +632,13 @@ int Server::start(const char* bind_addr) {
     return -1;
   }
   string addr(bind_addr, strlen(bind_addr));
-  sp_server_listener_ = std::make_shared<ServerListener>(this, addr);
-  poll_thread_worker_->add(sp_server_listener_);
+  sp_server_listener_ = rusty::Some(rusty::Arc<ServerListener>::make(this, addr));
+  poll_thread_worker_.as_ref().unwrap()->add(sp_server_listener_.as_ref().unwrap().clone());
   return 0;
 }
 
-// @safe - Registers RPC handler
+// @unsafe - Calls std::unordered_map::find and operator= (external unsafe)
+// SAFETY: Thread-safe map operations for handler registration
 int Server::reg(i32 rpc_id, const RequestHandler& func) {
     // disallow duplicate rpc_id
     if (handlers_.find(rpc_id) != handlers_.end()) {
@@ -622,7 +650,8 @@ int Server::reg(i32 rpc_id, const RequestHandler& func) {
     return 0;
 }
 
-// @safe - Unregisters RPC handler
+// @unsafe - Calls std::unordered_map::erase (external unsafe)
+// SAFETY: Thread-safe map operation for handler removal
 void Server::unreg(i32 rpc_id) {
     handlers_.erase(rpc_id);
 }

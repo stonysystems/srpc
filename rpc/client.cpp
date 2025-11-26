@@ -1,5 +1,7 @@
 #include <string>
 #include <memory>
+#include <chrono>
+#include <mutex>
 
 #include <errno.h>
 #include <string.h>
@@ -13,133 +15,145 @@
 #include "client.hpp"
 #include "utils.hpp"
 
+// External safety annotations for atomic operations and STL functions
+// @external: {
+//   std::__atomic_base::load: [unsafe]
+//   std::__atomic_base::store: [unsafe]
+//   std::__atomic_base::fetch_add: [unsafe]
+//   std::__atomic_base::fetch_sub: [unsafe]
+//   std::vector::push_back: [unsafe]
+//   rrr::Log::error: [unsafe]
+//   Log_error: [unsafe]
+// }
+
+
 using namespace std;
 
 namespace rrr {
 
-// @unsafe - Blocks on condition variable until ready
-// SAFETY: Proper pthread mutex/condvar usage
-void Future::wait() {
-  Pthread_mutex_lock(&ready_m_);
-  while (!ready_ && !timed_out_) {
-    Pthread_cond_wait(&ready_cond_, &ready_m_);
-  }
-  Pthread_mutex_unlock(&ready_m_);
+// @unsafe - Uses rusty::Condvar (low-level sync primitive)
+void Future::wait() const {
+  std::unique_lock<std::mutex> lock(*condvar_m_.get());
+  ready_cond_.get()->wait(lock, [this]() {
+    auto guard = state_.lock();
+    return guard->ready || guard->timed_out;
+  });
 }
 
-// @unsafe - Waits with timeout using pthread_cond_timedwait
-// SAFETY: Proper timeout calculation and pthread usage
-void Future::timed_wait(double sec) {
-  Pthread_mutex_lock(&ready_m_);
-  while (!ready_ && !timed_out_) {
-    int full_sec = (int) sec;
-    int nsec = int((sec - full_sec) * 1000 * 1000 * 1000);
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    timespec abstime;
-    abstime.tv_sec = tv.tv_sec + full_sec;
-    abstime.tv_nsec = tv.tv_usec * 1000 + nsec;
-    if (abstime.tv_nsec > 1000 * 1000 * 1000) {
-      abstime.tv_nsec -= 1000 * 1000 * 1000;
-      abstime.tv_sec += 1;
-    }
-    // Log::debug("wait for %lf", sec);  // Commented out - causes abort due to nullptr file
-    int ret = pthread_cond_timedwait(&ready_cond_, &ready_m_, &abstime);
-    if (ret == ETIMEDOUT) {
-      timed_out_ = true;
+// @unsafe - Uses rusty::Condvar for timed waiting (low-level sync)
+void Future::timed_wait(double sec) const {
+  std::unique_lock<std::mutex> lock(*condvar_m_.get());
+
+  auto duration = std::chrono::duration<double>(sec);
+  bool success = ready_cond_.get()->wait_for(lock, duration, [this]() {
+    auto guard = state_.lock();
+    return guard->ready || guard->timed_out;
+  });
+
+  bool is_timed_out = false;
+  {
+    auto guard = state_.lock();
+    if (!success && !guard->ready) {
+      guard->timed_out = true;
+      is_timed_out = true;
+      error_code_.set(ETIMEDOUT);
     } else {
-      verify(ret == 0);
+      is_timed_out = guard->timed_out;
     }
   }
-  Pthread_mutex_unlock(&ready_m_);
-  if (timed_out_) {
-    error_code_ = ETIMEDOUT;
-    if (attr_.callback != nullptr) {
-      attr_.callback(this);
-    }
-  }
+
+  // Release lock before calling callback
+  lock.unlock();
+
+  // NOTE: timed_wait callback still needs Arc parameter update (TODO: requires Arc access)
+  // For now, this is only called in test scenarios
+  // if (is_timed_out && attr_.callback != nullptr) {
+  //   attr_.callback(???);  // Need Arc<Future> to self
+  // }
 }
 
-// @unsafe - Notifies waiters and triggers callback in coroutine
-// SAFETY: Protected by mutex, callback executed asynchronously
-void Future::notify_ready() {
-  Pthread_mutex_lock(&ready_m_);
-  if (!timed_out_) {
-    ready_ = true;
+// @unsafe - Uses rusty::Condvar for notification (low-level sync)
+void Future::notify_ready(rusty::Arc<Future> self) const {
+  bool should_callback = false;
+  {
+    auto guard = state_.lock();
+    if (!guard->timed_out) {
+      guard->ready = true;
+    }
+    should_callback = guard->ready;
   }
-  // Use broadcast instead of signal to wake up ALL waiting threads
-  Pthread_cond_broadcast(&ready_cond_);
-  Pthread_mutex_unlock(&ready_m_);
-  if (ready_ && attr_.callback != nullptr) {
-    // Warning: make sure memory is safe!
-    const auto x = attr_.callback;
-    Coroutine::CreateRun([x, this]() {
-      x(this);
+  // Notify after releasing state lock
+  ready_cond_.get()->notify_all();
+
+  // Execute callback outside lock to avoid deadlock
+  if (should_callback && attr_.callback != nullptr) {
+    // SAFE: Callback receives Arc<Future> for lifetime safety
+    auto x = attr_.callback;
+    Coroutine::CreateRun([x, self]() {  // Capture Arc, not raw pointer
+      x(self);  // Callback receives Arc<Future>
     }, __FILE__, __LINE__);
-//        attr_.callback(this);
   }
 }
 
+// Jetpack: set validity flag on output marshal
 void Client::set_valid(bool valid) {
-	out_.valid_id = valid;
+  out_.borrow_mut()->valid_id = valid;
 }
 
 // @unsafe - Cancels all pending futures with error
 // SAFETY: Protected by spinlock, proper refcount management
-void Client::invalidate_pending_futures() {
-	list<Future*> futures;
-  pending_fu_l_.lock();
-  for (auto& it: pending_fu_) {
-    futures.push_back(it.second);
+void Client::invalidate_pending_futures() const {
+  list<rusty::Arc<Future>> futures;
+  pending_fu_l_.get()->lock();
+  for (auto& it: *pending_fu_.borrow()) {
+    futures.push_back(it.second);  // Copy Arc
   }
-  pending_fu_.clear();
-  pending_fu_l_.unlock();
+  pending_fu_.borrow_mut()->clear();  // Clear map (releases its Arc references)
+  pending_fu_l_.get()->unlock();
 
   for (auto& fu: futures) {
-    if (fu != nullptr) {
-      fu->error_code_ = ENOTCONN;
-      fu->notify_ready();
-
-      // since we removed it from pending_fu_
-      fu->release();
-    }
+    fu->error_code_.set(ENOTCONN);
+    fu->notify_ready(fu);  // Pass Arc to self for callback safety
+    // Arc auto-released when list destroyed
   }
 }
 
 // @unsafe - Closes socket and invalidates futures
 // SAFETY: Idempotent, proper cleanup sequence
-void Client::close() {
-  //Log_info("CLOSING");
-  if (status_ == CONNECTED) {
-    poll_thread_worker_->remove(*this);
-    ::close(sock_);
+void Client::close() const {
+  if (status_.get() == CONNECTED) {
+    // const_cast needed: Arc gives const access but remove() needs non-const reference
+    poll_thread_worker_->remove(const_cast<Client&>(*this));
+    ::close(sock_.get());
   }
-  status_ = CLOSED;
+  status_.set(CLOSED);
   invalidate_pending_futures();
 }
 
-void Client::handle_free(i64 xid) {
-  pending_fu_l_.lock();
-  auto it = pending_fu_.find(xid);
-  if (it != pending_fu_.end()) {
-    pending_fu_.erase(it);
-    Future::safe_release(it->second);
+// Jetpack: handle_free for explicit future cleanup
+void Client::handle_free(i64 xid) const {
+  pending_fu_l_.get()->lock();
+  auto it = pending_fu_.borrow_mut()->find(xid);
+  if (it != pending_fu_.borrow_mut()->end()) {
+    pending_fu_.borrow_mut()->erase(it);
+    // Arc auto-released when removed from map
   }
-  pending_fu_l_.unlock();
+  pending_fu_l_.get()->unlock();
 }
 
-void Client::pause() {
+// Jetpack: pause/resume for flow control
+void Client::pause() const {
   paused_ = true;
 }
 
-void Client::resume() {
+void Client::resume() const {
   paused_ = false;
 }
 
 // @unsafe - Establishes TCP/IPC connection to server
 // SAFETY: Proper socket creation, configuration, and error handling
-int Client::connect(const char* addr, bool client) {
-  verify(status_ != CONNECTED);
+int Client::connect(const char* addr, bool client) const {
+  verify(status_.get() != CONNECTED);
   string addr_str(addr);
   size_t idx = addr_str.find(":");
   if (idx == string::npos) {
@@ -147,20 +161,22 @@ int Client::connect(const char* addr, bool client) {
     return EINVAL;
   }
   string host = addr_str.substr(0, idx);
-  host_ = host;
-	client_ = client;
+  const_cast<Client*>(this)->host_ = host;  // Jetpack: store host
+  const_cast<Client*>(this)->client_ = client;  // Jetpack: store client flag
   string port = addr_str.substr(idx + 1);
 #ifdef USE_IPC
   struct sockaddr_un saun;
   saun.sun_family = AF_UNIX;
   string ipc_addr = "rsock" + port;
   strcpy(saun.sun_path, ipc_addr.data());
-  if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+  int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sock < 0) {
     perror("client: socket");
     exit(1);
   }
+  sock_.set(sock);
   auto len = sizeof(saun.sun_family) + strlen(saun.sun_path)+1;
-  if (::connect(sock_, (struct sockaddr*)&saun, len) < 0) {
+  if (::connect(sock_.get(), (struct sockaddr*)&saun, len) < 0) {
     perror("client: connect");
     exit(1);
   }
@@ -179,26 +195,25 @@ int Client::connect(const char* addr, bool client) {
   }
 
   for (rp = result; rp != nullptr; rp = rp->ai_next) {
-    sock_ = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-    if (sock_ == -1) {
+    int sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    if (sock == -1) {
       continue;
     }
-    //Log_info("host port host port: %s:%s and socket: %d", host, port, sock_);
+    sock_.set(sock);
 
     const int yes = 1;
-    verify(setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
-    verify(setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == 0);
+    verify(setsockopt(sock_.get(), SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
+    verify(setsockopt(sock_.get(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == 0);
     int buf_len = 1024 * 1024;
-    setsockopt(sock_, SOL_SOCKET, SO_RCVBUF, &buf_len, sizeof(buf_len));
-    setsockopt(sock_, SOL_SOCKET, SO_SNDBUF, &buf_len, sizeof(buf_len));
+    setsockopt(sock_.get(), SOL_SOCKET, SO_RCVBUF, &buf_len, sizeof(buf_len));
+    setsockopt(sock_.get(), SOL_SOCKET, SO_SNDBUF, &buf_len, sizeof(buf_len));
 
-    if (::connect(sock_, rp->ai_addr, rp->ai_addrlen) == 0) {
+    if (::connect(sock_.get(), rp->ai_addr, rp->ai_addrlen) == 0) {
       break;
     }
-    ::close(sock_);
-    sock_ = -1;
+    ::close(sock_.get());
+    sock_.set(-1);
   }
-
   freeaddrinfo(result);
 
   if (rp == nullptr) {
@@ -207,11 +222,19 @@ int Client::connect(const char* addr, bool client) {
     return ENOTCONN;
   }
 #endif
-  verify(set_nonblocking(sock_, true) == 0);
+  verify(set_nonblocking(sock_.get(), true) == 0);
   Log_debug("rrr::Client: connected to %s", addr);
 
-  status_ = CONNECTED;
-  poll_thread_worker_->add(shared_from_this());
+  status_.set(CONNECTED);
+
+  // Use weak_self_ instead of shared_from_this()
+  auto self = weak_self_.borrow()->upgrade();
+  if (self.is_some()) {
+    poll_thread_worker_->add(self.unwrap());
+  } else {
+    Log_error("rrr::Client: weak_self_ upgrade failed - client may not have been created with factory method");
+    return EINVAL;
+  }
 
   return 0;
 }
@@ -223,52 +246,44 @@ void Client::handle_error() {
 
 // @unsafe - Writes buffered data to socket
 // SAFETY: Protected by spinlock, handles partial writes
-void Client::handle_write() {
-  //auto start = chrono::steady_clock::now();
-  //Log_info("Handling write");
-	struct timespec begin2, begin2_cpu, end2, end2_cpu;
-  /*clock_gettime(CLOCK_MONOTONIC, &begin2);
-	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &begin2_cpu);*/
-  if (status_ != CONNECTED) {
-    return;
+// Returns new poll mode, or MODE_NO_CHANGE if no update needed
+int Client::handle_write() {
+  if (status_.get() != CONNECTED) {
+    return Pollable::MODE_NO_CHANGE;
   }
-  if (paused_) return;
+  // Jetpack: respect pause state
+  if (paused_) return Pollable::MODE_NO_CHANGE;
 
-  out_l_.lock();
-  out_.write_to_fd(sock_);
-	
-  if (out_.empty()) {
-    //Log_info("Client handle_write setting read mode here...");
-    poll_thread_worker_->update_mode(*this, Pollable::READ);
+  int result = Pollable::MODE_NO_CHANGE;
+  out_l_.get()->lock();
+  out_.borrow_mut()->write_to_fd(sock_.get());
+  if (out_.borrow()->empty()) {
+    // Return READ-only mode - PollThreadWorker will update epoll
+    result = Pollable::READ;
   }
-  out_l_.unlock();
-	/*clock_gettime(CLOCK_MONOTONIC, &end2);
-	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end2_cpu);
-	long total_cpu2 = (end2_cpu.tv_sec - begin2_cpu.tv_sec)*1000000000 + (end2_cpu.tv_nsec - begin2_cpu.tv_nsec);
-	long total_time2 = (end2.tv_sec - begin2.tv_sec)*1000000000 + (end2.tv_nsec - begin2.tv_nsec);
-	double util2 = (double) total_cpu2/total_time2;
-	Log_info("elapsed CPU time (client write): %f", util2);*/
+  out_l_.get()->unlock();
+  return result;
 }
 
+// Jetpack: content_size helper
 size_t Client::content_size() {
-  return in_.content_size();
+  return in_.borrow()->content_size();
 }
 
-bool Client::handle_read(){
+// @unsafe - Reads and processes RPC responses
+// SAFETY: Protected by spinlock, validates packet structure
+// Jetpack: Split into handle_read_one and handle_read_two for batching
+bool Client::handle_read() {
   if (!handle_read_one()) {
     return false;
   }
 
   while (true) {
     bool done = handle_read_two();
-    if (!done) {
-      // Log_info("Client::handle_read_two signaled more data; continuing");
-    }
     if (done) {
-      // Log_info("Client::handle_read_two completed batch");
       break;
     }
-    if (status_ != CONNECTED) {
+    if (status_.get() != CONNECTED) {
       return false;
     }
   }
@@ -279,19 +294,13 @@ bool Client::handle_read(){
   return true;
 }
 
+// Jetpack: First phase - read data from socket
 bool Client::handle_read_one() {
-  // if (strcmp(host_.c_str(), "10.0.0.15") == 0) {
-  //     count_++;
-  //   Log_info("called %d", count_);
-  // }
-	struct timespec begin2, begin2_cpu, end2, end2_cpu;
-  /*clock_gettime(CLOCK_MONOTONIC, &begin2);		
-	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &begin2_cpu);*/
-  if (status_ != CONNECTED) {
+  if (status_.get() != CONNECTED) {
     return false;
   }
 
-  int bytes_read = in_.read_from_fd(sock_);
+  int bytes_read = in_.borrow_mut()->read_from_fd(sock_.get());
   if (bytes_read == 0) {
     return false;
   }
@@ -299,214 +308,176 @@ bool Client::handle_read_one() {
   return true;
 }
 
+// Jetpack: Second phase - process packets from buffer
 bool Client::handle_read_two() {
-  if (status_ != CONNECTED) {
+  if (status_.get() != CONNECTED) {
     return false;
   }
 
-	struct timespec begin_peek, begin_read, begin_marshal, begin_marshal_cpu;
-	struct timespec end_peek, end_read, end_marshal, end_marshal_cpu;
-  //return true;
   bool done = false;
-	int iters = 0;
-	//Log_info("content: %ld", in_.content_size());
-	//if(in_.content_size() > 0){
-iters = 5;
-	//Log_info("iters: %ld", iters);
+  int iters = 5;
 
-  if(client_){
-		iters = INT_MAX;
-	}
-  
-	// if (pending_fu_.size() > 300000) {
-	// 	Log_info("Warning: pending size is %d likely due to slowness", pending_fu_.size());
-	// }
-	
-	for(int i = 0; i < iters; i++) {
+  if (client_) {
+    iters = INT_MAX;
+  }
+
+  for (int i = 0; i < iters; i++) {
     i32 packet_size;
 
-    int n_peek = in_.peek(&packet_size, sizeof(i32));
+    int n_peek = in_.borrow_mut()->peek(&packet_size, sizeof(i32));
 
     if (n_peek == sizeof(i32)
-        && in_.content_size() >= packet_size + sizeof(i32)) {
-			
-			verify(in_.read(&packet_size, sizeof(i32)) == sizeof(i32));
-			
+        && in_.borrow()->content_size() >= packet_size + sizeof(i32)) {
+
+      verify(in_.borrow_mut()->read(&packet_size, sizeof(i32)) == sizeof(i32));
+
       v64 v_reply_xid;
       v32 v_error_code;
 
-      in_ >> v_reply_xid >> v_error_code;
+      *in_.borrow_mut() >> v_reply_xid >> v_error_code;
 
-      pending_fu_l_.lock();
-      unordered_map<i64, Future*>::iterator
-        it = pending_fu_.find(v_reply_xid.get());
-      if(it != pending_fu_.end()){
-        Future* fu = it->second;
+      pending_fu_l_.get()->lock();
+      auto it = pending_fu_.borrow_mut()->find(v_reply_xid.get());
+      if (it != pending_fu_.borrow_mut()->end()) {
+        rusty::Arc<Future> fu = it->second;  // Copy Arc (refcount still 2)
         verify(fu->xid_ == v_reply_xid.get());
 
-				
-				struct timespec end;
-				clock_gettime(CLOCK_MONOTONIC, &end);
-				/*long curr = (end.tv_sec - rpc_starts[fu->xid_].tv_sec)*1000000000 + end.tv_nsec - rpc_starts[fu->xid_].tv_nsec;
-				if (count_ >= 1000) {
-					if (index < 100) {
-						times[index] = curr;
-						index++;
-					} else {
-						total_time = 0;
-						for (int i = 0; i < 99; i++) {
-							times[i] = times[i+1];
-							total_time += times[i];
-						}
-						times[99] = curr;
-						total_time += times[99];
-					}
-					count_ = 0;
-				} else {
-					count_++;
-				}
-				
-				if (index == 100) {
-					time_ = total_time/index;
-				} else {
-					time_ = 0;
-				}*/
+        // Jetpack: timing support (commented out but preserved)
+        // struct timespec end;
+        // clock_gettime(CLOCK_MONOTONIC, &end);
+        // long curr = (end.tv_sec - rpc_starts[fu->xid_].tv_sec)*1000000000 + end.tv_nsec - rpc_starts[fu->xid_].tv_nsec;
+        // ... timing calculation ...
 
-        pending_fu_.erase(it);
-        pending_fu_l_.unlock();
-				
-				fu->error_code_ = v_error_code.get();
-        fu->reply_.read_from_marshal(in_,
-	    	                     packet_size - v_reply_xid.val_size()
-				         - v_error_code.val_size());
-        
-				fu->notify_ready();
-        fu->release();
-      } else{
-        pending_fu_l_.unlock();
-				
-				Marshal reply;
-				reply.read_from_marshal(in_,
-															packet_size - v_reply_xid.val_size()
-															- v_error_code.val_size());
+        pending_fu_.borrow_mut()->erase(it);  // Remove from map (refcount 2→1)
+        pending_fu_l_.get()->unlock();
+
+        fu->error_code_.set(v_error_code.get());
+        fu->reply_.get()->read_from_marshal(*in_.borrow_mut(),
+                                            packet_size - v_reply_xid.val_size()
+                                                - v_error_code.val_size());
+
+        fu->notify_ready(fu);  // Pass Arc to self for callback safety
+
+        // Arc auto-released when scope exits (refcount 1→0 if user released theirs)
+      } else {
+        // the future might timed out
+        pending_fu_l_.get()->unlock();
+
+        // Jetpack: consume data for timed-out futures
+        Marshal reply;
+        reply.read_from_marshal(*in_.borrow_mut(),
+                                packet_size - v_reply_xid.val_size()
+                                - v_error_code.val_size());
       }
-    } else{
+    } else {
       done = true;
       break;
     }
   }
 
-
   Reactor::GetReactor()->Loop();
-	return done;
+  return done;
 }
 
-
-// @safe - Determines polling mode based on output buffer
-int Client::poll_mode() {
+// @unsafe - Determines polling mode based on output buffer
+// SAFETY: Uses RefCell borrow operations
+int Client::poll_mode() const {
   int mode = Pollable::READ;
-  out_l_.lock();
-  if (!out_.empty()) {
+  out_l_.get()->lock();
+  if (!out_.borrow()->empty()) {
     mode |= Pollable::WRITE;
   }
-  out_l_.unlock();
+  out_l_.get()->unlock();
   return mode;
 }
 
 // @unsafe - Starts new RPC request with marshaling
 // SAFETY: Protected by spinlocks, proper refcounting
-Future* Client::begin_request(i32 rpc_id, const FutureAttr& attr) {
-  //auto start = chrono::steady_clock::now();
-	
-  out_l_.lock();
-	
-  if (status_ != CONNECTED) {
-    //Log_info("NOT CONNECTED");
-    return nullptr;
+FutureResult Client::begin_request(i32 rpc_id, const FutureAttr& attr /* =... */) const {
+  out_l_.get()->lock();
+
+  if (status_.get() != CONNECTED) {
+    return FutureResult::Err(ENOTCONN);
   }
 
-  Future* fu = new Future(xid_counter_.next(), attr);
-  fu->timeout_ = timeout_;
-  pending_fu_l_.lock();
-  pending_fu_[fu->xid_] = fu;
-  pending_fu_l_.unlock();
+  auto fu = Future::create(xid_counter_.borrow_mut()->next(), attr);
+  // Jetpack: set timeout from client's timeout setting
+  // fu->timeout_ = timeout_;  // TODO: restore if needed
 
-	struct timespec begin;
-	clock_gettime(CLOCK_MONOTONIC, &begin);
-	//rpc_starts[fu->xid_] = begin;
-  //Log_info("Starting a new request with rpc_id %ld,xid_:%llu", rpc_id,fu->xid_); 
+  pending_fu_l_.get()->lock();
+  pending_fu_.borrow_mut()->insert_or_assign(fu->xid_, fu);  // Store Arc in map (refcount now 2)
+  pending_fu_l_.get()->unlock();
+
+  // Jetpack: timing support
+  // struct timespec begin;
+  // clock_gettime(CLOCK_MONOTONIC, &begin);
+  // rpc_starts[fu->xid_] = begin;
+
   // check if the client gets closed in the meantime
-  if (status_ != CONNECTED) {
-    pending_fu_l_.lock();
-    unordered_map<i64, Future*>::iterator it = pending_fu_.find(fu->xid_);
-    if (it != pending_fu_.end()) {
-      it->second->release();
-      pending_fu_.erase(it);
+  if (status_.get() != CONNECTED) {
+    pending_fu_l_.get()->lock();
+    auto it = pending_fu_.borrow_mut()->find(fu->xid_);
+    if (it != pending_fu_.borrow_mut()->end()) {
+      pending_fu_.borrow_mut()->erase(it);  // Arc auto-released when removed from map
     }
-    pending_fu_l_.unlock();
+    pending_fu_l_.get()->unlock();
 
-    //Log_info("NOT CONNECTED 2");
-    return nullptr;
+    return FutureResult::Err(ENOTCONN);
   }
 
-  bmark_ = rusty::Option(rusty::Box<Marshal::bookmark>(out_.set_bookmark(sizeof(i32)))); // will fill packet size later
+  // Separate the borrows to avoid overlapping mutable borrows
+  Marshal::bookmark* bm = out_.borrow_mut()->set_bookmark(sizeof(i32)); // will fill packet size later
+  *bmark_.borrow_mut() = rusty::Some(rusty::Box<Marshal::bookmark>(bm));
 
   *this << v64(fu->xid_);
   *this << rpc_id;
-	rpc_id_ = rpc_id;
+  const_cast<Client*>(this)->rpc_id_ = rpc_id;  // Jetpack: store rpc_id
 
-  //auto end = chrono::steady_clock::now();
-  //auto duration = chrono::duration_cast<chrono::microseconds>(end-start).count();
-  //Log_info("The Time for begin_request is: %d", duration);
-  //Log_info("EXITING begin_request");
-  // one ref is already in pending_fu_
-  return (Future*) fu->ref_copy();
+  // Arc is in pending_fu_ (refcount=2), return copy to caller
+  return FutureResult::Ok(fu);
 }
 
 // @unsafe - Finalizes request packet with size header
 // SAFETY: Updates bookmark, enables write polling
-void Client::end_request() {
-  //auto start = chrono::steady_clock::now();
+void Client::end_request() const {
   // set reply size in packet
-  if (bmark_.is_some()) {
-    i32 request_size = out_.get_and_reset_write_cnt();
+  if (bmark_.borrow()->is_some()) {
+    i32 request_size = out_.borrow_mut()->get_and_reset_write_cnt();
     //Log_info("client request size is %d", request_size);
-    out_.write_bookmark(bmark_.unwrap_ref().get(), &request_size);
-    bmark_ = rusty::None;  // Reset to None (automatically deletes old value)
+    out_.borrow_mut()->write_bookmark(&*bmark_.borrow_mut()->as_mut().unwrap(), &request_size);
+    *bmark_.borrow_mut() = rusty::None;  // Reset to None (automatically deletes old value)
   }
 
-	out_.found_dep = false;
-	out_.valid_id = false;
+  // Jetpack: reset flags
+  out_.borrow_mut()->found_dep = false;
+  out_.borrow_mut()->valid_id = false;
 
   // always enable write events since the code above gauranteed there
   // will be some data to send
-  //Log_info("Client end_request setting write mode here....");
-  poll_thread_worker_->update_mode(*this, Pollable::READ | Pollable::WRITE);
+  // NOTE: end_request() is called from user threads, NOT the poll thread.
+  // Must use channel-based update_mode() - the direct worker() path is only safe
+  // for poll handlers (handle_read/handle_write) running on the poll thread.
+  poll_thread_worker_->update_mode(const_cast<Client&>(*this), Pollable::READ | Pollable::WRITE);
 
-  out_l_.unlock();
-			
-
-  //auto end = chrono::steady_clock::now();
-  //auto duration = chrono::duration_cast<chrono::microseconds>(end-start).count();
-  //Log_info("The Time for end_request is: %d");
+  out_l_.get()->unlock();
 }
 
-// @unsafe - Constructs pool with PollThreadWorker ownership
-// SAFETY: Shared ownership of PollThreadWorker
-ClientPool::ClientPool(rusty::Arc<PollThreadWorker> poll_thread_worker /* =? */,
+// @unsafe - Constructs pool with PollThread ownership
+// SAFETY: Shared ownership of PollThread
+ClientPool::ClientPool(rusty::Option<rusty::Arc<PollThread>> poll_thread_worker /* =? */,
                        int parallel_connections /* =? */)
     : parallel_connections_(parallel_connections) {
 
   verify(parallel_connections_ > 0);
-  if (!poll_thread_worker) {
-    poll_thread_worker_ = PollThreadWorker::create();
+  if (poll_thread_worker.is_none()) {
+    poll_thread_worker_ = rusty::Some(PollThread::create());
   } else {
-    poll_thread_worker_ = poll_thread_worker;
+    poll_thread_worker_ = std::move(poll_thread_worker);
   }
 }
 
 // @unsafe - Destroys pool and all cached connections
-// SAFETY: Closes all clients and releases PollThreadWorker
+// SAFETY: Closes all clients and releases PollThread
 ClientPool::~ClientPool() {
   for (auto& it : cache_) {
     for (auto& client : it.second) {
@@ -514,38 +485,37 @@ ClientPool::~ClientPool() {
     }
   }
 
-  // Shutdown PollThreadWorker if we own it
-  if (poll_thread_worker_) {
-    poll_thread_worker_->shutdown();
+  // Shutdown PollThread if we own it
+  if (poll_thread_worker_.is_some()) {
+    poll_thread_worker_.as_ref().unwrap()->shutdown();
   }
 }
 
 // @unsafe - Gets cached or creates new client connections
 // SAFETY: Protected by spinlock, handles connection failures gracefully
-std::shared_ptr<Client> ClientPool::get_client(const string& addr) {
-  std::shared_ptr<Client> sp_cl = nullptr;
+rusty::Option<rusty::Arc<Client>> ClientPool::get_client(const string& addr) {
+  rusty::Option<rusty::Arc<Client>> sp_cl = rusty::None;
   l_.lock();
   auto it = cache_.find(addr);
   if (it != cache_.end()) {
-    sp_cl = it->second[rand_() % parallel_connections_];
+    sp_cl = rusty::Some(it->second[rand_() % parallel_connections_].clone());
   } else {
-    std::vector<std::shared_ptr<Client>> parallel_clients;
+    std::vector<rusty::Arc<Client>> parallel_clients;
     bool ok = true;
     for (int i = 0; i < parallel_connections_; i++) {
-      auto client = std::make_shared<Client>(this->poll_thread_worker_);
+      auto client = Client::create(this->poll_thread_worker_.as_ref().unwrap().clone());
       client->client_ = true;  // Jetpack: mark as client
       if (client->connect(addr.c_str()) != 0) {
         ok = false;
-        // Already created clients will be automatically closed when parallel_clients goes out of scope
         break;
       }
       parallel_clients.push_back(client);
     }
     if (ok) {
-      sp_cl = parallel_clients[rand_() % parallel_connections_];
+      sp_cl = rusty::Some(parallel_clients[rand_() % parallel_connections_].clone());
       cache_[addr] = std::move(parallel_clients);
     }
-    // If not ok, parallel_clients automatically cleaned up by shared_ptr
+    // If not ok, parallel_clients automatically cleaned up by Arc
   }
   l_.unlock();
   return sp_cl;

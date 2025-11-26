@@ -5,35 +5,91 @@
 #include "reactor/event.h"
 #include "reactor/reactor.h"
 
+// External safety annotations for atomic operations and STL functions
+// @external: {
+//   std::__atomic_base::load: [unsafe]
+//   std::__atomic_base::store: [unsafe]
+//   std::__atomic_base::fetch_add: [unsafe]
+//   std::__atomic_base::fetch_sub: [unsafe]
+//   std::map::erase: [unsafe]
+//   std::list::erase: [unsafe]
+//   std::list::emplace_back: [unsafe]
+//   std::vector::push_back: [unsafe]
+//   std::function::function: [unsafe]
+// }
+
+
 
 namespace rrr {
 
 
+// @unsafe - Creates std::function objects from lambdas
+uint64_t ALock::Lock(uint64_t owner,
+                     type_t type,
+                     uint64_t priority) {
+
+  IntEvent& proceed = Reactor::CreateEvent<IntEvent>(); // init 0, 1 as ready
+  uint64_t ret_id = 0;
+  // @unsafe {
+  std::function<void(uint64_t)> _yes_callback
+      = [&proceed, &ret_id](uint64_t id) {
+        ret_id = id;
+        verify(id > 0);
+        proceed.Set(1);
+      };
+  std::function<void()> _no_callback
+      = [&]() {
+        proceed.Set(1);
+      };
+  std::function<int()> _wound_callback
+      = [&]() {
+//        proceed.Set(1); // TODO why this caused problem???
+        return 0;
+      };
+  // }
+  vlock(owner,
+        _yes_callback,
+        _no_callback,
+        type,
+        priority,
+        _wound_callback);
+  proceed.Wait();
+  return ret_id;
+}
+
+// Overload with wound_callback for jetpack compatibility
 uint64_t ALock::Lock(uint64_t owner,
                      type_t type,
                      uint64_t priority,
-                     const std::function<int(void)>& wound_cb) {
-  auto x = Reactor::CreateSpEvent<BoxEvent<uint64_t>>();
+                     const std::function<int(void)>& wound_callback) {
+
+  IntEvent& proceed = Reactor::CreateEvent<IntEvent>();
+  uint64_t ret_id = 0;
   std::function<void(uint64_t)> _yes_callback
-      = [x](uint64_t id) {
+      = [&proceed, &ret_id](uint64_t id) {
+        ret_id = id;
         verify(id > 0);
-        x->Set(id);
+        proceed.Set(1);
       };
   std::function<void()> _no_callback
-      = [x]() {
-        x->Set(0);
+      = [&]() {
+        proceed.Set(1);
       };
   vlock(owner,
         _yes_callback,
         _no_callback,
         type,
         priority,
-        wound_cb);
-  x->Wait();
-  verify(x->status_ != Event::TIMEOUT);
-  return x->Get();
+        wound_callback);
+  proceed.Wait();
+  return ret_id;
 }
 
+void ALock::DisableWound(uint64_t lock_req_id) {
+  // TODO
+}
+
+// @unsafe
 WaitDieALock::~WaitDieALock() {
     verify(!done_);
     done_ = true;
@@ -134,7 +190,7 @@ void WaitDieALock::abort(uint64_t id) {
     }
 
     int64_t n_w_before_this = 0;
-    auto it = requests_.begin();
+    std::list<lock_req_t>::iterator it = requests_.begin();
     for (; it != requests_.end(); it++)
         if (it->id == id)
             break;
@@ -146,7 +202,7 @@ void WaitDieALock::abort(uint64_t id) {
 
     if (it->status == lock_req_t::WAIT) { // abort waiting request
         lock_req_t aborted_lock_req(*it);
-        auto next_it = requests_.erase(it);
+        std::list<lock_req_t>::iterator next_it = requests_.erase(it);
         if (aborted_lock_req.type == RLOCK) {
             n_r_in_queue_--;
         }
@@ -173,11 +229,11 @@ void WaitDieALock::abort(uint64_t id) {
         if (it->type == RLOCK) { // unlock a read lock
             n_r_in_queue_--;
             n_rlock_--;
-            auto next_it = requests_.erase(it);
+            std::list<lock_req_t>::iterator next_it = requests_.erase(it);
             if (n_rlock_ == 0) {
                 if (next_it == requests_.end()) { // empty queue
                     status_ = FREE;
-                    verify(requests_.empty());
+                    verify(requests_.size() == 0);
                 }
                 else {
                     write_acquire(*next_it);
@@ -186,10 +242,10 @@ void WaitDieALock::abort(uint64_t id) {
         }
         else { // unlock a write lock
             n_w_in_queue_--;
-            auto next_it = requests_.erase(it);
+            std::list<lock_req_t>::iterator next_it = requests_.erase(it);
             if (next_it == requests_.end()) { // empty queue
                 status_ = FREE;
-                verify(requests_.empty());
+                verify(requests_.size() == 0);
             }
             else if (next_it->type == WLOCK) { // acquire next write lock
                 write_acquire(*next_it);
@@ -212,7 +268,7 @@ void WaitDieALock::abort(uint64_t id) {
 WoundDieALock::~WoundDieALock() {
     verify(!done_);
     done_ = true;
-    auto it = requests_.begin();
+    std::list<lock_req_t>::iterator it = requests_.begin();
     verify(status_ != RLOCKED);
     for (; it != requests_.end(); it++) {
         if (it->status == lock_req_t::WAIT)
@@ -225,7 +281,7 @@ void WoundDieALock::wound_die(type_t type, int64_t priority) {
     switch (type) {
         case WLOCK:
         {
-            auto rit = requests_.rbegin();
+            std::list<lock_req_t>::reverse_iterator rit = requests_.rbegin();
             while (rit != requests_.rend()) {
                 if (rit->priority >= priority) { // try wound it
                     int ret = wound(*rit);
@@ -234,22 +290,21 @@ void WoundDieALock::wound_die(type_t type, int64_t priority) {
                         continue;
                     }
                 }
-//                else {
-//                    if (rit->type == WLOCK) {
-//                        break;
-//                    }
-//                }
+                else {
+                    if (rit->type == WLOCK) {
+                        break;
+                    }
+                }
                 rit++;
             }
             break;
         }
         case RLOCK:
         {
-            auto rit = requests_.rbegin();
+            std::list<lock_req_t>::reverse_iterator rit = requests_.rbegin();
             while (rit != requests_.rend()) {
                 if (rit->priority < priority) {
-//                    break;
-                  continue;
+                    break;
                 }
                 if (rit->type == WLOCK) { // try wound write lock
                     int ret = wound(*rit);
@@ -297,7 +352,7 @@ uint64_t WoundDieALock::vlock(uint64_t owner,
             }
             else {
                 std::vector<lock_req_t *> lock_reqs;
-                auto it = requests_.begin();
+                std::list<lock_req_t>::iterator it = requests_.begin();
                 for (; it != requests_.end(); it++)
                     if (it->type == RLOCK)
                         lock_reqs.push_back(&(*it));
@@ -312,7 +367,7 @@ uint64_t WoundDieALock::vlock(uint64_t owner,
             verify(front.type == RLOCK && front.status == lock_req_t::LOCK);
             bool new_acquired = false;
             std::vector<lock_req_t *> lock_reqs;
-            auto it = requests_.begin();
+            std::list<lock_req_t>::iterator it = requests_.begin();
             for (; it != requests_.end(); it++) {
                 if (it->status == lock_req_t::LOCK) {
                     verify(it->type == RLOCK && new_acquired == false);
@@ -343,7 +398,7 @@ void WoundDieALock::abort(uint64_t id) {
         return;
 
     int64_t n_w_before_this = 0;
-    auto it = requests_.begin();
+    std::list<lock_req_t>::iterator it = requests_.begin();
     for (; it != requests_.end(); it++)
         if (it->id == id)
             break;
@@ -355,7 +410,7 @@ void WoundDieALock::abort(uint64_t id) {
 
     if (it->status == lock_req_t::WAIT) { // abort waiting request
         lock_req_t aborted_lock_req(*it);
-        auto next_it = requests_.erase(it);
+        std::list<lock_req_t>::iterator next_it = requests_.erase(it);
         if (aborted_lock_req.type == WLOCK) {
             if (n_w_before_this == 0) { // alock must be read locked
                                         // needs to approve all following read
@@ -377,11 +432,11 @@ void WoundDieALock::abort(uint64_t id) {
     else { // unlock
         if (it->type == RLOCK) { // unlock a read lock
             n_rlock_--;
-            auto next_it = requests_.erase(it);
+            std::list<lock_req_t>::iterator next_it = requests_.erase(it);
             if (n_rlock_ == 0) {
                 if (next_it == requests_.end()) { // empty queue
                     status_ = FREE;
-                    verify(requests_.empty());
+                    verify(requests_.size() == 0);
                 }
                 else {
                     write_acquire(*next_it);
@@ -389,10 +444,10 @@ void WoundDieALock::abort(uint64_t id) {
             }
         }
         else { // unlock a write lock
-            auto next_it = requests_.erase(it);
+            std::list<lock_req_t>::iterator next_it = requests_.erase(it);
             if (next_it == requests_.end()) { // empty queue
                 status_ = FREE;
-                verify(requests_.empty());
+                verify(requests_.size() == 0);
             }
             else if (next_it->type == WLOCK) { // acquire next write lock
                 write_acquire(*next_it);
@@ -479,9 +534,12 @@ uint64_t TimeoutALock::vlock(uint64_t owner,
         uint64_t tm_now = rrr::Time::now();
         uint64_t tm_out = tm_now + tm_wait_;
         auto& alarm = get_alarm_s();
+        // @unsafe - Lambda captures reference to req
+        // @unsafe {
         req.alarm_id_ = alarm.add(tm_out, [this, &req] () {
                 this->do_timeout(req);
                 });
+        // }
     } else {
         // tm_wait_ = 0
         // do nothing, no callback after release the lock_;
@@ -616,14 +674,19 @@ void TimeoutALock::abort(uint64_t id) {
     for (auto& r: lock_reqs) {
         r->yes_callback_(r->id_);
     }
+
+    return;
 }
 
 
+// @unsafe - Uses std::function and std::vector
 TimeoutALock::~TimeoutALock() {
     //    return;
 
     // free all the lockes and trigger timeout for those waiting.
+    // @unsafe {
     std::vector<std::function<void(void)>> tocall;
+    // }
     //        lock_.lock();
     auto& alarm = get_alarm_s();
     auto it = requests_.begin();

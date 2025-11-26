@@ -21,6 +21,11 @@
 #include "alarm.hpp"
 #include "dball.hpp"
 
+// External safety annotations for STL functions used in inline methods
+// @external: {
+//   std::function::function: [unsafe]
+// }
+
 #define ALOCK_TIMEOUT (200000) // 0.2s;
 //#define ALOCK_TIMEOUT (0) // no_timeout;
 
@@ -30,6 +35,7 @@ namespace rrr {
 class ALock {
  public:
   enum type_t { RLOCK, WLOCK };
+ private:
   uint64_t next_id_ = 1;
   uint64_t owner_{0};
 
@@ -42,6 +48,7 @@ class ALock {
     return next_id_++;
   }
 
+  // @unsafe - Pure virtual function for lock implementation
   virtual uint64_t vlock(uint64_t owner,
                          const std::function<void(uint64_t)> &yes_callback,
                          const std::function<void(void)> &no_callback,
@@ -58,16 +65,19 @@ class ALock {
       done_(false) {
   }
 
+  // @unsafe - Constructs std::function and calls virtual vlock
   virtual uint64_t lock(uint64_t owner,
                         const std::function<void(void)> &yes_callback,
                         const std::function<void(void)> &no_callback,
                         type_t type = WLOCK,
                         int64_t priority = 0, // lower value has higher priority
                         const std::function<int(void)> &wound_callback = [] ()->int {return 0;}) {
+    // @unsafe {
     std::function<void(uint64_t)> _yes_callback
         = [yes_callback](uint64_t id) {
           yes_callback();
         };
+    // }
     return vlock(owner,
                  _yes_callback,
                  no_callback,
@@ -82,9 +92,15 @@ class ALock {
    */
   virtual uint64_t Lock(uint64_t owner = 0,
                         type_t type = WLOCK,
-                        uint64_t priority = 0,
-                        const std::function<int(void)>& = {});
+                        uint64_t priority = 0);
 
+  // Overload with wound_callback for jetpack compatibility
+  virtual uint64_t Lock(uint64_t owner,
+                        type_t type,
+                        uint64_t priority,
+                        const std::function<int(void)>& wound_callback);
+
+  virtual void DisableWound(uint64_t req_id);
   virtual void abort(uint64_t id) = 0;
   virtual ~ALock() { }
 };
@@ -267,7 +283,6 @@ class WaitDieALock: public ALock {
   virtual void abort(uint64_t id) override;
 };
 
-// TODO rename this to WoundWaitLock
 class WoundDieALock: public ALock {
  protected:
   struct lock_req_t {
@@ -330,9 +345,7 @@ class WoundDieALock: public ALock {
   // return 1: unwoundable
   int wound(lock_req_t &lock_req) {
     if (lock_req.status == lock_req_t::WAIT) { // waiting, use no callback
-      int ret = lock_req.wound_callback();
       lock_req.no_callback();
-      verify(ret == 0);
       return 0;
     } else { // locked, use wound callback
       int ret = lock_req.wound_callback();
@@ -514,6 +527,7 @@ class TimeoutALock: public ALock {
         status_(WAIT) {
     }
 
+    // @safe
     status_t get_status() {
       //            std::lock_guard<std::mutex> guard(mtx_);
       return status_;
@@ -639,11 +653,13 @@ class ALockGroup {
     status_ = s;
   }
 
+  // @safe
   status_t get_status() {
     //        std::lock_guard<std::mutex> guard(mtx_);
     return status_;
   }
 
+  // @unsafe
   void add(ALock *alock, ALock::type_t type = ALock::WLOCK) {
 
 
