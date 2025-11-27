@@ -224,6 +224,8 @@ bool ServerConnection::handle_read() {
 
         auto it = server_->handlers_.find(rpc_id);
         if (it != server_->handlers_.end()) {
+            // rusty::Function allows direct capture of move-only types like rusty::Box
+            // Lambda captures rusty::Box<Request> by move, maintaining single ownership semantics
             auto weak_this = weak_self_;
             // Jetpack: pass file/line for debugging; mako-dev block_read_in not used in this branch
             Coroutine::CreateRun([handler = it->second, req = std::move(req), weak_this]() mutable {

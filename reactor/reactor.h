@@ -31,6 +31,11 @@
 //   kevent: [unsafe, (int, const struct kevent*, int, struct kevent*, int, const struct timespec*) -> int]
 //   close: [unsafe, (int) -> int]
 //   std::__atomic_base::load: [unsafe, (std::memory_order) -> auto]
+//   rusty::Function::Function: [safe]
+//   rusty::Function::operator(): [safe]
+//   rusty::Rc::Rc: [safe]
+//   rusty::Rc::make: [safe]
+//   rusty::Rc::clone: [safe]
 // }
 
 // External safety annotations for STL and RustyCpp operations
@@ -45,6 +50,10 @@
 //   std::*::clear: [unsafe, () -> void]
 //   std::*::empty: [unsafe, () -> bool]
 //   std::*::size: [unsafe, () -> size_t]
+//   std::*::back: [unsafe, () -> auto&]
+//   std::*::pop_back: [unsafe, () -> void]
+//   std::*::push_back: [unsafe, (auto) -> void]
+//   std::*::insert_or_assign: [unsafe, (auto...) -> auto]
 //   std::*::operator[]: [unsafe, (auto) -> auto&]
 //   std::make_shared: [unsafe, (auto...) -> std::shared_ptr<auto>]
 //   std::shared_ptr::operator*: [unsafe, () -> auto&]
@@ -52,22 +61,29 @@
 //   std::shared_ptr::get: [unsafe, () -> auto*]
 //   std::shared_ptr::operator=: [unsafe, (const std::shared_ptr<auto>&) -> std::shared_ptr<auto>&]
 //   std::shared_ptr::shared_ptr: [unsafe, (auto...) -> void]
-//   std::list::push_back: [unsafe, (auto) -> void]
-//   std::vector::push_back: [unsafe, (auto) -> void]
-//   std::unordered_map::operator[]: [unsafe, (auto) -> auto&]
-//   std::unordered_map::find: [unsafe, (auto) -> auto]
-//   std::unordered_map::erase: [unsafe, (auto) -> auto]
-//   std::unordered_map::insert: [unsafe, (auto) -> auto]
-//   std::unordered_map::clear: [unsafe, () -> void]
-//   std::unordered_set::insert: [unsafe, (auto) -> auto]
-//   std::unordered_set::erase: [unsafe, (auto) -> auto]
-//   std::unordered_set::find: [unsafe, (auto) -> auto]
-//   std::unordered_set::clear: [unsafe, () -> void]
-//   std::set::insert: [unsafe, (auto) -> auto]
-//   std::set::erase: [unsafe, (auto) -> auto]
-//   std::set::find: [unsafe, (auto) -> auto]
-//   std::set::clear: [unsafe, () -> void]
+//   std::visit: [unsafe, (auto...) -> auto]
+//   visit: [unsafe, (auto...) -> auto]
+//   std::move: [unsafe, (auto) -> auto]
 //   rusty::rc::Weak::Weak: [safe, () -> void]
+//   rusty::Option::Option: [unsafe, (auto...) -> void]
+//   rusty::Option::is_none: [unsafe, () -> bool]
+//   rusty::Option::is_some: [unsafe, () -> bool]
+//   rusty::Option::as_ref: [unsafe, () -> auto]
+//   rusty::Option::unwrap: [unsafe, () -> auto]
+//   rusty::Rc::clone: [unsafe, () -> auto]
+//   rusty::Arc::Arc: [unsafe, (auto...) -> void]
+//   rusty::Arc::clone: [unsafe, () -> auto]
+//   rusty::Arc::get: [unsafe, () -> auto*]
+//   rusty::sync::mpsc::Receiver::Receiver: [unsafe, (auto...) -> void]
+//   rusty::sync::mpsc::Receiver::try_recv: [unsafe, () -> auto]
+//   rusty::RefCell::borrow_mut: [unsafe, () -> auto]
+//   rrr::Log::debug: [unsafe, (auto...) -> void]
+//   rrr::Log::error: [unsafe, (auto...) -> void]
+//   Log_debug: [unsafe, (auto...) -> void]
+//   Log_error: [unsafe, (auto...) -> void]
+//   rrr::Event::Test: [unsafe, () -> bool]
+//   rrr::Time::now: [unsafe, (auto...) -> auto]
+//   verify: [unsafe, (auto) -> void]
 // }
 
 namespace rrr {
@@ -154,10 +170,11 @@ class Reactor {
    * @param ev. is usually allocated on coroutine stack. memory managed by user.
    */
   // Creates and runs a new coroutine with rusty::Rc ownership
-  rusty::Rc<Coroutine> CreateRunCoroutine(std::move_only_function<void()> func,
+  // Jetpack: file/line parameters for debugging coroutine creation location
+  rusty::Rc<Coroutine> CreateRunCoroutine(rusty::Function<void()> func,
                                           const char* file = "",
                                           int64_t line = 0) const;
-  // Main event loop - check_timeout parameter for flexibility
+  // Main event loop - check_timeout parameter for flexibility (Jetpack)
   void Loop(bool infinite = false, bool check_timeout = true) const;
   void DiskLoop() const;
   // Continues execution of a paused coroutine with rusty::Rc
@@ -247,7 +264,7 @@ namespace rrr {
 // Receives commands from PollThread via mpsc channel
 //
 // @safe - Single-threaded worker with RefCell for interior mutability
-// SAFETY: PollThreadWorker is memory-safe because:
+// Design rationale - PollThreadWorker is memory-safe because:
 // 1. Single-threaded: Runs only on its dedicated poll thread, no data races
 // 2. Ownership: Owns all Pollables via fd_to_pollable_ map
 // 3. Lifetime: Worker outlives all Pollables - on shutdown, clears before destruction

@@ -5,6 +5,7 @@
 #include <rusty/option.hpp>
 #include <rusty/cell.hpp>
 #include <rusty/refcell.hpp>
+#include <rusty/function.hpp>
 
 #define USE_BOOST_COROUTINE2
 
@@ -50,12 +51,13 @@ class Coroutine {
   // Returns None if called outside of a coroutine context
   static rusty::Option<rusty::Rc<Coroutine>> CurrentCoroutine();
 
-  // Template wrapper to support file/line debugging parameters
-  // Using std::move_only_function to support move-only callables (e.g., lambdas capturing rusty::Box)
+  // the argument cannot be a reference because it could be declared on stack.
+  // Using rusty::Function to support move-only callables (e.g., lambdas capturing rusty::Box)
   // Creates and runs coroutine with rusty::Rc ownership
+  // Template wrapper to support file/line debugging parameters (Jetpack)
   template <typename Func>
   static rusty::Rc<Coroutine> CreateRun(Func&& func, const char* file = "", int64_t line = 0) {
-    return CreateRunImpl(std::move_only_function<void()>(std::forward<Func>(func)), file, line);
+    return CreateRunImpl(rusty::Function<void()>(std::forward<Func>(func)), file, line);
   }
 
   static void Sleep(uint64_t microseconds);
@@ -68,15 +70,15 @@ class Coroutine {
 
   // Interior mutability for use with rusty::Rc (const methods need to modify state)
   mutable Status status_ = INIT;
-  mutable bool needs_finalize_ = false;
-  mutable std::move_only_function<void()> func_{};
+  mutable bool needs_finalize_ = false;  // Jetpack: track finalization state
+  mutable rusty::Function<void()> func_{};
 
   // Migrated from std::unique_ptr to rusty::Box with Option for nullable semantics
   mutable rusty::Option<rusty::Box<boost_coro_task_t>> boost_coro_task_{};
   mutable boost::optional<boost_coro_yield_t&> boost_coro_yield_{};
 
   Coroutine() = delete;
-  explicit Coroutine(std::move_only_function<void()> func);
+  explicit Coroutine(rusty::Function<void()> func);
   ~Coroutine();
   // @unsafe - Uses std::bind and function pointers
   void BoostRunWrapper(boost_coro_yield_t& yield);
@@ -96,7 +98,7 @@ class Coroutine {
   }
 
  private:
-  static rusty::Rc<Coroutine> CreateRunImpl(std::move_only_function<void()> func, const char* file, int64_t line);
+  static rusty::Rc<Coroutine> CreateRunImpl(rusty::Function<void()> func, const char* file, int64_t line);
 };
 
 } // namespace rrr

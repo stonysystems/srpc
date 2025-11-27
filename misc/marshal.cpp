@@ -523,10 +523,9 @@ MarshallDeputy::GetInitializer(int32_t type) {
   return f;
 }
 
-// @safe - Returns reference to global factory registry
+// Returns reference to global factory registry
 // SAFETY: Protected by mutex, initializes on first access
 // Uses Construct On First Use idiom to avoid static initialization order fiasco
-// @lifetime: () -> &'static
 MarshallDeputy::MarContainer&
 MarshallDeputy::GetInitializers() {
   // Note: Caller must hold md_mutex_g
