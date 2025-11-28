@@ -28,7 +28,7 @@
 //   operator!=: [safe, (auto, auto) -> bool]
 //   operator==: [safe, (auto, auto) -> bool]
 //   std::*::find: [safe, (auto) -> auto]
-//   std::*::end: [safe, (auto) -> auto]
+//   std::*::end: [safe, () -> auto]
 //   std::*::begin: [safe, () -> auto]
 //   std::*::insert: [safe, (auto) -> auto]
 //   std::*::operator[]: [safe, (auto) -> auto]
