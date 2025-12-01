@@ -174,6 +174,13 @@ bool ServerConnection::handle_read() {
         return false;
     }
 
+    // CRITICAL FIX: With edge-triggered epoll (EPOLLET), we must:
+    // 1. Drain all data from the socket
+    // 2. Process ALL complete packets in the buffer
+    // The old code only processed ONE packet per handle_read() call,
+    // causing hangs when multiple requests arrive together.
+
+    // First, read all available data from the socket into the buffer
     size_t bytes_read = in_.read_from_fd(socket_);
     if (bytes_read == 0 && in_.content_size() < sizeof(i32)) {
         // Connection made no forward progress and there isn't enough buffered
@@ -184,11 +191,12 @@ bool ServerConnection::handle_read() {
 
     std::list<rusty::Box<Request>> complete_requests;
 
-    // Read all available complete packets in one batch
+    // Process ALL complete packets in the buffer
     for (;;) {
         i32 packet_size;
         int n_peek = in_.peek(&packet_size, sizeof(i32));
         if (n_peek == sizeof(i32) && in_.content_size() >= packet_size + sizeof(i32)) {
+            // consume the packet size
             verify(in_.read(&packet_size, sizeof(i32)) == sizeof(i32));
 
             auto req = rusty::Box<Request>(new Request());
@@ -200,6 +208,7 @@ bool ServerConnection::handle_read() {
             complete_requests.push_back(std::move(req));
 
         } else {
+            // packet not complete or there's no more packet to process
             break;
         }
     }

@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/syscall.h>  // For SYS_gettid
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -425,6 +426,7 @@ rusty::Rc<rusty::RefCell<PollThreadWorker>> PollThreadWorker::create(rusty::sync
 }
 
 void PollThreadWorker::poll_loop() {
+  Log_debug("[poll_loop] Starting poll loop");
   while (!stop_) {
     TriggerJob();
 
@@ -446,6 +448,7 @@ void PollThreadWorker::poll_loop() {
     Reactor::GetReactor()->Loop();
   }
 
+  Log_debug("[poll_loop] Exited while loop (stop_=true), starting cleanup");
   // Shutdown cleanup - remove all registered pollables
   for (auto& [fd, sp_poll] : fd_to_pollable_) {
     if (mode_.find(fd) != mode_.end()) {
@@ -455,6 +458,7 @@ void PollThreadWorker::poll_loop() {
   fd_to_pollable_.clear();
   mode_.clear();
   pending_remove_.clear();
+  Log_debug("[poll_loop] Cleanup complete, poll_loop exiting");
 }
 
 void PollThreadWorker::process_commands() {
@@ -609,10 +613,10 @@ rusty::Arc<PollThread> PollThread::create() {
   // Spawn thread - worker owns the receiver
   auto handle = rusty::thread::spawn(
     [thread_id_ptr](rusty::sync::mpsc::Receiver<PollCommand> rx) {
-      thread_id_ptr->store(std::this_thread::get_id(), std::memory_order_release);
+      auto tid = std::this_thread::get_id();
+      thread_id_ptr->store(tid, std::memory_order_release);
       // Create worker wrapped in Rc<RefCell<>>
       auto worker = PollThreadWorker::create(std::move(rx));
-      // borrow_mut() returns RefMut<T>, use -> to access methods
       worker->borrow_mut()->poll_loop();
     },
     std::move(receiver)
@@ -627,30 +631,49 @@ rusty::Arc<PollThread> PollThread::create() {
   return arc;
 }
 
+PollThread::~PollThread() {
+  pid_t tid = syscall(SYS_gettid);
+  Log_debug("[PollThread::~PollThread] Destructor called from TID=%d", (int)tid);
+  shutdown();
+  Log_debug("[PollThread::~PollThread] Destructor complete");
+}
+
 void PollThread::shutdown() const {
+  pid_t main_tid = syscall(SYS_gettid);
+  Log_debug("[PollThread::shutdown] Called from TID=%d", (int)main_tid);
   if (shutdown_called_.exchange(true)) {
+    Log_debug("[PollThread::shutdown] Already called, returning");
     return;  // Already called
   }
 
   // Send shutdown command via channel
+  Log_debug("[PollThread::shutdown] Sending CmdShutdown");
   sender_.send(CmdShutdown{});
+  Log_debug("[PollThread::shutdown] CmdShutdown sent");
 
   // Check if we're on the poll thread (atomic load for thread-safe read)
-  if (std::this_thread::get_id() == poll_thread_id_.load(std::memory_order_acquire)) {
+  auto current_tid = std::this_thread::get_id();
+  auto poll_tid = poll_thread_id_.load(std::memory_order_acquire);
+  if (current_tid == poll_tid) {
+    Log_debug("[PollThread::shutdown] Called from poll thread, skipping join");
     return;
   }
 
   // Join thread
+  Log_debug("[PollThread::shutdown] Acquiring join_handle lock...");
   {
     auto guard = join_handle_.lock();
+    Log_debug("[PollThread::shutdown] join_handle lock acquired");
     if (guard->is_some()) {
+      Log_debug("[PollThread::shutdown] Calling thread.join()...");
       guard->take().unwrap().join();
+      Log_debug("[PollThread::shutdown] thread.join() completed!");
+    } else {
+      Log_debug("[PollThread::shutdown] join_handle is None, thread already joined");
     }
   }
-}
-
-PollThread::~PollThread() {
-  shutdown();
+  Log_debug("[PollThread::shutdown] Released join_handle lock");
+  Log_debug("[PollThread::shutdown] Complete");
 }
 
 void PollThread::add(rusty::Arc<Pollable> poll) const {

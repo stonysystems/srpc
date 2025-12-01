@@ -184,7 +184,10 @@ class Reactor {
   void ReadyEventsThreadSafePushBack(std::shared_ptr<Event> ev) const;
 
   ~Reactor() {
-//    verify(0);
+    Log_debug("[Reactor::~Reactor] Starting destruction, all_events_.size()=%zu, coros_.size()=%zu",
+              all_events_.size(), coros_.size());
+    // Note: destructor body runs BEFORE member variables are destroyed
+    Log_debug("[Reactor::~Reactor] Destructor body complete, about to destroy member variables");
   }
   friend Event;
 
