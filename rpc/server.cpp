@@ -30,6 +30,7 @@ using namespace std;
 //   std::unordered_map::find: [unsafe, (auto) -> auto]
 //   std::unordered_map::erase: [unsafe, (auto) -> void]
 //   std::function::operator=: [unsafe, (auto) -> std::function&]
+//   rrr::ServerConnection: [unsafe_type]
 // }
 
 namespace rrr {

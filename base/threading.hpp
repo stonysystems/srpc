@@ -70,7 +70,7 @@ public:
 //    virtual Lockable::type whatami() = 0;
 };
 
-// @safe - Thread-safe spinlock using atomic operations
+// @unsafe - Used with mutable for interior mutability
 class SpinLock: public Lockable {
 public:
     // @safe - Initializes to unlocked state

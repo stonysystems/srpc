@@ -1,6 +1,13 @@
 
 #pragma once
 
+// External safety annotations for types included transitively through this umbrella header
+// These annotations ensure the borrow checker recognizes types as unsafe when analyzing
+// files that include rrr.hpp
+// @external: {
+//   rrr::ServerConnection: [unsafe_type]
+// }
+
 #include "base/all.hpp"
 
 #include "misc/stat.hpp"
