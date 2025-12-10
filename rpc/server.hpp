@@ -128,8 +128,8 @@ class ServerConnection;
 // Type alias for Arc weak reference
 using WeakServerConnection = rusty::sync::Weak<ServerConnection>;
 
-// @unsafe - Handles individual client connections
 // SAFETY: Thread-safe with spinlocks, proper Arc lifetime management
+// @unsafe - Handles individual client connections
 class ServerConnection: public Pollable {
 
     friend class Server;

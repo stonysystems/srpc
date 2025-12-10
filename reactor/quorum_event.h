@@ -80,8 +80,10 @@ class QuorumEvent : public Event {
     return n_voted_no_ > (n_total_ - quorum_);
   }
 
+  // @unsafe: calls undeclared Test(), Time::now(), vector::push_back(), IntEvent::Set()
   void VoteYes();
 
+  // @unsafe: calls undeclared Test(), IntEvent::Set()
   void VoteNo();
 
   bool IsReady() override {
