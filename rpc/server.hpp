@@ -1,3 +1,4 @@
+// @unsafe - RPC server module uses raw sockets and mutable spinlocks
 #pragma once
 #include <rusty/arc.hpp>
 #include <rusty/option.hpp>
@@ -35,6 +36,10 @@
 //   std::*::erase: [safe, (auto) -> auto]
 // }
 
+// for getaddrinfo() used in Server::start()
+//struct addrinfo;
+
+// @unsafe - RPC module uses raw sockets, mutable spinlocks, and pthread primitives
 namespace rrr {
 
 class Server;
@@ -128,9 +133,10 @@ class ServerConnection;
 // Type alias for Arc weak reference
 using WeakServerConnection = rusty::sync::Weak<ServerConnection>;
 
-// SAFETY: Thread-safe with spinlocks, proper Arc lifetime management
-// @unsafe - Handles individual client connections
+// @unsafe - Uses mutable SpinLock for interior mutability
 class ServerConnection: public Pollable {
+    // Handles individual client connections
+    // SAFETY: Thread-safe with spinlocks, proper Arc lifetime management
 
     friend class Server;
     friend class ServerListener;

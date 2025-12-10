@@ -76,14 +76,17 @@ void Future::timed_wait(double sec) const {
 void Future::notify_ready(rusty::Arc<Future> self) const {
   bool should_callback = false;
   {
-    auto guard = state_.lock();
-    if (!guard->timed_out) {
-      guard->ready = true;
+    std::lock_guard<std::mutex> cv_lock(*condvar_m_.get());
+    {
+      auto guard = state_.lock();
+      if (!guard->timed_out) {
+        guard->ready = true;
+      }
+      should_callback = guard->ready;
     }
-    should_callback = guard->ready;
+    // Notify while holding condvar_m_ to prevent race with wait()
+    ready_cond_.get()->notify_all();
   }
-  // Notify after releasing state lock
-  ready_cond_.get()->notify_all();
 
   // Execute callback outside lock to avoid deadlock
   if (should_callback && attr_.callback != nullptr) {
