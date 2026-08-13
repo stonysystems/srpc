@@ -1139,7 +1139,11 @@ struct SerializableRegistryMap {
     map: rusty::HashMap<i32, rusty::SerializableRegistryFactory>,
 }
 
-fn registry() -> &'static rusty::Mutex<SerializableRegistryMap> {
+// The otherwise-unused parameter intentionally makes this a C++ function
+// template: the generated lazy function-local registry then has linkonce
+// linkage instead of adding a new externally strong provider symbol.
+#[allow(clippy::extra_unused_type_parameters)]
+fn registry<T>() -> &'static rusty::Mutex<SerializableRegistryMap> {
     static R: rusty::Mutex<SerializableRegistryMap> = rusty::Mutex::new(SerializableRegistryMap {
         map: rusty::HashMap::new(),
     });
@@ -1151,14 +1155,14 @@ pub fn serializable_registry_register_factory(
     kind: i32,
     factory: rusty::SerializableRegistryFactory,
 ) {
-    let mut guard = registry().lock().unwrap();
+    let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
     (*guard).map.insert(kind, factory);
 }
 
 #[allow(clippy::explicit_auto_deref)]
 #[allow(unsafe_code)]
 pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy {
-    let guard = registry().lock().unwrap();
+    let guard = registry::<SerializableRegistryMap>().lock().unwrap();
     let entry = (*guard).map.get(&kind);
     unsafe { cpp_debugging::verify(entry.is_some()) };
     entry.unwrap()()
@@ -1166,12 +1170,12 @@ pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy 
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_is_registered_impl(kind: i32) -> bool {
-    let guard = registry().lock().unwrap();
+    let guard = registry::<SerializableRegistryMap>().lock().unwrap();
     (*guard).map.get(&kind).is_some()
 }
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_clear_impl() {
-    let mut guard = registry().lock().unwrap();
+    let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
     (*guard).map.clear();
 }
