@@ -60,6 +60,9 @@ namespace = "rrr"
 kind = "function_template"
 callable_signatures = ["void(bool)"]
 
+[modules."rrr::errors"]
+namespace = "rrr"
+
 [modules."rrr::serializable"]
 namespace = "rrr"
 

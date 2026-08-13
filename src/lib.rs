@@ -7,6 +7,8 @@
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod basetypes;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
+pub mod callbacks;
+#[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod callback_wrapper;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod channel;

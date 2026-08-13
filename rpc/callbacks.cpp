@@ -1,134 +1,87 @@
-module;
+//! Thread-safe connection lifecycle callback registration and dispatch.
+//!
+//! The public names, field order, and method signatures intentionally match
+//! the legacy `rrr.callbacks` C++ module. Callback lists are cloned under the
+//! mutex and invoked after releasing it, and `clear_all` drains dispatches that
+//! already took a snapshot before returning.
 
-#include <rusty/rusty.hpp>
-#include <rusty/function.hpp>
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Condvar, Mutex};
 
-export module rrr.callbacks;
+// This otherwise-unused source-owned import keeps the exact `rrr.errors`
+// provider visible to generated C++. The private alias below remains the real
+// Rust enum for rustc callers; the checked type map preserves its public C++
+// spelling as `::rrr::RpcError`.
+#[allow(unused_imports)]
+use cpp::rrr::errors as cpp_errors;
+use rusty as cpp;
 
-import std;
-import rusty;
-import rrr.errors;
-import rrr.threading;
+// Native Rust uses `String`. The SRPC consumer profile maps this private alias
+// to `std::string`, preserving the legacy callback and method signatures rather
+// than exposing rusty-cpp's distinct `rusty::String` type.
+type LegacyStdString = String;
+type LegacyRpcError = crate::errors::RpcError;
 
-// @safe - Callback registry/dispatch. All operations go through rusty
-// primitives (rusty::Mutex / Vec / Arc / Function). No raw pointers,
-// syscalls, or operator-overload chains.
-//
-// `ConnectionCallbacks` (the payload struct behind the rusty::Mutex) and
-// `CallbackManager` (the public facade) are authored as inline Rust
-// DSL; the transpiler regenerates the matching
-// `/*RUSTYCPP:GEN-BEGIN ... END*/` block below.
-//
-// Nothing here is hand-written C++ any more: the per-callback exception
-// swallow (`invoke_callback_safely`) is three arity-specific DSL fns over
-// `std::panic::catch_unwind`, one per callback alias.
-export namespace rrr {
+pub type ConnectionCallback = Arc<Box<dyn Fn() + Send + Sync>>;
+pub type ErrorCallback = Arc<Box<dyn Fn(LegacyRpcError, &LegacyStdString) + Send + Sync>>;
+pub type ReconnectCallback = Arc<Box<dyn Fn(bool) + Send + Sync>>;
 
-// Authored as inline Rust DSL. `dyn Fn` is callable through `&self`, so it
-// lowers to the trailing-`const` C++ signature these aliases need (`dyn
-// FnMut` would give the non-const form). Spell the string parameter
-// `&std::string`, NOT `&String` — the latter lowers to
-// `const rusty::String&`, a different type.
-#if RUSTYCPP_RUST
-type ConnectionCallback = rusty::Arc<rusty::Function<dyn Fn()>>;
-type ErrorCallback = rusty::Arc<rusty::Function<dyn Fn(RpcError, &std::string)>>;
-type ReconnectCallback = rusty::Arc<rusty::Function<dyn Fn(bool)>>;
-#endif
-/*RUSTYCPP:GEN-BEGIN id=callbacks.2 version=1 rust_sha256=bc6501a4c6cb41f46e0b9900a07aef4ae9d456c7440fe6e9c3b5381550c9033f*/
-using ConnectionCallback = rusty::Arc<rusty::Function<void() const>>;
-using ErrorCallback = rusty::Arc<rusty::Function<void(RpcError, const std::string&) const>>;
-using ReconnectCallback = rusty::Arc<rusty::Function<void(bool) const>>;
-/*RUSTYCPP:GEN-END id=callbacks.2*/
-
-// @safe - the per-callback exception swallow, now DSL.
-// `std::panic::catch_unwind` lowers to `rusty::panic::catch_unwind`, whose
-// internal `catch (...)` IS the old `try { } catch (...) { }`: the Result is
-// dropped, so a throwing — or panicking — user callback is swallowed exactly
-// as before (a rusty panic is `throw std::runtime_error`, which the old
-// `catch (...)` swallowed too). No log arm on purpose: adding one would
-// change observable behaviour. Same recipe as server.cpp's
-// `server_invoke_shutdown_hook_safely`, minus its logging/rethrow kernel.
-//
-// The template + parameter pack are gone because every call site is one of
-// exactly three arities (5 sites: 3x arity-0, 1x arity-2, 1x arity-1), one
-// per callback alias. Rust has no overloading, so the three fns live in
-// SEPARATE `#if RUSTYCPP_RUST` blocks; the emitted C++ overloads fine and
-// the arities are disjoint, so no ambiguity is possible.
-#if RUSTYCPP_RUST
-fn invoke_callback_safely(cb: &ConnectionCallback) {
-    unsafe { std::panic::catch_unwind(|| { (*cb)(); }); }
+#[cfg_attr(any(), cpp_name(invoke_callback_safely))]
+fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // The explicit double dereference is also significant to the C++
+        // consumer: `Arc<Box<dyn Fn>>` flattens to `Arc<Function>`, so this
+        // emits exactly one pointer-like dereference before invocation.
+        (**callback)();
+    }));
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=callbacks.3 version=1 rust_sha256=c8723db94d76137a21c57d2d5a1ef09d65a5d246c9ebdc8ee61e71c992dcb253*/
-void invoke_callback_safely(const ConnectionCallback& cb) {
-    // @unsafe
-    {
-        rusty::panic::catch_unwind([&]() {
-(rusty::detail::deref_if_pointer_like(cb))();
-});
-    }
-}
-/*RUSTYCPP:GEN-END id=callbacks.3*/
 
-#if RUSTYCPP_RUST
-fn invoke_callback_safely(cb: &ErrorCallback, error: RpcError, message: &std::string) {
-    unsafe { std::panic::catch_unwind(|| { (*cb)(error, message); }); }
+#[cfg_attr(any(), cpp_name(invoke_callback_safely))]
+fn invoke_error_callback_safely(
+    callback: &ErrorCallback,
+    error: LegacyRpcError,
+    message: &LegacyStdString,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        (**callback)(error, message);
+    }));
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=callbacks.4 version=1 rust_sha256=b526360c1468c90fd6512cceb4b2bad90396f2d12ffd1041b59aac2b280dab3b*/
-void invoke_callback_safely(const ErrorCallback& cb, RpcError error, const std::string& message) {
-    // @unsafe
-    {
-        rusty::panic::catch_unwind([&]() {
-(rusty::detail::deref_if_pointer_like(cb))(std::move(error), message);
-});
-    }
-}
-/*RUSTYCPP:GEN-END id=callbacks.4*/
 
-#if RUSTYCPP_RUST
-fn invoke_callback_safely(cb: &ReconnectCallback, success: bool) {
-    unsafe { std::panic::catch_unwind(|| { (*cb)(success); }); }
+#[cfg_attr(any(), cpp_name(invoke_callback_safely))]
+fn invoke_reconnect_callback_safely(callback: &ReconnectCallback, success: bool) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        (**callback)(success);
+    }));
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=callbacks.5 version=1 rust_sha256=d000708bb2bce5998cdd061d5cfbea8e2e90ba2e3bd1cbcef22a8e6a01ace29a*/
-void invoke_callback_safely(const ReconnectCallback& cb, bool success) {
-    // @unsafe
-    {
-        rusty::panic::catch_unwind([&]() {
-(rusty::detail::deref_if_pointer_like(cb))(std::move(success));
-});
-    }
-}
-/*RUSTYCPP:GEN-END id=callbacks.5*/
 
-#if RUSTYCPP_RUST
-struct ConnectionCallbacks {
-    on_connected: Vec<ConnectionCallback>,
-    on_disconnected: Vec<ConnectionCallback>,
-    on_error: Vec<ErrorCallback>,
-    on_reconnecting: Vec<ConnectionCallback>,
-    on_reconnected: Vec<ReconnectCallback>,
+pub struct ConnectionCallbacks {
+    pub on_connected: Vec<ConnectionCallback>,
+    pub on_disconnected: Vec<ConnectionCallback>,
+    pub on_error: Vec<ErrorCallback>,
+    pub on_reconnecting: Vec<ConnectionCallback>,
+    pub on_reconnected: Vec<ReconnectCallback>,
 }
 
 impl ConnectionCallbacks {
-    fn new() -> ConnectionCallbacks {
+    pub fn new() -> ConnectionCallbacks {
         ConnectionCallbacks {
-            on_connected: Vec::<ConnectionCallback>::new(),
-            on_disconnected: Vec::<ConnectionCallback>::new(),
-            on_error: Vec::<ErrorCallback>::new(),
-            on_reconnecting: Vec::<ConnectionCallback>::new(),
-            on_reconnected: Vec::<ReconnectCallback>::new(),
+            on_connected: Vec::new(),
+            on_disconnected: Vec::new(),
+            on_error: Vec::new(),
+            on_reconnecting: Vec::new(),
+            on_reconnected: Vec::new(),
         }
     }
 
-    fn total_count(&self) -> usize {
-        self.on_connected.size() + self.on_disconnected.size() +
-            self.on_error.size() + self.on_reconnecting.size() +
-            self.on_reconnected.size()
+    pub fn total_count(&self) -> usize {
+        self.on_connected.len()
+            + self.on_disconnected.len()
+            + self.on_error.len()
+            + self.on_reconnecting.len()
+            + self.on_reconnected.len()
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.on_connected.clear();
         self.on_disconnected.clear();
         self.on_error.clear();
@@ -137,433 +90,188 @@ impl ConnectionCallbacks {
     }
 }
 
-struct CallbackManager {
-    callbacks_field: rusty::Mutex<ConnectionCallbacks>,
-    // Rundown state: count of invoke_* dispatches currently running
-    // (snapshot taken, callbacks possibly mid-invocation) + the condvar
-    // clear_all waits on. Closes the teardown race where a poll-thread
-    // fiber snapshots the Arc'd callbacks just before clear_all empties
-    // the lists, then invokes a lambda whose captured stack frame the
-    // clearing thread has already left (~50% SIGSEGV in
-    // rpc_state_integration LifecycleCallbacksFireInExpectedOrder).
-    inflight_field: rusty::Mutex<usize>,
-    inflight_cv_field: Box<rusty::Condvar>,
+pub struct CallbackManager {
+    pub callbacks_field: Mutex<ConnectionCallbacks>,
+    pub inflight_field: Mutex<usize>,
+    pub inflight_cv_field: Box<Condvar>,
 }
 
 impl CallbackManager {
-    fn new() -> CallbackManager {
+    pub fn new() -> CallbackManager {
         CallbackManager {
-            callbacks_field: rusty::Mutex::<ConnectionCallbacks>::new(ConnectionCallbacks {}),
-            inflight_field: rusty::Mutex::<usize>::new(0usize),
-            inflight_cv_field: Box::new(rusty::Condvar {}),
+            callbacks_field: Mutex::new(ConnectionCallbacks::new()),
+            inflight_field: Mutex::new(0),
+            inflight_cv_field: Box::new(Condvar::new()),
         }
     }
 
-    // Bracket every invoke_* dispatch. enter BEFORE the snapshot, exit
-    // after the last callback returns (invoke_callback_safely swallows
-    // user exceptions, so exit is always reached).
-    fn inflight_enter(&self) {
-        let mut g = self.inflight_field.lock().unwrap();
-        *g += 1usize;
+    pub fn inflight_enter(&self) {
+        let mut guard = self.inflight_field.lock().unwrap();
+        *guard += 1;
     }
 
-    fn inflight_exit(&self) {
+    pub fn inflight_exit(&self) {
         {
-            let mut g = self.inflight_field.lock().unwrap();
-            *g -= 1usize;
+            let mut guard = self.inflight_field.lock().unwrap();
+            *guard -= 1;
         }
         self.inflight_cv_field.notify_all();
     }
 
-    // NOTE: field access through a `rusty::MutexGuard<T>` lowers to `.`
-    // instead of `->` in the current transpiler (smart-pointer-guard
-    // auto-deref handles method calls but not field access). We
-    // dereference the guard explicitly with `(*guard).field` so the
-    // emitted C++ becomes `(*guard).field.method(...)` — which
-    // compiles because `rusty::MutexGuard<T>::operator*()` returns
-    // `T&`. Method calls on the guard itself (`guard.unwrap()`,
-    // `guard.lock()`, etc.) work unchanged.
-    fn add_on_connected(&self, cb: rusty::Function<dyn Fn()>) {
-        let arc_cb: ConnectionCallback = ConnectionCallback::make(cb);
-        let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_connected.push(arc_cb);
+    pub fn add_on_connected(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        let callback: ConnectionCallback = Arc::new(callback);
+        let mut guard = self.callbacks_field.lock().unwrap();
+        guard.on_connected.push(callback);
     }
 
-    fn add_on_disconnected(&self, cb: rusty::Function<dyn Fn()>) {
-        let arc_cb: ConnectionCallback = ConnectionCallback::make(cb);
-        let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_disconnected.push(arc_cb);
+    pub fn add_on_disconnected(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        let callback: ConnectionCallback = Arc::new(callback);
+        let mut guard = self.callbacks_field.lock().unwrap();
+        guard.on_disconnected.push(callback);
     }
 
-    fn add_on_error(&self, cb: rusty::Function<dyn Fn(RpcError, &std::string)>) {
-        let arc_cb: ErrorCallback = ErrorCallback::make(cb);
-        let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_error.push(arc_cb);
+    #[allow(clippy::type_complexity)]
+    pub fn add_on_error(
+        &self,
+        callback: Box<dyn Fn(LegacyRpcError, &LegacyStdString) + Send + Sync>,
+    ) {
+        let callback: ErrorCallback = Arc::new(callback);
+        let mut guard = self.callbacks_field.lock().unwrap();
+        guard.on_error.push(callback);
     }
 
-    fn add_on_reconnecting(&self, cb: rusty::Function<dyn Fn()>) {
-        let arc_cb: ConnectionCallback = ConnectionCallback::make(cb);
-        let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_reconnecting.push(arc_cb);
+    pub fn add_on_reconnecting(&self, callback: Box<dyn Fn() + Send + Sync>) {
+        let callback: ConnectionCallback = Arc::new(callback);
+        let mut guard = self.callbacks_field.lock().unwrap();
+        guard.on_reconnecting.push(callback);
     }
 
-    fn add_on_reconnected(&self, cb: rusty::Function<dyn Fn(bool)>) {
-        let arc_cb: ReconnectCallback = ReconnectCallback::make(cb);
-        let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_reconnected.push(arc_cb);
+    pub fn add_on_reconnected(&self, callback: Box<dyn Fn(bool) + Send + Sync>) {
+        let callback: ReconnectCallback = Arc::new(callback);
+        let mut guard = self.callbacks_field.lock().unwrap();
+        guard.on_reconnected.push(callback);
     }
 
-    fn invoke_on_connected(&self) {
+    pub fn invoke_on_connected(&self) {
         self.inflight_enter();
-        let callbacks_copy: Vec<ConnectionCallback> = {
+        let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();
-            (*guard).on_connected.clone()
+            guard.on_connected.clone()
         };
-        let n: usize = callbacks_copy.size();
-        let mut i: usize = 0usize;
-        while i < n {
-            invoke_callback_safely(callbacks_copy[i]);
-            i += 1usize;
+        let count = callbacks.len();
+        let mut index = 0;
+        while index < count {
+            invoke_connection_callback_safely(&callbacks[index]);
+            index += 1;
         }
         self.inflight_exit();
     }
 
-    fn invoke_on_disconnected(&self) {
+    pub fn invoke_on_disconnected(&self) {
         self.inflight_enter();
-        let callbacks_copy: Vec<ConnectionCallback> = {
+        let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();
-            (*guard).on_disconnected.clone()
+            guard.on_disconnected.clone()
         };
-        let n: usize = callbacks_copy.size();
-        let mut i: usize = 0usize;
-        while i < n {
-            invoke_callback_safely(callbacks_copy[i]);
-            i += 1usize;
+        let count = callbacks.len();
+        let mut index = 0;
+        while index < count {
+            invoke_connection_callback_safely(&callbacks[index]);
+            index += 1;
         }
         self.inflight_exit();
     }
 
-    fn invoke_on_error(&self, error: RpcError, message: &std::string) {
+    pub fn invoke_on_error(&self, error: LegacyRpcError, message: &LegacyStdString) {
         self.inflight_enter();
-        let callbacks_copy: Vec<ErrorCallback> = {
+        let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();
-            (*guard).on_error.clone()
+            guard.on_error.clone()
         };
-        let n: usize = callbacks_copy.size();
-        let mut i: usize = 0usize;
-        while i < n {
-            invoke_callback_safely(callbacks_copy[i], error, message);
-            i += 1usize;
+        let count = callbacks.len();
+        let mut index = 0;
+        while index < count {
+            invoke_error_callback_safely(&callbacks[index], error, message);
+            index += 1;
         }
         self.inflight_exit();
     }
 
-    fn invoke_on_reconnecting(&self) {
+    pub fn invoke_on_reconnecting(&self) {
         self.inflight_enter();
-        let callbacks_copy: Vec<ConnectionCallback> = {
+        let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();
-            (*guard).on_reconnecting.clone()
+            guard.on_reconnecting.clone()
         };
-        let n: usize = callbacks_copy.size();
-        let mut i: usize = 0usize;
-        while i < n {
-            invoke_callback_safely(callbacks_copy[i]);
-            i += 1usize;
+        let count = callbacks.len();
+        let mut index = 0;
+        while index < count {
+            invoke_connection_callback_safely(&callbacks[index]);
+            index += 1;
         }
         self.inflight_exit();
     }
 
-    fn invoke_on_reconnected(&self, success: bool) {
+    pub fn invoke_on_reconnected(&self, success: bool) {
         self.inflight_enter();
-        let callbacks_copy: Vec<ReconnectCallback> = {
+        let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();
-            (*guard).on_reconnected.clone()
+            guard.on_reconnected.clone()
         };
-        let n: usize = callbacks_copy.size();
-        let mut i: usize = 0usize;
-        while i < n {
-            invoke_callback_safely(callbacks_copy[i], success);
-            i += 1usize;
+        let count = callbacks.len();
+        let mut index = 0;
+        while index < count {
+            invoke_reconnect_callback_safely(&callbacks[index], success);
+            index += 1;
         }
         self.inflight_exit();
     }
 
-    // After clear_all returns, no previously-registered callback is
-    // running or will run again — safe to free captured state. Do NOT
-    // call from inside a callback (the drain would wait on itself).
-    fn clear_all(&self) {
+    /// Remove every registered callback and wait for dispatches that already
+    /// took a callback snapshot. Must not be called from inside a callback.
+    pub fn clear_all(&self) {
         {
-            let guard = self.callbacks_field.lock().unwrap();
+            let mut guard = self.callbacks_field.lock().unwrap();
             guard.clear();
         }
-        // Rundown: block until no invoke_* dispatch is in flight. This used
-        // to call a hand-written `callback_manager_wait_inflight_drain`
-        // because "the DSL grammar can't express the wait-while lambda
-        // binding" — it does now, and the emit is byte-for-byte the old
-        // body: `wait_while(std::move(guard), [&](size_t& n){ ... })
-        // .unwrap()`, including the auto std::move on the guard and the Box
-        // arrow-deref. INLINED rather than kept a free fn on purpose: a free
-        // fn taking `&rusty::Mutex<usize>` lowers to a REFERENCE parameter
-        // while this call site's `&self.inflight_field` lowers to a POINTER,
-        // and inlining sidesteps that mismatch entirely.
-        let mut inflight_guard = self.inflight_field.lock().unwrap();
-        inflight_guard = self.inflight_cv_field
-            .wait_while(inflight_guard, |n: &mut usize| { *n != 0usize })
+        let guard = self.inflight_field.lock().unwrap();
+        let _guard = self
+            .inflight_cv_field
+            .wait_while(guard, |inflight| *inflight != 0)
             .unwrap();
     }
 
-    fn callback_count(&self) -> usize {
+    pub fn callback_count(&self) -> usize {
         let guard = self.callbacks_field.lock().unwrap();
         guard.total_count()
     }
 
-    fn has_callbacks(&self) -> bool {
-        self.callback_count() > 0usize
+    pub fn has_callbacks(&self) -> bool {
+        self.callback_count() > 0
     }
 
-    fn on_connected_count(&self) -> usize {
+    pub fn on_connected_count(&self) -> usize {
         let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_connected.size()
+        guard.on_connected.len()
     }
 
-    fn on_disconnected_count(&self) -> usize {
+    pub fn on_disconnected_count(&self) -> usize {
         let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_disconnected.size()
+        guard.on_disconnected.len()
     }
 
-    fn on_error_count(&self) -> usize {
+    pub fn on_error_count(&self) -> usize {
         let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_error.size()
+        guard.on_error.len()
     }
 
-    fn on_reconnecting_count(&self) -> usize {
+    pub fn on_reconnecting_count(&self) -> usize {
         let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_reconnecting.size()
+        guard.on_reconnecting.len()
     }
 
-    fn on_reconnected_count(&self) -> usize {
+    pub fn on_reconnected_count(&self) -> usize {
         let guard = self.callbacks_field.lock().unwrap();
-        (*guard).on_reconnected.size()
+        guard.on_reconnected.len()
     }
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=callbacks.1 version=1 rust_sha256=3a21a098fdcebfce87d03709e62b23712fb64fbd18304d5c64e0f239d28d92c6*/
-struct ConnectionCallbacks;
-struct CallbackManager;
-
-struct ConnectionCallbacks {
-    rusty::Vec<ConnectionCallback> on_connected;
-    rusty::Vec<ConnectionCallback> on_disconnected;
-    rusty::Vec<ErrorCallback> on_error;
-    rusty::Vec<ConnectionCallback> on_reconnecting;
-    rusty::Vec<ReconnectCallback> on_reconnected;
-
-    static ConnectionCallbacks new_();
-    size_t total_count() const;
-    void clear();
-};
-
-struct CallbackManager {
-    rusty::Mutex<ConnectionCallbacks> callbacks_field;
-    rusty::Mutex<size_t> inflight_field;
-    rusty::Box<rusty::Condvar> inflight_cv_field;
-
-    static CallbackManager new_();
-    void inflight_enter() const;
-    void inflight_exit() const;
-    void add_on_connected(rusty::Function<void() const> cb) const;
-    void add_on_disconnected(rusty::Function<void() const> cb) const;
-    void add_on_error(rusty::Function<void(RpcError, const std::string&) const> cb) const;
-    void add_on_reconnecting(rusty::Function<void() const> cb) const;
-    void add_on_reconnected(rusty::Function<void(bool) const> cb) const;
-    void invoke_on_connected() const;
-    void invoke_on_disconnected() const;
-    void invoke_on_error(RpcError error, const std::string& message) const;
-    void invoke_on_reconnecting() const;
-    void invoke_on_reconnected(bool success) const;
-    void clear_all() const;
-    size_t callback_count() const;
-    bool has_callbacks() const;
-    size_t on_connected_count() const;
-    size_t on_disconnected_count() const;
-    size_t on_error_count() const;
-    size_t on_reconnecting_count() const;
-    size_t on_reconnected_count() const;
-};
-
-
-ConnectionCallbacks ConnectionCallbacks::new_() {
-    return ConnectionCallbacks{.on_connected = rusty::Vec<ConnectionCallback>::new_(), .on_disconnected = rusty::Vec<ConnectionCallback>::new_(), .on_error = rusty::Vec<ErrorCallback>::new_(), .on_reconnecting = rusty::Vec<ConnectionCallback>::new_(), .on_reconnected = rusty::Vec<ReconnectCallback>::new_()};
-}
-
-size_t ConnectionCallbacks::total_count() const {
-    return (((this->on_connected.size() + this->on_disconnected.size()) + this->on_error.size()) + this->on_reconnecting.size()) + this->on_reconnected.size();
-}
-
-void ConnectionCallbacks::clear() {
-    this->on_connected.clear();
-    this->on_disconnected.clear();
-    this->on_error.clear();
-    this->on_reconnecting.clear();
-    this->on_reconnected.clear();
-}
-
-CallbackManager CallbackManager::new_() {
-    return CallbackManager{.callbacks_field = rusty::Mutex<ConnectionCallbacks>::new_(ConnectionCallbacks{}), .inflight_field = rusty::Mutex<size_t>::new_(static_cast<size_t>(0)), .inflight_cv_field = rusty::Box<rusty::Condvar>::new_(rusty::Condvar{})};
-}
-
-void CallbackManager::inflight_enter() const {
-    auto g = this->inflight_field.lock().unwrap();
-    *g += static_cast<size_t>(1);
-}
-
-void CallbackManager::inflight_exit() const {
-    {
-        auto g = this->inflight_field.lock().unwrap();
-        *g -= static_cast<size_t>(1);
-    }
-    this->inflight_cv_field->notify_all();
-}
-
-void CallbackManager::add_on_connected(rusty::Function<void() const> cb) const {
-    ConnectionCallback arc_cb = ConnectionCallback::make(std::move(cb));
-    auto guard = this->callbacks_field.lock().unwrap();
-    (*guard).on_connected.push(std::move(arc_cb));
-}
-
-void CallbackManager::add_on_disconnected(rusty::Function<void() const> cb) const {
-    ConnectionCallback arc_cb = ConnectionCallback::make(std::move(cb));
-    auto guard = this->callbacks_field.lock().unwrap();
-    (*guard).on_disconnected.push(std::move(arc_cb));
-}
-
-void CallbackManager::add_on_error(rusty::Function<void(RpcError, const std::string&) const> cb) const {
-    ErrorCallback arc_cb = ErrorCallback::make(std::move(cb));
-    auto guard = this->callbacks_field.lock().unwrap();
-    (*guard).on_error.push(std::move(arc_cb));
-}
-
-void CallbackManager::add_on_reconnecting(rusty::Function<void() const> cb) const {
-    ConnectionCallback arc_cb = ConnectionCallback::make(std::move(cb));
-    auto guard = this->callbacks_field.lock().unwrap();
-    (*guard).on_reconnecting.push(std::move(arc_cb));
-}
-
-void CallbackManager::add_on_reconnected(rusty::Function<void(bool) const> cb) const {
-    ReconnectCallback arc_cb = ReconnectCallback::make(std::move(cb));
-    auto guard = this->callbacks_field.lock().unwrap();
-    (*guard).on_reconnected.push(std::move(arc_cb));
-}
-
-void CallbackManager::invoke_on_connected() const {
-    this->inflight_enter();
-    const rusty::Vec<ConnectionCallback> callbacks_copy = [&]() -> rusty::Vec<ConnectionCallback> { auto guard = this->callbacks_field.lock().unwrap();
-return rusty::clone((*guard).on_connected); }();
-    const size_t n = callbacks_copy.size();
-    size_t i = static_cast<size_t>(0);
-    while (rusty::detail::deref_if_pointer_like(i) < rusty::detail::deref_if_pointer_like(n)) {
-        invoke_callback_safely(callbacks_copy[i]);
-        i += static_cast<size_t>(1);
-    }
-    this->inflight_exit();
-}
-
-void CallbackManager::invoke_on_disconnected() const {
-    this->inflight_enter();
-    const rusty::Vec<ConnectionCallback> callbacks_copy = [&]() -> rusty::Vec<ConnectionCallback> { auto guard = this->callbacks_field.lock().unwrap();
-return rusty::clone((*guard).on_disconnected); }();
-    const size_t n = callbacks_copy.size();
-    size_t i = static_cast<size_t>(0);
-    while (rusty::detail::deref_if_pointer_like(i) < rusty::detail::deref_if_pointer_like(n)) {
-        invoke_callback_safely(callbacks_copy[i]);
-        i += static_cast<size_t>(1);
-    }
-    this->inflight_exit();
-}
-
-void CallbackManager::invoke_on_error(RpcError error, const std::string& message) const {
-    this->inflight_enter();
-    const rusty::Vec<ErrorCallback> callbacks_copy = [&]() -> rusty::Vec<ErrorCallback> { auto guard = this->callbacks_field.lock().unwrap();
-return rusty::clone((*guard).on_error); }();
-    const size_t n = callbacks_copy.size();
-    size_t i = static_cast<size_t>(0);
-    while (rusty::detail::deref_if_pointer_like(i) < rusty::detail::deref_if_pointer_like(n)) {
-        invoke_callback_safely(callbacks_copy[i], std::move(error), message);
-        i += static_cast<size_t>(1);
-    }
-    this->inflight_exit();
-}
-
-void CallbackManager::invoke_on_reconnecting() const {
-    this->inflight_enter();
-    const rusty::Vec<ConnectionCallback> callbacks_copy = [&]() -> rusty::Vec<ConnectionCallback> { auto guard = this->callbacks_field.lock().unwrap();
-return rusty::clone((*guard).on_reconnecting); }();
-    const size_t n = callbacks_copy.size();
-    size_t i = static_cast<size_t>(0);
-    while (rusty::detail::deref_if_pointer_like(i) < rusty::detail::deref_if_pointer_like(n)) {
-        invoke_callback_safely(callbacks_copy[i]);
-        i += static_cast<size_t>(1);
-    }
-    this->inflight_exit();
-}
-
-void CallbackManager::invoke_on_reconnected(bool success) const {
-    this->inflight_enter();
-    const rusty::Vec<ReconnectCallback> callbacks_copy = [&]() -> rusty::Vec<ReconnectCallback> { auto guard = this->callbacks_field.lock().unwrap();
-return rusty::clone((*guard).on_reconnected); }();
-    const size_t n = callbacks_copy.size();
-    size_t i = static_cast<size_t>(0);
-    while (rusty::detail::deref_if_pointer_like(i) < rusty::detail::deref_if_pointer_like(n)) {
-        invoke_callback_safely(callbacks_copy[i], std::move(success));
-        i += static_cast<size_t>(1);
-    }
-    this->inflight_exit();
-}
-
-void CallbackManager::clear_all() const {
-    {
-        auto guard = this->callbacks_field.lock().unwrap();
-        (*guard).clear();
-    }
-    auto inflight_guard = this->inflight_field.lock().unwrap();
-    inflight_guard = this->inflight_cv_field->wait_while(std::move(inflight_guard), [&](size_t& n) {
-return n != static_cast<size_t>(0);
-}).unwrap();
-}
-
-size_t CallbackManager::callback_count() const {
-    auto guard = this->callbacks_field.lock().unwrap();
-    return (*guard).total_count();
-}
-
-bool CallbackManager::has_callbacks() const {
-    return this->callback_count() > static_cast<size_t>(0);
-}
-
-size_t CallbackManager::on_connected_count() const {
-    auto guard = this->callbacks_field.lock().unwrap();
-    return (*guard).on_connected.size();
-}
-
-size_t CallbackManager::on_disconnected_count() const {
-    auto guard = this->callbacks_field.lock().unwrap();
-    return (*guard).on_disconnected.size();
-}
-
-size_t CallbackManager::on_error_count() const {
-    auto guard = this->callbacks_field.lock().unwrap();
-    return (*guard).on_error.size();
-}
-
-size_t CallbackManager::on_reconnecting_count() const {
-    auto guard = this->callbacks_field.lock().unwrap();
-    return (*guard).on_reconnecting.size();
-}
-
-size_t CallbackManager::on_reconnected_count() const {
-    auto guard = this->callbacks_field.lock().unwrap();
-    return (*guard).on_reconnected.size();
-}
-/*RUSTYCPP:GEN-END id=callbacks.1*/
-
-} // export namespace rrr

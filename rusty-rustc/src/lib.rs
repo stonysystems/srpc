@@ -272,6 +272,10 @@ pub mod rrr {
         }
     }
 
+    /// Compile-time-only namespace model used to retain the private
+    /// `rrr.errors` named-module import in canonical callback generation.
+    pub mod errors {}
+
     pub mod logging {
         /// Rust-side no-op model of the production logging entry point.
         ///
