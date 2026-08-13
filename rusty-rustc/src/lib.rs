@@ -26,7 +26,35 @@ pub mod sys {
 
 /// Rust-only declarations for C++ modules imported by canonical rrr sources.
 /// The exact local `rusty` facade dependency is omitted from generated C++.
+#[allow(clippy::missing_safety_doc)]
 pub mod rrr {
+    pub mod basetypes {
+        #[allow(non_snake_case)]
+        pub mod SparseInt {
+            #[allow(unsafe_code)]
+            pub unsafe fn buf_size(byte0: u8) -> usize {
+                crate::sparse_buf_size(byte0)
+            }
+
+            #[allow(unsafe_code)]
+            pub unsafe fn dump32(value: i32, buffer: *mut u8) -> usize {
+                unsafe { crate::sparse_dump32(value, buffer) }
+            }
+
+            #[allow(unsafe_code)]
+            pub unsafe fn load32(buffer: *const u8) -> i32 {
+                unsafe { crate::sparse_load32(buffer) }
+            }
+        }
+    }
+
+    pub mod debugging {
+        #[allow(unsafe_code)]
+        pub unsafe fn verify(value: bool) {
+            assert!(value);
+        }
+    }
+
     pub mod logging {
         /// Rust-side no-op model of the production logging entry point.
         ///
@@ -37,7 +65,148 @@ pub mod rrr {
         #[allow(unsafe_code)]
         pub unsafe fn log_line(_level: i32, _line: i32, _file: *const i8, _message: &String) {}
     }
+
+    pub mod serializable {
+        use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};
+
+        #[allow(unsafe_code)]
+        pub unsafe fn serializable_holder_of<T: 'static>(
+            _base: *const SerializableBase,
+        ) -> *const SerializableSharedPtrHolder<T> {
+            core::ptr::null()
+        }
+
+        #[allow(non_snake_case)]
+        pub mod SerializableRegistry {
+            use super::{SerializableBase, SerializableProxy};
+
+            #[allow(unsafe_code)]
+            pub unsafe fn create(_kind: i32) -> SerializableProxy {
+                SerializableProxy::make(SerializableBase)
+            }
+        }
+    }
 }
+
+fn sparse_buf_size(byte0: u8) -> usize {
+    if byte0 & 0x80 == 0 {
+        1
+    } else if byte0 & 0xc0 == 0x80 {
+        2
+    } else if byte0 & 0xe0 == 0xc0 {
+        3
+    } else if byte0 & 0xf0 == 0xe0 {
+        4
+    } else {
+        5
+    }
+}
+
+#[allow(unsafe_code)]
+unsafe fn sparse_dump32(value: i32, buffer: *mut u8) -> usize {
+    let bytes = value.to_ne_bytes();
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
+    bytes.len()
+}
+
+#[allow(unsafe_code)]
+unsafe fn sparse_load32(buffer: *const u8) -> i32 {
+    let mut bytes = [0u8; 4];
+    unsafe { core::ptr::copy_nonoverlapping(buffer, bytes.as_mut_ptr(), bytes.len()) };
+    i32::from_ne_bytes(bytes)
+}
+
+pub struct Arc<T: ?Sized> {
+    inner: std::sync::Arc<T>,
+}
+
+impl<T: ?Sized> Clone for Arc<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T: ?Sized> Arc<T> {
+    pub fn get(&self) -> *const T {
+        std::sync::Arc::as_ptr(&self.inner)
+    }
+
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        std::sync::Arc::get_mut(&mut self.inner)
+    }
+}
+
+pub trait ArcMake<Argument> {
+    type Output;
+    fn make(argument: Argument) -> Self::Output;
+}
+
+impl<T> ArcMake<T> for Arc<T> {
+    type Output = Arc<T>;
+
+    fn make(argument: T) -> Self::Output {
+        Arc {
+            inner: std::sync::Arc::new(argument),
+        }
+    }
+}
+
+impl<T> ArcMake<Arc<T>> for Arc<SerializableSharedPtrHolder<T>> {
+    type Output = SerializableProxy;
+
+    fn make(_argument: Arc<T>) -> Self::Output {
+        SerializableProxy::make(SerializableBase)
+    }
+}
+
+impl<T: ?Sized> Arc<T> {
+    pub fn make<Argument>(argument: Argument) -> <Self as ArcMake<Argument>>::Output
+    where
+        Self: ArcMake<Argument>,
+    {
+        <Self as ArcMake<Argument>>::make(argument)
+    }
+}
+
+pub struct BinaryWriteArchive;
+
+impl BinaryWriteArchive {
+    /// # Safety
+    ///
+    /// `data` must denote `len` readable bytes.
+    #[allow(unsafe_code)]
+    pub unsafe fn write_bytes(&mut self, _data: *const u8, _len: usize) {}
+}
+
+pub struct BinaryReadArchive;
+
+impl BinaryReadArchive {
+    /// # Safety
+    ///
+    /// `data` must denote `len` writable bytes.
+    #[allow(unsafe_code)]
+    pub unsafe fn read_exact(&mut self, _data: *mut u8, _len: usize) -> bool {
+        false
+    }
+}
+
+pub struct SerializableBase;
+
+impl SerializableBase {
+    pub fn save(&self, _archive: &mut BinaryWriteArchive) {}
+    pub fn load(&mut self, _archive: &mut BinaryReadArchive) {}
+    pub fn kind(&self) -> i32 {
+        0
+    }
+}
+
+pub struct SerializableSharedPtrHolder<T> {
+    pub ptr: Arc<T>,
+}
+
+pub type SerializableProxy = Arc<SerializableBase>;
 
 /// Rust-only contract for metric views used by the canonical load-balancer module.
 pub trait LoadBalancerMetrics {

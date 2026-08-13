@@ -1,5 +1,15 @@
 LegacyAddrInfo = "addrinfo"
 LegacyStdString = "std::string"
+BinaryReadArchive = "BinaryReadArchive"
+BinaryWriteArchive = "BinaryWriteArchive"
+SerializableBase = "SerializableBase"
+SerializableProxy = "SerializableProxy"
+SerializableSharedPtrHolder = "details::SerializableSharedPtrHolder"
 
 [rusty]
 StdVector = "std::vector"
+BinaryReadArchive = "BinaryReadArchive"
+BinaryWriteArchive = "BinaryWriteArchive"
+SerializableBase = "SerializableBase"
+SerializableProxy = "SerializableProxy"
+SerializableSharedPtrHolder = "details::SerializableSharedPtrHolder"

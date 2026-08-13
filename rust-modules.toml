@@ -69,3 +69,7 @@ source = "rpc/utils.cpp"
 [[module]]
 cpp_module = "rrr.frame_codec"
 source = "rpc/frame_codec.cpp"
+
+[[module]]
+cpp_module = "rrr.serializable_envelope"
+source = "misc/serializable_envelope.cpp"

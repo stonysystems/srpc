@@ -35,6 +35,8 @@ pub mod request_options;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod request_queue;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
+pub mod serializable_envelope;
+#[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod stat;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod utils;
