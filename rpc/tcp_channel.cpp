@@ -11,8 +11,9 @@
 
 use rusty::cpp_inherit;
 use rusty::StdArcGetMutExt as _;
+use std::cell::{RefCell, UnsafeCell};
 use std::os::fd::IntoRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
 
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
@@ -75,14 +76,20 @@ extern "C" {
     fn srpc_tcp_shutdown(fd: i32) -> i32;
     fn srpc_tcp_set_nonblocking(fd: i32) -> i32;
     fn srpc_tcp_last_errno() -> i32;
+    fn srpc_tcp_current_thread_id() -> u32;
 }
 
 pub struct TcpConnection {
-    fd_: rusty::Mutex<LegacyOwnedFd>,
+    // ABI note: these are deliberately the historical storage types.  The
+    // already-present `outbound_` mutex is also the lifetime gate for `fd_`,
+    // while `on_frame_` gates every access to `inbound_`.  Adding standalone
+    // mutex wrappers around either field grew the public C++ object by 72
+    // bytes and shifted every following field.
+    fd_: UnsafeCell<LegacyOwnedFd>,
     peer_address_: LegacyStdString,
     outbound_high_water_: usize,
     outbound_: rusty::Mutex<TcpOutBuf>,
-    inbound_: rusty::Mutex<FrameStreamReader>,
+    inbound_: RefCell<FrameStreamReader>,
     closed_: AtomicBool,
     on_closed_fired_: AtomicBool,
     pending_write_update_: AtomicBool,
@@ -91,6 +98,21 @@ pub struct TcpConnection {
     on_closed_: rusty::Mutex<OnClosedCallback>,
     on_error_: rusty::Mutex<OnErrorCallback>,
 }
+
+// SAFETY: all state reachable through shared references is either immutable
+// after publication, atomic, or protected by an existing mutex:
+//
+// * `fd_` and `outbound_` are protected by `outbound_`;
+// * `inbound_` is poll-worker-owned and every access (including the safe
+//   `content_size` observer) is protected by `on_frame_`;
+// * callbacks are protected by their corresponding mutexes; and
+// * `poll_thread_` is installed through `&mut self` before the Arc is shared.
+//
+// The sole mutating inbound entry point is unsafe and documents the reactor's
+// single-poll-worker precondition, so safe Rust cannot create two competing
+// decoder operations.
+unsafe impl Send for TcpConnection {}
+unsafe impl Sync for TcpConnection {}
 
 impl TcpConnection {
     /// Construct a connection by taking unique ownership of `fd`.
@@ -103,11 +125,11 @@ impl TcpConnection {
     pub unsafe fn new(fd: i32, peer_address: LegacyStdString) -> TcpConnection {
         TcpConnection {
             // SAFETY: callers transfer a freshly connected descriptor.
-            fd_: rusty::Mutex::new(unsafe { LegacyOwnedFd::from_raw_fd(fd) }),
+            fd_: UnsafeCell::new(unsafe { LegacyOwnedFd::from_raw_fd(fd) }),
             peer_address_: peer_address,
             outbound_high_water_: kTcpConnectionOutboundHighWaterDefault,
             outbound_: rusty::Mutex::<TcpOutBuf>::new(Default::default()),
-            inbound_: rusty::Mutex::new(FrameStreamReader::new()),
+            inbound_: RefCell::new(FrameStreamReader::new()),
             closed_: AtomicBool::new(false),
             on_closed_fired_: AtomicBool::new(false),
             pending_write_update_: AtomicBool::new(false),
@@ -162,7 +184,9 @@ impl TcpConnection {
     }
 
     pub fn fd(&self) -> i32 {
-        self.fd_.lock().unwrap().as_raw_fd()
+        let _guard = self.outbound_.lock().unwrap();
+        // SAFETY: `outbound_` serializes access to the descriptor slot.
+        unsafe { (&*self.fd_.get()).as_raw_fd() }
     }
 
     // READ always; WRITE only while the outbound buffer is non-empty.
@@ -176,12 +200,23 @@ impl TcpConnection {
     }
 
     pub fn content_size(&self) -> usize {
+        let inbound_size = {
+            let _gate = self.on_frame_.lock().unwrap();
+            self.inbound_.borrow().buffered_bytes()
+        };
         let guard = self.outbound_.lock().unwrap();
-        (*guard).len() + self.inbound_.lock().unwrap().buffered_bytes()
+        (*guard).len() + inbound_size
     }
 
-    pub fn handle_read(&self) -> bool {
-        tcpconn_handle_read(self)
+    /// Drive this connection's receive decoder.
+    ///
+    /// # Safety
+    ///
+    /// The caller must be this connection's registered poll worker, and no
+    /// other call to `handle_read` may overlap it.  The reactor satisfies this
+    /// contract by serializing pollable callbacks on one worker.
+    pub unsafe fn handle_read(&self) -> bool {
+        unsafe { tcpconn_handle_read(self) }
     }
 
     pub fn handle_write(&self) -> i32 {
@@ -252,7 +287,8 @@ impl PollableBase for TcpPollableShim {
         self.conn_.content_size()
     }
     fn handle_read(&mut self) -> bool {
-        self.conn_.handle_read()
+        // SAFETY: Pollable callbacks are serialized by the owning poll worker.
+        unsafe { self.conn_.handle_read() }
     }
     fn handle_write(&mut self) -> i32 {
         self.conn_.handle_write()
@@ -329,10 +365,19 @@ pub struct TcpListener {
     // The poll worker reads the listener while user threads may close it.
     // Mutex/atomics make that ownership boundary explicit and remove the
     // historical RefCell/Cell cross-thread race.
-    listener_: rusty::Mutex<LegacyTcpListener>,
-    bound_address_: rusty::Mutex<LegacyStdString>,
+    // These retain their historical RefCell representation and exact ABI.
+    // `on_accept_` doubles as the lifecycle gate for both cells.  Callback
+    // invocation always occurs after the gate has been released.
+    listener_: RefCell<LegacyTcpListener>,
+    bound_address_: RefCell<LegacyStdString>,
     closed_: AtomicBool,
     listened_: AtomicBool,
+    // Reuses the historical padding bytes between the one-byte latches and
+    // `poll_thread_`.  This is the owner latch for the whole accept driver,
+    // not just its callback window: at most one `handle_read` may accept or
+    // invoke `on_accept_` at a time.  `close` waits for that owner unless it
+    // is called reentrantly by the owner itself.
+    accept_callback_thread_: AtomicU32,
     poll_thread_: Option<Arc<PollThread>>,
     // Retained for exact historical layout/API compatibility. Registration
     // no longer depends on upgrading this weak pointer: the channel shim owns
@@ -342,14 +387,21 @@ pub struct TcpListener {
     on_error_: rusty::Mutex<OnErrorCallback>,
 }
 
+// SAFETY: `listener_` and `bound_address_` are only accessed while holding
+// `on_accept_`; latches are atomic; callbacks have their own mutexes; and the
+// Arc/Weak fields are initialized through `&mut self` before publication.
+unsafe impl Send for TcpListener {}
+unsafe impl Sync for TcpListener {}
+
 impl TcpListener {
     #[cfg_attr(any(), cpp_ctor)]
     pub fn new() -> TcpListener {
         TcpListener {
-            listener_: rusty::Mutex::<LegacyTcpListener>::new(Default::default()),
-            bound_address_: rusty::Mutex::<LegacyStdString>::new(Default::default()),
+            listener_: RefCell::<LegacyTcpListener>::new(Default::default()),
+            bound_address_: RefCell::<LegacyStdString>::new(Default::default()),
             closed_: AtomicBool::new(false),
             listened_: AtomicBool::new(false),
+            accept_callback_thread_: AtomicU32::new(0),
             poll_thread_: None,
             self_weak_: None,
             on_accept_: rusty::Mutex::<OnAcceptCallback>::new(Default::default()),
@@ -416,11 +468,12 @@ impl TcpListener {
         // mutex. `close()` sets the closed latch first and then takes this same
         // mutex, so a concurrent close either wins before publication or
         // waits and removes the newly published fd before it returns.
-        let mut listener_guard = self.listener_.lock().unwrap();
+        let _lifecycle_gate = self.on_accept_.lock().unwrap();
         if self.closed_.load(Ordering::Acquire) {
             return ChannelError::AddressInUse;
         }
-        let mut address_guard = self.bound_address_.lock().unwrap();
+        let mut listener_guard = self.listener_.borrow_mut();
+        let mut address_guard = self.bound_address_.borrow_mut();
         *address_guard = address_string;
         *listener_guard = bound;
         ChannelError::None
@@ -429,11 +482,30 @@ impl TcpListener {
     // Sets the closed latch and replaces the owned listener with a
     // default one — the old value drops here, RAII-closing the fd.
     pub fn close(&self) {
-        if self.closed_.swap(true, Ordering::AcqRel) {
-            return;
+        // This store and the post-CAS `closed_` recheck are sequentially
+        // consistent with the owner CAS/load pair.  That rules out the
+        // store-buffering outcome where close misses a new owner while that
+        // owner simultaneously misses `closed_` on a weak-memory target.
+        self.closed_.store(true, Ordering::SeqCst);
+        // Every caller crosses the lifecycle gate and idempotently takes the
+        // descriptor.  Otherwise a second close could observe the closed bit
+        // set by a first closer and return before that first closer removed
+        // the fd or before an active accept driver released ownership.
+        {
+            let _lifecycle_gate = self.on_accept_.lock().unwrap();
+            let mut g = self.listener_.borrow_mut();
+            let _closed = core::mem::take(&mut *g);
         }
-        let mut g = self.listener_.lock().unwrap();
-        let _closed = core::mem::take(&mut *g);
+        // An accept callback may itself call close(); that call must not wait
+        // for its own `handle_read` invocation to return. Other threads wait
+        // until the whole accept-driver scope clears its Linux TID.
+        let current_thread = unsafe { srpc_tcp_current_thread_id() };
+        while {
+            let callback_thread = self.accept_callback_thread_.load(Ordering::SeqCst);
+            callback_thread != 0 && callback_thread != current_thread
+        } {
+            core::hint::spin_loop();
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -441,7 +513,8 @@ impl TcpListener {
     }
 
     pub fn local_address(&self) -> LegacyStdString {
-        let g = self.bound_address_.lock().unwrap();
+        let _lifecycle_gate = self.on_accept_.lock().unwrap();
+        let g = self.bound_address_.borrow();
         (*g).clone()
     }
 
@@ -456,7 +529,8 @@ impl TcpListener {
     }
 
     pub fn fd(&self) -> i32 {
-        let g = self.listener_.lock().unwrap();
+        let _lifecycle_gate = self.on_accept_.lock().unwrap();
+        let g = self.listener_.borrow();
         (*g).as_owned_fd().as_raw_fd()
     }
 
@@ -671,14 +745,14 @@ fn tcpconn_drain_outbound_locked(conn: &TcpConnection, buf: &mut TcpOutBuf) -> C
     let mut offset: usize = 0;
     let mut blocked = false;
     while !blocked && offset < buf.len() {
-        let n = tcpconn_send_bytes(conn, buf, offset);
-        if n > 0 {
-            offset += n as usize;
-        } else if n == 0 {
+        let io = tcpconn_send_bytes(conn, buf, offset);
+        if io.count > 0 {
+            offset += io.count as usize;
+        } else if io.count == 0 {
             // send returning 0 with bytes remaining = transport reset.
             return ChannelError::ConnectionReset;
         } else {
-            let err = tcpconn_last_errno();
+            let err = io.error;
             if err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK {
                 blocked = true;
             } else if err == TCP_ERR_INTERRUPTED {
@@ -711,7 +785,8 @@ fn tcpconn_deliver_on_closed_locked(conn: &TcpConnection, reason: ChannelError) 
 }
 
 fn tcpconn_next_frame(conn: &TcpConnection, v: &mut FrameView) -> FrameDecodeStatus {
-    let g = conn.inbound_.lock().unwrap();
+    let _gate = conn.on_frame_.lock().unwrap();
+    let g = conn.inbound_.borrow();
     (*g).next_frame(v)
 }
 
@@ -728,34 +803,36 @@ unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> Chan
     }
     let extended_header_flag = false;
 
-    let mut guard = conn.outbound_.lock().unwrap();
+    {
+        let mut guard = conn.outbound_.lock().unwrap();
 
-    // Reject when the queue is already past the high water — we never
-    // append to a buffer that's already over budget so backpressure is
-    // strictly bounded.
-    if (*guard).len() >= conn.outbound_high_water_ {
-        return ChannelError::WouldBlock;
-    }
+        // Reject when the queue is already past the high water — we never
+        // append to a buffer that's already over budget so backpressure is
+        // strictly bounded.
+        if (*guard).len() >= conn.outbound_high_water_ {
+            return ChannelError::WouldBlock;
+        }
 
-    let encoded_size = if extended_header_flag {
-        (frame.size as u32 | 0x8000_0000u32) as i32
-    } else {
-        frame.size as i32
-    };
-    let header = encoded_size.to_ne_bytes();
-    let start = guard.len();
-    guard.resize(start + 4usize + frame.size, 0u8);
-    guard[start] = header[0];
-    guard[start + 1usize] = header[1];
-    guard[start + 2usize] = header[2];
-    guard[start + 3usize] = header[3];
-    if frame.size > 0usize {
-        // SAFETY: ChannelFrame promises a readable range of `size` bytes.
-        let payload = unsafe { core::slice::from_raw_parts(frame.payload, frame.size) };
-        let mut i: usize = 0;
-        while i < frame.size {
-            guard[start + 4usize + i] = payload[i];
-            i += 1usize;
+        let encoded_size = if extended_header_flag {
+            (frame.size as u32 | 0x8000_0000u32) as i32
+        } else {
+            frame.size as i32
+        };
+        let header = encoded_size.to_ne_bytes();
+        let start = guard.len();
+        guard.resize(start + 4usize + frame.size, 0u8);
+        guard[start] = header[0];
+        guard[start + 1usize] = header[1];
+        guard[start + 2usize] = header[2];
+        guard[start + 3usize] = header[3];
+        if frame.size > 0usize {
+            // SAFETY: ChannelFrame promises a readable range of `size` bytes.
+            let payload = unsafe { core::slice::from_raw_parts(frame.payload, frame.size) };
+            let mut i: usize = 0;
+            while i < frame.size {
+                guard[start + 4usize + i] = payload[i];
+                i += 1usize;
+            }
         }
     }
 
@@ -797,24 +874,31 @@ fn tcpconn_close(conn: &TcpConnection) {
         return;
     }
     {
-        let mut fd = conn.fd_.lock().unwrap();
+        let _fd_gate = conn.outbound_.lock().unwrap();
+        // SAFETY: `outbound_` serializes every descriptor access/mutation.
+        let fd = unsafe { &mut *conn.fd_.get() };
         if fd.is_valid() {
             // SAFETY: the mutex keeps the descriptor live for the syscall.
             unsafe {
                 let _ = srpc_tcp_shutdown(fd.as_raw_fd());
             }
-            let _closed = core::mem::take(&mut *fd);
+            let _closed = core::mem::take(fd);
         }
     }
     tcpconn_deliver_on_closed_locked(conn, ChannelError::None);
 }
 
 fn tcpconn_reset_fd(conn: &TcpConnection) {
-    let mut fd = conn.fd_.lock().unwrap();
-    let _closed = core::mem::take(&mut *fd);
+    let _fd_gate = conn.outbound_.lock().unwrap();
+    // SAFETY: `outbound_` serializes every descriptor access and mutation.
+    let fd = unsafe { &mut *conn.fd_.get() };
+    let _closed = core::mem::take(fd);
 }
 
-fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
+/// # Safety
+///
+/// Calls for one connection must be serialized by its poll worker.
+unsafe fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
     if conn.closed_.load(Ordering::Acquire) {
         return false;
     }
@@ -822,21 +906,21 @@ fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
     let mut draining = true;
     while draining {
         let scratch = tcpconn_scratch();
-        let n = tcpconn_recv_bytes(conn, scratch);
-        if n > 0 {
-            tcpconn_append_inbound(conn, n as usize);
+        let io = tcpconn_recv_bytes(conn, scratch);
+        if io.count > 0 {
+            tcpconn_append_inbound(conn, io.count as usize);
             any_progress = true;
-            if (n as usize) < kRecvScratchBytes {
+            if (io.count as usize) < kRecvScratchBytes {
                 draining = false;
             }
-        } else if n == 0 {
+        } else if io.count == 0 {
             // Peer closed cleanly: no on_error, just the close latch.
             conn.closed_.store(true, Ordering::Release);
             tcpconn_reset_fd(conn);
             tcpconn_deliver_on_closed_locked(conn, ChannelError::None);
             return false;
         } else {
-            let err = tcpconn_last_errno();
+            let err = io.error;
             if err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK {
                 draining = false;
             } else if err == TCP_ERR_INTERRUPTED {
@@ -924,31 +1008,50 @@ fn tcpconn_scratch() -> *mut RecvScratch {
     unsafe { srpc_tcp_recv_scratch() as *mut RecvScratch }
 }
 
-fn tcpconn_recv_bytes(conn: &TcpConnection, s: *mut RecvScratch) -> i64 {
-    let fd = conn.fd_.lock().unwrap();
+struct TcpIoResult {
+    count: i64,
+    error: i32,
+}
+
+fn tcpconn_recv_bytes(conn: &TcpConnection, s: *mut RecvScratch) -> TcpIoResult {
+    let _fd_gate = conn.outbound_.lock().unwrap();
+    // SAFETY: `outbound_` serializes every descriptor access/mutation.
+    let fd = unsafe { &*conn.fd_.get() };
     if !fd.is_valid() {
-        return 0;
+        return TcpIoResult { count: 0, error: 0 };
     }
     // SAFETY: `s` is the current thread's full RecvScratch allocation and
     // the descriptor remains owned while the mutex guard is held.
-    unsafe { srpc_tcp_recv_bytes(fd.as_raw_fd(), (*s).arr.as_mut_ptr(), kRecvScratchBytes) }
+    let count =
+        unsafe { srpc_tcp_recv_bytes(fd.as_raw_fd(), (*s).arr.as_mut_ptr(), kRecvScratchBytes) };
+    // Capture the seam's thread-local errno before this scope unlocks the fd
+    // gate or another transport call can replace the snapshot.
+    let error = if count < 0 {
+        unsafe { srpc_tcp_last_errno() }
+    } else {
+        0
+    };
+    TcpIoResult { count, error }
 }
 
 fn tcpconn_append_inbound(conn: &TcpConnection, n: usize) {
     let s = tcpconn_scratch();
-    let mut guard = conn.inbound_.lock().unwrap();
+    let _gate = conn.on_frame_.lock().unwrap();
+    let mut guard = conn.inbound_.borrow_mut();
     // SAFETY: `s` remains the current thread's scratch and `n` is the
     // nonnegative byte count returned by the immediately preceding recv.
     unsafe { guard.append((*s).arr.as_ptr(), n) };
 }
 
 fn tcpconn_consume_inbound(conn: &TcpConnection) {
-    let mut guard = conn.inbound_.lock().unwrap();
+    let _gate = conn.on_frame_.lock().unwrap();
+    let mut guard = conn.inbound_.borrow_mut();
     guard.consume_frame();
 }
 
 fn tcpconn_reset_inbound(conn: &TcpConnection) {
-    let mut guard = conn.inbound_.lock().unwrap();
+    let _gate = conn.on_frame_.lock().unwrap();
+    let mut guard = conn.inbound_.borrow_mut();
     guard.reset();
 }
 
@@ -956,19 +1059,22 @@ fn tcpconn_handle_write(conn: &TcpConnection) -> i32 {
     if conn.closed_.load(Ordering::Acquire) {
         return TCP_POLL_NO_CHANGE;
     }
-    let mut guard = conn.outbound_.lock().unwrap();
-    if (*guard).is_empty() {
-        return TCP_POLL_READ;
-    }
-    let result = tcpconn_drain_outbound_locked(conn, &mut *guard);
-    if result == ChannelError::None {
+    let result: ChannelError;
+    {
+        let mut guard = conn.outbound_.lock().unwrap();
         if (*guard).is_empty() {
             return TCP_POLL_READ;
         }
-        return TCP_POLL_NO_CHANGE;
-    }
-    if result == ChannelError::WouldBlock {
-        return TCP_POLL_NO_CHANGE;
+        result = tcpconn_drain_outbound_locked(conn, &mut *guard);
+        if result == ChannelError::None {
+            if (*guard).is_empty() {
+                return TCP_POLL_READ;
+            }
+            return TCP_POLL_NO_CHANGE;
+        }
+        if result == ChannelError::WouldBlock {
+            return TCP_POLL_NO_CHANGE;
+        }
     }
     {
         let callback = {
@@ -1001,13 +1107,21 @@ fn tcpconn_handle_error(conn: &TcpConnection) {
     tcpconn_close(conn);
 }
 
-fn tcpconn_send_bytes(conn: &TcpConnection, buf: &mut TcpOutBuf, offset: usize) -> i64 {
-    let fd = conn.fd_.lock().unwrap();
+fn tcpconn_send_bytes(conn: &TcpConnection, buf: &mut TcpOutBuf, offset: usize) -> TcpIoResult {
+    // The only callers hold `outbound_`, which is also the fd lifetime gate.
+    // SAFETY: the caller holds `outbound_`, which gates this UnsafeCell.
+    let fd = unsafe { &*conn.fd_.get() };
     if !fd.is_valid() {
-        return 0;
+        return TcpIoResult { count: 0, error: 0 };
     }
     let remaining = buf.len() - offset;
-    unsafe { srpc_tcp_send_bytes(fd.as_raw_fd(), buf.as_ptr().add(offset), remaining) }
+    let count = unsafe { srpc_tcp_send_bytes(fd.as_raw_fd(), buf.as_ptr().add(offset), remaining) };
+    let error = if count < 0 {
+        unsafe { srpc_tcp_last_errno() }
+    } else {
+        0
+    };
+    TcpIoResult { count, error }
 }
 
 // Drop the prefix that send(2) actually accepted.
@@ -1053,6 +1167,42 @@ fn tcpconn_last_errno() -> i32 {
 struct AcceptStep {
     ch: ChannelError,
     proxy: Option<ChannelConnectionProxy>,
+    connection: Option<Arc<TcpConnection>>,
+}
+
+struct TcpListenerHandleReadScope {
+    owner_thread_: *const AtomicU32,
+    acquired_: bool,
+}
+
+impl TcpListenerHandleReadScope {
+    fn new(listener: &TcpListener) -> TcpListenerHandleReadScope {
+        let thread_id = unsafe { srpc_tcp_current_thread_id() };
+        let acquired = listener
+            .accept_callback_thread_
+            .compare_exchange(0, thread_id, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        TcpListenerHandleReadScope {
+            owner_thread_: &raw const listener.accept_callback_thread_,
+            acquired_: acquired,
+        }
+    }
+
+    fn acquired(&self) -> bool {
+        self.acquired_
+    }
+}
+
+impl Drop for TcpListenerHandleReadScope {
+    fn drop(&mut self) {
+        if self.acquired_ {
+            // SAFETY: the listener remains borrowed for the full synchronous
+            // `handle_read` invocation containing this scope guard.
+            unsafe {
+                (*self.owner_thread_).store(0, Ordering::Release);
+            }
+        }
+    }
 }
 
 // The DSL has no default field initializers, so the old `ch =
@@ -1062,6 +1212,7 @@ fn tcplistener_accept_step_new() -> AcceptStep {
     AcceptStep {
         ch: ChannelError::None,
         proxy: None,
+        connection: None,
     }
 }
 
@@ -1069,8 +1220,25 @@ fn tcplistener_take_proxy(s: &mut AcceptStep) -> ChannelConnectionProxy {
     s.proxy.take().unwrap()
 }
 
+fn tcplistener_close_accepted(s: &mut AcceptStep) {
+    if let Some(connection) = s.connection.take() {
+        tcpconn_close(&connection);
+    }
+}
+
 fn tcplistener_handle_read(lst: &TcpListener) -> bool {
-    if lst.closed_.load(Ordering::Acquire) {
+    if lst.closed_.load(Ordering::SeqCst) {
+        return false;
+    }
+    // Serialize the entire accept driver, including callback invocation.
+    // A contending call and same-thread callback recursion both return
+    // without touching the listener.  After acquiring, recheck `closed_` to
+    // close the race in which `close` observed no owner before this CAS.
+    let _owner_scope = TcpListenerHandleReadScope::new(lst);
+    if !_owner_scope.acquired() {
+        return false;
+    }
+    if lst.closed_.load(Ordering::SeqCst) {
         return false;
     }
     if !tcplistener_is_bound(lst) {
@@ -1079,16 +1247,36 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
     let mut any_progress = false;
     let mut accepting = true;
     while accepting {
+        if lst.closed_.load(Ordering::Acquire) {
+            break;
+        }
         let mut step = tcplistener_accept_step_new();
         let rc = tcplistener_accept_step(lst, &raw mut step);
         if rc == 1 {
+            #[allow(unused_mut)]
+            let mut accepted = tcplistener_take_proxy(&mut step);
+            if lst.closed_.load(Ordering::Acquire) {
+                tcplistener_close_accepted(&mut step);
+                accepting = false;
+                continue;
+            }
             any_progress = true;
             let callback = {
                 let guard = lst.on_accept_.lock().unwrap();
                 (*guard).clone()
             };
             if callback.has_value() {
-                callback.callable()(tcplistener_take_proxy(&mut step));
+                // Close either set the latch before the whole-driver owner
+                // was installed (and is observed above/here) or sees the
+                // active owner TID and waits for this handle_read to return.
+                // Thus the callback cannot begin after a concurrent close
+                // has returned.
+                if lst.closed_.load(Ordering::Acquire) {
+                    tcplistener_close_accepted(&mut step);
+                    accepting = false;
+                    continue;
+                }
+                callback.callable()(accepted);
             }
         } else if rc == 0 {
             accepting = false;
@@ -1118,7 +1306,8 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
 }
 
 fn tcplistener_is_bound(lst: &TcpListener) -> bool {
-    let g = lst.listener_.lock().unwrap();
+    let _lifecycle_gate = lst.on_accept_.lock().unwrap();
+    let g = lst.listener_.borrow();
     (*g).is_bound()
 }
 
@@ -1127,7 +1316,13 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
     // SAFETY: every caller passes its live stack-local AcceptStep for the
     // duration of this synchronous accept attempt.
     let out: &mut AcceptStep = unsafe { &mut *out };
-    let listener_guard = lst.listener_.lock().unwrap();
+    // `on_accept_` is also the lifecycle gate.  It keeps the RefCell and its
+    // descriptor stable against concurrent listen/close while accept runs.
+    let _lifecycle_gate = lst.on_accept_.lock().unwrap();
+    if lst.closed_.load(Ordering::Acquire) {
+        return 0;
+    }
+    let listener_guard = lst.listener_.borrow();
     let accept_result = listener_guard.accept();
     if accept_result.is_err() {
         let err = accept_result.unwrap_err();
@@ -1171,6 +1366,7 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
         }
     }
 
+    out.connection = Some(conn.clone());
     out.proxy = Some(make_tcp_connection_channel_proxy(conn));
     1
 }

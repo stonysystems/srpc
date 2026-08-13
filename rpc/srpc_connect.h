@@ -19,6 +19,7 @@ int64_t srpc_tcp_send_bytes(int32_t fd, const uint8_t* data, size_t size);
 int32_t srpc_tcp_shutdown(int32_t fd);
 int32_t srpc_tcp_set_nonblocking(int32_t fd);
 int32_t srpc_tcp_last_errno(void);
+uint32_t srpc_tcp_current_thread_id(void);
 
 #ifdef __cplusplus
 }

@@ -1,15 +1,23 @@
 #![allow(unsafe_code)]
 
-use rrr::channel::{ChannelError, OnClosedCallback};
+use rrr::channel::{ChannelError, OnAcceptCallback, OnClosedCallback};
 use rrr::tcp_channel::{kTcpConnectionOutboundHighWaterDefault, TcpConnection, TcpListener};
 use rusty::CallbackWrapper;
+use std::net::TcpStream;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 
 fn assert_send_sync<T: Send + Sync>() {}
+
+static NEXT_TEST_THREAD_ID: AtomicU32 = AtomicU32::new(1);
+
+thread_local! {
+    static TEST_THREAD_ID: u32 = NEXT_TEST_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+}
 
 // Cargo's Rust lane does not compile the production plain-C syscall seam.
 // These inert definitions satisfy references in unexercised TCP I/O helpers;
@@ -42,6 +50,11 @@ pub extern "C" fn srpc_tcp_set_nonblocking(_fd: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn srpc_tcp_last_errno() -> i32 {
     0
+}
+
+#[no_mangle]
+pub extern "C" fn srpc_tcp_current_thread_id() -> u32 {
+    TEST_THREAD_ID.with(|thread_id| *thread_id)
 }
 
 #[test]
@@ -159,4 +172,148 @@ fn closed_callback_can_replace_itself_without_deadlocking() {
     close.join().unwrap();
     assert!(connection.is_closed());
     assert_eq!(connection.fd(), -1);
+}
+
+#[test]
+fn close_return_never_precedes_a_new_accept_callback() {
+    for _ in 0..128 {
+        let listener = Arc::new(TcpListener::new());
+        assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::None);
+
+        let close_returned = Arc::new(AtomicBool::new(false));
+        let late_callback = Arc::new(AtomicBool::new(false));
+        let close_returned_in_callback = Arc::clone(&close_returned);
+        let late_callback_in_callback = Arc::clone(&late_callback);
+        let callback: OnAcceptCallback = CallbackWrapper::from_callable(Box::new(move |_proxy| {
+            if close_returned_in_callback.load(Ordering::SeqCst) {
+                late_callback_in_callback.store(true, Ordering::SeqCst);
+            }
+        }));
+        listener.set_on_accept(callback);
+
+        let _client = TcpStream::connect(listener.local_address()).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+
+        let read_listener = Arc::clone(&listener);
+        let read_barrier = Arc::clone(&barrier);
+        let read = thread::spawn(move || {
+            read_barrier.wait();
+            read_listener.handle_read()
+        });
+
+        let close_listener = Arc::clone(&listener);
+        let close_barrier = Arc::clone(&barrier);
+        let close_returned_in_thread = Arc::clone(&close_returned);
+        let close = thread::spawn(move || {
+            close_barrier.wait();
+            close_listener.close();
+            close_returned_in_thread.store(true, Ordering::SeqCst);
+        });
+
+        barrier.wait();
+        close.join().unwrap();
+        let _ = read.join().unwrap();
+        assert!(!late_callback.load(Ordering::SeqCst));
+        assert!(listener.is_closed());
+        assert_eq!(listener.fd(), -1);
+    }
+}
+
+#[test]
+fn close_waits_for_the_whole_accept_driver_with_two_readers() {
+    let listener = Arc::new(TcpListener::new());
+    assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::None);
+
+    let callbacks_entered = Arc::new(AtomicU32::new(0));
+    let release_first = Arc::new(AtomicBool::new(false));
+    let (first_entered_tx, first_entered_rx) = mpsc::channel();
+    let callback: OnAcceptCallback = CallbackWrapper::from_callable(Box::new({
+        let callbacks_entered = Arc::clone(&callbacks_entered);
+        let release_first = Arc::clone(&release_first);
+        move |_proxy| {
+            let index = callbacks_entered.fetch_add(1, Ordering::SeqCst);
+            if index == 0 {
+                first_entered_tx.send(()).unwrap();
+                while !release_first.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+            }
+        }
+    }));
+    listener.set_on_accept(callback);
+
+    let client1 = TcpStream::connect(listener.local_address()).unwrap();
+    let reader1_listener = Arc::clone(&listener);
+    let reader1 = thread::spawn(move || reader1_listener.handle_read());
+    first_entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+
+    // A second safe reader must not overwrite the first reader's owner TID.
+    // It returns without accepting the second queued connection.
+    let client2 = TcpStream::connect(listener.local_address()).unwrap();
+    let reader2_listener = Arc::clone(&listener);
+    let reader2 = thread::spawn(move || reader2_listener.handle_read());
+    let reader2_result = reader2.join().unwrap();
+
+    let (close_done_tx, close_done_rx) = mpsc::channel();
+    let closer1_listener = Arc::clone(&listener);
+    let close1_done_tx = close_done_tx.clone();
+    let closer1 = thread::spawn(move || {
+        closer1_listener.close();
+        close1_done_tx.send(()).unwrap();
+    });
+    while !listener.is_closed() {
+        thread::yield_now();
+    }
+
+    // Exercise the already-closed path too: every non-owner close must wait
+    // for the live accept owner, not only the first caller that set `closed_`.
+    let closer2_listener = Arc::clone(&listener);
+    let closer2 = thread::spawn(move || {
+        closer2_listener.close();
+        close_done_tx.send(()).unwrap();
+    });
+    let a_close_returned_while_first_callback_was_live = close_done_rx
+        .recv_timeout(Duration::from_millis(200))
+        .is_ok();
+
+    release_first.store(true, Ordering::Release);
+    let _ = reader1.join().unwrap();
+    if !a_close_returned_while_first_callback_was_live {
+        close_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    close_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    closer1.join().unwrap();
+    closer2.join().unwrap();
+    drop((client1, client2));
+
+    assert!(!reader2_result);
+    assert_eq!(callbacks_entered.load(Ordering::SeqCst), 1);
+    assert!(
+        !a_close_returned_while_first_callback_was_live,
+        "a non-owner close returned while the whole accept driver was live"
+    );
+    assert_eq!(listener.fd(), -1);
+}
+
+#[test]
+fn accept_callback_can_close_its_listener_without_deadlocking() {
+    let listener = Arc::new(TcpListener::new());
+    assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::None);
+
+    let weak_listener = Arc::downgrade(&listener);
+    let (closed_tx, closed_rx) = mpsc::channel();
+    let callback: OnAcceptCallback = CallbackWrapper::from_callable(Box::new(move |_proxy| {
+        let listener = weak_listener.upgrade().unwrap();
+        listener.close();
+        closed_tx.send(()).unwrap();
+    }));
+    listener.set_on_accept(callback);
+
+    let _client = TcpStream::connect(listener.local_address()).unwrap();
+    assert!(listener.handle_read());
+    closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(listener.is_closed());
+    assert_eq!(listener.fd(), -1);
 }

@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -37,6 +38,10 @@ unsigned char* srpc_tcp_recv_scratch(void) {
 
 int32_t srpc_tcp_last_errno(void) {
     return srpc_tcp_io_errno;
+}
+
+uint32_t srpc_tcp_current_thread_id(void) {
+    return (uint32_t)syscall(SYS_gettid);
 }
 
 int64_t srpc_tcp_recv_bytes(int32_t fd, unsigned char* data, size_t size) {
