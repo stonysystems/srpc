@@ -1,341 +1,153 @@
-module;
+//! Canonical Rust owner for branch hints, verification, and stack traces.
 
-#include <rusty/rusty.hpp>
-#include <execinfo.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
+type LegacyCChar = i8;
 
-export module rrr.debugging;
-
-import std;
-import rusty;
-
-// @safe - debugging primitives. `verify()` is a pure precondition
-// check; `likely`/`unlikely` are `__builtin_expect` wrappers. The
-// `print_stack_trace` impl uses backtrace/backtrace_symbols raw char
-// arrays and carries per-method
-// `// @unsafe` below. Symbol resolution is IN-PROCESS only (no
-// external binaries are executed).
-export namespace rrr {
-
-// Restored after modularization: deptran code (RW_command.cc,
-// copilot/server.cc, …) still uses `likely(x)` / `unlikely(x)` as
-// branch-prediction hints. The original inline forms lived in
-// base/debugging.hpp; the modularization commit dropped them with
-// "unused externally" in the message, which was incorrect.
-//
-// erpc's `third-party/erpc/src/common.h` defines `likely(x)` /
-// `unlikely(x)` as preprocessor macros. Wrap in `#ifndef` so we
-// don't fight the macros when the erpc header has already won.
-// The four `#ifndef`/`#endif` guard lines stay hand-written on purpose:
-// they ask whether another header defined a C MACRO of that name, which
-// Rust `#[cfg]` cannot ask. The transpiler is textual, so the DSL block
-// nests inside them correctly (probe-verified). Two spellings are lost
-// with no DSL equivalent — `[[nodiscard]]` and `noexcept` — and the
-// emitted definition is not `inline`; it is module-attached, so clang
-// can still inline it from the BMI.
-#ifndef likely
-// @safe - `__builtin_expect` branch hint; pure, no side effects.
-#if RUSTYCPP_RUST
-fn likely(value: bool) -> bool {
-    __builtin_expect(value, true)
+pub fn likely(value: bool) -> bool {
+    // Rust has no stable branch-expect intrinsic. The generated function keeps
+    // the exact public behavior; the C++ compiler can still inline this body.
+    value
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.3 version=1 rust_sha256=0c594084e9a2931a3f5f09e95d19761108ae65d096ff4a64e48e3567ee86b6d9*/
-bool likely(bool value);
 
-bool likely(bool value) {
-    return __builtin_expect(std::move(value), true);
+pub fn unlikely(value: bool) -> bool {
+    // See `likely`: this is the stable-Rust spelling of the same boolean API.
+    value
 }
-/*RUSTYCPP:GEN-END id=debugging.3*/
-#endif
-#ifndef unlikely
-// @safe - `__builtin_expect` branch hint; pure, no side effects.
-#if RUSTYCPP_RUST
-fn unlikely(value: bool) -> bool {
-    __builtin_expect(value, false)
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.5 version=1 rust_sha256=a86166bcb89b6c9894edf3c479103648a3d5c88cfe9e20129c9d9fa71119417b*/
-bool unlikely(bool value);
 
-bool unlikely(bool value) {
-    return __builtin_expect(std::move(value), false);
-}
-/*RUSTYCPP:GEN-END id=debugging.5*/
-#endif
+#[allow(unsafe_code)]
+mod debugging_ffi {
+    use super::LegacyCChar;
 
-void print_stack_trace(FILE* fp = stderr) __attribute__((noinline));
-
-// The failure tail of `verify()`, in DSL. Authorized semantic change:
-// this now PANICS rather than aborting. Two consequences worth stating
-// at the definition, because neither is visible from a call site:
-//
-//  - `panic!` lowers to `rusty::panic::do_panic`, which is compile-time
-//    switched. This tree does not define `RUSTY_PANIC_ABORT` anywhere,
-//    so a panic THROWS `std::runtime_error` and unwinds. rrr has live
-//    `catch (...)` sites (`rpc/callbacks.cpp`, canonical
-//    `src/rrr/src/request_queue.rs` / `rrr.request_queue`) and
-//    a `catch_unwind` in rpc/server.cpp, any of which can now swallow a
-//    failed precondition that previously killed the process. That is
-//    why the stack trace is emitted HERE, before the throw: even when
-//    the panic is swallowed, the failure still reaches stderr with the
-//    frames intact, which is not recoverable after unwinding.
-//  - the trace precedes the message deliberately (the message is the
-//    last line, nearest the eye, and closest to any `what()` a catcher
-//    later prints).
-#if RUSTYCPP_RUST
-fn verify_failed(file: &str, line: u32) {
-    print_stack_trace(stderr);
-    panic!("verify failed at {}, line {}", file, line);
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.6 version=1 rust_sha256=447806d50d5e9ea998e4fed523c51d16bfd0cec5da4cd46ea0c29dd84934c30b*/
-void verify_failed(std::string_view file, uint32_t line);
-
-void verify_failed(std::string_view file, uint32_t line) {
-    print_stack_trace(std::move(stderr));
-    rusty::panic::do_panic(std::format("verify failed at {}, line {}" , file , line));
-}
-/*RUSTYCPP:GEN-END id=debugging.6*/
-
-/**
- * Use assert() when the test is only intended for debugging.
- * Use verify() when the test is crucial for both debug and release binary.
- */
-template <typename Expr>
-// @safe - pure precondition check; panics on failure (parity with Rust's
-// `assert!`). No memory operations, no caller-visible side effects.
-// The declaration stays hand-written because its source_location default
-// captures the CALLER across ~1,940 call sites. The body is DSL-authored
-// below; C++ carries this earlier default onto the generated definition.
-inline void verify(const Expr& expr,
-                   const std::source_location& loc = std::source_location::current());
-
-#if RUSTYCPP_RUST
-fn verify<Expr>(expr: &Expr, loc: &std::source_location) {
-    if unlikely(!(expr as bool)) {
-        verify_failed(loc.file_name(), loc.line());
+    unsafe extern "C" {
+        pub(super) fn srpc_stderr() -> *mut rusty::CFile;
+        pub(super) fn srpc_backtrace_capture(out_symbols: *mut *mut *mut LegacyCChar) -> i32;
+        pub(super) fn srpc_backtrace_free(symbols: *mut *mut LegacyCChar);
+        pub(super) fn fputs(text: *const LegacyCChar, stream: *mut rusty::CFile) -> i32;
     }
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.7 version=1 rust_sha256=caea79f92e7f1cbda02588acb39e8e98925b1bc5ebd843d0a792844be5ef5576*/
-template<typename Expr>
-void verify(const Expr& expr, const std::source_location& loc);
 
-template<typename Expr>
-void verify(const Expr& expr, const std::source_location& loc) {
-    if (unlikely(!(static_cast<bool>(expr)))) {
-        verify_failed(loc.file_name(), loc.line());
-    }
-}
-/*RUSTYCPP:GEN-END id=debugging.7*/
-
-} // export namespace rrr
-
-// @safe - impl namespace: only `print_stack_trace` lives here and it
-// carries its own per-method `// @unsafe` overrides; the anonymous
-// helper `read_line_from_pipe` is also `// @unsafe`.
-namespace rrr {
-
-
-// Reshaped for the DSL (H-category shrink) and — per the no-external-
-// binaries rule — resolved entirely IN-PROCESS: symbols come from
-// libc's backtrace_symbols only. The former popen("addr2line ...")
-// resolution (an external binary executed inside an abort path) is
-// deleted, along with its pipe reader and the get_exec_path helper it
-// existed for.
-
-// Raw capture: the backtrace_symbols strings, minus the last frame
-// (legacy loop bound). ok=false when backtrace_symbols itself failed.
-// Move-only (rusty::Vec field).
-//
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is
-// the source of truth; the transpiler regenerates the matching
-// `RUSTYCPP:GEN-BEGIN ... END` block. The DSL has no default field
-// initializers, so `ok = false` moved into a `BtCapture::new_()`
-// factory and `bt_capture` constructs through it -- a bare
-// `BtCapture cap;` on the emitted aggregate would leave `ok`
-// indeterminate. Spelling the Vec element type in `Vec::<std::string>
-// ::new()` is mandatory: bare `rusty::Vec::new()` makes the
-// transpiler panic on a leaked `auto` template argument.
-#if RUSTYCPP_RUST
 struct BtCapture {
     ok: bool,
-    symbols: rusty::Vec<std::string>,
+    symbols: Vec<rusty::LoggingString>,
 }
 
 impl BtCapture {
     fn new() -> BtCapture {
-        BtCapture { ok: false, symbols: rusty::Vec::<std::string>::new() }
+        BtCapture {
+            ok: false,
+            symbols: Vec::new(),
+        }
     }
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.1 version=1 rust_sha256=9cab6ba5f8722df577a000981845413671a181b29d615f3cbbb9e7fed1daf7d5*/
-struct BtCapture;
 
-struct BtCapture {
-    bool ok;
-    rusty::Vec<std::string> symbols;
-
-    static BtCapture new_();
-};
-
-
-BtCapture BtCapture::new_() {
-    return BtCapture{.ok = false, .symbols = rusty::Vec<std::string>::new_()};
-}
-/*RUSTYCPP:GEN-END id=debugging.1*/
-
-// @unsafe - backtrace/backtrace_symbols raw `char**` + free.
-BtCapture bt_capture();
-
-// @unsafe - snprintf left-justified frame index ("%-3d  ").
-std::string bt_index_prefix(int i);
-
-// @unsafe - trivial factory; std::string default construction has no
-// DSL spelling.
-std::string bt_empty_string();
-
-// DSL core: report assembly over the captured symbol strings.
-#if RUSTYCPP_RUST
-fn bt_render(cap: &BtCapture) -> std::string {
-    let mut out = bt_empty_string();
-    if !cap.ok {
-        out.append("  *** failed to obtain stack trace!\n");
-        return out;
-    }
-    out.append("  *** begin stack trace ***\n");
-    let mut k = 0;
-    while k < cap.symbols.len() {
-        out.append(bt_index_prefix(k));
-        out.append(cap.symbols[k]);
-        out.append("\n");
-        k += 1;
-    }
-    out.append("  ***  end stack trace  ***\n");
-    out
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.bt_render version=1 rust_sha256=5e566583a7c846c8e5883cd8599f2ef651e682549caba5738cd579ebad1007f8*/
-std::string bt_render(const BtCapture& cap) {
-    auto out = bt_empty_string();
-    if (rusty::detail::rust_not(cap.ok)) {
-        out.append("  *** failed to obtain stack trace!\n");
-        return std::move(out);
-    }
-    out.append("  *** begin stack trace ***\n");
-    auto k = 0;
-    while (rusty::detail::deref_if_pointer_like(k) < rusty::len(cap.symbols)) {
-        out.append(bt_index_prefix(std::move(k)));
-        out.append(cap.symbols[k]);
-        out.append("\n");
-        rusty::detail::deref_if_pointer_like(k) += 1;
-    }
-    out.append("  ***  end stack trace  ***\n");
-    return std::move(out);
-}
-/*RUSTYCPP:GEN-END id=debugging.bt_render*/
-
-// @unsafe - backtrace/backtrace_symbols raw `char**` + free. Drops the
-// last frame (the pre-reshape loop ran to `frames - 1`).
-// The execinfo pair and its malloc'd `char**` ownership contract live in
-// srpc_base.c now (plain C, Goal-0 C demotion), which keeps
-// <execinfo.h>, the raw char** and the free() out of this TU. Only the
-// walk into the Vec stays here -- rusty::Vec<std::string> is a C++ type,
-// so it cannot cross the C boundary, and the RENDERING is already DSL.
-extern "C" int srpc_backtrace_capture(char*** out_syms);
-extern "C" void srpc_backtrace_free(char** syms);
-using c_char = char;
-
-// @unsafe - walks the C-owned symbol array into the Vec.
-#if RUSTYCPP_RUST
+#[allow(unsafe_code)]
 fn bt_capture() -> BtCapture {
-    let mut cap = BtCapture::new();
-    let mut str_frames: *mut *mut c_char = core::ptr::null_mut();
-    let frames = srpc_backtrace_capture(&raw mut str_frames);
-    if (frames < 0) {
-        return cap;
+    let mut capture = BtCapture::new();
+    let mut raw_symbols: *mut *mut LegacyCChar = core::ptr::null_mut();
+    // SAFETY: the C seam initializes `raw_symbols` or returns a negative count.
+    let frame_count = unsafe { debugging_ffi::srpc_backtrace_capture(&raw mut raw_symbols) };
+    if frame_count < 0_i32 {
+        return capture;
     }
-    cap.ok = true;
-    let mut i = 0;
-    while i < frames - 1 {
-        cap.symbols.push(std::string(str_frames[i]));
-        i += 1;
+
+    capture.ok = true;
+    let mut index = 0_i32;
+    while index < frame_count - 1_i32 {
+        let mut symbol = bt_empty_string();
+        // SAFETY: the C seam returns `frame_count` readable pointers.
+        let symbol_pointer = unsafe { *raw_symbols.add(index as usize) };
+        let mut offset = 0_usize;
+        // SAFETY: each returned pointer names a readable NUL-terminated string.
+        while unsafe { *symbol_pointer.add(offset) } != 0 as LegacyCChar {
+            // SAFETY: offset advances only through bytes preceding the NUL.
+            symbol.push_back(unsafe { *symbol_pointer.add(offset) });
+            offset += 1_usize;
+        }
+        capture.symbols.push(symbol);
+        index += 1_i32;
     }
-    srpc_backtrace_free(str_frames);
-    cap
+    // SAFETY: `raw_symbols` is exactly the allocation returned by the C seam.
+    unsafe { debugging_ffi::srpc_backtrace_free(raw_symbols) };
+    capture
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.8 version=1 rust_sha256=9a88b2e8814f39355c27161714217cf75876ec82fa271626941f02e870254bf8*/
-BtCapture bt_capture() {
-    auto cap = BtCapture::new_();
-    c_char** str_frames = rusty::ptr::null_mut();
-    const auto frames = srpc_backtrace_capture(&str_frames);
-    if ((rusty::detail::deref_if_pointer_like(frames) < 0)) {
-        return std::move(cap);
+
+fn bt_index_prefix(index: i32) -> rusty::LoggingString {
+    let mut output = bt_empty_string();
+    output.append(&index.to_string());
+    while output.size() < 3_usize {
+        output.append(" ");
     }
-    cap.ok = true;
-    auto i = 0;
-    while (rusty::detail::deref_if_pointer_like(i) < (rusty::detail::deref_if_pointer_like(frames) - 1)) {
-        cap.symbols.push(std::string(str_frames[i]));
-        rusty::detail::deref_if_pointer_like(i) += 1;
+    output.append("  ");
+    output
+}
+
+fn bt_empty_string() -> rusty::LoggingString {
+    Default::default()
+}
+
+fn bt_render(capture: &BtCapture) -> rusty::LoggingString {
+    let mut output = bt_empty_string();
+    if !capture.ok {
+        output.append("  *** failed to obtain stack trace!\n");
+        return output;
     }
-    srpc_backtrace_free(str_frames);
-    return std::move(cap);
-}
-/*RUSTYCPP:GEN-END id=debugging.8*/
 
-// @unsafe - snprintf into a raw `char[16]`.
-// (was an snprintf kernel; std::format's {:<3} covers %-3d)
-#if RUSTYCPP_RUST
-fn bt_index_prefix(i: i32) -> std::string {
-    format!("{:<3}  ", i)
-}
-
-fn bt_empty_string() -> std::string {
-    format!("")
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.2 version=1 rust_sha256=62b433c3b21b3524deeb62bd5a39c7b325b7181c24c396be38d73da313f0e821*/
-std::string bt_index_prefix(int32_t i);
-std::string bt_empty_string();
-
-std::string bt_index_prefix(int32_t i) {
-    return std::format("{:<3}  " , i);
+    output.append("  *** begin stack trace ***\n");
+    let mut index = 0_usize;
+    while index < capture.symbols.len() {
+        output.append(bt_index_prefix(index as i32));
+        output.append(&capture.symbols[index]);
+        output.append("\n");
+        index += 1_usize;
+    }
+    output.append("  ***  end stack trace  ***\n");
+    output
 }
 
-std::string bt_empty_string() {
-    return std::format("");
-}
-/*RUSTYCPP:GEN-END id=debugging.2*/
-
-// The report writer. Authored as inline Rust DSL: a `*mut FILE`
-// parameter lowers to `FILE*`, and the `unsafe {}` block keeps the
-// `@unsafe` annotation on the fputs. The exported declaration at the
-// top of this file stays hand-written C++ -- it carries the
-// `= stderr` default argument and `__attribute__((noinline))`, neither
-// of which the DSL can spell.
-#if RUSTYCPP_RUST
-fn print_stack_trace(fp: *mut FILE) {
-    let cap = bt_capture();
-    let report = bt_render(&cap);
-    unsafe { fputs(report.c_str(), fp); }
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=debugging.4 version=1 rust_sha256=2f97cb5efe74f695b3c0911f2c1edde92cd07cb5cb5d3cea05949c5b8179230a*/
-void print_stack_trace(FILE* fp) {
-    const auto cap = bt_capture();
-    const auto report = bt_render(cap);
-    // @unsafe
-    {
-        fputs(report.c_str(), fp);
+/// Print the current in-process stack trace to `stream`.
+///
+/// # Safety
+///
+/// `stream` must point to a live libc `FILE` object.
+#[allow(unsafe_code)]
+pub unsafe fn print_stack_trace(
+    #[cfg_attr(any(), cpp_default_argument(stderr))] stream: *mut ::rusty::CFile,
+) {
+    let capture = bt_capture();
+    let report = bt_render(&capture);
+    // SAFETY: generated C++ maps this call to `std::string::c_str`, and the
+    // caller upholds the stream contract.
+    unsafe {
+        debugging_ffi::fputs(report.c_str(), stream);
     }
 }
-/*RUSTYCPP:GEN-END id=debugging.4*/
 
+#[allow(unsafe_code)]
+pub fn verify_failed(file: &str, line: u32) {
+    // SAFETY: libc owns the returned process-wide stream for its lifetime.
+    let error_stream = unsafe { debugging_ffi::srpc_stderr() };
+    // SAFETY: the process-wide stderr stream is live for this synchronous call.
+    unsafe { print_stack_trace(error_stream) };
+    let mut message: rusty::LoggingString = Default::default();
+    message.append("verify failed at ");
+    message.append(file);
+    message.append(", line ");
+    message.append(&line.to_string());
+    rusty::panic::do_panic(message)
+}
 
-} // namespace rrr
+/// Verify an expression while preserving the C++ caller-location default.
+///
+/// Canonical Rust callers pass an explicit rustc-only `SourceLocation`. The
+/// inert parameter marker is intended to make generated C++ retain the legacy
+/// `std::source_location::current()` default at every C++ call site.
+pub fn verify<Expr>(
+    expr: &Expr,
+    #[cfg_attr(any(), cpp_default_argument(source_location))] location: &::rusty::SourceLocation,
+) where
+    Expr: Copy + Into<bool>,
+{
+    let value: bool = (*expr).into();
+    if unlikely(!value) {
+        verify_failed(location.file_name(), location.line());
+    }
+}

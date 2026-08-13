@@ -121,3 +121,7 @@ source = "rpc/fiber_channel.cpp"
 [[module]]
 cpp_module = "rrr.threading"
 source = "base/threading.cpp"
+
+[[module]]
+cpp_module = "rrr.debugging"
+source = "base/debugging.cpp"

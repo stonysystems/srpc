@@ -23,6 +23,12 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Return libc's process-wide stderr stream without exposing a C global through
+ * Rust's foreign-static lowering. */
+FILE* srpc_stderr(void) {
+    return stderr;
+}
+
 /* Keep rrr::get_ncpu's historical sysconf behavior behind a plain-C seam so
  * the canonical Rust owner need not duplicate libc's platform-specific
  * _SC_NPROCESSORS_ONLN constant. */
