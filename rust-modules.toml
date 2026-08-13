@@ -109,3 +109,7 @@ source = "rpc/pollable_proxy.cpp"
 [[module]]
 cpp_module = "rrr.callbacks"
 source = "rpc/callbacks.cpp"
+
+[[module]]
+cpp_module = "rrr.inmemory_channel"
+source = "rpc/inmemory_channel.cpp"
