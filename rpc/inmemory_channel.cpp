@@ -169,8 +169,12 @@ impl InMemoryChannel {
         }
     }
 
-    pub fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
-        inmemory_channel_send_frame(self, frame)
+    /// # Safety
+    ///
+    /// `frame` must satisfy the raw payload validity contract on
+    /// `ChannelConnectionBase::send_frame` for this synchronous call.
+    pub unsafe fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
+        unsafe { inmemory_channel_send_frame(self, frame) }
     }
 
     pub fn flush(&self) {}
@@ -249,7 +253,12 @@ impl InMemoryChannel {
 }
 
 /// Deliver a copied frame synchronously after dropping the state lock.
-pub fn inmemory_channel_send_frame(
+///
+/// # Safety
+///
+/// `frame` must satisfy the raw payload validity contract on
+/// `ChannelConnectionBase::send_frame` for this synchronous call.
+pub unsafe fn inmemory_channel_send_frame(
     channel: &InMemoryChannel,
     frame: &ChannelFrame,
 ) -> ChannelError {
@@ -358,8 +367,8 @@ pub struct InMemoryChannelShim {
 
 #[cpp_inherit]
 impl ChannelConnectionBase for InMemoryChannelShim {
-    fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
-        self.conn_.send_frame(frame)
+    unsafe fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
+        unsafe { self.conn_.send_frame(frame) }
     }
 
     fn flush(&mut self) {

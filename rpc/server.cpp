@@ -2182,11 +2182,16 @@ fn sconn_reply(sconn: &ServerConnection, req: &Request,
     if write_fn {
         write_fn(ar);
     }
-    sconn_dispatch_response_frame_via_channel((*sconn), body_sink.bytes.as_ptr(),
-                                              body_sink.bytes.len());
+    unsafe {
+        sconn_dispatch_response_frame_via_channel(
+            (*sconn),
+            body_sink.bytes.as_ptr(),
+            body_sink.bytes.len(),
+        );
+    }
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=server.16 version=1 rust_sha256=33782bd7bde013e52f888edc7878adca073b78aeff03d42a5c6f7ea815243e6f*/
+/*RUSTYCPP:GEN-BEGIN id=server.16 version=1 rust_sha256=90383d9aa4499e558cd41ae9feb9dc0fbdd97a162d74ac441f319df5937b33a5*/
 void sconn_reply(const ServerConnection& sconn, const Request& req, int32_t error_code, ServerReplyFn write_fn) {
     BufferSink body_sink = BufferSink{.bytes = rusty::Vec<uint8_t>::new_()};
     auto ar_store = BinaryWriteArchive{.sink_ = make_sink_proxy(&body_sink)};
@@ -2197,7 +2202,10 @@ void sconn_reply(const ServerConnection& sconn, const Request& req, int32_t erro
     if (write_fn) {
         write_fn(ar);
     }
-    sconn_dispatch_response_frame_via_channel((sconn), rusty::as_ptr(body_sink.bytes), rusty::len(body_sink.bytes));
+    // @unsafe
+    {
+        sconn_dispatch_response_frame_via_channel((sconn), rusty::as_ptr(body_sink.bytes), rusty::len(body_sink.bytes));
+    }
 }
 /*RUSTYCPP:GEN-END id=server.16*/
 
@@ -2475,8 +2483,8 @@ ChannelConnectionBase* sconn_proxy_ptr(const rusty::Option<ChannelConnectionProx
 // layer mirrors the legacy fd path's behavior of not surfacing
 // send-side errors from `reply()`.
 #if RUSTYCPP_RUST
-fn sconn_dispatch_response_frame_via_channel(sconn: &ServerConnection,
-                                             bytes: *const u8, size: usize) {
+unsafe fn sconn_dispatch_response_frame_via_channel(sconn: &ServerConnection,
+                                                    bytes: *const u8, size: usize) {
     let mut conn_ptr: *mut ChannelConnectionBase = core::ptr::null_mut();
     {
         let guard = sconn.channel_proxy_.lock().unwrap();
@@ -2487,10 +2495,11 @@ fn sconn_dispatch_response_frame_via_channel(sconn: &ServerConnection,
         conn_ptr = sconn_proxy_ptr((*guard));
     }
     let frame = ChannelFrame { payload: bytes, size: size };
-    let _ = (*conn_ptr).send_frame(frame);
+    let _ = unsafe { (*conn_ptr).send_frame(frame) };
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=server.18 version=1 rust_sha256=9fe9d5d1deb78bf9a023ccd7ef2fe41f3c470ece8483dc9e863adc683bdd42db*/
+/*RUSTYCPP:GEN-BEGIN id=server.18 version=1 rust_sha256=5e66c70bc72a47da8d41e1b6c15b33c71d3fa517a7a3fad8681304f0c1b6a669*/
+// @unsafe
 void sconn_dispatch_response_frame_via_channel(const ServerConnection& sconn, const uint8_t* bytes, size_t size) {
     ChannelConnectionBase* conn_ptr = rusty::ptr::null_mut();
     {

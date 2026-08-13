@@ -1,11 +1,15 @@
 #![allow(unsafe_code)]
 
-use rrr::channel::ChannelError;
-use rrr::tcp_channel::{
-    TcpConnection, TcpListener, kTcpConnectionOutboundHighWaterDefault,
-};
+use rrr::channel::{ChannelError, OnClosedCallback};
+use rrr::tcp_channel::{kTcpConnectionOutboundHighWaterDefault, TcpConnection, TcpListener};
+use rusty::CallbackWrapper;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
+use std::sync::{mpsc, Arc, Barrier};
+use std::thread;
+use std::time::Duration;
+
+fn assert_send_sync<T: Send + Sync>() {}
 
 // Cargo's Rust lane does not compile the production plain-C syscall seam.
 // These inert definitions satisfy references in unexercised TCP I/O helpers;
@@ -42,6 +46,9 @@ pub extern "C" fn srpc_tcp_last_errno() -> i32 {
 
 #[test]
 fn fresh_listener_preserves_the_invalid_fd_and_basic_pollable_contract() {
+    assert_send_sync::<TcpConnection>();
+    assert_send_sync::<TcpListener>();
+
     let listener = TcpListener::new();
 
     assert_eq!(listener.fd(), -1);
@@ -58,31 +65,29 @@ fn fresh_listener_preserves_the_invalid_fd_and_basic_pollable_contract() {
 fn listener_bind_close_and_single_use_state_match_the_cpp_contract() {
     let listener = TcpListener::new();
 
-    assert_eq!(listener.listen("not-an-address"), ChannelError::AddressInvalid);
+    assert_eq!(
+        listener.listen("not-an-address"),
+        ChannelError::AddressInvalid
+    );
     assert_eq!(listener.fd(), -1);
     assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::None);
     assert!(listener.fd() >= 0);
     assert!(listener.local_address().starts_with("127.0.0.1:"));
-    assert_eq!(
-        listener.listen("127.0.0.1:0"),
-        ChannelError::AddressInUse
-    );
+    assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::AddressInUse);
 
     listener.close();
     listener.close();
     assert!(listener.is_closed());
     assert_eq!(listener.fd(), -1);
-    assert_eq!(
-        listener.listen("127.0.0.1:0"),
-        ChannelError::AddressInUse
-    );
+    assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::AddressInUse);
 }
 
 #[test]
 fn connection_constructor_owns_the_fd_and_preserves_initial_state() {
     let (owned, _peer) = UnixStream::pair().unwrap();
     let raw_fd = owned.into_raw_fd();
-    let connection = TcpConnection::new(raw_fd, "test-peer".to_string());
+    // SAFETY: into_raw_fd transferred the stream's unique descriptor here.
+    let connection = unsafe { TcpConnection::new(raw_fd, "test-peer".to_string()) };
 
     assert_eq!(connection.fd(), raw_fd);
     assert_eq!(connection.peer_address(), "test-peer");
@@ -91,4 +96,67 @@ fn connection_constructor_owns_the_fd_and_preserves_initial_state() {
     assert_eq!(connection.content_size(), 0);
     assert!(!connection.check_pending_write_update());
     assert_eq!(kTcpConnectionOutboundHighWaterDefault, 4 * 1024 * 1024);
+}
+
+#[test]
+fn concurrent_listener_bind_and_close_never_publish_a_live_fd_after_close() {
+    for _ in 0..128 {
+        let listener = Arc::new(TcpListener::new());
+        let barrier = Arc::new(Barrier::new(3));
+
+        let bind_listener = Arc::clone(&listener);
+        let bind_barrier = Arc::clone(&barrier);
+        let bind = thread::spawn(move || {
+            bind_barrier.wait();
+            bind_listener.listen("127.0.0.1:0")
+        });
+
+        let close_listener = Arc::clone(&listener);
+        let close_barrier = Arc::clone(&barrier);
+        let close = thread::spawn(move || {
+            close_barrier.wait();
+            close_listener.close();
+        });
+
+        barrier.wait();
+        let bind_result = bind.join().unwrap();
+        close.join().unwrap();
+
+        assert!(matches!(
+            bind_result,
+            ChannelError::None | ChannelError::AddressInUse
+        ));
+        assert!(listener.is_closed());
+        assert_eq!(listener.fd(), -1);
+    }
+}
+
+#[test]
+fn closed_callback_can_replace_itself_without_deadlocking() {
+    let (owned, _peer) = UnixStream::pair().unwrap();
+    let raw_fd = owned.into_raw_fd();
+    // SAFETY: into_raw_fd transferred the stream's unique descriptor here.
+    let connection =
+        Arc::new(unsafe { TcpConnection::new(raw_fd, "reentrant-test-peer".to_string()) });
+    let weak = Arc::downgrade(&connection);
+    let (fired_tx, fired_rx) = mpsc::channel();
+    let callback: OnClosedCallback =
+        CallbackWrapper::from_callable(Box::new(move |reason: ChannelError| {
+            if let Some(connection) = weak.upgrade() {
+                connection.set_on_closed(OnClosedCallback::default());
+            }
+            fired_tx.send(reason).unwrap();
+        }));
+    connection.set_on_closed(callback);
+
+    let closing_connection = Arc::clone(&connection);
+    let close = thread::spawn(move || closing_connection.close());
+
+    assert_eq!(
+        fired_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ChannelError::None
+    );
+    close.join().unwrap();
+    assert!(connection.is_closed());
+    assert_eq!(connection.fd(), -1);
 }

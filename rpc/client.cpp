@@ -1529,7 +1529,9 @@ impl ClientConnection {
         }
         (*self.callback_manager_).invoke_on_connected();
     }
-    fn dispatch_frame_via_channel(&self, body_bytes: *const u8, body_size: usize) -> ChannelError { clientconn_dispatch_frame_via_channel(self, body_bytes, body_size) }
+    unsafe fn dispatch_frame_via_channel(&self, body_bytes: *const u8, body_size: usize) -> ChannelError {
+        unsafe { clientconn_dispatch_frame_via_channel(self, body_bytes, body_size) }
+    }
     fn handle_error(&self) {
         let prev_state = self.state_machine_.state();
         let abort_flag: bool = unsafe { self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire) };
@@ -1681,7 +1683,7 @@ impl ClientConnection {
     fn is_closed(&self) -> bool { self.state_machine_.is_terminal() }
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=client.8 version=1 rust_sha256=9f3b4a2030e0f4776be648d93e3b2de9087f53182e1edf11ca1f401a987c5fb2*/
+/*RUSTYCPP:GEN-BEGIN id=client.8 version=1 rust_sha256=17bbec71549e64ee68a1b919f38c3c2390c3393bf81098458b2a5b67c4973068*/
 struct ClientConnection;
 
 struct ClientConnection {
@@ -2271,7 +2273,10 @@ void ClientConnection::invoke_connected_callback() const {
 }
 
 ChannelError ClientConnection::dispatch_frame_via_channel(const uint8_t* body_bytes, size_t body_size) const {
-    return clientconn_dispatch_frame_via_channel((*this), body_bytes, std::move(body_size));
+    // @unsafe
+    {
+        return clientconn_dispatch_frame_via_channel((*this), body_bytes, std::move(body_size));
+    }
 }
 
 void ClientConnection::handle_error() const {
@@ -4305,8 +4310,9 @@ fn clientconn_request_via_channel<F>(conn: &ClientConnection, rpc_id: i32,
     Serialize_::serialize(rpc_id, ar);
     write_fn(ar);
 
-    let ch_err = conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(),
-                                                 body_sink.bytes.len());
+    let ch_err = unsafe {
+        conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
+    };
     if ch_err != ChannelError::None {
         {
             let mut pending_guard2 = conn.pending_fu_.lock().unwrap();
@@ -4321,7 +4327,7 @@ fn clientconn_request_via_channel<F>(conn: &ClientConnection, rpc_id: i32,
     FutureResult::Ok(fu)
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=client.23 version=1 rust_sha256=b577481cb6c86338451ae76a9b1ae7b6a04bcdf2d840fb62fd843d62e41823c6*/
+/*RUSTYCPP:GEN-BEGIN id=client.23 version=1 rust_sha256=fd8a15741f9d20dce4d6c6cdb7182fba3aec2bfdd3cca10eadda0e9c6cbdbcac*/
 template<typename F>
 FutureResult clientconn_request_via_channel(const ClientConnection& conn, int32_t rpc_id, const FutureAttr& attr, F write_fn) {
     if (rusty::detail::rust_not(conn.allow_request_with_circuit_metrics())) {
@@ -4456,8 +4462,9 @@ fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
     Serialize_::serialize(rpc_id, ar);
     write_fn(ar);
 
-    let ch_err = conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(),
-                                                 body_sink.bytes.len());
+    let ch_err = unsafe {
+        conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
+    };
     if ch_err != ChannelError::None {
         let mut guard = conn.pending_cb_slots_.lock().unwrap();
         (*guard)[slot] = None;
@@ -4469,7 +4476,7 @@ fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
     Result::<(), i32>::Ok(())
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=client.24 version=1 rust_sha256=11aab555f20808485d1db946928fcf899505bb0218e926310db5a68f6daa722e*/
+/*RUSTYCPP:GEN-BEGIN id=client.24 version=1 rust_sha256=c3e886829f465aabeaeaa0ca2a0625fc783359046704472096579bf4cfa68dd6*/
 template<typename F>
 rusty::Result<rusty::Unit, int32_t> clientconn_request_async(const ClientConnection& conn, int32_t rpc_id, F write_fn, AsyncReplyCallback on_reply) {
     if (rusty::detail::rust_not(conn.allow_request_with_circuit_metrics())) {
@@ -4900,9 +4907,9 @@ if (rusty::detail::rust_not(rusty::is_empty(args_bytes))) {
 // lifecycle). Sends run under the slot's lock here (unlike the
 // server's reply path) — both bindings' send_frame are brief.
 #if RUSTYCPP_RUST
-fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
-                                         body_bytes: *const u8,
-                                         body_size: usize) -> ChannelError {
+unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
+                                                body_bytes: *const u8,
+                                                body_size: usize) -> ChannelError {
     if !conn.channel_mode_.get() {
         return ChannelError_ConnectionReset();
     }
@@ -4910,7 +4917,7 @@ fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
         let mut guard = conn.direct_channel_.lock().unwrap();
         if (*guard).is_some() {
             let p: &mut Box<ChannelConnectionBase> = (*guard).as_mut().unwrap();
-            return p.send_frame(ChannelFrame { payload: body_bytes, size: body_size });
+            return unsafe { p.send_frame(ChannelFrame { payload: body_bytes, size: body_size }) };
         }
     }
     let mut guard2 = conn.fiber_channel_.lock().unwrap();
@@ -4918,10 +4925,11 @@ fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
         return ChannelError_ConnectionReset();
     }
     let p2: &mut Box<FiberChannel> = (*guard2).as_mut().unwrap();
-    p2.send_frame(ChannelFrame { payload: body_bytes, size: body_size })
+    unsafe { p2.send_frame(ChannelFrame { payload: body_bytes, size: body_size }) }
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=client.16 version=1 rust_sha256=35ba0b3851cd9cb41fb82deb8ba68f14d4cb5f6ef5619835225057055e0a7a04*/
+/*RUSTYCPP:GEN-BEGIN id=client.16 version=1 rust_sha256=5236e92e643ebb9af84431c571eea2aa3500a24338164a1c6882bdaca1b252da*/
+// @unsafe
 ChannelError clientconn_dispatch_frame_via_channel(const ClientConnection& conn, const uint8_t* body_bytes, size_t body_size) {
     if (rusty::detail::rust_not(conn.channel_mode_.get())) {
         return ChannelError_ConnectionReset();
@@ -4938,7 +4946,10 @@ ChannelError clientconn_dispatch_frame_via_channel(const ClientConnection& conn,
         return ChannelError_ConnectionReset();
     }
     rusty::Box<FiberChannel>& p2 = ((rusty::detail::deref_if_pointer_like(guard2))).as_mut().unwrap();
-    return p2->send_frame(ChannelFrame{.payload = body_bytes, .size = std::move(body_size)});
+    // @unsafe
+    {
+        return p2->send_frame(ChannelFrame{.payload = body_bytes, .size = std::move(body_size)});
+    }
 }
 /*RUSTYCPP:GEN-END id=client.16*/
 
@@ -4960,11 +4971,12 @@ fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     Serialize_::serialize(v64::new(conn.xid_counter_.next(1i64)), ar);
     Serialize_::serialize(kInternalHeartbeatRpcId as i32, ar);
     // Send-side errors are ignored here (same as the legacy fd path).
-    let _ = conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(),
-                                            body_sink.bytes.len());
+    let _ = unsafe {
+        conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
+    };
 }
 #endif
-/*RUSTYCPP:GEN-BEGIN id=client.17 version=1 rust_sha256=f4c3301fe04c220beb004d902035b761603958f4dd27a55c394bbb0c8aefffc3*/
+/*RUSTYCPP:GEN-BEGIN id=client.17 version=1 rust_sha256=6607aab84c3d41d96836950a6deb3ae6e281691f870c92b884339b93538877f8*/
 void clientconn_enqueue_heartbeat_probe(const ClientConnection& conn) {
     BufferSink body_sink = BufferSink{.bytes = rusty::Vec<uint8_t>::new_()};
     auto ar_store = BinaryWriteArchive{.sink_ = make_sink_proxy(&body_sink)};

@@ -88,21 +88,25 @@ impl FiberChannel {
     pub fn bind_callbacks(&mut self) {
         let self_ptr: *mut FiberChannel = &raw mut *self;
 
-        let frame_self: *mut FiberChannel = self_ptr;
-        let frame_callback: Box<dyn Fn(&ChannelFrame)> = Box::new(move |frame| {
+        // Store the pinned address as an integer so the callback itself meets
+        // the channel facade's Send+Sync capture contract. The reactor-thread
+        // affinity documented on FiberChannel remains the safety invariant
+        // governing the dereference.
+        let frame_self: usize = self_ptr as usize;
+        let frame_callback: Box<dyn Fn(&ChannelFrame) + Send + Sync> = Box::new(move |frame| {
             // SAFETY: `bind_callbacks` requires a pinned wrapper and Drop
             // detaches this callback before tearing down any member.
-            unsafe { (*frame_self).on_inbound_frame(frame) };
+            unsafe { (*(frame_self as *mut FiberChannel)).on_inbound_frame(frame) };
         });
         let ch: &mut Box<LegacyChannelConnectionBase> = &mut self.ch_;
         ch.set_on_frame(OnFrameCallback::from_callable(
             frame_callback,
         ));
 
-        let closed_self: *mut FiberChannel = self_ptr;
-        let closed_callback: Box<dyn Fn(ChannelError)> = Box::new(move |_reason| {
+        let closed_self: usize = self_ptr as usize;
+        let closed_callback: Box<dyn Fn(ChannelError) + Send + Sync> = Box::new(move |_reason| {
             // SAFETY: same pin-and-detach invariant as the frame callback.
-            unsafe { (*closed_self).on_inbound_closed() };
+            unsafe { (*(closed_self as *mut FiberChannel)).on_inbound_closed() };
         });
         ch.set_on_closed(OnClosedCallback::from_callable(
             closed_callback,
@@ -110,7 +114,7 @@ impl FiberChannel {
 
         // Fatal errors are followed by on_closed.  Non-fatal errors are
         // intentionally ignored at this layer, matching the original wrapper.
-        let error_callback: Box<dyn Fn(ChannelError, &str)> =
+        let error_callback: Box<dyn Fn(ChannelError, &str) + Send + Sync> =
             Box::new(move |_error, _message| {});
         ch.set_on_error(OnErrorCallback::from_callable(
             error_callback,
@@ -215,12 +219,16 @@ impl FiberChannel {
         }
     }
 
-    pub fn send_frame(
+    /// # Safety
+    ///
+    /// `frame` must satisfy the channel facade's raw payload validity
+    /// contract for this synchronous call.
+    pub unsafe fn send_frame(
         &mut self,
         frame: &ChannelFrame,
     ) -> ChannelError {
         let ch: &mut Box<LegacyChannelConnectionBase> = &mut self.ch_;
-        ch.send_frame(frame)
+        unsafe { ch.send_frame(frame) }
     }
 
     pub fn close(&mut self) {

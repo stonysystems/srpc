@@ -60,16 +60,28 @@ pub struct ChannelFrame {
     pub size: usize,
 }
 
-/// Callback aliases deliberately carry a boxed Rust trait object.  The C++
-/// projection flattens `Box<dyn Fn>` to `rusty::Function<... const>`, which is
-/// the callable type expected by the generated `CallbackWrapper<F>` owner.
-pub type OnFrameCallback = LegacyCallbackWrapper<Box<dyn Fn(&self::ChannelFrame)>>;
-pub type OnClosedCallback = LegacyCallbackWrapper<Box<dyn Fn(self::ChannelError)>>;
-pub type OnErrorCallback = LegacyCallbackWrapper<Box<dyn Fn(self::ChannelError, &str)>>;
+/// Callback aliases deliberately carry a boxed Rust trait object.  Transport
+/// callbacks cross the user-thread / poll-thread boundary, so captures must be
+/// both `Send` and `Sync`. The C++ projection erases these Rust auto-trait
+/// bounds and remains the established `rusty::Function<... const>` ABI.
+pub type OnFrameCallback =
+    LegacyCallbackWrapper<Box<dyn Fn(&self::ChannelFrame) + Send + Sync>>;
+pub type OnClosedCallback =
+    LegacyCallbackWrapper<Box<dyn Fn(self::ChannelError) + Send + Sync>>;
+pub type OnErrorCallback =
+    LegacyCallbackWrapper<Box<dyn Fn(self::ChannelError, &str) + Send + Sync>>;
 
 /// Abstract transport connection implemented by TCP and in-memory channels.
 pub trait ChannelConnectionBase {
-    fn send_frame(&mut self, frame: &self::ChannelFrame) -> self::ChannelError;
+    /// Send one frame whose payload is described by a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// If `frame.size` is nonzero, `frame.payload` must be non-null, aligned,
+    /// and readable for exactly `frame.size` bytes for this synchronous call.
+    /// The range must not be concurrently mutated.
+    #[allow(unsafe_code)]
+    unsafe fn send_frame(&mut self, frame: &self::ChannelFrame) -> self::ChannelError;
     fn flush(&mut self);
     fn close(&mut self);
     fn is_closed(&self) -> bool;
@@ -82,7 +94,8 @@ pub trait ChannelConnectionBase {
 /// Owned, non-nullable connection handle.
 pub type ChannelConnectionProxy = Box<dyn ChannelConnectionBase>;
 
-pub type OnAcceptCallback = LegacyCallbackWrapper<Box<dyn Fn(self::ChannelConnectionProxy)>>;
+pub type OnAcceptCallback =
+    LegacyCallbackWrapper<Box<dyn Fn(self::ChannelConnectionProxy) + Send + Sync>>;
 
 /// Abstract accept loop implemented by transport listeners.
 pub trait ChannelListenerBase {

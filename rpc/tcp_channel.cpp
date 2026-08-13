@@ -6,8 +6,7 @@
     non_camel_case_types,
     non_snake_case,
     unsafe_code,
-    clippy::explicit_auto_deref,
-    clippy::arc_with_non_send_sync
+    clippy::explicit_auto_deref
 )]
 
 use rusty::cpp_inherit;
@@ -94,8 +93,14 @@ pub struct TcpConnection {
 }
 
 impl TcpConnection {
+    /// Construct a connection by taking unique ownership of `fd`.
+    ///
+    /// # Safety
+    ///
+    /// `fd` must be a live connected descriptor whose ownership is transferred
+    /// exactly once. The caller must not close or otherwise use it afterward.
     #[cfg_attr(any(), cpp_ctor)]
-    pub fn new(fd: i32, peer_address: LegacyStdString) -> TcpConnection {
+    pub unsafe fn new(fd: i32, peer_address: LegacyStdString) -> TcpConnection {
         TcpConnection {
             // SAFETY: callers transfer a freshly connected descriptor.
             fd_: rusty::Mutex::new(unsafe { LegacyOwnedFd::from_raw_fd(fd) }),
@@ -117,8 +122,12 @@ impl TcpConnection {
         self.outbound_high_water_ = bytes;
     }
 
-    pub fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
-        tcpconn_send_frame(self, frame)
+    /// # Safety
+    ///
+    /// `frame` must satisfy the raw payload validity contract on
+    /// `ChannelConnectionBase::send_frame`.
+    pub unsafe fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
+        unsafe { tcpconn_send_frame(self, frame) }
     }
 
     pub fn flush(&self) {
@@ -201,8 +210,8 @@ struct TcpChannelShim {
 
 #[cpp_inherit]
 impl ChannelConnectionBase for TcpChannelShim {
-    fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
-        self.conn_.send_frame(frame)
+    unsafe fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
+        unsafe { self.conn_.send_frame(frame) }
     }
     fn flush(&mut self) {
         self.conn_.flush()
@@ -382,26 +391,14 @@ impl TcpListener {
                 return io_kind_to_channel_error(error.kind());
             }
         };
-        {
-            let mut g = self.listener_.lock().unwrap();
-            *g = bound;
-        }
-        let nonblock_result = {
-            let g = self.listener_.lock().unwrap();
-            (*g).set_nonblocking(true)
-        };
+        let nonblock_result = bound.set_nonblocking(true);
         if let Err(error) = nonblock_result {
             let ch = io_kind_to_channel_error(error.kind());
-            let mut g = self.listener_.lock().unwrap();
-            let _closed = core::mem::take(&mut *g); // RAII close
             self.listened_.store(false, Ordering::Release);
             return ch;
         }
         // Discover actual bound address (port may have been 0).
-        let local_result = {
-            let g = self.listener_.lock().unwrap();
-            (*g).local_addr()
-        };
+        let local_result = bound.local_addr();
         // Keep the result match as a statement: rusty-cpp otherwise lets the
         // following MutexGuard assignment context leak into the match lambda's
         // return type.
@@ -415,10 +412,17 @@ impl TcpListener {
                 address_string = addr.to_string();
             }
         }
-        {
-            let mut b = self.bound_address_.lock().unwrap();
-            *b = address_string;
+        // Publish the fully configured listener while holding its lifecycle
+        // mutex. `close()` sets the closed latch first and then takes this same
+        // mutex, so a concurrent close either wins before publication or
+        // waits and removes the newly published fd before it returns.
+        let mut listener_guard = self.listener_.lock().unwrap();
+        if self.closed_.load(Ordering::Acquire) {
+            return ChannelError::AddressInUse;
         }
+        let mut address_guard = self.bound_address_.lock().unwrap();
+        *address_guard = address_string;
+        *listener_guard = bound;
         ChannelError::None
     }
 
@@ -697,9 +701,12 @@ fn tcpconn_deliver_on_closed_locked(conn: &TcpConnection, reason: ChannelError) 
     if conn.on_closed_fired_.swap(true, Ordering::AcqRel) {
         return;
     }
-    let guard = conn.on_closed_.lock().unwrap();
-    if (*guard).has_value() {
-        (*guard).callable()(reason);
+    let callback = {
+        let guard = conn.on_closed_.lock().unwrap();
+        (*guard).clone()
+    };
+    if callback.has_value() {
+        callback.callable()(reason);
     }
 }
 
@@ -709,7 +716,7 @@ fn tcpconn_next_frame(conn: &TcpConnection, v: &mut FrameView) -> FrameDecodeSta
 }
 
 #[allow(unused_unsafe)]
-fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> ChannelError {
+unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> ChannelError {
     if conn.closed_.load(Ordering::Acquire) {
         return ChannelError::ConnectionReset;
     }
@@ -837,9 +844,12 @@ fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
             } else {
                 let ch = tcpconn_errno_to_channel_error(err);
                 {
-                    let guard = conn.on_error_.lock().unwrap();
-                    if (*guard).has_value() {
-                        (*guard).callable()(ch, "socket receive failed");
+                    let callback = {
+                        let guard = conn.on_error_.lock().unwrap();
+                        (*guard).clone()
+                    };
+                    if callback.has_value() {
+                        callback.callable()(ch, "socket receive failed");
                     }
                 }
                 conn.closed_.store(true, Ordering::Release);
@@ -874,9 +884,12 @@ fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
                 size: v.payload_size,
             };
             {
-                let guard = conn.on_frame_.lock().unwrap();
-                if (*guard).has_value() {
-                    (*guard).callable()(&cf);
+                let callback = {
+                    let guard = conn.on_frame_.lock().unwrap();
+                    (*guard).clone()
+                };
+                if callback.has_value() {
+                    callback.callable()(&cf);
                 }
             }
             tcpconn_consume_inbound(conn);
@@ -885,9 +898,12 @@ fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
         } else {
             // Malformed inbound stream.
             {
-                let guard = conn.on_error_.lock().unwrap();
-                if (*guard).has_value() {
-                    (*guard).callable()(
+                let callback = {
+                    let guard = conn.on_error_.lock().unwrap();
+                    (*guard).clone()
+                };
+                if callback.has_value() {
+                    callback.callable()(
                         ChannelError::Internal,
                         "malformed frame on inbound stream",
                     );
@@ -955,9 +971,12 @@ fn tcpconn_handle_write(conn: &TcpConnection) -> i32 {
         return TCP_POLL_NO_CHANGE;
     }
     {
-        let eg = conn.on_error_.lock().unwrap();
-        if (*eg).has_value() {
-            (*eg).callable()(result, "outbound write failed");
+        let callback = {
+            let guard = conn.on_error_.lock().unwrap();
+            (*guard).clone()
+        };
+        if callback.has_value() {
+            callback.callable()(result, "outbound write failed");
         }
     }
     conn.closed_.store(true, Ordering::Release);
@@ -971,9 +990,12 @@ fn tcpconn_handle_error(conn: &TcpConnection) {
         return;
     }
     {
-        let guard = conn.on_error_.lock().unwrap();
-        if (*guard).has_value() {
-            (*guard).callable()(ChannelError::Internal, "epoll/poll signaled error");
+        let callback = {
+            let guard = conn.on_error_.lock().unwrap();
+            (*guard).clone()
+        };
+        if callback.has_value() {
+            callback.callable()(ChannelError::Internal, "epoll/poll signaled error");
         }
     }
     tcpconn_close(conn);
@@ -1061,22 +1083,31 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
         let rc = tcplistener_accept_step(lst, &raw mut step);
         if rc == 1 {
             any_progress = true;
-            let guard = lst.on_accept_.lock().unwrap();
-            if (*guard).has_value() {
-                (*guard).callable()(tcplistener_take_proxy(&mut step));
+            let callback = {
+                let guard = lst.on_accept_.lock().unwrap();
+                (*guard).clone()
+            };
+            if callback.has_value() {
+                callback.callable()(tcplistener_take_proxy(&mut step));
             }
         } else if rc == 0 {
             accepting = false;
         } else if rc == 2 {
-            let guard = lst.on_error_.lock().unwrap();
-            if (*guard).has_value() {
-                (*guard).callable()(step.ch, "accept: failed to set non-blocking");
+            let callback = {
+                let guard = lst.on_error_.lock().unwrap();
+                (*guard).clone()
+            };
+            if callback.has_value() {
+                callback.callable()(step.ch, "accept: failed to set non-blocking");
             }
         } else {
             {
-                let guard = lst.on_error_.lock().unwrap();
-                if (*guard).has_value() {
-                    (*guard).callable()(step.ch, "socket accept failed");
+                let callback = {
+                    let guard = lst.on_error_.lock().unwrap();
+                    (*guard).clone()
+                };
+                if callback.has_value() {
+                    callback.callable()(step.ch, "socket accept failed");
                 }
             }
             lst.close();
@@ -1123,7 +1154,9 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
 
     // Hand the accepted fd to TcpConnection.
     let conn_fd = stream.into_owned_fd().into_raw_fd();
-    let mut conn = Arc::new(TcpConnection::new(conn_fd, peer_addr_str));
+    // SAFETY: accept transferred the freshly created descriptor into this
+    // connection; no other owner remains after into_raw_fd above.
+    let mut conn = Arc::new(unsafe { TcpConnection::new(conn_fd, peer_addr_str) });
 
     if let Some(pt) = lst.poll_thread_.as_ref() {
         // The Arc is still uniquely owned, so this is the safe minting
@@ -1147,9 +1180,12 @@ fn tcplistener_handle_error(listener: &TcpListener) {
         return;
     }
     {
-        let guard = listener.on_error_.lock().unwrap();
-        if (*guard).has_value() {
-            (*guard).callable()(ChannelError::Internal, "epoll/poll signaled error");
+        let callback = {
+            let guard = listener.on_error_.lock().unwrap();
+            (*guard).clone()
+        };
+        if callback.has_value() {
+            callback.callable()(ChannelError::Internal, "epoll/poll signaled error");
         }
     }
     listener.close();
@@ -1242,7 +1278,9 @@ pub fn tcp_factory_connect(fac: &TcpFactory, addr: &str) -> ConnectResult {
         };
     }
 
-    let mut conn = Arc::new(TcpConnection::new(fd, addr.to_string()));
+    // SAFETY: srpc_tcp_connect_socket returned a fresh descriptor whose
+    // ownership is transferred exactly once into TcpConnection.
+    let mut conn = Arc::new(unsafe { TcpConnection::new(fd, addr.to_string()) });
     conn.get_mut()
         .unwrap()
         .set_poll_thread(fac.poll_thread_.clone());

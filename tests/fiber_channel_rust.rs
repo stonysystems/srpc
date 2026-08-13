@@ -94,7 +94,7 @@ struct StubConnection {
 }
 
 impl ChannelConnectionBase for StubConnection {
-    fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
+    unsafe fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
         let mut state = self.state.0.lock().unwrap();
         let bytes = if frame.size == 0 || frame.payload.is_null() {
             Vec::new()
@@ -224,7 +224,7 @@ fn send_close_proxy_state_and_test_access_match_the_facade() {
         size: payload.len(),
     };
     assert_eq!(
-        wrapper_mut(&mut wrapper).send_frame(&frame),
+        unsafe { wrapper_mut(&mut wrapper).send_frame(&frame) },
         ChannelError::None
     );
     assert_eq!(handle.0.lock().unwrap().sent, [payload.to_vec()]);

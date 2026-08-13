@@ -1,6 +1,4 @@
 #![allow(unsafe_code)]
-#![allow(clippy::arc_with_non_send_sync)]
-
 use rrr::channel::{
     ChannelConnectionProxy, ChannelError, ChannelFactoryProxy, ChannelFrame, ChannelListenerProxy,
     OnAcceptCallback, OnClosedCallback, OnFrameCallback,
@@ -12,9 +10,17 @@ use rrr::inmemory_channel::{
     InMemoryFactory, InMemoryListener, InMemorySwitchboard,
 };
 use rusty::CallbackWrapper;
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+
+struct AcceptedSlot(Mutex<Option<ChannelConnectionProxy>>);
+
+// InMemory callbacks run synchronously on the calling test thread. The slot
+// never crosses a thread; these impls only let the callback type exercise the
+// production Send+Sync capture contract while retaining the thread-affine
+// channel proxy API.
+unsafe impl Send for AcceptedSlot {}
+unsafe impl Sync for AcceptedSlot {}
 
 fn make_factory() -> ChannelFactoryProxy {
     let switchboard: Arc<InMemorySwitchboard> = Arc::new(InMemorySwitchboard::new());
@@ -28,14 +34,14 @@ fn listen_and_connect(
 ) -> (
     ChannelListenerProxy,
     ChannelConnectionProxy,
-    Rc<RefCell<Option<ChannelConnectionProxy>>>,
+    Arc<AcceptedSlot>,
 ) {
     let mut listener: ChannelListenerProxy = factory.make_listener().unwrap();
-    let accepted: Rc<RefCell<Option<ChannelConnectionProxy>>> = Rc::new(RefCell::new(None));
+    let accepted: Arc<AcceptedSlot> = Arc::new(AcceptedSlot(Mutex::new(None)));
     let accepted_for_callback = accepted.clone();
-    let accept_callable: Box<dyn Fn(ChannelConnectionProxy)> =
+    let accept_callable: Box<dyn Fn(ChannelConnectionProxy) + Send + Sync> =
         Box::new(move |connection: ChannelConnectionProxy| {
-            *accepted_for_callback.borrow_mut() = Some(connection);
+            *accepted_for_callback.0.lock().unwrap() = Some(connection);
         });
     let accept_callback: OnAcceptCallback = CallbackWrapper::from_callable(accept_callable);
     listener.set_on_accept(accept_callback);
@@ -44,7 +50,7 @@ fn listen_and_connect(
     let mut result = factory.connect(address);
     assert_eq!(result.error, ChannelError::None);
     let client = result.connection.take().unwrap();
-    assert!(accepted.borrow().is_some());
+    assert!(accepted.0.lock().unwrap().is_some());
     (listener, client, accepted)
 }
 
@@ -99,16 +105,16 @@ fn connect_delivers_copied_bytes_and_peer_addresses_synchronously() {
     let mut factory = make_factory();
     let (_listener, mut client, accepted) =
         listen_and_connect(&mut factory, "inmemory://copy-test");
-    let mut server = accepted.borrow_mut().take().unwrap();
+    let mut server = accepted.0.lock().unwrap().take().unwrap();
 
     assert_eq!(client.peer_address(), "inmemory://copy-test");
     assert!(server.peer_address().starts_with("inmemory://client-"));
 
-    let seen: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_in_callback = seen.clone();
-    let frame_callable: Box<dyn Fn(&ChannelFrame)> = Box::new(move |frame: &ChannelFrame| {
+    let frame_callable: Box<dyn Fn(&ChannelFrame) + Send + Sync> = Box::new(move |frame: &ChannelFrame| {
         let bytes = unsafe { core::slice::from_raw_parts(frame.payload, frame.size) };
-        seen_in_callback.borrow_mut().extend_from_slice(bytes);
+        seen_in_callback.lock().unwrap().extend_from_slice(bytes);
     });
     let frame_callback: OnFrameCallback = CallbackWrapper::from_callable(frame_callable);
     server.set_on_frame(frame_callback);
@@ -118,9 +124,9 @@ fn connect_delivers_copied_bytes_and_peer_addresses_synchronously() {
         payload: payload.as_ptr(),
         size: payload.len(),
     };
-    assert_eq!(client.send_frame(&frame), ChannelError::None);
+    assert_eq!(unsafe { client.send_frame(&frame) }, ChannelError::None);
     payload.fill(9_u8);
-    assert_eq!(&*seen.borrow(), &[1_u8, 2_u8, 3_u8, 4_u8]);
+    assert_eq!(&*seen.lock().unwrap(), &[1_u8, 2_u8, 3_u8, 4_u8]);
 }
 
 #[test]
@@ -130,18 +136,18 @@ fn frame_callback_can_reenter_the_peer_without_holding_the_state_lock() {
         listen_and_connect(&mut factory, "inmemory://reentrant");
     let server_slot = accepted;
 
-    let replies: Rc<Cell<u32>> = Rc::new(Cell::new(0_u32));
+    let replies: Arc<AtomicU32> = Arc::new(AtomicU32::new(0_u32));
     let replies_in_callback = replies.clone();
-    let reply_callable: Box<dyn Fn(&ChannelFrame)> = Box::new(move |frame: &ChannelFrame| {
+    let reply_callable: Box<dyn Fn(&ChannelFrame) + Send + Sync> = Box::new(move |frame: &ChannelFrame| {
         assert_eq!(frame.size, 1_usize);
-        replies_in_callback.set(replies_in_callback.get() + 1_u32);
+        replies_in_callback.fetch_add(1_u32, Ordering::Relaxed);
     });
     let reply_callback: OnFrameCallback = CallbackWrapper::from_callable(reply_callable);
     client.set_on_frame(reply_callback);
 
     let server_for_callback = server_slot.clone();
-    server_slot.borrow_mut().as_mut().unwrap().set_on_frame({
-        let reentrant_callable: Box<dyn Fn(&ChannelFrame)> =
+    server_slot.0.lock().unwrap().as_mut().unwrap().set_on_frame({
+        let reentrant_callable: Box<dyn Fn(&ChannelFrame) + Send + Sync> =
             Box::new(move |_frame: &ChannelFrame| {
                 let reply = [0xA5_u8];
                 let reply_frame = ChannelFrame {
@@ -149,11 +155,15 @@ fn frame_callback_can_reenter_the_peer_without_holding_the_state_lock() {
                     size: reply.len(),
                 };
                 assert_eq!(
-                    server_for_callback
-                        .borrow_mut()
-                        .as_mut()
-                        .unwrap()
-                        .send_frame(&reply_frame),
+                    unsafe {
+                        server_for_callback
+                            .0
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .send_frame(&reply_frame)
+                    },
                     ChannelError::None
                 );
             });
@@ -165,31 +175,34 @@ fn frame_callback_can_reenter_the_peer_without_holding_the_state_lock() {
         payload: request.as_ptr(),
         size: request.len(),
     };
-    assert_eq!(client.send_frame(&request_frame), ChannelError::None);
-    assert_eq!(replies.get(), 1_u32);
+    assert_eq!(
+        unsafe { client.send_frame(&request_frame) },
+        ChannelError::None
+    );
+    assert_eq!(replies.load(Ordering::Relaxed), 1_u32);
 }
 
 #[test]
 fn close_is_peer_only_idempotent_and_kills_both_directions() {
     let mut factory = make_factory();
     let (_listener, mut client, accepted) = listen_and_connect(&mut factory, "inmemory://close");
-    let mut server = accepted.borrow_mut().take().unwrap();
+    let mut server = accepted.0.lock().unwrap().take().unwrap();
 
-    let client_closed: Rc<Cell<u32>> = Rc::new(Cell::new(0_u32));
+    let client_closed: Arc<AtomicU32> = Arc::new(AtomicU32::new(0_u32));
     let client_closed_cb = client_closed.clone();
-    let client_close_callable: Box<dyn Fn(ChannelError)> = Box::new(move |reason: ChannelError| {
+    let client_close_callable: Box<dyn Fn(ChannelError) + Send + Sync> = Box::new(move |reason: ChannelError| {
         assert_eq!(reason, ChannelError::None);
-        client_closed_cb.set(client_closed_cb.get() + 1_u32);
+        client_closed_cb.fetch_add(1_u32, Ordering::Relaxed);
     });
     let client_close_callback: OnClosedCallback =
         CallbackWrapper::from_callable(client_close_callable);
     client.set_on_closed(client_close_callback);
 
-    let server_closed: Rc<Cell<u32>> = Rc::new(Cell::new(0_u32));
+    let server_closed: Arc<AtomicU32> = Arc::new(AtomicU32::new(0_u32));
     let server_closed_cb = server_closed.clone();
-    let server_close_callable: Box<dyn Fn(ChannelError)> = Box::new(move |reason: ChannelError| {
+    let server_close_callable: Box<dyn Fn(ChannelError) + Send + Sync> = Box::new(move |reason: ChannelError| {
         assert_eq!(reason, ChannelError::None);
-        server_closed_cb.set(server_closed_cb.get() + 1_u32);
+        server_closed_cb.fetch_add(1_u32, Ordering::Relaxed);
     });
     let server_close_callback: OnClosedCallback =
         CallbackWrapper::from_callable(server_close_callable);
@@ -197,8 +210,8 @@ fn close_is_peer_only_idempotent_and_kills_both_directions() {
 
     client.close();
     client.close();
-    assert_eq!(client_closed.get(), 0_u32);
-    assert_eq!(server_closed.get(), 1_u32);
+    assert_eq!(client_closed.load(Ordering::Relaxed), 0_u32);
+    assert_eq!(server_closed.load(Ordering::Relaxed), 1_u32);
     assert!(client.is_closed());
     assert!(server.is_closed());
 
@@ -207,11 +220,17 @@ fn close_is_peer_only_idempotent_and_kills_both_directions() {
         payload: byte.as_ptr(),
         size: byte.len(),
     };
-    assert_eq!(client.send_frame(&frame), ChannelError::ConnectionReset);
-    assert_eq!(server.send_frame(&frame), ChannelError::ConnectionReset);
+    assert_eq!(
+        unsafe { client.send_frame(&frame) },
+        ChannelError::ConnectionReset
+    );
+    assert_eq!(
+        unsafe { server.send_frame(&frame) },
+        ChannelError::ConnectionReset
+    );
     server.close();
-    assert_eq!(client_closed.get(), 0_u32);
-    assert_eq!(server_closed.get(), 1_u32);
+    assert_eq!(client_closed.load(Ordering::Relaxed), 0_u32);
+    assert_eq!(server_closed.load(Ordering::Relaxed), 1_u32);
 }
 
 #[test]
@@ -219,10 +238,10 @@ fn fault_injection_is_per_side_drop_first_and_clearable() {
     let (a, b) = make_channel_pair_for_testing("side-a".to_owned(), "side-b".to_owned());
     let mut a_proxy = inmemory_channel::make_inmemory_channel_proxy(a.clone());
     let mut b_proxy = inmemory_channel::make_inmemory_channel_proxy(b.clone());
-    let delivered: Rc<Cell<u32>> = Rc::new(Cell::new(0_u32));
+    let delivered: Arc<AtomicU32> = Arc::new(AtomicU32::new(0_u32));
     let delivered_cb = delivered.clone();
-    let delivered_callable: Box<dyn Fn(&ChannelFrame)> = Box::new(move |_frame: &ChannelFrame| {
-        delivered_cb.set(delivered_cb.get() + 1_u32);
+    let delivered_callable: Box<dyn Fn(&ChannelFrame) + Send + Sync> = Box::new(move |_frame: &ChannelFrame| {
+        delivered_cb.fetch_add(1_u32, Ordering::Relaxed);
     });
     let delivered_callback: OnFrameCallback = CallbackWrapper::from_callable(delivered_callable);
     b_proxy.set_on_frame(delivered_callback);
@@ -235,16 +254,22 @@ fn fault_injection_is_per_side_drop_first_and_clearable() {
         payload: bytes.as_ptr(),
         size: bytes.len(),
     };
-    assert_eq!(a_proxy.send_frame(&frame), ChannelError::None);
-    assert_eq!(a_proxy.send_frame(&frame), ChannelError::None);
-    assert_eq!(a_proxy.send_frame(&frame), ChannelError::WouldBlock);
-    assert_eq!(a_proxy.send_frame(&frame), ChannelError::WouldBlock);
-    assert_eq!(a_proxy.send_frame(&frame), ChannelError::None);
-    assert_eq!(delivered.get(), 1_u32);
+    assert_eq!(unsafe { a_proxy.send_frame(&frame) }, ChannelError::None);
+    assert_eq!(unsafe { a_proxy.send_frame(&frame) }, ChannelError::None);
+    assert_eq!(
+        unsafe { a_proxy.send_frame(&frame) },
+        ChannelError::WouldBlock
+    );
+    assert_eq!(
+        unsafe { a_proxy.send_frame(&frame) },
+        ChannelError::WouldBlock
+    );
+    assert_eq!(unsafe { a_proxy.send_frame(&frame) }, ChannelError::None);
+    assert_eq!(delivered.load(Ordering::Relaxed), 1_u32);
 
     // B's state is independent of A's consumed counters.
-    assert_eq!(b_proxy.send_frame(&frame), ChannelError::None);
+    assert_eq!(unsafe { b_proxy.send_frame(&frame) }, ChannelError::None);
     inmemory_channel_inject_drop_next_sends(&b, 1_i32);
     inmemory_channel_clear_fault_injection(&b);
-    assert_eq!(b_proxy.send_frame(&frame), ChannelError::None);
+    assert_eq!(unsafe { b_proxy.send_frame(&frame) }, ChannelError::None);
 }

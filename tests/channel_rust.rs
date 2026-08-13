@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use rrr::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ChannelListenerBase,
@@ -29,7 +31,7 @@ impl RecordingConnection {
 }
 
 impl ChannelConnectionBase for RecordingConnection {
-    fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
+    unsafe fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
         if self.closed {
             return ChannelError::ConnectionReset;
         }
@@ -181,7 +183,7 @@ fn connection_proxy_forwards_every_method_and_callbacks_are_usable() {
         payload: payload.as_ptr(),
         size: payload.len(),
     };
-    assert_eq!(connection.send_frame(&frame), ChannelError::None);
+    assert_eq!(unsafe { connection.send_frame(&frame) }, ChannelError::None);
     connection.flush();
 
     let closed = OnClosedCallback::from_callable(Box::new(|reason| {
@@ -205,7 +207,10 @@ fn connection_proxy_forwards_every_method_and_callbacks_are_usable() {
 
     connection.close();
     assert!(connection.is_closed());
-    assert_eq!(connection.send_frame(&frame), ChannelError::ConnectionReset);
+    assert_eq!(
+        unsafe { connection.send_frame(&frame) },
+        ChannelError::ConnectionReset
+    );
 }
 
 #[test]
