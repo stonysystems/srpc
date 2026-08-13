@@ -4,14 +4,84 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 import tomllib
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 RUSTY_CPP_PIN = "29418811b7dc530bd3fe3936fe20ebc16aeb9a16"
+EXPECTED_INLINE_SOURCES = {
+    "base/debugging.cpp": "debugging",
+    "base/threading.cpp": "threading",
+    "misc/any_message.cpp": "any_message",
+    "misc/serializable.cpp": "serializable",
+    "reactor/epoll_wrapper.cc": "epoll_wrapper",
+    "reactor/reactor.cpp": "reactor",
+    "rpc/callbacks.cpp": "callbacks",
+    "rpc/channel.cpp": "channel",
+    "rpc/client.cpp": "client",
+    "rpc/fiber_channel.cpp": "fiber_channel",
+    "rpc/inmemory_channel.cpp": "inmemory_channel",
+    "rpc/pollable_proxy.cpp": "pollable_proxy",
+    "rpc/server.cpp": "server",
+    "rpc/tcp_channel.cpp": "tcp_channel",
+}
+EXPECTED_DSL_SOURCES = {
+    *EXPECTED_INLINE_SOURCES,
+    "reactor/epoll_platform_linux.cc",
+}
+
+
+def cmake_set(text: str, name: str) -> list[str]:
+    match = re.search(rf"set\({re.escape(name)}\s+(.*?)\s*\)", text, re.DOTALL)
+    if match is None:
+        raise AssertionError(f"missing CMake set({name})")
+    return [
+        token
+        for token in re.split(r"\s+", match.group(1).strip())
+        if token and not token.startswith("#")
+    ]
+
+
+def source_token(token: str) -> str:
+    prefix = "${CMAKE_CURRENT_SOURCE_DIR}/"
+    if not token.startswith(prefix):
+        raise AssertionError(f"non-repository-relative source token: {token}")
+    return token.removeprefix(prefix)
+
+
+def validate_provider_inventory(cmake: str, manifest: dict[str, object]) -> None:
+    modules = manifest["module"]
+    assert isinstance(modules, list)
+    canonical_names = [
+        entry["cpp_module"].removeprefix("rrr.") for entry in modules
+    ]
+    canonical_sources = [entry["source"] for entry in modules]
+    if cmake_set(cmake, "RRR_GOAL0_CANONICAL_MODULES") != canonical_names:
+        raise AssertionError("canonical CMake names differ from manifest order")
+    inline_sources = [
+        source_token(token) for token in cmake_set(cmake, "RRR_INLINE_MODULE_SRC")
+    ]
+    if inline_sources != list(EXPECTED_INLINE_SOURCES):
+        raise AssertionError("inline carrier path inventory drifted or duplicated")
+    if len(set(inline_sources)) != len(inline_sources):
+        raise AssertionError("inline carrier path inventory contains duplicates")
+    expected_inline_names = cmake_set(cmake, "RRR_EXPECTED_INLINE_MODULES")
+    if expected_inline_names != list(EXPECTED_INLINE_SOURCES.values()):
+        raise AssertionError("inline module-name inventory drifted")
+    retired = [
+        source_token(token)
+        for token in cmake_set(cmake, "RRR_GOAL0_RETIRED_CARRIER_SRC")
+    ]
+    if retired != canonical_sources or len(set(retired)) != len(retired):
+        raise AssertionError("retired carriers must equal canonical sources")
+    if cmake_set(cmake, "RRR_BORROW_SRC") != ["${RRR_INLINE_MODULE_SRC}"]:
+        raise AssertionError("borrow inventory must derive exactly from inline carriers")
 
 
 class StandaloneGoal0Tests(unittest.TestCase):
@@ -35,6 +105,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
             self.assertEqual(shim.resolve(), source.resolve())
 
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        validate_provider_inventory(cmake, manifest)
         inventory = re.search(
             r"set\(RRR_GOAL0_CANONICAL_MODULES\s+(.*?)\n\)",
             cmake,
@@ -56,6 +127,61 @@ class StandaloneGoal0Tests(unittest.TestCase):
                 f"${{CMAKE_CURRENT_SOURCE_DIR}}/{entry['source']})",
                 cmake,
             )
+
+    def test_duplicate_inline_provider_negative_control_is_rejected(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        with (ROOT / "rust-modules.toml").open("rb") as stream:
+            manifest = tomllib.load(stream)
+        mutated = cmake.replace(
+            "${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp\n)",
+            "${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp\n)",
+            1,
+        )
+        self.assertNotEqual(mutated, cmake)
+        with self.assertRaisesRegex(AssertionError, "drifted or duplicated"):
+            validate_provider_inventory(mutated, manifest)
+
+    def test_dsl_census_fails_closed_on_removed_block_or_carrier(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="srpc-dsl-contract-") as raw:
+            scratch = Path(raw)
+            (scratch / "scripts").mkdir()
+            shutil.copy2(
+                ROOT / "scripts/rrr_dsl_check.sh",
+                scratch / "scripts/rrr_dsl_check.sh",
+            )
+            for relative in EXPECTED_DSL_SOURCES:
+                destination = scratch / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, destination)
+            transpiler = scratch / "fake-transpiler"
+            transpiler.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            transpiler.chmod(0o755)
+
+            def check() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["bash", "scripts/rrr_dsl_check.sh", str(transpiler)],
+                    cwd=scratch,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+
+            self.assertEqual(check().returncode, 0)
+            carrier = scratch / "base/debugging.cpp"
+            original = carrier.read_text(encoding="utf-8")
+            carrier.write_text(
+                original.replace("#if RUSTYCPP_RUST", "#if 0", 1),
+                encoding="utf-8",
+            )
+            removed_block = check()
+            self.assertNotEqual(removed_block.returncode, 0)
+            self.assertIn("block census mismatch", removed_block.stderr)
+            carrier.write_text(original, encoding="utf-8")
+            os.unlink(scratch / "rpc/tcp_channel.cpp")
+            removed_carrier = check()
+            self.assertNotEqual(removed_carrier.returncode, 0)
+            self.assertIn("carrier census mismatch", removed_carrier.stderr)
 
     def test_rusty_cpp_is_an_exact_gitlink_dependency(self) -> None:
         fields = subprocess.check_output(
@@ -89,13 +215,34 @@ class StandaloneGoal0Tests(unittest.TestCase):
             self.assertTrue((ROOT / relative).is_file(), relative)
 
     def test_no_absolute_mako_checkout_dependency(self) -> None:
-        candidates = [ROOT / "CMakeLists.txt", *sorted((ROOT / "scripts").rglob("*"))]
+        tracked = subprocess.check_output(
+            ["git", "ls-files"], cwd=ROOT, text=True
+        ).splitlines()
+        candidates = [
+            ROOT / relative
+            for relative in tracked
+            if relative == "CMakeLists.txt"
+            or relative == "Makefile"
+            or relative == ".gitmodules"
+            or relative.endswith(
+                (".cmake", ".py", ".sh", ".toml", ".json", ".yaml", ".yml")
+            )
+        ]
+        absolute_mako = re.compile(
+            rb"/(?:home|Users|var/tmp)/[^\x00\r\n\"' ]*mako(?:[-/][^\x00\r\n\"' ]*)?"
+        )
+        parent_mako = re.compile(
+            rb"(?:^|[\s\"'=:(])\.\./(?:\.\./)*mako(?:[/\s\"')]|$)",
+            re.MULTILINE,
+        )
         for candidate in candidates:
             if not candidate.is_file() or "__pycache__" in candidate.parts:
                 continue
             data = candidate.read_bytes()
             self.assertNotIn(b"/home/users/" + b"shuai/mako", data, candidate)
             self.assertNotIn(b"/var/tmp/" + b"mako-", data, candidate)
+            self.assertIsNone(absolute_mako.search(data), candidate)
+            self.assertIsNone(parent_mako.search(data), candidate)
 
 
 if __name__ == "__main__":

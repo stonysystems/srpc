@@ -144,6 +144,63 @@ set(RRR_INLINE_MODULE_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp
 )
+set(RRR_EXPECTED_INLINE_MODULES
+    debugging
+    threading
+    any_message
+    serializable
+    epoll_wrapper
+    reactor
+    callbacks
+    channel
+    client
+    fiber_channel
+    inmemory_channel
+    pollable_proxy
+    server
+    tcp_channel
+)
+
+# Fail closed on both paths and declared provider names. A mere length check
+# lets one carrier be replaced by a duplicate while still reporting 37 module
+# inputs, which can silently remove a production provider.
+set(_RRR_INLINE_UNIQUE_SRC ${RRR_INLINE_MODULE_SRC})
+list(REMOVE_DUPLICATES _RRR_INLINE_UNIQUE_SRC)
+list(LENGTH RRR_INLINE_MODULE_SRC _RRR_INLINE_SRC_COUNT)
+list(LENGTH _RRR_INLINE_UNIQUE_SRC _RRR_INLINE_UNIQUE_SRC_COUNT)
+if(NOT _RRR_INLINE_SRC_COUNT EQUAL _RRR_INLINE_UNIQUE_SRC_COUNT)
+    message(FATAL_ERROR
+        "Goal-0 inline module carrier inventory contains duplicate paths")
+endif()
+set(_RRR_ACTUAL_INLINE_MODULES)
+foreach(_RRR_INLINE_SOURCE IN LISTS RRR_INLINE_MODULE_SRC)
+    file(READ "${_RRR_INLINE_SOURCE}" _RRR_INLINE_TEXT)
+    string(REGEX MATCHALL
+        "export[ \t\r\n]+module[ \t\r\n]+rrr\\.[A-Za-z_][A-Za-z0-9_]*"
+        _RRR_INLINE_DECLARATIONS "${_RRR_INLINE_TEXT}")
+    list(LENGTH _RRR_INLINE_DECLARATIONS _RRR_INLINE_DECLARATION_COUNT)
+    if(NOT _RRR_INLINE_DECLARATION_COUNT EQUAL 1)
+        message(FATAL_ERROR
+            "Inline carrier must declare exactly one rrr module: "
+            "${_RRR_INLINE_SOURCE}")
+    endif()
+    list(GET _RRR_INLINE_DECLARATIONS 0 _RRR_INLINE_DECLARATION)
+    string(REGEX REPLACE
+        ".*rrr\\.([A-Za-z_][A-Za-z0-9_]*)" "\\1"
+        _RRR_INLINE_MODULE "${_RRR_INLINE_DECLARATION}")
+    list(APPEND _RRR_ACTUAL_INLINE_MODULES "${_RRR_INLINE_MODULE}")
+endforeach()
+set(_RRR_EXPECTED_INLINE_MODULES_SORTED ${RRR_EXPECTED_INLINE_MODULES})
+set(_RRR_ACTUAL_INLINE_MODULES_SORTED ${_RRR_ACTUAL_INLINE_MODULES})
+list(SORT _RRR_EXPECTED_INLINE_MODULES_SORTED)
+list(SORT _RRR_ACTUAL_INLINE_MODULES_SORTED)
+if(NOT _RRR_ACTUAL_INLINE_MODULES_SORTED STREQUAL
+       _RRR_EXPECTED_INLINE_MODULES_SORTED)
+    message(FATAL_ERROR
+        "Goal-0 inline module declarations differ from the exact retained "
+        "inventory; expected=${_RRR_EXPECTED_INLINE_MODULES_SORTED}; "
+        "actual=${_RRR_ACTUAL_INLINE_MODULES_SORTED}")
+endif()
 list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_INLINE_MODULE_SRC})
 
 # These modules are owned by canonical Rust sources. rusty-cpp generates
@@ -243,6 +300,20 @@ set(RRR_GOAL0_RETIRED_CARRIER_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.cpp
 )
+set(_RRR_GOAL0_RETIRED_SORTED ${RRR_GOAL0_RETIRED_CARRIER_SRC})
+set(_RRR_GOAL0_CANONICAL_SORTED ${RRR_GOAL0_CANONICAL_RUST_SRC})
+set(_RRR_GOAL0_UNIQUE_RETIRED ${RRR_GOAL0_RETIRED_CARRIER_SRC})
+list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_RETIRED)
+list(LENGTH RRR_GOAL0_RETIRED_CARRIER_SRC _RRR_GOAL0_RETIRED_COUNT)
+list(LENGTH _RRR_GOAL0_UNIQUE_RETIRED _RRR_GOAL0_UNIQUE_RETIRED_COUNT)
+list(SORT _RRR_GOAL0_RETIRED_SORTED)
+list(SORT _RRR_GOAL0_CANONICAL_SORTED)
+if(NOT _RRR_GOAL0_RETIRED_COUNT EQUAL _RRR_GOAL0_UNIQUE_RETIRED_COUNT OR
+   NOT _RRR_GOAL0_RETIRED_SORTED STREQUAL _RRR_GOAL0_CANONICAL_SORTED)
+    message(FATAL_ERROR
+        "Goal-0 retired carriers must equal the unique canonical Rust "
+        "source inventory exactly")
+endif()
 foreach(_RRR_GOAL0_CANONICAL_SOURCE IN LISTS RRR_GOAL0_CANONICAL_RUST_SRC)
     if(NOT EXISTS "${_RRR_GOAL0_CANONICAL_SOURCE}")
         message(FATAL_ERROR
@@ -290,10 +361,19 @@ set_source_files_properties(${RRR_GOAL0_CRATE_CHILD_SRC}
 
 list(LENGTH RRR_INLINE_MODULE_SRC _RRR_INLINE_MODULE_COUNT)
 list(LENGTH RRR_MODULE_SRC _RRR_PRODUCTION_MODULE_COUNT)
+set(_RRR_PRODUCTION_MODULE_NAMES
+    ${RRR_GOAL0_CANONICAL_MODULES}
+    ${_RRR_ACTUAL_INLINE_MODULES}
+)
+set(_RRR_UNIQUE_PRODUCTION_MODULE_NAMES ${_RRR_PRODUCTION_MODULE_NAMES})
+list(REMOVE_DUPLICATES _RRR_UNIQUE_PRODUCTION_MODULE_NAMES)
+list(LENGTH _RRR_UNIQUE_PRODUCTION_MODULE_NAMES
+    _RRR_UNIQUE_PRODUCTION_MODULE_NAME_COUNT)
 math(EXPR _RRR_EXPECTED_INLINE_COUNT
     "37 - ${_RRR_GOAL0_MODULE_COUNT}")
 if(NOT _RRR_INLINE_MODULE_COUNT EQUAL _RRR_EXPECTED_INLINE_COUNT OR
-   NOT _RRR_PRODUCTION_MODULE_COUNT EQUAL 37)
+   NOT _RRR_PRODUCTION_MODULE_COUNT EQUAL 37 OR
+   NOT _RRR_UNIQUE_PRODUCTION_MODULE_NAME_COUNT EQUAL 37)
     message(FATAL_ERROR
         "Goal-0 production must contain all 37 retained module providers")
 endif()
@@ -407,41 +487,20 @@ if(NOT TARGET rrr)
     # Remaining hand-authored RRR C++ module units for borrow checking. The
     # canonical Rust modules are checked by rustc and are not duplicated
     # here as generated C++ providers.
-    set(RRR_BORROW_SRC
-        # base/
-        ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.cpp
-            # misc/
-        ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp
-        # reactor/ — (fiber_impl.cc, event.cc, quorum_event.cc, reactor.cc were
-        # merged into rrr.reactor / reactor.cpp during modularization.)
-        ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp
-        # rpc/
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp
-        # Notes on parse-recovery:
-        # - rpc/server.cpp and rpc/fiber_channel.cpp trip a libclang-22 crash
-        #   on the first parse attempt (clang++ CLI compiles them fine — it's
-        #   a libclang-specific bug). rusty-cpp's parser detects the crash
-        #   and retries with module args dropped (keeps `import std;` only),
-        #   producing a partial AST. Findings against these two files are
-        #   missing cross-module callee-name resolution, so they show up as
-        #   `Calling non-safe function 'unknown'` and may include false
-        #   positives. Once upstream libclang is fixed the recovery will
-        #   become a no-op and findings will gain full precision.
-        # Exclusions (each with a reason):
-        # - reactor/fiber_context_{aarch64,x86_64}.cc: arch-specific inline
-        #   `__asm__ volatile(...)` context-switch trampolines (~30 lines
-        #   each). C++ semantics don't reach them.
-    )
+    set(RRR_BORROW_SRC ${RRR_INLINE_MODULE_SRC})
+    set(_RRR_BORROW_SORTED ${RRR_BORROW_SRC})
+    set(_RRR_INLINE_SORTED ${RRR_INLINE_MODULE_SRC})
+    list(SORT _RRR_BORROW_SORTED)
+    list(SORT _RRR_INLINE_SORTED)
+    if(NOT _RRR_BORROW_SORTED STREQUAL _RRR_INLINE_SORTED)
+        message(FATAL_ERROR
+            "Borrow-check carriers must equal the remaining inline module "
+            "inventory exactly")
+    endif()
+    # Parse-recovery: rpc/server.cpp and rpc/fiber_channel.cpp trip a
+    # libclang-22 crash on the first parse attempt (clang++ CLI compiles them
+    # normally). rusty-cpp retries without module arguments. The architecture
+    # context-switch assembly remains deliberately outside this exact set.
 
     if(ENABLE_BORROW_CHECKING AND RRR_BORROW_SRC)
         add_library(rrr_borrow OBJECT ${RRR_BORROW_SRC})
@@ -508,6 +567,9 @@ add_custom_target(rrr_goal0_source_gate
     COMMAND
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_standalone.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
     COMMAND
         "${CMAKE_COMMAND}"
         -E env
@@ -731,6 +793,13 @@ if(BUILD_TESTING)
             "${CARGO_EXECUTABLE}" test --locked --workspace --all-targets
     )
     set_tests_properties(srpc_goal0_cargo PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(
+        NAME srpc_goal0_contracts
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
+    )
+    set_tests_properties(srpc_goal0_contracts PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(
         NAME srpc_goal0_rand_kernel_smoke
