@@ -18,7 +18,6 @@ file(GLOB RRR_BENCH_SRC
 # an inline carrier. Keep this census complete so none is also compiled through
 # the regular source glob.
 set(RRR_INLINE_MODULE_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp
@@ -28,7 +27,7 @@ set(RRR_INLINE_MODULE_SRC
 )
 list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_INLINE_MODULE_SRC})
 
-# These thirty modules are owned by canonical Rust sources. rusty-cpp generates
+# These thirty-one modules are owned by canonical Rust sources. rusty-cpp generates
 # their complete C++ module interfaces; no hand-authored carrier remains.
 set(RRR_GOAL0_CANONICAL_MODULES
     basetypes
@@ -61,6 +60,7 @@ set(RRR_GOAL0_CANONICAL_MODULES
     inmemory_channel
     fiber_channel
     threading
+    debugging
 )
 set(RRR_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.cpp)
 set(RRR_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.cpp)
@@ -92,14 +92,15 @@ set(RRR_GOAL0_SOURCE_callbacks ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.cpp)
 set(RRR_GOAL0_SOURCE_inmemory_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.cpp)
 set(RRR_GOAL0_SOURCE_fiber_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.cpp)
 set(RRR_GOAL0_SOURCE_threading ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.cpp)
+set(RRR_GOAL0_SOURCE_debugging ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp)
 set(_RRR_GOAL0_UNIQUE_MODULES ${RRR_GOAL0_CANONICAL_MODULES})
 list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_MODULES)
 list(LENGTH RRR_GOAL0_CANONICAL_MODULES _RRR_GOAL0_MODULE_COUNT)
 list(LENGTH _RRR_GOAL0_UNIQUE_MODULES _RRR_GOAL0_UNIQUE_MODULE_COUNT)
-if(NOT _RRR_GOAL0_MODULE_COUNT EQUAL 30 OR
-   NOT _RRR_GOAL0_UNIQUE_MODULE_COUNT EQUAL 30)
+if(NOT _RRR_GOAL0_MODULE_COUNT EQUAL 31 OR
+   NOT _RRR_GOAL0_UNIQUE_MODULE_COUNT EQUAL 31)
     message(FATAL_ERROR
-        "Goal-0 canonical module inventory must contain thirty unique names")
+        "Goal-0 canonical module inventory must contain thirty-one unique names")
 endif()
 
 set(RRR_GOAL0_CRATE_CPP_DIR
@@ -145,6 +146,7 @@ set(RRR_GOAL0_RETIRED_CARRIER_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp
 )
 foreach(_RRR_GOAL0_CANONICAL_SOURCE IN LISTS RRR_GOAL0_CANONICAL_RUST_SRC)
     if(NOT EXISTS "${_RRR_GOAL0_CANONICAL_SOURCE}")
@@ -168,16 +170,16 @@ list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC)
 list(LENGTH _RRR_GOAL0_UNIQUE_CANONICAL_RUST_SRC
     _RRR_GOAL0_UNIQUE_CANONICAL_COUNT)
 list(LENGTH _RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC _RRR_GOAL0_UNIQUE_CHILD_COUNT)
-if(NOT _RRR_GOAL0_CANONICAL_COUNT EQUAL 30 OR
-   NOT _RRR_GOAL0_CHILD_COUNT EQUAL 30 OR
-   NOT _RRR_GOAL0_UNIQUE_CANONICAL_COUNT EQUAL 30 OR
-   NOT _RRR_GOAL0_UNIQUE_CHILD_COUNT EQUAL 30)
+if(NOT _RRR_GOAL0_CANONICAL_COUNT EQUAL 31 OR
+   NOT _RRR_GOAL0_CHILD_COUNT EQUAL 31 OR
+   NOT _RRR_GOAL0_UNIQUE_CANONICAL_COUNT EQUAL 31 OR
+   NOT _RRR_GOAL0_UNIQUE_CHILD_COUNT EQUAL 31)
     message(FATAL_ERROR
-        "Goal-0 crate production must own exactly thirty unique "
+        "Goal-0 crate production must own exactly thirty-one unique "
         "Rust/generated providers")
 endif()
 
-# Production combines the remaining inline carriers with the thirty
+# Production combines the remaining inline carriers with the thirty-one
 # generated providers. The partial crate root remains compile-only until all
 # 37 surviving named modules are canonical Rust.
 set(RRR_MODULE_SRC ${RRR_INLINE_MODULE_SRC} ${RRR_GOAL0_CRATE_CHILD_SRC})
@@ -190,10 +192,10 @@ set_source_files_properties(${RRR_GOAL0_CRATE_CHILD_SRC}
 
 list(LENGTH RRR_INLINE_MODULE_SRC _RRR_INLINE_MODULE_COUNT)
 list(LENGTH RRR_MODULE_SRC _RRR_PRODUCTION_MODULE_COUNT)
-if(NOT _RRR_INLINE_MODULE_COUNT EQUAL 7 OR
+if(NOT _RRR_INLINE_MODULE_COUNT EQUAL 6 OR
    NOT _RRR_PRODUCTION_MODULE_COUNT EQUAL 37)
     message(FATAL_ERROR
-        "Goal-0 production must contain 7 inline and thirty generated modules")
+        "Goal-0 production must contain 6 inline and thirty-one generated modules")
 endif()
 list(FIND RRR_MODULE_SRC "${RRR_GOAL0_CRATE_ROOT_SRC}" _RRR_GOAL0_ROOT_INDEX)
 if(NOT _RRR_GOAL0_ROOT_INDEX EQUAL -1)
@@ -315,12 +317,10 @@ if(NOT TARGET rrr)
     target_sources(rrr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
 
     # Remaining hand-authored RRR C++ module units for borrow checking. The
-    # Thirty canonical Rust modules are checked by rustc and are not duplicated
+    # Thirty-one canonical Rust modules are checked by rustc and are not duplicated
     # here as generated C++ providers.
     set(RRR_BORROW_SRC
-        # base/
-        ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp
-            # misc/
+        # misc/
         ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp
         # reactor/ — (fiber_impl.cc, event.cc, quorum_event.cc, reactor.cc were
@@ -478,7 +478,7 @@ file(GENERATE
 
 # Crate mode emits all children and the partial root in one invocation. Both
 # the production target and dual gate consume this one build-tree generation.
-# Only the thirty child .cppm files enter RRR_MODULE_SRC. The dual gate compiles
+# Only the thirty-one child .cppm files enter RRR_MODULE_SRC. The dual gate compiles
 # rrr.cppm after its children in temporary storage, but production never does.
 set(RRR_GOAL0_CRATE_GENERATED_OUTPUTS
     ${RRR_GOAL0_CRATE_CHILD_SRC}
