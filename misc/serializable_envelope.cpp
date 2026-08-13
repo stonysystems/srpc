@@ -11,6 +11,10 @@ use rusty as cpp;
 /// # Safety
 ///
 /// `h` must be non-null and point to a live `SerializableSharedPtrHolder<T>`.
+/// The caller must additionally own an exclusive mutation window for the
+/// holder's inner `Arc<T>`: no cloned envelope, shared payload handle, raw
+/// pointer, or reference may observe or access `T` until the returned pointer
+/// is no longer used.
 pub unsafe fn envelope_holder_ptr_mut<T>(
     h: *const rusty::SerializableSharedPtrHolder<T>,
 ) -> *mut T {
@@ -63,9 +67,7 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
     pub fn pack<T: PayloadMember<PayloadSet> + Clone + 'static>(
         value: &T,
     ) -> SerializableEnvelope<PayloadSet> {
-        SerializableEnvelope::<PayloadSet>::pack_aliased::<T>(rusty::Arc::<T>::make(
-            value.clone(),
-        ))
+        SerializableEnvelope::<PayloadSet>::pack_aliased::<T>(rusty::Arc::<T>::make(value.clone()))
     }
 
     #[allow(clippy::field_reassign_with_default)]
@@ -73,7 +75,9 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
         sp: rusty::Arc<T>,
     ) -> SerializableEnvelope<PayloadSet> {
         let mut env: SerializableEnvelope<PayloadSet> = Default::default();
-        env.inner_ = Some(rusty::Arc::<rusty::SerializableSharedPtrHolder<T>>::make(sp));
+        env.inner_ = Some(rusty::Arc::<rusty::SerializableSharedPtrHolder<T>>::make(
+            sp,
+        ));
         env.refresh_kind();
         env
     }
@@ -131,8 +135,17 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
         self.refresh_kind();
     }
 
+    /// Return the historical mutable payload pointer after a checked downcast.
+    ///
+    /// # Safety
+    ///
+    /// The payload must be exclusively owned for the entire use of the
+    /// returned pointer. In particular, no envelope clone, `unpack_shared`
+    /// result, earlier raw pointer, or Rust/C++ reference may alias the inner
+    /// `Arc<T>`. `&mut self` alone does not prove this because cloning an
+    /// envelope shares its holder and payload.
     #[allow(unsafe_code)]
-    pub fn unpack_mut<T: PayloadMember<PayloadSet> + 'static>(&mut self) -> *mut T {
+    pub unsafe fn unpack_mut<T: PayloadMember<PayloadSet> + 'static>(&mut self) -> *mut T {
         let h = unsafe { cpp_serializable::serializable_holder_of::<T>(self.base_ptr()) };
         if h.is_null() {
             return core::ptr::null_mut();

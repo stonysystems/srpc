@@ -11,9 +11,17 @@ callable_signatures = ["size_t(uint8_t)"]
 kind = "function"
 callable_signatures = ["size_t(int32_t,uint8_t*)"]
 
+[modules."rrr::basetypes".symbols."SparseInt::dump64"]
+kind = "function"
+callable_signatures = ["size_t(int64_t,uint8_t*)"]
+
 [modules."rrr::basetypes".symbols."SparseInt::load32"]
 kind = "function"
 callable_signatures = ["int32_t(const uint8_t*)"]
+
+[modules."rrr::basetypes".symbols."SparseInt::load64"]
+kind = "function"
+callable_signatures = ["int64_t(const uint8_t*)"]
 
 [modules."rrr::basetypes".symbols.Time]
 kind = "type"
@@ -140,3 +148,35 @@ callable_signatures = []
 [modules.rusty.symbols."os::fd::OwnedFd::from_raw_fd"]
 kind = "function"
 callable_signatures = ["OwnedFd(int)"]
+
+[modules.rusty.symbols.srpc_adl_serialize]
+kind = "function_template"
+callable_signatures = ["void(const T&,Archive&)"]
+
+[modules.rusty.symbols.srpc_adl_deserialize]
+kind = "function_template"
+callable_signatures = ["void(T&,Archive&)"]
+
+[modules.rusty.symbols.srpc_sink_write]
+kind = "function_template"
+callable_signatures = ["void(Sink&,const uint8_t*,size_t)"]
+
+[modules.rusty.symbols.srpc_source_read]
+kind = "function_template"
+callable_signatures = ["size_t(Source&,uint8_t*,size_t)"]
+
+[modules.rusty.symbols.srpc_arc_default]
+kind = "function_template"
+callable_signatures = ["rusty::Arc<T>()"]
+
+[modules.rusty.symbols.srpc_arc_copy]
+kind = "function_template"
+callable_signatures = ["rusty::Arc<T>(const T&)"]
+
+[modules.rusty.symbols.srpc_holder_proxy]
+kind = "function_template"
+callable_signatures = ["rrr::SerializableProxy(rusty::Arc<T>)"]
+
+[modules.rusty.symbols.srpc_factory_from_callable]
+kind = "function_template"
+callable_signatures = ["rusty::Function<R()>(Callable)"]

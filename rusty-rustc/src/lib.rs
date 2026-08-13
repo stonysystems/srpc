@@ -11,15 +11,10 @@ use ::std::cell::{Cell, RefCell};
 use ::std::marker::PhantomData;
 use ::std::ops::{Deref, DerefMut, Index};
 use ::std::rc::Rc;
-use ::std::sync::{Condvar, Mutex};
+use ::std::sync::Condvar;
 use ::std::time::Duration;
 
 pub use rusty_cpp_markers::cpp_inherit;
-
-/// Rust-only model of the C++ runtime's owning allocation helper.
-pub fn make_box<T>(value: T) -> Box<T> {
-    Box::new(value)
-}
 
 /// Rust-only callback-wrapper spelling for canonical cross-module facades.
 pub struct CallbackWrapper<F> {
@@ -274,12 +269,520 @@ impl SourceLocation {
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
 
-/// Rust-only spelling for APIs imported from the C++ `rusty` module.
+/// Rustc-only spelling for the sparse 32-bit wrapper exported directly by the
+/// `rrr.basetypes` C++ module.  The production type map restores the public
+/// `rrr::v32` spelling; this local model only supplies the checked Rust API.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub struct SerializableV32(i32);
+
+impl SerializableV32 {
+    pub const fn new(value: i32) -> Self {
+        Self(value)
+    }
+
+    pub fn set(&mut self, value: i32) {
+        self.0 = value;
+    }
+
+    pub const fn get(&self) -> i32 {
+        self.0
+    }
+}
+
+/// Rustc-only spelling for the corresponding sparse 64-bit wrapper.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub struct SerializableV64(i64);
+
+impl SerializableV64 {
+    pub const fn new(value: i64) -> Self {
+        Self(value)
+    }
+
+    pub fn set(&mut self, value: i64) {
+        self.0 = value;
+    }
+
+    pub const fn get(&self) -> i64 {
+        self.0
+    }
+}
+
+/// Rustc-only dispatch facade for the generated C++ `Serialize_` overload
+/// namespace. The production type map restores that exact namespace spelling;
+/// the Rust body is intentionally inert because canonical unit tests exercise
+/// concrete leaf implementations directly.
+pub struct SerializableSerializeDispatch;
+
+impl SerializableSerializeDispatch {
+    pub fn serialize<T: ?Sized, Archive>(_value: &T, _archive: &mut Archive) {}
+}
+
+/// Read-side counterpart of `SerializableSerializeDispatch`.
+pub struct SerializableDeserializeDispatch;
+
+impl SerializableDeserializeDispatch {
+    pub fn deserialize<T, Archive>(_value: &mut T, _archive: &mut Archive) {}
+}
+
+/// Rustc-only model of the move-only zero-argument registry factory. The
+/// production type map restores `rusty::Function<SerializableProxy()>`.
+pub struct SerializableRegistryFactory {
+    callback: Box<dyn Fn() -> SerializableProxy + Send>,
+}
+
+impl SerializableRegistryFactory {
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: Fn() -> SerializableProxy + Send + 'static,
+    {
+        Self {
+            callback: Box::new(callback),
+        }
+    }
+}
+
+impl Deref for SerializableRegistryFactory {
+    type Target = dyn Fn() -> SerializableProxy + Send;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.callback
+    }
+}
+
+/// Minimal rustc-only model of the runtime mutex.  Production C++ keeps using
+/// `rusty::Mutex`; this wrapper exists only so canonical sources can be checked
+/// by rustc, including const initialization of process-wide registries.
+pub struct Mutex<T>(::std::sync::Mutex<T>);
+
+impl<T> Mutex<T> {
+    pub const fn new(value: T) -> Self {
+        Self(::std::sync::Mutex::new(value))
+    }
+
+    pub fn lock(&self) -> ::std::sync::LockResult<::std::sync::MutexGuard<'_, T>> {
+        self.0.lock()
+    }
+}
+
+/// Facade-only sequence used for the Rusty B-tree set.  The production type
+/// map restores the concrete C++ runtime container spelling.
+pub struct BTreeSet<T> {
+    values: Vec<T>,
+}
+
+impl<T> Default for BTreeSet<T> {
+    fn default() -> Self {
+        Self { values: Vec::new() }
+    }
+}
+
+impl<T> BTreeSet<T> {
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    pub fn insert(&mut self, value: T) {
+        self.values.push(value);
+    }
+
+    pub fn iter(&self) -> ::std::slice::Iter<'_, T> {
+        self.values.iter()
+    }
+}
+
+/// Facade-only associative sequence.  It deliberately requires no ordering or
+/// hashing bounds, matching the unconstrained C++ templates emitted from the
+/// canonical source.
+pub struct BTreeMap<K, V> {
+    values: Vec<(K, V)>,
+}
+
+impl<K, V> Default for BTreeMap<K, V> {
+    fn default() -> Self {
+        Self { values: Vec::new() }
+    }
+}
+
+impl<K, V> BTreeMap<K, V> {
+    pub const fn new() -> Self {
+        Self { values: Vec::new() }
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    pub fn insert(&mut self, key: K, value: V) {
+        self.values.push((key, value));
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V>
+    where
+        K: PartialEq,
+    {
+        self.values
+            .iter()
+            .find_map(|(candidate, value)| (candidate == key).then_some(value))
+    }
+
+    pub fn iter(&self) -> ::std::slice::Iter<'_, (K, V)> {
+        self.values.iter()
+    }
+}
+
+/// Hash-map facade kept distinct from `BTreeMap` so canonical source can carry
+/// both otherwise-overlapping Rust trait implementations.
+pub struct HashMap<K, V> {
+    values: Vec<(K, V)>,
+}
+
+impl<K, V> Default for HashMap<K, V> {
+    fn default() -> Self {
+        Self { values: Vec::new() }
+    }
+}
+
+impl<K, V> HashMap<K, V> {
+    pub const fn new() -> Self {
+        Self { values: Vec::new() }
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    pub fn insert(&mut self, key: K, value: V) {
+        self.values.push((key, value));
+    }
+
+    pub fn insert_callable<C, R>(&mut self, key: K, callback: C)
+    where
+        C: Fn() -> R + 'static,
+        R: 'static,
+        V: FromCallable0<C, R>,
+    {
+        self.values
+            .push((key, <V as FromCallable0<C, R>>::from_callable(callback)));
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V>
+    where
+        K: PartialEq,
+    {
+        self.values
+            .iter()
+            .find_map(|(candidate, value)| (candidate == key).then_some(value))
+    }
+
+    pub fn iter(&self) -> ::std::slice::Iter<'_, (K, V)> {
+        self.values.iter()
+    }
+}
+
+/// Hash-set facade exposes the `map` field used by the historical encoder.
+pub struct HashSet<T> {
+    pub map: HashMap<T, ()>,
+}
+
+impl<T> Default for HashSet<T> {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+}
+
+impl<T> HashSet<T> {
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    pub fn insert(&mut self, value: T) {
+        self.map.insert(value, ());
+    }
+}
+
+/// Distinct rustc-only model for `std::string_view`.
+#[derive(Default)]
+pub struct SerializableStdStringView {
+    bytes: Vec<u8>,
+}
+
+impl SerializableStdStringView {
+    pub fn size(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn data(&self) -> *const u8 {
+        self.bytes.as_ptr()
+    }
+}
+
+/// Distinct rustc-only models keep otherwise-aliasing C++ container impls
+/// coherent in Rust.  Each is mapped back to its historical STL spelling.
+macro_rules! serializable_std_sequence {
+    ($name:ident) => {
+        pub struct $name<T> {
+            values: Vec<T>,
+        }
+
+        impl<T> Default for $name<T> {
+            fn default() -> Self {
+                Self { values: Vec::new() }
+            }
+        }
+
+        impl<T> $name<T> {
+            pub fn size(&self) -> usize {
+                self.values.len()
+            }
+
+            pub fn clear(&mut self) {
+                self.values.clear();
+            }
+
+            pub fn reserve(&mut self, additional: usize) {
+                self.values.reserve(additional);
+            }
+
+            pub fn push_back(&mut self, value: T) {
+                self.values.push(value);
+            }
+
+            pub fn insert(&mut self, value: T) {
+                self.values.push(value);
+            }
+        }
+
+        impl<T> ::std::ops::Index<usize> for $name<T> {
+            type Output = T;
+
+            fn index(&self, index: usize) -> &Self::Output {
+                &self.values[index]
+            }
+        }
+
+        impl<'a, T> IntoIterator for &'a $name<T> {
+            type Item = &'a T;
+            type IntoIter = ::std::slice::Iter<'a, T>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.values.iter()
+            }
+        }
+    };
+}
+
+serializable_std_sequence!(SerializableStdList);
+serializable_std_sequence!(SerializableStdVector);
+serializable_std_sequence!(SerializableStdSet);
+serializable_std_sequence!(SerializableStdUnorderedSet);
+
+macro_rules! serializable_std_map {
+    ($name:ident) => {
+        pub struct $name<K, V> {
+            values: Vec<StdPair<K, V>>,
+        }
+
+        impl<K, V> Default for $name<K, V> {
+            fn default() -> Self {
+                Self { values: Vec::new() }
+            }
+        }
+
+        impl<K, V> $name<K, V> {
+            pub fn size(&self) -> usize {
+                self.values.len()
+            }
+
+            pub fn clear(&mut self) {
+                self.values.clear();
+            }
+
+            pub fn emplace(&mut self, key: K, value: V) {
+                self.values.push(StdPair::new(key, value));
+            }
+        }
+
+        impl<'a, K, V> IntoIterator for &'a $name<K, V> {
+            type Item = &'a StdPair<K, V>;
+            type IntoIter = ::std::slice::Iter<'a, StdPair<K, V>>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.values.iter()
+            }
+        }
+    };
+}
+
+serializable_std_map!(SerializableStdMap);
+serializable_std_map!(SerializableStdUnorderedMap);
+
+/// Type-only rustc stand-ins for compiler-generated trait adapters.
+pub struct RustcSinkBaseAdapterRefMut<T>(PhantomData<T>);
+pub struct RustcSourceBaseAdapterRefMut<T>(PhantomData<T>);
+
+/// Opaque rustc-only stand-in mapped to C++ `void` at the Serializable C ABI.
+pub enum LegacyCVoid {}
+
+/// The production emitter recognizes this call and emits
+/// `rusty::make_box<Adapter>(value)`.  The divergent Rust facade lets the call
+/// coerce to the local trait-object return type without pretending to model
+/// C++'s generated adapter hierarchy.
+pub fn make_box<Adapter>(_value: impl Sized) -> ! {
+    let _ = core::marker::PhantomData::<Adapter>;
+    panic!("rustc-only make_box facade is not executable")
+}
+
+/// Declarations for module-local C++ templates supplied by
+/// `misc/serializable_support.hpp`.  They preserve structural C++ dispatch
+/// while giving direct rustc a fully typed foreign boundary.
 pub mod rusty {
+    use crate::{Arc, SerializableProxy};
+
     pub mod os {
         pub mod fd {
-            pub type OwnedFd = std::os::fd::OwnedFd;
+            pub type OwnedFd = ::std::os::fd::OwnedFd;
         }
+    }
+
+    /// # Safety
+    ///
+    /// The C++ associated namespace for `T` must provide a compatible
+    /// `serialize(const T&, Archive&)` overload which does not retain either
+    /// borrowed argument.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_adl_serialize<T, Archive>(_value: &T, _archive: &mut Archive) {}
+
+    /// # Safety
+    ///
+    /// The C++ associated namespace for `T` must provide a compatible
+    /// `deserialize(T&, Archive&)` overload which does not retain either
+    /// borrowed argument.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_adl_deserialize<T, Archive>(_value: &mut T, _archive: &mut Archive) {}
+
+    /// # Safety
+    ///
+    /// If `_length` is nonzero, `_pointer` must address that many initialized
+    /// readable bytes for the duration of the call.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_sink_write<Sink: ?Sized>(
+        _sink: &mut Sink,
+        _pointer: *const u8,
+        _length: usize,
+    ) {
+    }
+
+    /// # Safety
+    ///
+    /// If `_length` is nonzero, `_pointer` must address that many writable
+    /// bytes for the duration of the call.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_source_read<Source: ?Sized>(
+        _source: &mut Source,
+        _pointer: *mut u8,
+        _length: usize,
+    ) -> usize {
+        0
+    }
+
+    /// Rustc-only coercion into the move-only registry callback facade. The
+    /// production runtime helper constructs `rusty::Function<R()>` from the
+    /// supplied closure.
+    ///
+    /// # Safety
+    ///
+    /// The callable must remain valid after it is moved into the returned C++
+    /// function wrapper and must return a well-formed owning proxy.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_factory_from_callable<C>(callback: C) -> crate::SerializableRegistryFactory
+    where
+        C: Fn() -> SerializableProxy + Send + 'static,
+    {
+        crate::SerializableRegistryFactory::from_callable(callback)
+    }
+
+    /// # Safety
+    ///
+    /// `T` must implement the structural C++ payload save contract for the
+    /// supplied archive and may not retain the archive reference.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_payload_save<T, Archive>(_value: &T, _archive: &mut Archive) {}
+
+    /// # Safety
+    ///
+    /// `T` must implement the structural C++ payload load contract for the
+    /// supplied archive and may not retain the archive reference.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_payload_load<T, Archive>(_value: &mut T, _archive: &mut Archive) {}
+
+    /// # Safety
+    ///
+    /// `T` must provide the structural C++ `kind() const` payload method.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_payload_kind<T>(_value: &T) -> i32 {
+        0
+    }
+
+    /// # Safety
+    ///
+    /// The production C++ `T` must be default constructible and safe to own in
+    /// `rusty::Arc<T>`.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_arc_default<T>() -> Arc<T> {
+        panic!("rustc-only default Arc construction facade is not executable")
+    }
+
+    /// # Safety
+    ///
+    /// The production C++ `T` must be copy constructible and safe to own in
+    /// `rusty::Arc<T>`.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_arc_copy<T>(_value: &T) -> Arc<T> {
+        panic!("rustc-only copying Arc construction facade is not executable")
+    }
+
+    /// # Safety
+    ///
+    /// `Holder` must be the module-owned `SerializableBase` holder for `T`,
+    /// with a constructor that takes ownership of the supplied Arc.
+    #[allow(unsafe_code)]
+    pub unsafe fn srpc_holder_proxy<Holder, T>(_value: Arc<T>) -> SerializableProxy {
+        let _ = core::marker::PhantomData::<Holder>;
+        panic!("rustc-only holder proxy construction facade is not executable")
     }
 }
 
@@ -342,8 +845,18 @@ pub mod rrr {
             }
 
             #[allow(unsafe_code)]
+            pub unsafe fn dump64(value: i64, buffer: *mut u8) -> usize {
+                unsafe { crate::sparse_dump64(value, buffer) }
+            }
+
+            #[allow(unsafe_code)]
             pub unsafe fn load32(buffer: *const u8) -> i32 {
                 unsafe { crate::sparse_load32(buffer) }
+            }
+
+            #[allow(unsafe_code)]
+            pub unsafe fn load64(buffer: *const u8) -> i64 {
+                unsafe { crate::sparse_load64(buffer) }
             }
         }
     }
@@ -371,7 +884,7 @@ pub mod rrr {
     }
 
     pub mod reactor {
-        use crate::{ReactorBoxEvent, ReactorFiber, REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS};
+        use crate::{REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS, ReactorBoxEvent, ReactorFiber};
         use ::std::cell::Cell;
         use ::std::rc::Rc;
         use ::std::sync::{Arc, Condvar, Mutex};
@@ -722,23 +1235,115 @@ fn sparse_buf_size(byte0: u8) -> usize {
         3
     } else if byte0 & 0xf0 == 0xe0 {
         4
-    } else {
+    } else if byte0 & 0xf8 == 0xf0 {
         5
+    } else if byte0 & 0xfc == 0xf8 {
+        6
+    } else if byte0 & 0xfe == 0xfc {
+        7
+    } else if byte0 == 0xfe {
+        8
+    } else {
+        9
     }
 }
 
 #[allow(unsafe_code)]
 unsafe fn sparse_dump32(value: i32, buffer: *mut u8) -> usize {
-    let bytes = value.to_ne_bytes();
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
-    bytes.len()
+    unsafe { sparse_dump64(value as i64, buffer) }
 }
 
 #[allow(unsafe_code)]
 unsafe fn sparse_load32(buffer: *const u8) -> i32 {
-    let mut bytes = [0u8; 4];
-    unsafe { core::ptr::copy_nonoverlapping(buffer, bytes.as_mut_ptr(), bytes.len()) };
-    i32::from_ne_bytes(bytes)
+    unsafe { sparse_load_signed(buffer, 4) as i32 }
+}
+
+fn sparse_value_size(value: i64) -> usize {
+    if (-64..=63).contains(&value) {
+        1
+    } else if (-8_192..=8_191).contains(&value) {
+        2
+    } else if (-1_048_576..=1_048_575).contains(&value) {
+        3
+    } else if (-134_217_728..=134_217_727).contains(&value) {
+        4
+    } else if (-17_179_869_184..=17_179_869_183).contains(&value) {
+        5
+    } else if (-2_199_023_255_552..=2_199_023_255_551).contains(&value) {
+        6
+    } else if (-281_474_976_710_656..=281_474_976_710_655).contains(&value) {
+        7
+    } else if (-36_028_797_018_963_968..=36_028_797_018_963_967).contains(&value) {
+        8
+    } else {
+        9
+    }
+}
+
+#[allow(unsafe_code)]
+unsafe fn sparse_dump64(value: i64, buffer: *mut u8) -> usize {
+    let encoded = value as u64;
+    let size = sparse_value_size(value);
+    unsafe {
+        if size <= 7 {
+            for index in 0..size {
+                *buffer.add(index) = ((encoded >> (8 * (size - 1 - index))) & 0xff) as u8;
+            }
+            let prefix = match size {
+                1 => 0x00,
+                2 => 0x80,
+                3 => 0xc0,
+                4 => 0xe0,
+                5 => 0xf0,
+                6 => 0xf8,
+                7 => 0xfc,
+                _ => unreachable!(),
+            };
+            *buffer &= 0xff >> size;
+            *buffer |= prefix;
+            return size;
+        }
+        for index in 0..8 {
+            *buffer.add(index + 1) = ((encoded >> (8 * (7 - index))) & 0xff) as u8;
+        }
+        *buffer = if size == 8 { 0xfe } else { 0xff };
+    }
+    size
+}
+
+#[allow(unsafe_code)]
+unsafe fn sparse_load_signed(buffer: *const u8, width: usize) -> i64 {
+    let size = unsafe { sparse_buf_size(*buffer) };
+    // The 64-bit marker 0xfe reports eight while still carrying eight payload
+    // bytes after the marker. The historical decoder therefore enters this
+    // full-width branch for `size == width`, not only `width + 1`.
+    let full_width_marker = if width == 8 { width } else { width + 1 };
+    if size >= full_width_marker {
+        let mut value = 0u64;
+        for index in 0..width {
+            value |= unsafe { *buffer.add(width - index) as u64 } << (8 * index);
+        }
+        return value as i64;
+    }
+    let mut value = 0u64;
+    for index in 0..size.saturating_sub(1) {
+        value |= unsafe { *buffer.add(size - 1 - index) as u64 } << (8 * index);
+    }
+    let mut top = unsafe { *buffer } & (0xff >> size);
+    let negative = ((top >> (7 - size)) & 1) == 1;
+    if negative {
+        top |= (0xff << (7 - size)) as u8;
+        for index in size..width {
+            value |= 0xffu64 << (8 * index);
+        }
+    }
+    value |= (top as u64) << (8 * (size - 1));
+    value as i64
+}
+
+#[allow(unsafe_code)]
+unsafe fn sparse_load64(buffer: *const u8) -> i64 {
+    unsafe { sparse_load_signed(buffer, 8) }
 }
 
 pub struct Arc<T: ?Sized> {
@@ -760,6 +1365,14 @@ impl<T: ?Sized> Arc<T> {
 
     pub fn get_mut(&mut self) -> Option<&mut T> {
         ::std::sync::Arc::get_mut(&mut self.inner)
+    }
+}
+
+impl<T: ?Sized> Deref for Arc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -901,6 +1514,10 @@ impl SerializableBase {
     pub fn kind(&self) -> i32 {
         0
     }
+
+    pub fn payload_type_id(&self) -> ::std::any::TypeId {
+        ::std::any::TypeId::of::<Self>()
+    }
 }
 
 pub struct SerializableSharedPtrHolder<T> {
@@ -1013,6 +1630,46 @@ impl<A: 'static, B: 'static> Function<dyn Fn(A, B)> {
             inner: Some(Box::new(callback)),
             runtime_layout_padding: [0; 32],
         }
+    }
+}
+
+/// Conversion used by the serializable registry's rustc-only HashMap facade.
+pub trait FromCallable0<C, R> {
+    fn from_callable(callback: C) -> Self;
+}
+
+impl<C, R> FromCallable0<C, R> for Function<dyn Fn() -> R>
+where
+    C: Fn() -> R + 'static,
+    R: 'static,
+{
+    fn from_callable(callback: C) -> Self {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl<R: 'static> Function<dyn Fn() -> R + Send> {
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: Fn() -> R + Send + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl<R: 'static> Function<dyn Fn() -> R> {
+    /// Erases a const-callable zero-argument callback with a return value.
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: Fn() -> R + 'static,
+    {
+        <Self as FromCallable0<C, R>>::from_callable(callback)
     }
 }
 

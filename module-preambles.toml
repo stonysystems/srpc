@@ -77,3 +77,9 @@ includes = [
     { path = "stdio.h", form = "angle" },
     { path = "source_location", form = "angle" },
 ]
+
+[[module]]
+name = "rrr.serializable"
+includes = [
+    { path = "misc/serializable_support.hpp", form = "quote" },
+]

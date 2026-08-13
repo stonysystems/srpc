@@ -28,4 +28,8 @@ fn empty_clone_and_pack_state_are_rustc_checked() {
     // generated C++ consumer gate owns the concrete holder recovery oracle.
     assert!(!packed.is_a::<Payload>());
     assert!(packed.unpack::<Payload>().is_null());
+
+    let _unsafe_mutation_boundary: unsafe fn(
+        &mut SerializableEnvelope<PayloadSet>,
+    ) -> *mut Payload = SerializableEnvelope::<PayloadSet>::unpack_mut::<Payload>;
 }
