@@ -73,3 +73,7 @@ source = "rpc/frame_codec.cpp"
 [[module]]
 cpp_module = "rrr.serializable_envelope"
 source = "misc/serializable_envelope.cpp"
+
+[[module]]
+cpp_module = "rrr.future"
+source = "reactor/future.cpp"

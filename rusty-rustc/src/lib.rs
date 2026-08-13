@@ -7,7 +7,121 @@
 //! omits it from generated C++ because the production definitions already
 //! live in the rusty runtime headers.
 
-use std::ops::{Deref, DerefMut, Index};
+use ::std::cell::Cell;
+use ::std::marker::PhantomData;
+use ::std::ops::{Deref, DerefMut, Index};
+use ::std::rc::Rc;
+use ::std::sync::{Condvar, Mutex};
+use ::std::time::Duration;
+
+/// Rust-only model of the `rrr.reactor` module's `BoxEvent<T>` template.
+///
+/// Crate-mode C++ generation maps this type back to the existing
+/// `rrr::BoxEvent<T>` definition. The synchronization state exists only so
+/// direct rustc tests can exercise one-shot set/wait/get behavior; it is never
+/// emitted into production C++.
+pub struct ReactorBoxEvent<T> {
+    pub is_set_: Cell<bool>,
+    value: Mutex<Option<T>>,
+    ready: Condvar,
+    not_thread_safe: PhantomData<Rc<()>>,
+}
+
+/// Rust-only conversion used by [`ReactorBoxEvent::set`] so canonical source
+/// can pass either an owned value or the borrowed value accepted by C++.
+pub trait ReactorSetValue<T> {
+    fn into_owned(self) -> T;
+}
+
+impl<T> ReactorSetValue<T> for T {
+    fn into_owned(self) -> T {
+        self
+    }
+}
+
+impl<T> ReactorSetValue<T> for &T
+where
+    T: Clone,
+{
+    fn into_owned(self) -> T {
+        self.clone()
+    }
+}
+
+impl<T> ReactorBoxEvent<T> {
+    pub fn new() -> ReactorBoxEvent<T> {
+        ReactorBoxEvent {
+            is_set_: Cell::new(false),
+            value: Mutex::new(None),
+            ready: Condvar::new(),
+            not_thread_safe: PhantomData,
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.is_set_.get()
+    }
+
+    pub fn set<V>(&self, value: V)
+    where
+        V: ReactorSetValue<T>,
+    {
+        *self.value.lock().unwrap() = Some(value.into_owned());
+        self.is_set_.set(true);
+        self.ready.notify_all();
+    }
+
+    pub fn wait(&self) {
+        let mut value = self.value.lock().unwrap();
+        while value.is_none() {
+            value = self.ready.wait(value).unwrap();
+        }
+    }
+
+    pub fn wait_timeout(&self, timeout_us: u64) {
+        if timeout_us == 0 {
+            self.wait();
+            return;
+        }
+        let value = self.value.lock().unwrap();
+        if value.is_none() {
+            let _guard = self
+                .ready
+                .wait_timeout(value, Duration::from_micros(timeout_us))
+                .unwrap();
+        }
+    }
+
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("BoxEvent value is not set")
+            .clone()
+    }
+}
+
+impl<T> Default for ReactorBoxEvent<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Rust-only representation of `std::pair<A, B>` used by canonical sources.
+pub struct StdPair<A, B> {
+    pub first: A,
+    pub second: B,
+}
+
+impl<A, B> StdPair<A, B> {
+    pub fn new(first: A, second: B) -> StdPair<A, B> {
+        StdPair { first, second }
+    }
+}
 
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
@@ -19,7 +133,7 @@ pub mod sys {
         /// syscall boundary to this compile-time-only facade. Production C++
         /// resolves this path to `rusty::sys::env::hostname()`.
         pub fn hostname() -> String {
-            std::env::var("HOSTNAME").unwrap_or_default()
+            ::std::env::var("HOSTNAME").unwrap_or_default()
         }
     }
 }
@@ -66,6 +180,20 @@ pub mod rrr {
         pub unsafe fn log_line(_level: i32, _line: i32, _file: *const i8, _message: &String) {}
     }
 
+    pub mod reactor {
+        use crate::ReactorBoxEvent;
+        use ::std::sync::Arc;
+
+        /// # Safety
+        ///
+        /// This facade has no caller-side precondition. `unsafe` records the
+        /// foreign named-module boundary at canonical Rust call sites.
+        #[allow(unsafe_code)]
+        pub unsafe fn create_sp_box_event<T>() -> Arc<ReactorBoxEvent<T>> {
+            Arc::new(ReactorBoxEvent::new())
+        }
+    }
+
     pub mod serializable {
         use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};
 
@@ -85,6 +213,20 @@ pub mod rrr {
                 SerializableProxy::make(SerializableBase)
             }
         }
+    }
+}
+
+/// Rust-only declarations behind `use cpp::std` in canonical code.
+pub mod std {
+    use crate::StdPair;
+
+    /// # Safety
+    ///
+    /// This facade has no caller-side precondition. `unsafe` records the
+    /// foreign named-module boundary at canonical Rust call sites.
+    #[allow(unsafe_code)]
+    pub unsafe fn make_pair<A, B>(first: A, second: B) -> StdPair<A, B> {
+        StdPair::new(first, second)
     }
 }
 
@@ -117,24 +259,24 @@ unsafe fn sparse_load32(buffer: *const u8) -> i32 {
 }
 
 pub struct Arc<T: ?Sized> {
-    inner: std::sync::Arc<T>,
+    inner: ::std::sync::Arc<T>,
 }
 
 impl<T: ?Sized> Clone for Arc<T> {
     fn clone(&self) -> Self {
         Self {
-            inner: std::sync::Arc::clone(&self.inner),
+            inner: ::std::sync::Arc::clone(&self.inner),
         }
     }
 }
 
 impl<T: ?Sized> Arc<T> {
     pub fn get(&self) -> *const T {
-        std::sync::Arc::as_ptr(&self.inner)
+        ::std::sync::Arc::as_ptr(&self.inner)
     }
 
     pub fn get_mut(&mut self) -> Option<&mut T> {
-        std::sync::Arc::get_mut(&mut self.inner)
+        ::std::sync::Arc::get_mut(&mut self.inner)
     }
 }
 
@@ -148,7 +290,7 @@ impl<T> ArcMake<T> for Arc<T> {
 
     fn make(argument: T) -> Self::Output {
         Arc {
-            inner: std::sync::Arc::new(argument),
+            inner: ::std::sync::Arc::new(argument),
         }
     }
 }
@@ -344,9 +486,9 @@ impl<A: 'static> Function<dyn FnMut(A)> {
 #[cfg(test)]
 mod tests {
     use super::Function;
-    use std::cell::Cell;
-    use std::mem::{align_of, size_of};
-    use std::rc::Rc;
+    use ::std::cell::Cell;
+    use ::std::mem::{align_of, size_of};
+    use ::std::rc::Rc;
 
     #[test]
     fn empty_and_layout_match_the_cpp_runtime() {
