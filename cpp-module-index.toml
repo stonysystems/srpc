@@ -53,3 +53,7 @@ namespace = "std"
 [modules.std.symbols.make_pair]
 kind = "function_template"
 callable_signatures = ["std::pair<A,B>(A,B)"]
+
+[modules.std.symbols.cout]
+kind = "object"
+callable_signatures = []

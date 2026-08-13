@@ -77,3 +77,7 @@ source = "misc/serializable_envelope.cpp"
 [[module]]
 cpp_module = "rrr.future"
 source = "reactor/future.cpp"
+
+[[module]]
+cpp_module = "rrr.logging"
+source = "base/logging.cpp"

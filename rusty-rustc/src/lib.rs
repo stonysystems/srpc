@@ -123,6 +123,9 @@ impl<A, B> StdPair<A, B> {
     }
 }
 
+/// Rust-only facade spelling mapped to the public `std::string` ABI.
+pub type LoggingString = std::string;
+
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
 
@@ -219,6 +222,112 @@ pub mod rrr {
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
     use crate::StdPair;
+    use ::std::cell::UnsafeCell;
+    use ::std::io::Write as _;
+
+    /// Values accepted by the rustc-only `std::string::append` model.
+    pub trait StringAppend {
+        fn append_to(self, output: &mut Vec<u8>);
+    }
+
+    impl StringAppend for &str {
+        fn append_to(self, output: &mut Vec<u8>) {
+            output.extend_from_slice(self.as_bytes());
+        }
+    }
+
+    impl StringAppend for &::std::string::String {
+        fn append_to(self, output: &mut Vec<u8>) {
+            output.extend_from_slice(self.as_bytes());
+        }
+    }
+
+    /// Rustc-only byte model of `std::string`.
+    #[allow(non_camel_case_types)]
+    pub struct string(UnsafeCell<Vec<u8>>);
+
+    impl Default for string {
+        fn default() -> Self {
+            Self(UnsafeCell::new(Vec::new()))
+        }
+    }
+
+    impl StringAppend for string {
+        fn append_to(self, output: &mut Vec<u8>) {
+            output.extend_from_slice(self.0.into_inner().as_slice());
+        }
+    }
+
+    impl StringAppend for &string {
+        #[allow(unsafe_code)]
+        fn append_to(self, output: &mut Vec<u8>) {
+            // SAFETY: this facade is used only by single-threaded direct-rustc
+            // logging tests; generated C++ maps the type to `std::string`.
+            output.extend_from_slice(unsafe { (&*self.0.get()).as_slice() });
+        }
+    }
+
+    impl string {
+        pub fn append<T: StringAppend>(&mut self, value: T) {
+            value.append_to(self.0.get_mut());
+        }
+
+        pub fn push_back(&mut self, value: i8) {
+            self.0.get_mut().push(value as u8);
+        }
+
+        pub fn resize(&mut self, size: usize) {
+            self.0.get_mut().resize(size, 0);
+        }
+
+        /// # Safety
+        ///
+        /// The returned pointer must not outlive this value or overlap any
+        /// other access to its byte storage.
+        #[allow(unsafe_code)]
+        pub unsafe fn data(&self) -> *mut i8 {
+            unsafe { (&mut *self.0.get()).as_mut_ptr().cast() }
+        }
+
+        #[allow(unsafe_code)]
+        pub fn size(&self) -> usize {
+            // SAFETY: direct-rustc facade callers do not access this model
+            // concurrently; the generated C++ uses `std::string` instead.
+            unsafe { (&*self.0.get()).len() }
+        }
+    }
+
+    pub struct Cout;
+
+    #[allow(non_upper_case_globals)]
+    pub static cout: Cout = Cout;
+
+    impl Cout {
+        /// # Safety
+        ///
+        /// `data` must denote `size` readable bytes.
+        #[allow(unsafe_code)]
+        pub unsafe fn write(&self, data: *mut i8, size: usize) {
+            let bytes = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+            let _ = ::std::io::stdout().write_all(bytes);
+        }
+
+        /// # Safety
+        ///
+        /// The byte is written synchronously and has no additional precondition.
+        #[allow(unsafe_code)]
+        pub unsafe fn put(&self, value: i8) {
+            let _ = ::std::io::stdout().write_all(&[value as u8]);
+        }
+
+        /// # Safety
+        ///
+        /// The flush is synchronous and has no additional precondition.
+        #[allow(unsafe_code)]
+        pub unsafe fn flush(&self) {
+            let _ = ::std::io::stdout().flush();
+        }
+    }
 
     /// # Safety
     ///

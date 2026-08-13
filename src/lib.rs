@@ -29,6 +29,8 @@ pub mod internal_protocol;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod load_balancer;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
+pub mod logging;
+#[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod rand;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod reconnect_policy;
