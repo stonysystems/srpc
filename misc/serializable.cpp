@@ -1009,12 +1009,13 @@ pub type SerializableRegistryFactory = rusty::SerializableRegistryFactory;
 
 pub mod details {
     use super::{Arc, BinaryReadArchive, BinaryWriteArchive, SerializableBase};
+    use rusty::cpp_inherit;
 
     pub struct SerializableSharedPtrHolder<T> {
         pub ptr: Arc<T>,
     }
 
-    #[rusty::cpp_inherit]
+    #[cpp_inherit]
     impl<T: SerializableBase + 'static> SerializableBase for SerializableSharedPtrHolder<T> {
         fn save(&self, ar: &mut BinaryWriteArchive) {
             self.ptr.save(ar)
