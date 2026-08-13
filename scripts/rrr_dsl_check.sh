@@ -33,10 +33,9 @@ EXPECTED_FILES=(
   reactor/reactor.cpp
   rpc/client.cpp
   rpc/server.cpp
-  rpc/tcp_channel.cpp
 )
-EXPECTED_FILE_COUNT=5
-EXPECTED_BLOCK_COUNT=222
+EXPECTED_FILE_COUNT=4
+EXPECTED_BLOCK_COUNT=183
 
 mapfile -t FILES < <(grep -rl '#if RUSTYCPP_RUST' base misc reactor rpc \
                        --include='*.cpp' --include='*.cc' \

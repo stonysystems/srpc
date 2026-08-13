@@ -33,7 +33,7 @@ PACKAGE_NAME = "rrr"
 GENERATED_ROOT = PurePosixPath("src")
 GENERATED_LIB = GENERATED_ROOT / "lib.rs"
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "29418811b7dc530bd3fe3936fe20ebc16aeb9a16"
+REQUIRED_RUSTY_CPP_COMMIT = "dc06d859c832979c723b39c474f43fa01c7e06df"
 APPROVED_PRODUCTION_ROOTS = (
     PurePosixPath("base"),
     PurePosixPath("misc"),
@@ -696,9 +696,12 @@ def render_lib(
         "",
     ]
     for module in sorted(modules, key=lambda entry: entry.rust_module):
+        style_allow = (
+            "non_snake_case, " if module.rust_module == "epoll_wrapper" else ""
+        )
         lines.extend(
             [
-                "#[allow(dead_code, non_upper_case_globals, "
+                f"#[allow(dead_code, {style_allow}non_upper_case_globals, "
                 "clippy::new_without_default)]",
                 f"pub mod {module.rust_module};",
             ]

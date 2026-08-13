@@ -106,6 +106,145 @@ pub struct ReactorFiber {
 }
 
 pub type ReactorIntEvent = rrr::reactor::IntEvent;
+pub type ReactorPollThread = rrr::reactor::PollThread;
+pub type RustcSocketAddrV4 = ::std::net::SocketAddrV4;
+pub type RustcIoErrorKind = ::std::io::ErrorKind;
+
+#[derive(Debug)]
+pub struct RustcIoError {
+    inner: ::std::io::Error,
+}
+
+impl RustcIoError {
+    pub fn kind(&self) -> RustcIoErrorKind {
+        self.inner.kind()
+    }
+
+    pub fn what(&self) -> String {
+        self.inner.to_string()
+    }
+}
+
+impl From<::std::io::Error> for RustcIoError {
+    fn from(inner: ::std::io::Error) -> Self {
+        Self { inner }
+    }
+}
+
+#[derive(Debug)]
+pub struct RustcTcpStream {
+    inner: ::std::net::TcpStream,
+}
+
+impl RustcTcpStream {
+    pub fn set_nonblocking(&self, value: bool) -> Result<(), RustcIoError> {
+        self.inner.set_nonblocking(value).map_err(Into::into)
+    }
+
+    pub fn into_owned_fd(self) -> ::std::os::fd::OwnedFd {
+        self.inner.into()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RustcTcpListener {
+    inner: Option<::std::net::TcpListener>,
+}
+
+impl RustcTcpListener {
+    pub fn bind(address: RustcSocketAddrV4) -> Result<Self, RustcIoError> {
+        ::std::net::TcpListener::bind(address)
+            .map(|inner| Self { inner: Some(inner) })
+            .map_err(Into::into)
+    }
+
+    pub fn set_nonblocking(&self, value: bool) -> Result<(), RustcIoError> {
+        self.inner
+            .as_ref()
+            .unwrap()
+            .set_nonblocking(value)
+            .map_err(Into::into)
+    }
+
+    pub fn local_addr(&self) -> Result<RustcSocketAddrV4, RustcIoError> {
+        let address = self
+            .inner
+            .as_ref()
+            .unwrap()
+            .local_addr()
+            .map_err(RustcIoError::from)?;
+        match address {
+            ::std::net::SocketAddr::V4(address) => Ok(address),
+            _ => Err(RustcIoError::from(::std::io::Error::new(
+                ::std::io::ErrorKind::InvalidInput,
+                "not IPv4",
+            ))),
+        }
+    }
+
+    pub fn accept(&self) -> Result<(RustcTcpStream, RustcSocketAddrV4), RustcIoError> {
+        let (stream, address) = self
+            .inner
+            .as_ref()
+            .unwrap()
+            .accept()
+            .map_err(RustcIoError::from)?;
+        match address {
+            ::std::net::SocketAddr::V4(address) => Ok((RustcTcpStream { inner: stream }, address)),
+            _ => Err(RustcIoError::from(::std::io::Error::new(
+                ::std::io::ErrorKind::InvalidInput,
+                "not IPv4",
+            ))),
+        }
+    }
+
+    pub fn is_bound(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    pub fn as_raw_fd(&self) -> i32 {
+        use ::std::os::fd::AsRawFd;
+        self.inner.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    }
+
+    pub fn as_owned_fd(&self) -> ::std::os::fd::BorrowedFd<'_> {
+        use ::std::os::fd::AsFd;
+        self.inner.as_ref().unwrap().as_fd()
+    }
+}
+
+/// Rustc-only ownership model for the production `rusty::os::fd::OwnedFd`.
+///
+/// The runtime wrapper has an invalid/default state; `std::os::fd::OwnedFd`
+/// deliberately does not, so the facade represents that state with `Option`.
+#[derive(Debug, Default)]
+pub struct RustcOwnedFd {
+    inner: Option<::std::os::fd::OwnedFd>,
+}
+
+impl RustcOwnedFd {
+    /// # Safety
+    ///
+    /// `fd` must be a live descriptor whose unique ownership is transferred
+    /// to the returned value.
+    #[allow(unsafe_code)]
+    pub unsafe fn from_raw_fd(fd: i32) -> Self {
+        use ::std::os::fd::FromRawFd;
+        Self {
+            // SAFETY: this facade has the same ownership precondition.
+            inner: Some(unsafe { ::std::os::fd::OwnedFd::from_raw_fd(fd) }),
+        }
+    }
+
+    pub fn as_raw_fd(&self) -> i32 {
+        use ::std::os::fd::AsRawFd;
+        self.inner.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.inner.is_some()
+    }
+}
 
 impl ReactorFiber {
     /// # Safety
@@ -268,6 +407,20 @@ impl SourceLocation {
 
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
+
+/// Rustc-only method facade for the member-shaped `rusty::Arc::get_mut()`
+/// C++ API. `std::sync::Arc` exposes the same operation as an associated
+/// function, so canonical sources import this trait to retain one spelling in
+/// both languages.
+pub trait StdArcGetMutExt<T: ?Sized> {
+    fn get_mut(&mut self) -> Option<&mut T>;
+}
+
+impl<T: ?Sized> StdArcGetMutExt<T> for ::std::sync::Arc<T> {
+    fn get_mut(&mut self) -> Option<&mut T> {
+        ::std::sync::Arc::get_mut(self)
+    }
+}
 
 /// Rustc-only spelling for the sparse 32-bit wrapper exported directly by the
 /// `rrr.basetypes` C++ module.  The production type map restores the public
@@ -672,6 +825,64 @@ pub fn make_box<Adapter>(_value: impl Sized) -> ! {
 pub mod rusty {
     use crate::{Arc, SerializableProxy};
 
+    pub use crate::ReactorPollThread;
+
+    pub mod io {
+        pub use ::std::io::Error;
+    }
+
+    pub mod ptr {
+        /// # Safety
+        ///
+        /// `pointer.add(offset)` must remain within the same allocation or one
+        /// byte past it.
+        #[allow(unsafe_code)]
+        pub unsafe fn add<T>(pointer: *const T, offset: usize) -> *const T {
+            unsafe { pointer.add(offset) }
+        }
+    }
+
+    pub mod net {
+        pub use crate::{
+            RustcIoError as Error, RustcSocketAddrV4 as SocketAddrV4,
+            RustcTcpListener as TcpListener, RustcTcpStream as TcpStream,
+        };
+
+        pub fn socket_addr_v4_from_str(value: &str) -> Result<SocketAddrV4, Error> {
+            value.parse::<SocketAddrV4>().map_err(|error| {
+                Error::from(::std::io::Error::new(
+                    ::std::io::ErrorKind::InvalidInput,
+                    error.to_string(),
+                ))
+            })
+        }
+
+        pub fn socket_addr_v4_to_string(value: SocketAddrV4) -> String {
+            value.to_string()
+        }
+
+        #[repr(C)]
+        pub struct InAddr {
+            pub s_addr: u32,
+        }
+
+        #[repr(C)]
+        pub struct SockAddrIn {
+            pub sin_addr: InAddr,
+            pub sin_port: u16,
+        }
+
+        pub fn sockaddr_in_from_socket_addr_v4(value: SocketAddrV4) -> SockAddrIn {
+            let octets = value.ip().octets();
+            SockAddrIn {
+                sin_addr: InAddr {
+                    s_addr: u32::from_ne_bytes(octets).to_be(),
+                },
+                sin_port: value.port().to_be(),
+            }
+        }
+    }
+
     pub mod os {
         pub mod fd {
             pub type OwnedFd = ::std::os::fd::OwnedFd;
@@ -884,12 +1095,35 @@ pub mod rrr {
     }
 
     pub mod reactor {
-        use crate::{REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS, ReactorBoxEvent, ReactorFiber};
+        use crate::{ReactorBoxEvent, ReactorFiber, REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS};
         use ::std::cell::Cell;
         use ::std::rc::Rc;
         use ::std::sync::{Arc, Condvar, Mutex};
 
         pub type Fiber = ReactorFiber;
+
+        /// Rustc-only opaque model of the cross-thread poll command sender.
+        pub struct PollThread;
+
+        impl PollThread {
+            /// # Safety
+            ///
+            /// `poll` must be a well-formed owning pollable proxy. The
+            /// production method moves it into the worker command queue.
+            #[allow(unsafe_code)]
+            pub unsafe fn add_proxy<P>(&self, _poll: P) {}
+
+            /// # Safety
+            ///
+            /// `fd` must identify a pollable registered with this thread.
+            #[allow(unsafe_code)]
+            pub unsafe fn update_mode(&self, _fd: i32, _new_mode: i32) {}
+        }
+
+        /// Rustc-only affinity model. Tests execute outside the poll worker.
+        pub fn pollworker_is_on_poll_thread() -> bool {
+            false
+        }
 
         /// Rust-only model of the reactor's fiber-aware integer event.
         pub struct IntEvent {

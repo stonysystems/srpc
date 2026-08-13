@@ -65,6 +65,13 @@ includes = [
 ]
 
 [[module]]
+name = "rrr.tcp_channel"
+includes = [
+    { path = "base/rustc_markers.hpp", form = "quote" },
+    { path = "rpc/srpc_connect.h", form = "quote" },
+]
+
+[[module]]
 name = "rrr.epoll_wrapper"
 includes = [
     { path = "rusty/os/fd.hpp", form = "angle" },

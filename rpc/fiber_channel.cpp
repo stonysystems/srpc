@@ -30,11 +30,17 @@ use std::collections::VecDeque;
 use std::marker::PhantomPinned;
 use std::sync::{Arc, Mutex};
 
+#[cfg_attr(any(), cpp_import_namespace(rrr))]
+use crate::channel::{
+    ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFrame,
+    OnClosedCallback, OnErrorCallback, OnFrameCallback,
+};
+
 // The Mako consumer profile maps this private queue alias back to its current
 // nominal STL carrier. Owned payloads intentionally remain rusty::Vec in C++,
 // matching the legacy module's post-DSL public API.
 type LegacyStdDeque<T> = VecDeque<T>;
-type LegacyChannelConnectionBase = dyn crate::channel::ChannelConnectionBase;
+type LegacyChannelConnectionBase = dyn ChannelConnectionBase;
 
 /// Heap-owned copy of an inbound frame payload.
 ///
@@ -55,7 +61,7 @@ pub struct OwnedFrame {
 #[repr(C)]
 #[cfg_attr(any(), cpp_no_fieldwise_ctor)]
 pub struct FiberChannel {
-    pub ch_: crate::channel::ChannelConnectionProxy,
+    pub ch_: ChannelConnectionProxy,
     pub queue_: Mutex<LegacyStdDeque<OwnedFrame>>,
     pub pending_recv_event_: Mutex<Option<Arc<rusty::ReactorIntEvent>>>,
     pub closed_: Cell<bool>,
@@ -67,7 +73,7 @@ impl FiberChannel {
     /// address (normally inside `Box`/`rusty::Box`).
     #[cfg_attr(any(), cpp_ctor)]
     #[cfg_attr(any(), cpp_explicit)]
-    pub fn new(ch: crate::channel::ChannelConnectionProxy) -> FiberChannel {
+    pub fn new(ch: ChannelConnectionProxy) -> FiberChannel {
         FiberChannel {
             ch_: ch,
             queue_: Mutex::new(Default::default()),
@@ -83,30 +89,30 @@ impl FiberChannel {
         let self_ptr: *mut FiberChannel = &raw mut *self;
 
         let frame_self: *mut FiberChannel = self_ptr;
-        let frame_callback: Box<dyn Fn(&crate::channel::ChannelFrame)> = Box::new(move |frame| {
+        let frame_callback: Box<dyn Fn(&ChannelFrame)> = Box::new(move |frame| {
             // SAFETY: `bind_callbacks` requires a pinned wrapper and Drop
             // detaches this callback before tearing down any member.
             unsafe { (*frame_self).on_inbound_frame(frame) };
         });
         let ch: &mut Box<LegacyChannelConnectionBase> = &mut self.ch_;
-        ch.set_on_frame(crate::channel::OnFrameCallback::from_callable(
+        ch.set_on_frame(OnFrameCallback::from_callable(
             frame_callback,
         ));
 
         let closed_self: *mut FiberChannel = self_ptr;
-        let closed_callback: Box<dyn Fn(crate::channel::ChannelError)> = Box::new(move |_reason| {
+        let closed_callback: Box<dyn Fn(ChannelError)> = Box::new(move |_reason| {
             // SAFETY: same pin-and-detach invariant as the frame callback.
             unsafe { (*closed_self).on_inbound_closed() };
         });
-        ch.set_on_closed(crate::channel::OnClosedCallback::from_callable(
+        ch.set_on_closed(OnClosedCallback::from_callable(
             closed_callback,
         ));
 
         // Fatal errors are followed by on_closed.  Non-fatal errors are
         // intentionally ignored at this layer, matching the original wrapper.
-        let error_callback: Box<dyn Fn(crate::channel::ChannelError, &str)> =
+        let error_callback: Box<dyn Fn(ChannelError, &str)> =
             Box::new(move |_error, _message| {});
-        ch.set_on_error(crate::channel::OnErrorCallback::from_callable(
+        ch.set_on_error(OnErrorCallback::from_callable(
             error_callback,
         ));
     }
@@ -157,7 +163,7 @@ impl FiberChannel {
         }
     }
 
-    fn on_inbound_frame(&mut self, frame: &crate::channel::ChannelFrame) {
+    fn on_inbound_frame(&mut self, frame: &ChannelFrame) {
         let copy: OwnedFrame = fiberchannel_owned_copy(frame);
         {
             let mut guard = self.queue_.lock().unwrap();
@@ -211,8 +217,8 @@ impl FiberChannel {
 
     pub fn send_frame(
         &mut self,
-        frame: &crate::channel::ChannelFrame,
-    ) -> crate::channel::ChannelError {
+        frame: &ChannelFrame,
+    ) -> ChannelError {
         let ch: &mut Box<LegacyChannelConnectionBase> = &mut self.ch_;
         ch.send_frame(frame)
     }
@@ -233,7 +239,7 @@ impl FiberChannel {
         ch.is_closed()
     }
 
-    pub fn channel_for_test(&mut self) -> &mut crate::channel::ChannelConnectionProxy {
+    pub fn channel_for_test(&mut self) -> &mut ChannelConnectionProxy {
         &mut self.ch_
     }
 }
@@ -245,13 +251,13 @@ impl Drop for FiberChannel {
         // The explicit values preserve the channel facade's nullable wrapper
         // representation without synthesizing an Option around it.
         let ch: &mut Box<LegacyChannelConnectionBase> = &mut self.ch_;
-        ch.set_on_frame(crate::channel::OnFrameCallback::default());
-        ch.set_on_closed(crate::channel::OnClosedCallback::default());
-        ch.set_on_error(crate::channel::OnErrorCallback::default());
+        ch.set_on_frame(OnFrameCallback::default());
+        ch.set_on_closed(OnClosedCallback::default());
+        ch.set_on_error(OnErrorCallback::default());
     }
 }
 
-fn fiberchannel_owned_copy(frame: &crate::channel::ChannelFrame) -> OwnedFrame {
+fn fiberchannel_owned_copy(frame: &ChannelFrame) -> OwnedFrame {
     let mut owned: OwnedFrame = Default::default();
     if frame.size > 0_usize && !frame.payload.is_null() {
         // SAFETY: ChannelFrame promises that payload addresses `size` bytes

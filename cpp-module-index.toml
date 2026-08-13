@@ -77,6 +77,22 @@ callable_signatures = ["void()"]
 kind = "function"
 callable_signatures = ["void(uint64_t)"]
 
+[modules."rrr::reactor".symbols.pollworker_is_on_poll_thread]
+kind = "function"
+callable_signatures = ["bool()"]
+
+[modules."rrr::reactor".symbols.PollThread]
+kind = "type"
+callable_signatures = []
+
+[modules."rrr::reactor".symbols."PollThread::add_proxy"]
+kind = "method"
+callable_signatures = ["void(PollableProxy)"]
+
+[modules."rrr::reactor".symbols."PollThread::update_mode"]
+kind = "method"
+callable_signatures = ["void(int32_t,int32_t)"]
+
 [modules."rrr::debugging"]
 namespace = "rrr"
 
