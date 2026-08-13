@@ -225,16 +225,18 @@ FrameCodec adds only its audited zero-copy view and raw-byte copy scopes.
 
 ## Verification boundary
 
-The Goal-0 source gate performs four distinct checks:
+The Goal-0 source gate performs five distinct checks:
 
-1. `rrr_dsl_check.sh` verifies drift for the 326 blocks that still live in
-   inline carriers.
+1. `rrr_dsl_check.sh` requires the exact 15-file/326-block surviving inline
+   inventory before checking every block for emitter drift.
 2. The schema-2 ownership check verifies the canonical manifest, source
    census, generated `lib.rs`, and toolchain identity.
 3. The standalone structural suite rejects Mako checkout dependencies and
-   verifies the exact rusty-cpp gitlink, manifest/CMake inventory, and
-   historical-source symlinks.
-4. Cargo test and clippy with `-D warnings` compile, test, and lint the whole
+   verifies the exact rusty-cpp gitlink, canonical/inline/retired/borrow
+   provider inventories, and historical-source symlinks.
+4. The fail-closed contract suite negative-tests all 23 canonical ownership,
+   import, output-surface, importer-use, preamble, and raw-ABI ratchets.
+5. Cargo test and clippy with `-D warnings` compile, test, and lint the whole
    workspace, including the rustc-only runtime facade.
 
 The C++ gate has two build paths, both sourced from rusty-cpp output:
@@ -247,6 +249,10 @@ The combined importer is linked and run against both paths. This is an
 artifact/build-integration comparison, not an independent second source
 implementation. Rust tests provide the source-level behavioral oracle; exact
 surface, layout, symbol, and C++ runtime ratchets protect the translated side.
+Every canonical child has an exact generated-output digest and direct-import
+list; the root must re-export all and only those 23 children in canonical
+order. Structured preambles are owner-exact and rejected from every sibling
+and the root.
 The direct lane resolves configured BMIs and archive members only for the 14
 still-inline dependency modules; every canonical provider is an independently
 compiled generated object placed ahead of that support archive.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,91 @@ CPP_MODULE_INDEX = "cpp-module-index.toml"
 NM_LINE = re.compile(r"^[0-9A-Fa-f]+\s+([A-Za-z])\s+(.+)$")
 PLACEHOLDER = re.compile(r"\b(?:TODO|UNSUPPORTED|skipped)\b", re.IGNORECASE)
 EXPECTED_TOTAL_PROVIDER_SYMBOLS = 332
+
+# These maps are intentionally exhaustive. Adding a canonical manifest module
+# without its dependency and byte-for-byte generated-output ratchets is a gate
+# error rather than an implicitly accepted, unreviewed provider.
+EXPECTED_IMPORTS = {
+    "rrr.basetypes": [],
+    "rrr.callback_wrapper": [],
+    "rrr.internal_protocol": [],
+    "rrr.stat": [],
+    "rrr.errors": [],
+    "rrr.connection_metrics": [],
+    "rrr.completion_tracker": ["rusty"],
+    "rrr.rand": ["rusty"],
+    "rrr.request_options": ["rrr.rand"],
+    "rrr.reconnect_policy": ["rrr.rand"],
+    "rrr.circuit_breaker": [],
+    "rrr.connection_state": [],
+    "rrr.heartbeat": ["rrr.circuit_breaker"],
+    "rrr.request_queue": ["rusty", "rrr.circuit_breaker"],
+    "rrr.load_balancer": [],
+    "rrr.utils": ["rrr.logging"],
+    "rrr.frame_codec": ["rrr.internal_protocol"],
+    "rrr.serializable_envelope": [
+        "rrr.basetypes",
+        "rrr.debugging",
+        "rrr.serializable",
+    ],
+    "rrr.future": ["rrr.reactor", "std"],
+    "rrr.logging": ["rrr.debugging", "std"],
+    "rrr.idempotency": ["rusty", "rrr.serializable"],
+    "rrr.fiber": ["rusty", "rrr.basetypes", "rrr.reactor"],
+    "rrr.misc": [],
+}
+
+EXPECTED_GENERATED_MODULE_SHA256 = {
+    "rrr.basetypes": "712d949cee2025b9e2441a13cdadd6ec2ebb3396a9561ec4a5aadc536b19cf7d",
+    "rrr.callback_wrapper": "b645833262c8cf8fd4ea2306f50d6ddf018610fe85cb8bcb5b3b195dc0503341",
+    "rrr.internal_protocol": "6d6c3107651d323ba54bbf2a40b8cbe454e7d7caff86e4b7b064e5f517d75eb4",
+    "rrr.stat": "6bb3860679d151d047c65c7392d6126dc7e2d03c07589e97683cccb5383a9962",
+    "rrr.errors": "4596c3f1f6efc43b4328b0088603cdb7557cf7134f001cea98a1d1c43fc570d1",
+    "rrr.connection_metrics": "a1cb3a899b81d01faaacd9f4d75e2582d1017b120b499fce6b30f631db2f7c1b",
+    "rrr.completion_tracker": "2213dd1620a2426f7fa0b0869aacf65d76ebd07ff76f3ca0c8fb3c232f75851a",
+    "rrr.rand": "0a62c12d6787e03503b6a0222fd530ed077c6e87eb392d4eab32b0e6c055fd27",
+    "rrr.request_options": "bafa311034fc84db922ebad61c44c4819cf062135005dbefa56ce221ef6958ef",
+    "rrr.reconnect_policy": "a4a59e6f6b7cf38cab31a838f8a1bcd83a3a6383e588e62e011dd73eaf2b2c3e",
+    "rrr.circuit_breaker": "c730bbc8b90dc7cd7a8b21c467ad00f043a2188c0264c94e59a81164d19d39ed",
+    "rrr.connection_state": "4e2f06b24c5a2310dda9f209c82b0e7285133aac46fc24de0c5137c3c683c863",
+    "rrr.heartbeat": "c076399ae3bc25c845162276e4a4ac93b25b8b9f6af05e02ffe5f3f9a1f14dfa",
+    "rrr.request_queue": "331d704c6e54b8fd608b5039e0d316255d8985157eb69f66e945a7dc1b73d2ed",
+    "rrr.load_balancer": "67bb85d53abf23a9dc7b4772deb01ba4d81632c6cf064a51e0f631e99c429827",
+    "rrr.utils": "029571a9e0ca0fe5445d246d7acd0f81294344442ba7c1fb0159884a54be9475",
+    "rrr.frame_codec": "f5f3b5f50d6bf6835718d1d7f71ac745491feddbebdd1917a084757afac058da",
+    "rrr.serializable_envelope": "8a220d3e7763f9b1896ed64e939838555af657419dff888796a13ec00a0ad82d",
+    "rrr.future": "f2dfa65121cb1d8d5423eeb9ab546c82502d7851370086cdd6764e10e485aabb",
+    "rrr.logging": "750c04079a572414205342604f90430a5dcbd10206676b56199c8a04890a0757",
+    "rrr.idempotency": "477296e6dea8f20becf8df619176641ec52bba55aa6d3f4bde52a556813bd722",
+    "rrr.fiber": "c1f62c52feffc2d2efc9f8bf73bbcad61b77b32f1f41c1b61bc79ae54bf65dbf",
+    "rrr.misc": "983ec11d436481286ea4450b798d747b291b25347040596b38744c44ec798b9c",
+}
+
+IMPORTER_USE_MARKERS = {
+    "rrr.basetypes": "rrr::SparseInt",
+    "rrr.callback_wrapper": "rrr::detail::CallbackWrapper",
+    "rrr.internal_protocol": "rrr::encode_response_size",
+    "rrr.stat": "rrr::AvgStat",
+    "rrr.errors": "rrr::RpcError",
+    "rrr.connection_metrics": "rrr::ConnectionMetrics",
+    "rrr.completion_tracker": "rrr::CompletionTracker",
+    "rrr.rand": "rrr::RandomGenerator",
+    "rrr.request_options": "rrr::RequestOptions",
+    "rrr.reconnect_policy": "rrr::ReconnectPolicy",
+    "rrr.circuit_breaker": "rrr::CircuitBreaker",
+    "rrr.connection_state": "rrr::ConnectionStateMachine",
+    "rrr.heartbeat": "rrr::HeartbeatManager",
+    "rrr.request_queue": "rrr::RequestQueue",
+    "rrr.load_balancer": "rrr::LoadBalancer",
+    "rrr.utils": "rrr::AddrInfo",
+    "rrr.frame_codec": "rrr::FrameStreamReader",
+    "rrr.serializable_envelope": "rrr::SerializableEnvelope",
+    "rrr.future": "rrr::FiberFuture",
+    "rrr.logging": "rrr::log_level_tag",
+    "rrr.idempotency": "rrr::IdempotencyCache",
+    "rrr.fiber": "rrr::this_fiber::get_id",
+    "rrr.misc": "rrr::OneTimeJob",
+}
 
 
 @dataclass(frozen=True)
@@ -1100,6 +1186,323 @@ ABI_SPECS = {
             }
         ),
     ),
+    "rrr.serializable_envelope": AbiSpec(
+        surface=frozenset(
+            {
+                "export module rrr.serializable_envelope;",
+                "export template<typename Set, typename Implementor>",
+                "struct PayloadMember",
+                "export template<typename PayloadSet>",
+                "struct SerializableEnvelope",
+                "int32_t kind_;",
+                "rusty::Option<SerializableProxy> inner_;",
+                "const SerializableBase* base_ptr() const",
+                "void refresh_kind()",
+                "bool has_value() const",
+                "int32_t kind() const",
+                "static SerializableEnvelope<PayloadSet> pack(const T& value)",
+                "static SerializableEnvelope<PayloadSet> pack_aliased(rusty::Arc<T> sp)",
+                "std::add_pointer_t<std::add_const_t<T>> unpack() const",
+                "rusty::Option<rusty::Arc<T>> unpack_shared() const",
+                "bool is_a() const",
+                "void save(BinaryWriteArchive& ar) const",
+                "void load(BinaryReadArchive& ar)",
+                "std::add_pointer_t<T> unpack_mut()",
+                "SerializableEnvelope<PayloadSet> clone() const",
+                "bool operator==(const SerializableEnvelope<PayloadSet>& other) const",
+                "rusty::Option<rusty::Arc<T>> marshallable_cast(const SerializableEnvelope<PayloadSet>& env)",
+                "void serialize(const SerializableEnvelope<PayloadSet>& env, BinaryWriteArchive& ar)",
+                "void deserialize(SerializableEnvelope<PayloadSet>& env, BinaryReadArchive& ar)",
+            }
+        ),
+        symbols=frozenset(),
+    ),
+    "rrr.future": AbiSpec(
+        surface=frozenset(
+            {
+                "export module rrr.future;",
+                "export template<typename T>",
+                "struct FiberFuture",
+                "struct FiberPromise",
+                "rusty::Option<rusty::Arc<BoxEvent<T>>> state_;",
+                "FiberFuture()",
+                "T get()",
+                "bool wait_for(uint64_t timeout_us)",
+                "bool is_ready() const",
+                "bool valid() const",
+                "FiberPromise()",
+                "FiberFuture<T> get_future()",
+                "void set_value(const T& value)",
+                "FiberFuture<T> fiber_promise_get_future(FiberPromise<T>& self_)",
+                "std::pair<FiberPromise<T>, FiberFuture<T>> make_promise()",
+                "FiberFuture<T> make_ready_future(T value)",
+                "FiberFuture already retrieved from FiberPromise",
+                "FiberPromise value already set",
+            }
+        ),
+        symbols=frozenset(),
+    ),
+    "rrr.logging": AbiSpec(
+        surface=frozenset(
+            {
+                "export module rrr.logging;",
+                "export struct Log",
+                "static constexpr int32_t FATAL = static_cast<int32_t>(0);",
+                "static constexpr int32_t ERROR = static_cast<int32_t>(1);",
+                "static constexpr int32_t WARN = static_cast<int32_t>(2);",
+                "static constexpr int32_t INFO = static_cast<int32_t>(3);",
+                "static constexpr int32_t DEBUG = static_cast<int32_t>(4);",
+                "static void set_level(int32_t level);",
+                "static int32_t level_now();",
+                "export std::string_view log_level_tag(int32_t level);",
+                "export void log_line(int32_t level, int32_t line, const int8_t* file, const std::string& msg);",
+                "export void log_sink_write(const std::string& line);",
+                "export std::string log_basename(const int8_t* fpath);",
+                "export std::string log_time_now();",
+                "logging_ffi::srpc_path_basename(reinterpret_cast<const std::string::value_type*>(fpath))",
+                "logging_ffi::srpc_time_now_str(now.data())",
+            }
+        ),
+        symbols=frozenset(
+            ("T", symbol)
+            for symbol in {
+                "rrr::Log@rrr.logging::level_now()",
+                "rrr::Log@rrr.logging::set_level(int)",
+                "rrr::log_basename@rrr.logging(signed char const*)",
+                "rrr::log_level_tag@rrr.logging(int)",
+                "rrr::log_line@rrr.logging(int, int, signed char const*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)",
+                "rrr::log_sink_write@rrr.logging(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)",
+                "rrr::log_time_now@rrr.logging()",
+            }
+        ),
+    ),
+    "rrr.idempotency": AbiSpec(
+        surface=frozenset(
+            {
+                "export module rrr.idempotency;",
+                "export struct IdempotencyKey",
+                "uint64_t client_id;",
+                "uint64_t sequence;",
+                "static IdempotencyKey new_(uint64_t client_id, uint64_t sequence);",
+                "static IdempotencyKey empty();",
+                "bool is_valid() const;",
+                "bool operator==(const IdempotencyKey& other) const;",
+                "export struct IdempotencyKeyHash",
+                "uint64_t hash_one(const IdempotencyKey& key) const;",
+                "export struct IdempotencyConfig",
+                "uint64_t ttl_ms;",
+                "size_t max_entries;",
+                "bool enabled;",
+                "static IdempotencyConfig defaults();",
+                "static IdempotencyConfig small();",
+                "static IdempotencyConfig large();",
+                "static IdempotencyConfig disabled();",
+                "export struct CachedResponse",
+                "rusty::Vec<uint8_t> response_data;",
+                "bool is_expired(uint64_t current_time_ms, uint64_t ttl_ms) const;",
+                "export struct IdempotencyKeyGenerator",
+                "rusty::Cell<uint64_t> client_id_field;",
+                "rusty::Cell<uint64_t> sequence_field;",
+                "static IdempotencyKeyGenerator new_(uint64_t client_id);",
+                "IdempotencyKey next() const;",
+                "void set_client_id(uint64_t id) const;",
+                "export struct IdempotencyCache",
+                "rusty::Cell<IdempotencyConfig> config_;",
+                "rusty::Mutex<rusty::VecDeque<CachedResponse>> cache_;",
+                "IdempotencyCache();",
+                "IdempotencyCache(IdempotencyConfig config);",
+                "bool lookup(const IdempotencyKey& key, uint64_t current_time_ms, int32_t& out_error_code, rusty::Vec<uint8_t>& out_response) const;",
+                "void store(const IdempotencyKey& key, int32_t error_code, const rusty::Vec<uint8_t>& response, uint64_t current_time_ms) const;",
+                "size_t evict_expired(uint64_t current_time_ms) const;",
+                "export void serialize(const IdempotencyKey& key, rrr::BinaryWriteArchive& archive)",
+                "export void deserialize(IdempotencyKey& key, rrr::BinaryReadArchive& archive)",
+                "rusty::wrapping_add(this->timestamp_ms",
+                "rusty::wrapping_add(sequence",
+                "rusty::wrapping_add(this->misses_.get()",
+                "rusty::wrapping_add(this->hits_.get()",
+                "rusty::wrapping_add(this->evictions_.get()",
+            }
+        ),
+        symbols=frozenset(
+            ("T", symbol)
+            for symbol in {
+                "rrr::serialize@rrr.idempotency(rrr::IdempotencyKey@rrr.idempotency const&, rrr::BinaryWriteArchive@rrr.serializable&)",
+                "rrr::deserialize@rrr.idempotency(rrr::IdempotencyKey@rrr.idempotency&, rrr::BinaryReadArchive@rrr.serializable&)",
+                "rrr::IdempotencyKey@rrr.idempotency::new_(unsigned long, unsigned long)",
+                "rrr::IdempotencyKey@rrr.idempotency::empty()",
+                "rrr::IdempotencyKey@rrr.idempotency::is_valid() const",
+                "rrr::IdempotencyKey@rrr.idempotency::operator==(rrr::IdempotencyKey@rrr.idempotency const&) const",
+                "rrr::IdempotencyKeyHash@rrr.idempotency::hash_one(rrr::IdempotencyKey@rrr.idempotency const&) const",
+                "rrr::IdempotencyConfig@rrr.idempotency::new_()",
+                "rrr::IdempotencyConfig@rrr.idempotency::defaults()",
+                "rrr::IdempotencyConfig@rrr.idempotency::small()",
+                "rrr::IdempotencyConfig@rrr.idempotency::large()",
+                "rrr::IdempotencyConfig@rrr.idempotency::disabled()",
+                "rrr::cached_response_set@rrr.idempotency(rrr::CachedResponse@rrr.idempotency&, rusty::port::vec::Vec@vec_port.vec<unsigned char, rusty::alloc::Global> const&)",
+                "rrr::cached_response_get@rrr.idempotency(rrr::CachedResponse@rrr.idempotency const&, rusty::port::vec::Vec@vec_port.vec<unsigned char, rusty::alloc::Global>&)",
+                "rrr::CachedResponse@rrr.idempotency::is_expired(unsigned long, unsigned long) const",
+                "rrr::IdempotencyKeyGenerator@rrr.idempotency::new_(unsigned long)",
+                "rrr::IdempotencyKeyGenerator@rrr.idempotency::next() const",
+                "rrr::IdempotencyKeyGenerator@rrr.idempotency::client_id() const",
+                "rrr::IdempotencyKeyGenerator@rrr.idempotency::set_client_id(unsigned long) const",
+                "rrr::IdempotencyKeyGenerator@rrr.idempotency::current_sequence() const",
+                "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache()",
+                "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache(rrr::IdempotencyConfig@rrr.idempotency)",
+                "rrr::IdempotencyCache@rrr.idempotency::enabled() const",
+                "rrr::IdempotencyCache@rrr.idempotency::config() const",
+                "rrr::IdempotencyCache@rrr.idempotency::set_config(rrr::IdempotencyConfig@rrr.idempotency const&) const",
+                "rrr::IdempotencyCache@rrr.idempotency::lookup(rrr::IdempotencyKey@rrr.idempotency const&, unsigned long, int&, rusty::port::vec::Vec@vec_port.vec<unsigned char, rusty::alloc::Global>&) const",
+                "rrr::IdempotencyCache@rrr.idempotency::store(rrr::IdempotencyKey@rrr.idempotency const&, int, rusty::port::vec::Vec@vec_port.vec<unsigned char, rusty::alloc::Global> const&, unsigned long) const",
+                "rrr::IdempotencyCache@rrr.idempotency::remove(rrr::IdempotencyKey@rrr.idempotency const&) const",
+                "rrr::IdempotencyCache@rrr.idempotency::clear() const",
+                "rrr::IdempotencyCache@rrr.idempotency::size() const",
+                "rrr::IdempotencyCache@rrr.idempotency::hits() const",
+                "rrr::IdempotencyCache@rrr.idempotency::misses() const",
+                "rrr::IdempotencyCache@rrr.idempotency::evictions() const",
+                "rrr::IdempotencyCache@rrr.idempotency::hit_rate() const",
+                "rrr::IdempotencyCache@rrr.idempotency::reset_stats() const",
+                "rrr::IdempotencyCache@rrr.idempotency::evict_expired(unsigned long) const",
+            }
+        ),
+    ),
+    "rrr.fiber": AbiSpec(
+        surface=frozenset(
+            {
+                "export module rrr.fiber;",
+                "namespace this_fiber",
+                "export uint64_t get_id();",
+                "export rusty::Option<rusty::Rc<Fiber>> current();",
+                "export bool in_fiber_context();",
+                "export void yield();",
+                "export void sleep_us(uint64_t microseconds);",
+                "export void sleep_ms(uint64_t milliseconds);",
+                "export void sleep_s(uint64_t seconds);",
+                "export void sleep_until_us(uint64_t abs_time_us);",
+                "rusty::wrapping_mul(milliseconds",
+                "rusty::wrapping_mul(seconds",
+                "rrr::fiber_sleep",
+            }
+        ),
+        symbols=frozenset(
+            ("T", symbol)
+            for symbol in {
+                "rrr::this_fiber::current@rrr.fiber()",
+                "rrr::this_fiber::get_id@rrr.fiber()",
+                "rrr::this_fiber::in_fiber_context@rrr.fiber()",
+                "rrr::this_fiber::sleep_ms@rrr.fiber(unsigned long)",
+                "rrr::this_fiber::sleep_s@rrr.fiber(unsigned long)",
+                "rrr::this_fiber::sleep_until_us@rrr.fiber(unsigned long)",
+                "rrr::this_fiber::sleep_us@rrr.fiber(unsigned long)",
+                "rrr::this_fiber::yield@rrr.fiber()",
+            }
+        ),
+    ),
+    "rrr.misc": AbiSpec(
+        surface=frozenset(
+            {
+                '#include "base/rustc_markers.hpp"',
+                "export module rrr.misc;",
+                "export class Job;",
+                "export struct OneTimeJob;",
+                "export class Job",
+                "virtual bool Ready() = 0;",
+                "virtual void Work() = 0;",
+                "virtual bool Done() = 0;",
+                "export struct OneTimeJob : public Job",
+                "rusty::Function<void()> func_;",
+                "static OneTimeJob new_(rusty::Function<void()> func);",
+                "export template<typename T, typename T1, typename T2>",
+                "T clamp(const T& value, const T1& lower, const T2& upper)",
+                "export int32_t get_ncpu();",
+                "export std::string format_thousands(double val);",
+                "int32_t srpc_get_ncpu();",
+                "int32_t srpc_format_fixed_2(double value, int8_t* output, size_t capacity);",
+                "namespace Job_",
+                "export bool Ready(OneTimeJob& self_)",
+                "export void Work(OneTimeJob& self_)",
+                "export bool Done(OneTimeJob& self_)",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ("D", "typeinfo for rrr::Job@rrr.misc"),
+                ("D", "typeinfo for rrr::OneTimeJob@rrr.misc"),
+                ("D", "vtable for rrr::Job@rrr.misc"),
+                ("D", "vtable for rrr::OneTimeJob@rrr.misc"),
+                ("R", "typeinfo name for rrr::Job@rrr.misc"),
+                ("R", "typeinfo name for rrr::OneTimeJob@rrr.misc"),
+                *(
+                    ("T", symbol)
+                    for symbol in {
+                        "rrr::Job@rrr.misc::~Job()",
+                        "rrr::Job_::Done@rrr.misc(rrr::OneTimeJob@rrr.misc&)",
+                        "rrr::Job_::Ready@rrr.misc(rrr::OneTimeJob@rrr.misc&)",
+                        "rrr::Job_::Work@rrr.misc(rrr::OneTimeJob@rrr.misc&)",
+                        "rrr::OneTimeJob@rrr.misc::Done()",
+                        "rrr::OneTimeJob@rrr.misc::OneTimeJob(bool, bool, rusty::Function<void ()>)",
+                        "rrr::OneTimeJob@rrr.misc::OneTimeJob(rrr::OneTimeJob@rrr.misc&&)",
+                        "rrr::OneTimeJob@rrr.misc::Ready()",
+                        "rrr::OneTimeJob@rrr.misc::Work()",
+                        "rrr::OneTimeJob@rrr.misc::new_(rusty::Function<void ()>)",
+                        "rrr::format_thousands@rrr.misc(double)",
+                        "rrr::get_ncpu@rrr.misc()",
+                    }
+                ),
+            }
+        ),
+    ),
+}
+
+# Extra raw entries emitted by the C++ ABI for constructor/destructor aliases.
+# Each tuple is one additional occurrence beyond the unique strong symbol in
+# ABI_SPECS. Every module also has exactly one module initializer.
+RAW_ABI_ALIASES = {
+    "rrr.completion_tracker": (
+        (
+            "T",
+            "rrr::CompletionTracker@rrr.completion_tracker::CompletionTracker()",
+        ),
+        (
+            "T",
+            "rrr::CompletionTracker@rrr.completion_tracker::CompletionTracker(rrr::CompletionTrackerConfig@rrr.completion_tracker)",
+        ),
+    ),
+    "rrr.request_queue": (
+        ("T", "rrr::RequestQueue@rrr.request_queue::RequestQueue()"),
+        (
+            "T",
+            "rrr::RequestQueue@rrr.request_queue::RequestQueue(rrr::RequestQueueConfig@rrr.request_queue)",
+        ),
+    ),
+    "rrr.utils": tuple(
+        ("T", symbol)
+        for symbol in (
+            "rrr::AddrInfo@rrr.utils::AddrInfo()",
+            "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*)",
+            "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*, rusty::Cell<bool>)",
+            "rrr::AddrInfo@rrr.utils::AddrInfo(rrr::AddrInfo@rrr.utils&&)",
+            "rrr::AddrInfo@rrr.utils::~AddrInfo()",
+        )
+    ),
+    "rrr.idempotency": (
+        ("T", "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache()"),
+        (
+            "T",
+            "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache(rrr::IdempotencyConfig@rrr.idempotency)",
+        ),
+    ),
+    "rrr.misc": (
+        ("T", "rrr::Job@rrr.misc::~Job()"),
+        ("T", "rrr::Job@rrr.misc::~Job()"),
+        (
+            "T",
+            "rrr::OneTimeJob@rrr.misc::OneTimeJob(bool, bool, rusty::Function<void ()>)",
+        ),
+        (
+            "T",
+            "rrr::OneTimeJob@rrr.misc::OneTimeJob(rrr::OneTimeJob@rrr.misc&&)",
+        ),
+    ),
 }
 
 
@@ -1267,12 +1670,25 @@ def load_owned_modules(root: Path) -> list[extraction.ModuleEntry]:
         raise GateError(f"cannot load extraction ownership: {exc}") from exc
     actual = {module.cpp_module for module in modules}
     expected = set(ABI_SPECS)
-    if not expected.issubset(actual):
+    ratchet_maps = {
+        "ABI specification": expected,
+        "direct-import specification": set(EXPECTED_IMPORTS),
+        "generated-module digest": set(EXPECTED_GENERATED_MODULE_SHA256),
+        "combined-importer use marker": set(IMPORTER_USE_MARKERS),
+    }
+    if any(names != actual for names in ratchet_maps.values()):
         details = ["crate-mode ABI ratchet does not match extraction manifest"]
-        if expected - actual:
-            details.append(
-                "missing manifest module(s): " + ", ".join(sorted(expected - actual))
-            )
+        for description, names in ratchet_maps.items():
+            if names - actual:
+                details.append(
+                    f"{description} has non-manifest module(s): "
+                    + ", ".join(sorted(names - actual))
+                )
+            if actual - names:
+                details.append(
+                    f"missing {description}(s): "
+                    + ", ".join(sorted(actual - names))
+                )
         raise GateError("\n".join(details))
     return modules
 
@@ -1354,13 +1770,23 @@ def require_cpp_surfaces(
     for module in modules:
         path = output / f"{module.cpp_module}.cppm"
         text = read_generated(path, f"child module {module.cpp_module}")
+        actual_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        expected_digest = EXPECTED_GENERATED_MODULE_SHA256[module.cpp_module]
+        if actual_digest != expected_digest:
+            raise GateError(
+                f"generated {module.cpp_module} exact output digest drifted: "
+                f"expected {expected_digest}, got {actual_digest}"
+            )
+        require_exact_module_imports(
+            text,
+            module.cpp_module,
+            EXPECTED_IMPORTS[module.cpp_module],
+        )
         required_surface = {
             f"export module {module.cpp_module};",
             "namespace rrr {",
         }
-        spec = ABI_SPECS.get(module.cpp_module)
-        if spec is not None:
-            required_surface.update(spec.surface)
+        required_surface.update(ABI_SPECS[module.cpp_module].surface)
         missing = sorted(
             fragment for fragment in required_surface if fragment not in text
         )
@@ -1573,11 +1999,40 @@ def require_cpp_surfaces(
                 raise GateError(
                     "rustc-only StdVector facade leaked into generated FrameCodec"
                 )
-        elif netdb_preamble in text:
+        misc_preamble = '#include "base/rustc_markers.hpp"'
+        if module.cpp_module == "rrr.misc":
+            if text.count(misc_preamble) != 1:
+                raise GateError(
+                    "generated rrr.misc must contain exactly one structured "
+                    "rustc-marker preamble include"
+                )
+            ordered = (
+                text.find("\nmodule;\n"),
+                text.find(misc_preamble),
+                text.find("#include <cstdint>"),
+                text.find("export module rrr.misc;"),
+            )
+            if -1 in ordered or list(ordered) != sorted(ordered):
+                raise GateError(
+                    "generated rrr.misc marker preamble is not between the "
+                    "global module fragment and standard includes"
+                )
+        elif misc_preamble in text:
+            raise GateError(
+                f"misc rustc-marker preamble leaked into {module.cpp_module}"
+            )
+
+        # Leakage checks must be independent of module-specific dependency
+        # handling above. Keeping them in that if/elif chain allowed several
+        # enumerated siblings to bypass the rejection clauses.
+        if module.cpp_module != "rrr.utils" and netdb_preamble in text:
             raise GateError(
                 f"utils netdb preamble leaked into {module.cpp_module}"
             )
-        elif "#include <rusty/io.hpp>" in text:
+        if (
+            module.cpp_module != "rrr.frame_codec"
+            and "#include <rusty/io.hpp>" in text
+        ):
             raise GateError(
                 f"FrameCodec io preamble leaked into {module.cpp_module}"
             )
@@ -1593,6 +2048,8 @@ def require_cpp_surfaces(
         raise GateError("utils netdb preamble leaked into the crate root")
     if "#include <rusty/io.hpp>" in root_text:
         raise GateError("FrameCodec io preamble leaked into the crate root")
+    if '#include "base/rustc_markers.hpp"' in root_text:
+        raise GateError("misc rustc-marker preamble leaked into the crate root")
     root_required = {
         "export module rrr;",
         "namespace rrr {",
@@ -1605,6 +2062,20 @@ def require_cpp_surfaces(
         raise GateError(
             "generated root module is missing required surface:\n  "
             + "\n  ".join(root_missing)
+        )
+    root_imports = re.findall(
+        r"^(export )?import ([^;\n]+);[ \t]*$",
+        root_text,
+        flags=re.MULTILINE,
+    )
+    expected_root_imports = [
+        ("export ", name) for name in sorted(module.cpp_module for module in modules)
+    ]
+    if root_imports != expected_root_imports:
+        raise GateError(
+            "generated root imports must be exactly the ordered canonical "
+            f"child re-exports; expected={expected_root_imports!r}, "
+            f"got={root_imports!r}"
         )
 
 
@@ -1945,6 +2416,28 @@ def require_exact_module_raw_symbols(
     )
 
 
+def require_all_module_raw_symbols(
+    module_name: str,
+    description: str,
+    entries: list[tuple[str, str]],
+) -> None:
+    """Pin every unique API, ABI alias, and sole module initializer."""
+
+    expected = Counter(ABI_SPECS[module_name].symbols)
+    expected.update(RAW_ABI_ALIASES.get(module_name, ()))
+    expected[("T", f"initializer for module {module_name}")] += 1
+    actual = Counter(entries)
+    if actual == expected:
+        return
+    missing = sorted((expected - actual).elements())
+    unexpected = sorted((actual - expected).elements())
+    raise GateError(
+        f"{description} {module_name} raw ABI must contain exactly "
+        f"{sum(expected.values())} entries; missing={missing!r}, "
+        f"unexpected={unexpected!r}"
+    )
+
+
 def basetypes_raw_symbols(
     nm: Path,
     root: Path,
@@ -2248,6 +2741,7 @@ def importer_source() -> str:
 #include <vector>
 #include <unistd.h>
 
+import rusty;
 import rrr.callback_wrapper;
 import rrr.basetypes;
 import rrr.circuit_breaker;
@@ -2255,14 +2749,21 @@ import rrr.completion_tracker;
 import rrr.connection_metrics;
 import rrr.connection_state;
 import rrr.errors;
+import rrr.fiber;
 import rrr.frame_codec;
+import rrr.future;
 import rrr.heartbeat;
+import rrr.idempotency;
 import rrr.internal_protocol;
 import rrr.load_balancer;
+import rrr.logging;
+import rrr.misc;
 import rrr.rand;
 import rrr.reconnect_policy;
 import rrr.request_options;
 import rrr.request_queue;
+import rrr.serializable;
+import rrr.serializable_envelope;
 import rrr.stat;
 import rrr.utils;
 
@@ -2293,6 +2794,14 @@ extern "C" std::uint64_t srpc_clock_monotonic_us(void) {
     return monotonic_now_us;
 }
 
+extern "C" std::uint64_t srpc_rdtsc_raw(void) {
+    return monotonic_now_us;
+}
+
+extern "C" std::uint64_t srpc_rdtsc(void) {
+    return monotonic_now_us;
+}
+
 extern "C" std::uint64_t srpc_clock_realtime_coarse_us(void) {
     return realtime_now_us;
 }
@@ -2304,6 +2813,8 @@ extern "C" std::uint64_t srpc_gettimeofday_us(void) {
 extern "C" void srpc_sleep_us(std::uint64_t microseconds) {
     slept_us = microseconds;
 }
+
+extern "C" void srpc_cpu_pause(void) {}
 
 extern "C" int srpc_find_open_port(void) {
     return selected_open_port;
@@ -2346,6 +2857,17 @@ extern "C" __attribute__((weak)) void srpc_time_now_str(char* now) {
     std::memcpy(now, kFixedTime, sizeof(kFixedTime));
 }
 
+extern "C" __attribute__((weak)) std::int32_t srpc_get_ncpu(void) {
+    return 8;
+}
+
+extern "C" __attribute__((weak)) std::int32_t srpc_format_fixed_2(
+    double value, std::int8_t* output, std::size_t capacity) {
+    const int written = std::snprintf(
+        reinterpret_cast<char*>(output), capacity, "%.2f", value);
+    return written < 0 ? -1 : written;
+}
+
 static void install_rand_raw(std::int32_t value) {
     rand_raw_value = value;
     rand_raw_draws = 0;
@@ -2383,6 +2905,54 @@ struct LoadBalancerProbeClient {
 
 using LoadBalancerProbeClients =
     std::vector<std::shared_ptr<LoadBalancerProbeClient>>;
+
+namespace canary {
+struct EnvelopePayloadSet {};
+
+struct EnvelopePayload {
+    std::int32_t value = 0;
+    std::int32_t kind() const { return 61; }
+    void save(rrr::BinaryWriteArchive&) const {}
+    void load(rrr::BinaryReadArchive&) {}
+};
+
+struct EnvelopeLegacyLayout {
+    std::int32_t kind_;
+    rusty::Option<rrr::SerializableProxy> inner_;
+};
+
+struct MiscBound {
+    int value;
+};
+
+struct MiscValue {
+    int value;
+    MiscValue(int initial) : value(initial) {}
+    MiscValue(const MiscBound& initial) : value(initial.value) {}
+};
+
+bool operator<(const MiscValue& value, const MiscBound& bound) {
+    return value.value < bound.value;
+}
+
+bool operator>(const MiscValue& value, const MiscBound& bound) {
+    return value.value > bound.value;
+}
+}  // namespace canary
+
+namespace rrr {
+template <>
+struct PayloadMember<canary::EnvelopePayloadSet, canary::EnvelopePayload> {
+    static constexpr bool value = true;
+    static constexpr std::int32_t KIND = 61;
+};
+}  // namespace rrr
+
+template <class T>
+concept HasSendMarker = requires { T::is_send; };
+
+template <class T>
+concept HasSyncMarker = requires { T::is_sync; };
 
 static_assert(std::is_same_v<rrr::RandWeightVec, std::vector<double>>);
 
@@ -2447,6 +3017,104 @@ static_assert(std::is_same_v<
 static_assert(std::is_same_v<
               decltype(&rrr::FrameStreamReader::buffered_bytes),
               std::size_t (rrr::FrameStreamReader::*)() const>);
+
+static_assert(rrr::PayloadMember<
+              canary::EnvelopePayloadSet, canary::EnvelopePayload>::value);
+static_assert(rrr::PayloadMember<
+              canary::EnvelopePayloadSet, canary::EnvelopePayload>::KIND == 61);
+static_assert(!rrr::PayloadMember<canary::EnvelopePayloadSet, int>::value);
+static_assert(sizeof(rrr::SerializableEnvelope<canary::EnvelopePayloadSet>) ==
+              sizeof(canary::EnvelopeLegacyLayout));
+static_assert(alignof(rrr::SerializableEnvelope<canary::EnvelopePayloadSet>) ==
+              alignof(canary::EnvelopeLegacyLayout));
+static_assert(std::is_default_constructible_v<
+              rrr::SerializableEnvelope<canary::EnvelopePayloadSet>>);
+static_assert(std::is_copy_constructible_v<
+              rrr::SerializableEnvelope<canary::EnvelopePayloadSet>>);
+
+static_assert(std::is_default_constructible_v<rrr::FiberFuture<int>>);
+static_assert(std::is_default_constructible_v<rrr::FiberPromise<int>>);
+static_assert(std::is_move_constructible_v<rrr::FiberFuture<int>>);
+static_assert(std::is_same_v<
+              decltype(&rrr::FiberFuture<int>::wait_for),
+              bool (rrr::FiberFuture<int>::*)(std::uint64_t)>);
+static_assert(std::is_same_v<
+              decltype(&rrr::FiberPromise<int>::set_value),
+              void (rrr::FiberPromise<int>::*)(const int&)>);
+
+static_assert(rrr::Log::FATAL == 0 && rrr::Log::ERROR == 1 &&
+              rrr::Log::WARN == 2 && rrr::Log::INFO == 3 &&
+              rrr::Log::DEBUG == 4);
+static_assert(std::is_same_v<
+              decltype(&rrr::log_level_tag),
+              std::string_view (*)(std::int32_t)>);
+static_assert(std::is_same_v<
+              decltype(&rrr::log_line),
+              void (*)(std::int32_t, std::int32_t, const std::int8_t*,
+                       const std::string&)>);
+
+static_assert(sizeof(rrr::IdempotencyKey) == 16);
+static_assert(alignof(rrr::IdempotencyKey) == 8);
+static_assert(offsetof(rrr::IdempotencyKey, client_id) == 0);
+static_assert(offsetof(rrr::IdempotencyKey, sequence) == 8);
+static_assert(std::is_standard_layout_v<rrr::IdempotencyKey>);
+static_assert(std::is_trivially_copyable_v<rrr::IdempotencyKey>);
+static_assert(HasSendMarker<rrr::IdempotencyKey>);
+static_assert(HasSyncMarker<rrr::IdempotencyKey>);
+static_assert(sizeof(rrr::IdempotencyKeyHash) == 1);
+static_assert(sizeof(rrr::IdempotencyConfig) == 24);
+static_assert(alignof(rrr::IdempotencyConfig) == 8);
+static_assert(offsetof(rrr::IdempotencyConfig, ttl_ms) == 0);
+static_assert(offsetof(rrr::IdempotencyConfig, max_entries) == 8);
+static_assert(offsetof(rrr::IdempotencyConfig, enabled) == 16);
+static_assert(std::is_trivially_copyable_v<rrr::IdempotencyConfig>);
+static_assert(sizeof(rrr::CachedResponse) == 80);
+static_assert(alignof(rrr::CachedResponse) == 8);
+static_assert(offsetof(rrr::CachedResponse, key) == 0);
+static_assert(offsetof(rrr::CachedResponse, error_code) == 16);
+static_assert(offsetof(rrr::CachedResponse, response_data) == 24);
+static_assert(offsetof(rrr::CachedResponse, timestamp_ms) == 72);
+static_assert(sizeof(rrr::IdempotencyKeyGenerator) == 16);
+static_assert(offsetof(rrr::IdempotencyKeyGenerator, client_id_field) == 0);
+static_assert(offsetof(rrr::IdempotencyKeyGenerator, sequence_field) == 8);
+static_assert(HasSendMarker<rrr::IdempotencyKeyGenerator>);
+static_assert(!HasSyncMarker<rrr::IdempotencyKeyGenerator>);
+static_assert(sizeof(rrr::IdempotencyCache) == 120);
+static_assert(alignof(rrr::IdempotencyCache) == 8);
+static_assert(offsetof(rrr::IdempotencyCache, config_) == 0);
+static_assert(offsetof(rrr::IdempotencyCache, cache_) == 24);
+static_assert(offsetof(rrr::IdempotencyCache, hits_) == 96);
+static_assert(offsetof(rrr::IdempotencyCache, misses_) == 104);
+static_assert(offsetof(rrr::IdempotencyCache, evictions_) == 112);
+static_assert(!HasSendMarker<rrr::IdempotencyCache>);
+static_assert(!HasSyncMarker<rrr::IdempotencyCache>);
+static_assert(std::is_same_v<
+              decltype(&rrr::IdempotencyCache::lookup),
+              bool (rrr::IdempotencyCache::*)(
+                  const rrr::IdempotencyKey&, std::uint64_t, std::int32_t&,
+                  rusty::Vec<std::uint8_t>&) const>);
+static_assert(std::is_same_v<
+              decltype(&rrr::IdempotencyCache::store),
+              void (rrr::IdempotencyCache::*)(
+                  const rrr::IdempotencyKey&, std::int32_t,
+                  const rusty::Vec<std::uint8_t>&, std::uint64_t) const>);
+
+static_assert(std::is_same_v<
+              decltype(&rrr::this_fiber::get_id), std::uint64_t (*)()>);
+static_assert(std::is_same_v<
+              decltype(&rrr::this_fiber::sleep_us),
+              void (*)(std::uint64_t)>);
+
+static_assert(sizeof(rrr::Job) == 8);
+static_assert(alignof(rrr::Job) == 8);
+static_assert(sizeof(rrr::OneTimeJob) == 64);
+static_assert(alignof(rrr::OneTimeJob) == 16);
+static_assert(std::is_base_of_v<rrr::Job, rrr::OneTimeJob>);
+static_assert(std::is_convertible_v<rrr::OneTimeJob*, rrr::Job*>);
+static_assert(std::is_same_v<
+              decltype(&rrr::get_ncpu), std::int32_t (*)()>);
+static_assert(std::is_same_v<
+              decltype(&rrr::format_thousands), std::string (*)(double)>);
 
 static_assert(std::is_same_v<rrr::i8, std::int8_t>);
 static_assert(std::is_same_v<rrr::i16, std::int16_t>);
@@ -5169,9 +5837,271 @@ int main() {
         invalid_queue.size() != 1) {
         return 176;
     }
+
+    using Envelope = rrr::SerializableEnvelope<canary::EnvelopePayloadSet>;
+    Envelope empty_envelope;
+    auto cloned_empty_envelope = empty_envelope.clone();
+    if (empty_envelope.has_value() || empty_envelope.kind() != 0 ||
+        !(empty_envelope == cloned_empty_envelope)) {
+        return 214;
+    }
+    canary::EnvelopePayload envelope_payload{7};
+    auto packed_envelope = Envelope::pack(envelope_payload);
+    const auto* unpacked_envelope =
+        packed_envelope.template unpack<canary::EnvelopePayload>();
+    auto shared_envelope =
+        rrr::marshallable_cast<canary::EnvelopePayload>(packed_envelope);
+    if (!packed_envelope.has_value() || packed_envelope.kind() != 61 ||
+        !packed_envelope.template is_a<canary::EnvelopePayload>() ||
+        unpacked_envelope == nullptr || unpacked_envelope->value != 7 ||
+        shared_envelope.is_none() || shared_envelope.unwrap()->value != 7) {
+        return 215;
+    }
+    auto cloned_envelope = packed_envelope.clone();
+    auto* mutable_envelope =
+        cloned_envelope.template unpack_mut<canary::EnvelopePayload>();
+    if (!(packed_envelope == cloned_envelope) || mutable_envelope == nullptr) {
+        return 216;
+    }
+    mutable_envelope->value = 9;
+    if (packed_envelope.template unpack<canary::EnvelopePayload>()->value != 9) {
+        return 217;
+    }
+
+    rrr::FiberFuture<int> invalid_future;
+    if (invalid_future.valid() || invalid_future.is_ready() ||
+        invalid_future.wait_for(1)) {
+        return 218;
+    }
+    rrr::FiberPromise<int> promise;
+    auto future = promise.get_future();
+    if (!future.valid() || future.is_ready()) {
+        return 219;
+    }
+    bool duplicate_future_threw = false;
+    try {
+        (void)promise.get_future();
+    } catch (const std::logic_error&) {
+        duplicate_future_threw = true;
+    }
+    promise.set_value(42);
+    if (!duplicate_future_threw || !promise.is_ready() ||
+        !future.is_ready() || future.get() != 42 || future.get() != 42) {
+        return 220;
+    }
+    bool duplicate_value_threw = false;
+    try {
+        promise.set_value(7);
+    } catch (const std::logic_error&) {
+        duplicate_value_threw = true;
+    }
+    if (!duplicate_value_threw) {
+        return 221;
+    }
+    auto [pair_promise, pair_future] = rrr::make_promise<std::string>();
+    pair_promise.set_value("pair");
+    auto ready_future = rrr::make_ready_future<std::string>("ready");
+    if (pair_future.get() != "pair" || !ready_future.wait_for(1) ||
+        ready_future.get() != "ready") {
+        return 222;
+    }
+
+    if (rrr::log_level_tag(rrr::Log::FATAL) != "F " ||
+        rrr::log_level_tag(rrr::Log::ERROR) != "E " ||
+        rrr::log_level_tag(rrr::Log::WARN) != "W " ||
+        rrr::log_level_tag(rrr::Log::INFO) != "I " ||
+        rrr::log_level_tag(rrr::Log::DEBUG) != "D " ||
+        rrr::log_level_tag(99) != "? " ||
+        rrr::log_basename(nullptr) != "<unknown>" ||
+        rrr::log_basename(reinterpret_cast<const std::int8_t*>("a/b/file.cc")) !=
+            "file.cc" ||
+        rrr::log_time_now() != "2000-01-02 03:04:05.006") {
+        return 223;
+    }
+    std::ostringstream logging_sink;
+    original_cout = std::cout.rdbuf(logging_sink.rdbuf());
+    rrr::Log::set_level(rrr::Log::WARN);
+    rrr::log_line(rrr::Log::INFO, 42,
+                  reinterpret_cast<const std::int8_t*>("file.cc"),
+                  "filtered");
+    rrr::log_line(rrr::Log::ERROR, 42,
+                  reinterpret_cast<const std::int8_t*>("a/b/file.cc"),
+                  "visible");
+    std::cout.rdbuf(original_cout);
+    rrr::Log::set_level(rrr::Log::DEBUG);
+    if (logging_sink.str() !=
+        "E [file.cc:42] 2000-01-02 03:04:05.006 | visible\\n") {
+        return 224;
+    }
+
+    const auto idempotency_empty = rrr::IdempotencyKey::empty();
+    const auto idempotency_key = rrr::IdempotencyKey::new_(12'345, 67'890);
+    rrr::IdempotencyKeyHash idempotency_hash;
+    if (idempotency_empty.is_valid() || !idempotency_key.is_valid() ||
+        !(idempotency_key == rrr::IdempotencyKey{12'345, 67'890}) ||
+        idempotency_hash.hash_one(idempotency_key) !=
+            (12'345ULL ^ (67'890ULL * 0x9e3779b97f4a7c15ULL))) {
+        return 225;
+    }
+    rrr::BufferSink idempotency_sink;
+    rrr::BinaryWriteArchive idempotency_writer(
+        rrr::make_sink_proxy(&idempotency_sink));
+    rrr::serialize(idempotency_key, idempotency_writer);
+    if (idempotency_sink.bytes.len() != 16) {
+        return 226;
+    }
+    rrr::BufferSource idempotency_source(
+        idempotency_sink.bytes.data(), idempotency_sink.bytes.len());
+    rrr::BinaryReadArchive idempotency_reader(
+        rrr::make_source_proxy(&idempotency_source));
+    auto restored_key = rrr::IdempotencyKey::empty();
+    rrr::deserialize(restored_key, idempotency_reader);
+    if (!(restored_key == idempotency_key)) {
+        return 227;
+    }
+    auto idempotency_generator = rrr::IdempotencyKeyGenerator::new_(7);
+    if (!(idempotency_generator.next() == rrr::IdempotencyKey{7, 0})) {
+        return 228;
+    }
+    idempotency_generator.sequence_field.set(
+        std::numeric_limits<std::uint64_t>::max());
+    if (idempotency_generator.next().sequence !=
+            std::numeric_limits<std::uint64_t>::max() ||
+        idempotency_generator.current_sequence() != 0) {
+        return 229;
+    }
+    const auto idempotency_defaults = rrr::IdempotencyConfig::defaults();
+    if (idempotency_defaults.ttl_ms != 60'000 ||
+        idempotency_defaults.max_entries != 10'000 ||
+        !idempotency_defaults.enabled ||
+        rrr::IdempotencyConfig::disabled().enabled) {
+        return 230;
+    }
+    rrr::CachedResponse wrapped_response{
+        rrr::IdempotencyKey::empty(), 0, {},
+        std::numeric_limits<std::uint64_t>::max() - 5};
+    if (!wrapped_response.is_expired(5, 10) ||
+        wrapped_response.is_expired(5, 0)) {
+        return 231;
+    }
+    auto idempotency_config = idempotency_defaults;
+    idempotency_config.ttl_ms = 100;
+    idempotency_config.max_entries = 2;
+    rrr::IdempotencyCache idempotency_cache(idempotency_config);
+    rusty::Vec<std::uint8_t> payload_one;
+    payload_one.push(1);
+    payload_one.push(2);
+    rusty::Vec<std::uint8_t> payload_two;
+    payload_two.push(4);
+    const rrr::IdempotencyKey first_key{1, 1};
+    const rrr::IdempotencyKey second_key{1, 2};
+    const rrr::IdempotencyKey third_key{1, 3};
+    idempotency_cache.store(first_key, 11, payload_one, 1'000);
+    idempotency_cache.store(second_key, 22, payload_two, 1'050);
+    std::int32_t cached_error = -1;
+    rusty::Vec<std::uint8_t> cached_payload;
+    if (!idempotency_cache.lookup(
+            first_key, 1'050, cached_error, cached_payload) ||
+        cached_error != 11 || cached_payload.len() != 2) {
+        return 232;
+    }
+    idempotency_cache.store(third_key, 33, payload_two, 1'100);
+    if (idempotency_cache.size() != 2 ||
+        idempotency_cache.evictions() != 1 ||
+        idempotency_cache.lookup(
+            second_key, 1'100, cached_error, cached_payload) ||
+        !idempotency_cache.lookup(
+            first_key, 1'100, cached_error, cached_payload)) {
+        return 233;
+    }
+    idempotency_cache.store(first_key, 44, payload_two, 1'110);
+    if (!idempotency_cache.lookup(
+            first_key, 1'110, cached_error, cached_payload) ||
+        cached_error != 44 || idempotency_cache.hits() != 3 ||
+        idempotency_cache.misses() != 1 ||
+        idempotency_cache.evict_expired(1'211) != 2 ||
+        idempotency_cache.size() != 0) {
+        return 234;
+    }
+    idempotency_cache.reset_stats();
+    idempotency_cache.set_config(rrr::IdempotencyConfig::disabled());
+    idempotency_cache.store({2, 1}, 0, payload_one, 0);
+    if (idempotency_cache.enabled() || idempotency_cache.size() != 0 ||
+        idempotency_cache.hits() != 0 || idempotency_cache.misses() != 0 ||
+        idempotency_cache.evictions() != 0) {
+        return 235;
+    }
+
+    if (rrr::this_fiber::get_id() != 0 ||
+        rrr::this_fiber::current().is_some() ||
+        rrr::this_fiber::in_fiber_context()) {
+        return 236;
+    }
+    rrr::this_fiber::yield();
+    rrr::this_fiber::sleep_us(0);
+    rrr::this_fiber::sleep_ms(0);
+    rrr::this_fiber::sleep_s(0);
+    rrr::this_fiber::sleep_until_us(rrr::Time::now(true));
+
+    if (rrr::clamp(5, 0, 10) != 5 || rrr::clamp(-2, 0, 10) != 0 ||
+        rrr::clamp(12, 0, 10) != 10 ||
+        rrr::clamp(canary::MiscValue(-2), canary::MiscBound{0},
+                   canary::MiscBound{10}).value != 0 ||
+        rrr::clamp(canary::MiscValue(12), canary::MiscBound{0},
+                   canary::MiscBound{10}).value != 10) {
+        return 237;
+    }
+    int job_calls = 0;
+    auto one_time_job = rrr::OneTimeJob::new_(
+        rusty::Function<void()>([&job_calls]() { ++job_calls; }));
+    rrr::Job* job = &one_time_job;
+    if (!job->Ready() || job->Done()) {
+        return 238;
+    }
+    job->Work();
+    if (job->Ready() || !job->Done() || job_calls != 1 ||
+        rrr::get_ncpu() <= 0 || rrr::format_thousands(0.0) != "0.00" ||
+        rrr::format_thousands(-0.0) != "0.00" ||
+        rrr::format_thousands(1234.5) != "1,234.50" ||
+        rrr::format_thousands(-1234567.89) != "-1,234,567.89" ||
+        rrr::format_thousands(999.999) != "1,000.00") {
+        return 239;
+    }
     return 0;
 }
 """
+
+
+def require_importer_coverage(modules: list[extraction.ModuleEntry]) -> None:
+    """Require one direct import and one concrete use per canonical module."""
+
+    source = importer_source()
+    canonical = {module.cpp_module for module in modules}
+    if canonical != set(IMPORTER_USE_MARKERS):
+        raise GateError(
+            "combined-importer use ratchet does not equal canonical manifest"
+        )
+    imports = Counter(
+        re.findall(r"^import (rrr\.[^;\n]+);[ \t]*$", source, re.MULTILINE)
+    )
+    missing_or_duplicated = sorted(
+        module for module in canonical if imports[module] != 1
+    )
+    if missing_or_duplicated:
+        raise GateError(
+            "combined importer must directly import every canonical module "
+            f"exactly once: {missing_or_duplicated!r}"
+        )
+    missing_uses = sorted(
+        module
+        for module, marker in IMPORTER_USE_MARKERS.items()
+        if marker not in source
+    )
+    if missing_uses:
+        raise GateError(
+            "combined importer lacks concrete canonical module use(s): "
+            + ", ".join(missing_uses)
+        )
 
 
 def compile_module(
@@ -5184,12 +6114,23 @@ def compile_module(
     cxx_flags: list[str],
     prebuilt_module_dirs: list[Path],
     configured_module_map: dict[str, Path],
+    configured_module_dependencies: dict[str, set[str]],
 ) -> Path:
     source = source_dir / f"{module_name}.cppm"
     pcm = work_dir / f"{module_name}.pcm"
     object_file = work_dir / f"{module_name}.o"
+    direct_module_map = generated_lane_module_map(
+        configured_module_map,
+        work_dir,
+        dependency_names=(
+            set(configured_module_map)
+            if module_name == "rrr"
+            else configured_module_dependencies[module_name]
+        ),
+        exclude=module_name,
+    )
     module_path_flags = (
-        module_file_flags(configured_module_map, exclude=module_name)
+        module_file_flags(direct_module_map)
         if configured_module_map
         else [
             f"-fprebuilt-module-path={path}"
@@ -5308,6 +6249,12 @@ def resolve_configured_module_map(
         for modmap in build_root.rglob("*.o.modmap"):
             if not modmap.is_file() or "rrr.dir" not in modmap.parts:
                 continue
+            # Retired historical .cpp carriers can leave stale CMake modmaps
+            # in an incremental build tree. Only generated canonical owners
+            # under goal0-crate-cpp define the dependency closure for this
+            # lane; inline providers live elsewhere and are not queried here.
+            if "goal0-crate-cpp" not in modmap.parts:
+                continue
             for line in modmap.read_text(encoding="utf-8").splitlines():
                 fields = shlex.split(line)
                 if len(fields) != 1:
@@ -5346,6 +6293,58 @@ def resolve_configured_module_map(
     return mappings
 
 
+def resolve_configured_module_dependencies(
+    root: Path, raw_build_roots: list[str]
+) -> dict[str, set[str]]:
+    """Read each configured rrr provider's exact CMake BMI closure."""
+
+    dependencies: dict[str, set[str]] = {}
+    for raw in raw_build_roots:
+        build_root = Path(raw)
+        if not build_root.is_absolute():
+            build_root = root / build_root
+        build_root = build_root.resolve()
+        if not build_root.is_dir():
+            raise GateError(
+                f"configured module-map root is unavailable: {build_root}"
+            )
+        for modmap in build_root.rglob("*.o.modmap"):
+            if not modmap.is_file() or "rrr.dir" not in modmap.parts:
+                continue
+            # Retired historical .cpp carriers can leave stale CMake modmaps
+            # in an incremental build tree. Canonical dependency closures
+            # come only from the generated crate-provider directory.
+            if "goal0-crate-cpp" not in modmap.parts:
+                continue
+            output_name: str | None = None
+            imported: set[str] = set()
+            for line in modmap.read_text(encoding="utf-8").splitlines():
+                fields = shlex.split(line)
+                if len(fields) != 1:
+                    continue
+                field = fields[0]
+                if field.startswith("-fmodule-output="):
+                    output_name = Path(
+                        field.removeprefix("-fmodule-output=")
+                    ).stem
+                elif field.startswith("-fmodule-file="):
+                    assignment = field.removeprefix("-fmodule-file=")
+                    if "=" in assignment:
+                        imported.add(assignment.split("=", 1)[0])
+            if output_name is None or not output_name.startswith("rrr."):
+                continue
+            previous = dependencies.get(output_name)
+            if previous is not None and previous != imported:
+                raise GateError(
+                    f"configured dependency closure for {output_name} is "
+                    f"ambiguous: {sorted(previous)!r} vs {sorted(imported)!r}"
+                )
+            dependencies[output_name] = imported
+    if raw_build_roots and not dependencies:
+        raise GateError("configured module-map roots contain no rrr provider maps")
+    return dependencies
+
+
 def module_file_flags(
     module_map: dict[str, Path], *, exclude: str | None = None
 ) -> list[str]:
@@ -5356,8 +6355,38 @@ def module_file_flags(
     ]
 
 
+def generated_lane_module_map(
+    configured_module_map: dict[str, Path],
+    work_dir: Path,
+    *,
+    dependency_names: set[str],
+    exclude: str | None = None,
+) -> dict[str, Path]:
+    """Use all and only CMake's configured dependency BMI closure.
+
+    Inline BMIs may themselves import canonical modules, so Clang requires the
+    exact configured canonical BMI identities used to build those inline
+    dependencies. The provider object under test is still compiled directly
+    from generated source and linked ahead of the production archive; exact
+    output/surface/ABI ratchets prove its declaration and implementation.
+    """
+
+    missing_configured = dependency_names - set(configured_module_map)
+    if missing_configured:
+        raise GateError(
+            "generated lane dependency closure lacks configured BMI(s): "
+            + ", ".join(sorted(missing_configured))
+        )
+    result = {name: configured_module_map[name] for name in dependency_names}
+    if exclude is not None:
+        result.pop(exclude, None)
+    return result
+
+
 def generated_module_order(
-    output: Path, modules: list[extraction.ModuleEntry]
+    output: Path,
+    modules: list[extraction.ModuleEntry],
+    configured_module_dependencies: dict[str, set[str]],
 ) -> list[extraction.ModuleEntry]:
     """Return a stable dependency order for generated canonical modules."""
 
@@ -5378,7 +6407,9 @@ def generated_module_order(
                 flags=re.MULTILINE,
             )
         )
-        dependencies[module.cpp_module] = imports & by_name.keys()
+        dependencies[module.cpp_module] = (
+            imports | configured_module_dependencies[module.cpp_module]
+        ) & by_name.keys()
 
     ordered: list[extraction.ModuleEntry] = []
     remaining = set(by_name)
@@ -5416,7 +6447,9 @@ def check_generated_output(
     link_flags: list[str],
     prebuilt_module_dirs: list[Path],
     configured_module_map: dict[str, Path],
+    configured_module_dependencies: dict[str, set[str]],
 ) -> None:
+    require_importer_coverage(modules)
     require_cpp_surfaces(root, output, modules)
     require_zero_hand_slots(output / "rusty_hand_slots.md")
     include = root / "third-party/rusty-cpp/include"
@@ -5424,10 +6457,16 @@ def check_generated_output(
     # Compilation products live outside the build-tree generation directory.
     # That directory remains a deterministic crate-output census shared by the
     # production target and this gate.
-    with tempfile.TemporaryDirectory(prefix="rrr-crate-mode-compile-") as temporary:
+    # BMIs can be tens of MiB each. Keep this transient lane beside the build
+    # tree rather than on a potentially small/shared /tmp tmpfs.
+    with tempfile.TemporaryDirectory(
+        prefix=".rrr-crate-mode-compile-", dir=output.parent
+    ) as temporary:
         work = Path(temporary)
         generated_object_by_name: dict[str, Path] = {}
-        for module in generated_module_order(output, modules):
+        for module in generated_module_order(
+            output, modules, configured_module_dependencies
+        ):
             generated_object_by_name[module.cpp_module] = compile_module(
                 clang,
                 root,
@@ -5438,6 +6477,7 @@ def check_generated_output(
                 cxx_flags,
                 prebuilt_module_dirs,
                 configured_module_map,
+                configured_module_dependencies,
             )
         generated_objects = [
             generated_object_by_name[module.cpp_module] for module in modules
@@ -5455,13 +6495,20 @@ def check_generated_output(
             cxx_flags,
             prebuilt_module_dirs,
             configured_module_map,
+            configured_module_dependencies,
         )
 
         importer = work / "importer.cpp"
         importer_object = work / "importer.o"
         importer.write_text(importer_source(), encoding="utf-8")
         importer_module_flags = (
-            module_file_flags(configured_module_map)
+            module_file_flags(
+                generated_lane_module_map(
+                    configured_module_map,
+                    work,
+                    dependency_names=set(configured_module_map),
+                )
+            )
             if configured_module_map
             else [
                 f"-fprebuilt-module-path={work}",
@@ -5532,136 +6579,42 @@ def check_generated_output(
                 nm, root, generated_object, module.cpp_module
             )
             generated_symbol_count += len(generated_symbols)
-            if module.cpp_module in ABI_SPECS:
-                require_expected_symbols(
-                    module.cpp_module,
-                    "crate-generated object",
-                    generated_symbols,
-                )
+            require_expected_symbols(
+                module.cpp_module,
+                "crate-generated object",
+                generated_symbols,
+            )
 
-            if module.cpp_module == "rrr.completion_tracker":
-                require_completion_raw_symbols(
-                    "crate-generated object",
-                    completion_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.rand":
-                require_rand_raw_symbols(
-                    "crate-generated object",
-                    rand_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.request_options":
-                require_request_options_raw_symbols(
-                    "crate-generated object",
-                    request_options_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.reconnect_policy":
-                require_reconnect_policy_raw_symbols(
-                    "crate-generated object",
-                    reconnect_policy_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.circuit_breaker":
-                require_circuit_breaker_raw_symbols(
-                    "crate-generated object",
-                    circuit_breaker_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.request_queue":
-                require_request_queue_raw_symbols(
-                    "crate-generated object",
-                    request_queue_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.basetypes":
-                require_basetypes_raw_symbols(
-                    "crate-generated object",
-                    basetypes_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module == "rrr.utils":
-                require_utils_raw_symbols(
-                    "crate-generated object",
-                    utils_raw_symbols(nm, root, generated_object),
-                )
-            elif module.cpp_module in {
-                "rrr.connection_state",
-                "rrr.heartbeat",
-                "rrr.load_balancer",
-                "rrr.frame_codec",
-            }:
-                require_exact_module_raw_symbols(
-                    module.cpp_module,
-                    "crate-generated object",
-                    exact_module_raw_symbols(
-                        nm, root, generated_object, module.cpp_module
-                    ),
-                )
+            require_all_module_raw_symbols(
+                module.cpp_module,
+                "crate-generated object",
+                exact_module_raw_symbols(
+                    nm, root, generated_object, module.cpp_module
+                ),
+            )
 
             if production is not None:
                 production_symbols = module_symbols(
                     nm, root, production, module.cpp_module
                 )
                 production_symbol_count += len(production_symbols)
-                if module.cpp_module in ABI_SPECS:
-                    require_expected_symbols(
-                        module.cpp_module,
-                        "production library",
-                        production_symbols,
-                    )
+                require_expected_symbols(
+                    module.cpp_module,
+                    "production library",
+                    production_symbols,
+                )
                 if production_symbols != generated_symbols:
                     raise GateError(
                         f"production {module.cpp_module} ABI differs from "
                         "the independently compiled generated-object ABI"
                     )
-                if module.cpp_module == "rrr.completion_tracker":
-                    require_completion_raw_symbols(
-                        "production library",
-                        completion_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.rand":
-                    require_rand_raw_symbols(
-                        "production library",
-                        rand_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.request_options":
-                    require_request_options_raw_symbols(
-                        "production library",
-                        request_options_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.reconnect_policy":
-                    require_reconnect_policy_raw_symbols(
-                        "production library",
-                        reconnect_policy_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.circuit_breaker":
-                    require_circuit_breaker_raw_symbols(
-                        "production library",
-                        circuit_breaker_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.request_queue":
-                    require_request_queue_raw_symbols(
-                        "production library",
-                        request_queue_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.basetypes":
-                    require_basetypes_raw_symbols(
-                        "production library",
-                        basetypes_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module == "rrr.utils":
-                    require_utils_raw_symbols(
-                        "production library",
-                        utils_raw_symbols(nm, root, production),
-                    )
-                elif module.cpp_module in {
-                    "rrr.connection_state",
-                    "rrr.heartbeat",
-                    "rrr.load_balancer",
-                    "rrr.frame_codec",
-                }:
-                    require_exact_module_raw_symbols(
-                        module.cpp_module,
-                        "production library",
-                        exact_module_raw_symbols(
-                            nm, root, production, module.cpp_module
-                        ),
-                    )
+                require_all_module_raw_symbols(
+                    module.cpp_module,
+                    "production library",
+                    exact_module_raw_symbols(
+                        nm, root, production, module.cpp_module
+                    ),
+                )
 
         if generated_symbol_count != EXPECTED_TOTAL_PROVIDER_SYMBOLS:
             raise GateError(
@@ -5720,6 +6673,10 @@ def check(args: argparse.Namespace) -> None:
         root,
         list(getattr(args, "configured_module_map_root", None) or []),
     )
+    configured_module_dependencies = resolve_configured_module_dependencies(
+        root,
+        list(getattr(args, "configured_module_map_root", None) or []),
+    )
     if configured_module_map:
         missing_configured_modules = sorted(
             module.cpp_module
@@ -5730,6 +6687,16 @@ def check(args: argparse.Namespace) -> None:
             raise GateError(
                 "configured CMake BMI map is missing canonical modules: "
                 + ", ".join(missing_configured_modules)
+            )
+        missing_dependency_closures = sorted(
+            module.cpp_module
+            for module in modules
+            if module.cpp_module not in configured_module_dependencies
+        )
+        if missing_dependency_closures:
+            raise GateError(
+                "configured CMake dependency map is missing canonical modules: "
+                + ", ".join(missing_dependency_closures)
             )
 
     generated_raw = getattr(args, "generated_dir", None)
@@ -5747,6 +6714,7 @@ def check(args: argparse.Namespace) -> None:
             link_flags=link_flags,
             prebuilt_module_dirs=prebuilt_module_dirs,
             configured_module_map=configured_module_map,
+            configured_module_dependencies=configured_module_dependencies,
         )
     else:
         with tempfile.TemporaryDirectory(prefix="rrr-crate-mode-") as temporary:
@@ -5781,6 +6749,7 @@ def check(args: argparse.Namespace) -> None:
                 link_flags=link_flags,
                 prebuilt_module_dirs=prebuilt_module_dirs,
                 configured_module_map=configured_module_map,
+                configured_module_dependencies=configured_module_dependencies,
             )
 
     symbol_count = EXPECTED_TOTAL_PROVIDER_SYMBOLS
@@ -5805,7 +6774,11 @@ def check(args: argparse.Namespace) -> None:
         "contracts, LoadBalancer layout/strategy/selection/wrapping runtime "
         "contracts, Utils layout/move/teardown/port/hostname/logging runtime "
         "contracts, FrameCodec layout/wire/fragmentation/compaction/wrapping runtime "
-        "contracts, and "
+        "contracts, SerializableEnvelope template/layout/archive/runtime contracts, "
+        "Future promise/ready/error runtime contracts, Logging exact tag/filter/line "
+        "runtime contracts, Idempotency layout/wire/LRU/expiry/counter runtime "
+        "contracts, Fiber context/sleep runtime contracts, Misc Job/clamp/ncpu/format "
+        "runtime contracts, and "
         f"{symbol_count} exact provider-owned strong ABI symbols"
     )
 

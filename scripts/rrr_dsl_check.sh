@@ -28,9 +28,47 @@ if [[ ! -x "$TRANSPILER" ]]; then
   exit 2
 fi
 
+EXPECTED_FILES=(
+  base/debugging.cpp
+  base/threading.cpp
+  misc/any_message.cpp
+  misc/serializable.cpp
+  reactor/epoll_platform_linux.cc
+  reactor/epoll_wrapper.cc
+  reactor/reactor.cpp
+  rpc/callbacks.cpp
+  rpc/channel.cpp
+  rpc/client.cpp
+  rpc/fiber_channel.cpp
+  rpc/inmemory_channel.cpp
+  rpc/pollable_proxy.cpp
+  rpc/server.cpp
+  rpc/tcp_channel.cpp
+)
+EXPECTED_FILE_COUNT=15
+EXPECTED_BLOCK_COUNT=326
+
 mapfile -t FILES < <(grep -rl '#if RUSTYCPP_RUST' base misc reactor rpc \
-                       --include='*.cpp' \
-                       --include='*.cc' --include='*.h' --include='*.hpp' | sort)
+                       --include='*.cpp' --include='*.cc' \
+                       --include='*.h' --include='*.hpp' | sort)
+
+if [[ ${#FILES[@]} -ne $EXPECTED_FILE_COUNT ]] ||
+   [[ "${FILES[*]}" != "${EXPECTED_FILES[*]}" ]]; then
+  echo "inline-Rust carrier census mismatch" >&2
+  echo "expected (${#EXPECTED_FILES[@]}): ${EXPECTED_FILES[*]}" >&2
+  echo "actual (${#FILES[@]}): ${FILES[*]}" >&2
+  exit 1
+fi
+
+block_count=0
+for f in "${FILES[@]}"; do
+  count=$(grep -c '^#if RUSTYCPP_RUST' "$f")
+  block_count=$((block_count + count))
+done
+if [[ $block_count -ne $EXPECTED_BLOCK_COUNT ]]; then
+  echo "inline-Rust block census mismatch: expected $EXPECTED_BLOCK_COUNT, got $block_count" >&2
+  exit 1
+fi
 
 fail=0
 for f in "${FILES[@]}"; do
@@ -42,5 +80,5 @@ for f in "${FILES[@]}"; do
 done
 
 echo
-echo "checked ${#FILES[@]} files, $fail with drift"
+echo "checked ${#FILES[@]} files / $block_count blocks, $fail with drift"
 exit $(( fail > 0 ? 1 : 0 ))
