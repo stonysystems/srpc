@@ -32,7 +32,7 @@ TYPE_MAP = "rust-type-map.toml"
 CPP_MODULE_INDEX = "cpp-module-index.toml"
 NM_LINE = re.compile(r"^[0-9A-Fa-f]+\s+([A-Za-z])\s+(.+)$")
 PLACEHOLDER = re.compile(r"\b(?:TODO|UNSUPPORTED|skipped)\b", re.IGNORECASE)
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 332
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 519
 
 # These maps are intentionally exhaustive. Adding a canonical manifest module
 # without its dependency and byte-for-byte generated-output ratchets is a gate
@@ -65,6 +65,15 @@ EXPECTED_IMPORTS = {
     "rrr.idempotency": ["rusty", "rrr.serializable"],
     "rrr.fiber": ["rusty", "rrr.basetypes", "rrr.reactor"],
     "rrr.misc": [],
+    "rrr.channel": ["rrr.callback_wrapper"],
+    "rrr.epoll_wrapper": ["rusty"],
+    "rrr.pollable_proxy": [],
+    "rrr.callbacks": ["rusty", "rrr.errors"],
+    "rrr.inmemory_channel": ["rusty", "rrr.channel"],
+    "rrr.fiber_channel": ["rusty", "rrr.reactor", "rrr.channel"],
+    "rrr.threading": ["rrr.debugging"],
+    "rrr.debugging": ["rusty"],
+    "rrr.any_message": ["rusty", "rrr.debugging", "rrr.serializable"],
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
@@ -91,6 +100,15 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "rrr.idempotency": "477296e6dea8f20becf8df619176641ec52bba55aa6d3f4bde52a556813bd722",
     "rrr.fiber": "c1f62c52feffc2d2efc9f8bf73bbcad61b77b32f1f41c1b61bc79ae54bf65dbf",
     "rrr.misc": "983ec11d436481286ea4450b798d747b291b25347040596b38744c44ec798b9c",
+    "rrr.channel": "3674baf56385577645a8cd34d7cb0cbbab3ab06ec84a37627582328c564269fa",
+    "rrr.epoll_wrapper": "cc34a8e6c7d6105970eeec9326921c01c42329676127b1b4fc4eb7c12b48edb2",
+    "rrr.pollable_proxy": "5bfff3cbfb69b4b0f23797f97eff5a290360baa630edd7f301c22b09d827474a",
+    "rrr.callbacks": "16230a47b7800cc977dfaa2b7867272adbd0a7687c274f1dc3b0d92fb3210efd",
+    "rrr.inmemory_channel": "4b7da8930ab09e0e61d1f2edfb88279034827782d5292b5b94c102017f83ba50",
+    "rrr.fiber_channel": "1413f35b9afb49f1c14776ae81895b56e43ccf83598159f42daa960bf46aa140",
+    "rrr.threading": "91f4a45f99886d4a83b7242d7afa511afc96f485f3e0ecc6c52263b49671fdd7",
+    "rrr.debugging": "618aa01b631cd28ff5e61f171ba1af7e4790cf2f3618b874dff6b5b6ecf30435",
+    "rrr.any_message": "5d771d4176725d3f7c46c7a033da555fea062b98b5f11b6014a8684190b2ed76",
 }
 
 IMPORTER_USE_MARKERS = {
@@ -117,6 +135,15 @@ IMPORTER_USE_MARKERS = {
     "rrr.idempotency": "rrr::IdempotencyCache",
     "rrr.fiber": "rrr::this_fiber::get_id",
     "rrr.misc": "rrr::OneTimeJob",
+    "rrr.channel": "rrr::ChannelFrame",
+    "rrr.epoll_wrapper": "rrr::Epoll",
+    "rrr.pollable_proxy": "rrr::PollableProxy",
+    "rrr.callbacks": "rrr::CallbackManager",
+    "rrr.inmemory_channel": "rrr::InMemorySwitchboard",
+    "rrr.fiber_channel": "rrr::FiberChannel",
+    "rrr.threading": "rrr::SpinLock",
+    "rrr.debugging": "rrr::likely",
+    "rrr.any_message": "rrr::AnyMessage",
 }
 
 
@@ -1451,6 +1478,349 @@ ABI_SPECS = {
             }
         ),
     ),
+    "rrr.channel": AbiSpec(
+        surface=frozenset(
+            {
+                "export enum class ChannelError : int32_t;",
+                "export struct ChannelFrame;",
+                "export class ChannelFactoryBase;",
+                "export class ChannelListenerBase;",
+                "export class ChannelConnectionBase;",
+                "export using ChannelConnectionProxy = rusty::Box<ChannelConnectionBase>;",
+                "export std::string_view channel_error_to_string(ChannelError error);",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('D', 'typeinfo for rrr::ChannelConnectionBase@rrr.channel'),
+                ('D', 'typeinfo for rrr::ChannelFactoryBase@rrr.channel'),
+                ('D', 'typeinfo for rrr::ChannelListenerBase@rrr.channel'),
+                ('D', 'vtable for rrr::ChannelConnectionBase@rrr.channel'),
+                ('D', 'vtable for rrr::ChannelFactoryBase@rrr.channel'),
+                ('D', 'vtable for rrr::ChannelListenerBase@rrr.channel'),
+                ('R', 'typeinfo name for rrr::ChannelConnectionBase@rrr.channel'),
+                ('R', 'typeinfo name for rrr::ChannelFactoryBase@rrr.channel'),
+                ('R', 'typeinfo name for rrr::ChannelListenerBase@rrr.channel'),
+                ('T', 'rrr::ChannelConnectionBase@rrr.channel::~ChannelConnectionBase()'),
+                ('T', 'rrr::ChannelFactoryBase@rrr.channel::~ChannelFactoryBase()'),
+                ('T', 'rrr::ChannelListenerBase@rrr.channel::~ChannelListenerBase()'),
+                ('T', 'rrr::channel_error_to_string@rrr.channel(rrr::ChannelError@rrr.channel)'),
+            }
+        ),
+    ),
+    "rrr.epoll_wrapper": AbiSpec(
+        surface=frozenset(
+            {
+                "export class Pollable;",
+                "export struct Epoll;",
+                "export extern rusty::sync::atomic::AtomicI32 epoll_remove_count;",
+                "export void epoll_bump_remove_count();",
+                "export int32_t epoll_open();",
+                "int32_t Add(int32_t fd, int32_t poll_mode);",
+                "int32_t Remove(int32_t fd);",
+                "int32_t Update(int32_t fd, int32_t new_mode, int32_t old_mode);",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('D', 'typeinfo for rrr::Pollable@rrr.epoll_wrapper'),
+                ('D', 'vtable for rrr::Pollable@rrr.epoll_wrapper'),
+                ('R', 'rrr::LINUX_EPOLLERR@rrr.epoll_wrapper'),
+                ('R', 'rrr::LINUX_EPOLLHUP@rrr.epoll_wrapper'),
+                ('R', 'rrr::LINUX_EPOLLIN@rrr.epoll_wrapper'),
+                ('R', 'rrr::LINUX_EPOLLOUT@rrr.epoll_wrapper'),
+                ('R', 'rrr::LINUX_EPOLLRDHUP@rrr.epoll_wrapper'),
+                ('R', 'rrr::PollMode::NO_CHANGE@rrr.epoll_wrapper'),
+                ('R', 'rrr::PollMode::READ@rrr.epoll_wrapper'),
+                ('R', 'rrr::PollMode::WRITE@rrr.epoll_wrapper'),
+                ('R', 'rrr::PollReady::ERROR@rrr.epoll_wrapper'),
+                ('R', 'rrr::PollReady::READABLE@rrr.epoll_wrapper'),
+                ('R', 'rrr::PollReady::WRITABLE@rrr.epoll_wrapper'),
+                ('R', 'typeinfo name for rrr::Pollable@rrr.epoll_wrapper'),
+                ('T', 'rrr::Epoll@rrr.epoll_wrapper::Add(int, int)'),
+                ('T', 'rrr::Epoll@rrr.epoll_wrapper::Epoll()'),
+                ('T', 'rrr::Epoll@rrr.epoll_wrapper::Remove(int)'),
+                ('T', 'rrr::Epoll@rrr.epoll_wrapper::Update(int, int, int)'),
+                ('T', 'rrr::Epoll@rrr.epoll_wrapper::fd() const'),
+                ('T', 'rrr::EpollWaitEvent@rrr.epoll_wrapper::default_()'),
+                ('T', 'rrr::Pollable@rrr.epoll_wrapper::~Pollable()'),
+                ('T', 'rrr::epoll_bump_remove_count@rrr.epoll_wrapper()'),
+            }
+        ),
+    ),
+    "rrr.pollable_proxy": AbiSpec(
+        surface=frozenset(
+            {
+                "export class PollableBase;",
+                "export using PollableProxy = rusty::Box<PollableBase>;",
+                "export template<typename T>",
+                "PollableProxy make_pollable_proxy_from_typed_arc(rusty::Arc<T> poll);",
+                "virtual int32_t fd() const = 0;",
+                "virtual int32_t poll_mode() const = 0;",
+                "virtual void close() = 0;",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('D', 'typeinfo for rrr::PollableBase@rrr.pollable_proxy'),
+                ('D', 'vtable for rrr::PollableBase@rrr.pollable_proxy'),
+                ('R', 'typeinfo name for rrr::PollableBase@rrr.pollable_proxy'),
+                ('T', 'rrr::PollableBase@rrr.pollable_proxy::~PollableBase()'),
+            }
+        ),
+    ),
+    "rrr.callbacks": AbiSpec(
+        surface=frozenset(
+            {
+                "export struct ConnectionCallbacks;",
+                "export struct CallbackManager;",
+                "export using ConnectionCallback = rusty::Arc<rusty::Function<void() const>>;",
+                "static ConnectionCallbacks new_();",
+                "static CallbackManager new_();",
+                "void invoke_on_error(::rrr::RpcError error, const std::string& message) const;",
+                "size_t callback_count() const;",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('T', 'rrr::CallbackManager@rrr.callbacks::add_on_connected(rusty::Function<void () const>) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::add_on_disconnected(rusty::Function<void () const>) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::add_on_error(rusty::Function<void (rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&) const>) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::add_on_reconnected(rusty::Function<void (bool) const>) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::add_on_reconnecting(rusty::Function<void () const>) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::callback_count() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::clear_all() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::has_callbacks() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::inflight_enter() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::inflight_exit() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::invoke_on_connected() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::invoke_on_disconnected() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::invoke_on_error(rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::invoke_on_reconnected(bool) const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::invoke_on_reconnecting() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::new_()'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::on_connected_count() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::on_disconnected_count() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::on_error_count() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::on_reconnected_count() const'),
+                ('T', 'rrr::CallbackManager@rrr.callbacks::on_reconnecting_count() const'),
+                ('T', 'rrr::ConnectionCallbacks@rrr.callbacks::clear()'),
+                ('T', 'rrr::ConnectionCallbacks@rrr.callbacks::new_()'),
+                ('T', 'rrr::ConnectionCallbacks@rrr.callbacks::total_count() const'),
+                ('T', 'rrr::invoke_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void () const> > const&)'),
+                ('T', 'rrr::invoke_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void (bool) const> > const&, bool)'),
+                ('T', 'rrr::invoke_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void (rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&) const> > const&, rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&)'),
+            }
+        ),
+    ),
+    "rrr.inmemory_channel": AbiSpec(
+        surface=frozenset(
+            {
+                "export struct InMemoryChannel;",
+                "export struct InMemorySwitchboard;",
+                "export struct InMemoryListener;",
+                "export struct InMemoryFactory;",
+                "export struct InMemoryChannelShim;",
+                "export struct InMemoryListenerShim;",
+                "export struct InMemoryFactoryShim;",
+                "::rrr::ChannelError send_frame(const ::rrr::ChannelFrame& frame) const;",
+                "static InMemorySwitchboard new_();",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('D', 'typeinfo for rrr::InMemoryChannelShim@rrr.inmemory_channel'),
+                ('D', 'typeinfo for rrr::InMemoryFactoryShim@rrr.inmemory_channel'),
+                ('D', 'typeinfo for rrr::InMemoryListenerShim@rrr.inmemory_channel'),
+                ('D', 'vtable for rrr::InMemoryChannelShim@rrr.inmemory_channel'),
+                ('D', 'vtable for rrr::InMemoryFactoryShim@rrr.inmemory_channel'),
+                ('D', 'vtable for rrr::InMemoryListenerShim@rrr.inmemory_channel'),
+                ('R', 'typeinfo name for rrr::InMemoryChannelShim@rrr.inmemory_channel'),
+                ('R', 'typeinfo name for rrr::InMemoryFactoryShim@rrr.inmemory_channel'),
+                ('R', 'typeinfo name for rrr::InMemoryListenerShim@rrr.inmemory_channel'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::close() const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::flush() const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::is_closed() const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::new_(rusty::Arc<rrr::InMemoryConnectionState@rrr.inmemory_channel>, bool)'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::peer_address() const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::send_frame(rrr::ChannelFrame@rrr.channel const&) const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::set_on_closed(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel) const> >) const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::set_on_error(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel, std::__1::basic_string_view<char, std::__1::char_traits<char> >) const> >) const'),
+                ('T', 'rrr::InMemoryChannel@rrr.inmemory_channel::set_on_frame(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelFrame@rrr.channel const&) const> >) const'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::InMemoryChannelShim(rrr::InMemoryChannelShim@rrr.inmemory_channel&&)'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::InMemoryChannelShim(rusty::Arc<rrr::InMemoryChannel@rrr.inmemory_channel>)'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::close()'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::flush()'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::is_closed() const'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::peer_address() const'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::send_frame(rrr::ChannelFrame@rrr.channel const&)'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::set_on_closed(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel) const> >)'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::set_on_error(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel, std::__1::basic_string_view<char, std::__1::char_traits<char> >) const> >)'),
+                ('T', 'rrr::InMemoryChannelShim@rrr.inmemory_channel::set_on_frame(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelFrame@rrr.channel const&) const> >)'),
+                ('T', 'rrr::InMemoryFactory@rrr.inmemory_channel::backend_name() const'),
+                ('T', 'rrr::InMemoryFactory@rrr.inmemory_channel::connect(std::__1::basic_string_view<char, std::__1::char_traits<char> >) const'),
+                ('T', 'rrr::InMemoryFactory@rrr.inmemory_channel::make_listener() const'),
+                ('T', 'rrr::InMemoryFactory@rrr.inmemory_channel::new_(rusty::Arc<rrr::InMemorySwitchboard@rrr.inmemory_channel>)'),
+                ('T', 'rrr::InMemoryFactoryShim@rrr.inmemory_channel::InMemoryFactoryShim(rrr::InMemoryFactoryShim@rrr.inmemory_channel&&)'),
+                ('T', 'rrr::InMemoryFactoryShim@rrr.inmemory_channel::InMemoryFactoryShim(rusty::Arc<rrr::InMemoryFactory@rrr.inmemory_channel>)'),
+                ('T', 'rrr::InMemoryFactoryShim@rrr.inmemory_channel::backend_name() const'),
+                ('T', 'rrr::InMemoryFactoryShim@rrr.inmemory_channel::connect(std::__1::basic_string_view<char, std::__1::char_traits<char> >)'),
+                ('T', 'rrr::InMemoryFactoryShim@rrr.inmemory_channel::make_listener()'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::close() const'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::is_closed() const'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::listen(std::__1::basic_string_view<char, std::__1::char_traits<char> >) const'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::local_address() const'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::new_(rusty::Arc<rrr::InMemorySwitchboard@rrr.inmemory_channel>)'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::set_on_accept(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const> >) const'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::set_on_error(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel, std::__1::basic_string_view<char, std::__1::char_traits<char> >) const> >) const'),
+                ('T', 'rrr::InMemoryListener@rrr.inmemory_channel::set_self_weak(rusty::sync::Weak<rrr::InMemoryListener@rrr.inmemory_channel>)'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::InMemoryListenerShim(rrr::InMemoryListenerShim@rrr.inmemory_channel&&)'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::InMemoryListenerShim(rusty::Arc<rrr::InMemoryListener@rrr.inmemory_channel>)'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::close()'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::is_closed() const'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::listen(std::__1::basic_string_view<char, std::__1::char_traits<char> >)'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::local_address() const'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::set_on_accept(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const> >)'),
+                ('T', 'rrr::InMemoryListenerShim@rrr.inmemory_channel::set_on_error(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel, std::__1::basic_string_view<char, std::__1::char_traits<char> >) const> >)'),
+                ('T', 'rrr::InMemorySwitchboard@rrr.inmemory_channel::find_listener(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&) const'),
+                ('T', 'rrr::InMemorySwitchboard@rrr.inmemory_channel::new_()'),
+                ('T', 'rrr::InMemorySwitchboard@rrr.inmemory_channel::register_listener(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >, rusty::sync::Weak<rrr::InMemoryListener@rrr.inmemory_channel>) const'),
+                ('T', 'rrr::InMemorySwitchboard@rrr.inmemory_channel::unregister_listener(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&) const'),
+                ('T', 'rrr::inmemory_channel_clear_fault_injection@rrr.inmemory_channel(rrr::InMemoryChannel@rrr.inmemory_channel const&)'),
+                ('T', 'rrr::inmemory_channel_inject_drop_next_sends@rrr.inmemory_channel(rrr::InMemoryChannel@rrr.inmemory_channel const&, int)'),
+                ('T', 'rrr::inmemory_channel_inject_send_error@rrr.inmemory_channel(rrr::InMemoryChannel@rrr.inmemory_channel const&, rrr::ChannelError@rrr.channel, int)'),
+                ('T', 'rrr::inmemory_channel_send_frame@rrr.inmemory_channel(rrr::InMemoryChannel@rrr.inmemory_channel const&, rrr::ChannelFrame@rrr.channel const&)'),
+                ('T', 'rrr::inmemory_factory_connect@rrr.inmemory_channel(rrr::InMemoryFactory@rrr.inmemory_channel const&, std::__1::basic_string_view<char, std::__1::char_traits<char> >)'),
+                ('T', 'rrr::inmemory_factory_make_listener@rrr.inmemory_channel(rrr::InMemoryFactory@rrr.inmemory_channel const&)'),
+                ('T', 'rrr::inmemory_listener_accept_for_connect@rrr.inmemory_channel(rrr::InMemoryListener@rrr.inmemory_channel const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&)'),
+                ('T', 'rrr::make_channel_pair_for_testing@rrr.inmemory_channel(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >)'),
+                ('T', 'rrr::make_inmemory_channel_proxy@rrr.inmemory_channel(rusty::Arc<rrr::InMemoryChannel@rrr.inmemory_channel>)'),
+                ('T', 'rrr::make_inmemory_factory_proxy@rrr.inmemory_channel(rusty::Arc<rrr::InMemoryFactory@rrr.inmemory_channel>)'),
+                ('T', 'rrr::make_inmemory_listener_proxy@rrr.inmemory_channel(rusty::Arc<rrr::InMemoryListener@rrr.inmemory_channel>)'),
+            }
+        ),
+    ),
+    "rrr.fiber_channel": AbiSpec(
+        surface=frozenset(
+            {
+                "export struct OwnedFrame;",
+                "export struct FiberChannel;",
+                "explicit FiberChannel(::rrr::ChannelConnectionProxy ch);",
+                "rusty::Option<OwnedFrame> recv_frame();",
+                "::rrr::ChannelError send_frame(const ::rrr::ChannelFrame& frame);",
+                "bool is_closed() const;",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::FiberChannel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::arm_waiter()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::bind_callbacks()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::channel_for_test()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::close()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::is_closed() const'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::on_inbound_closed()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::on_inbound_frame(rrr::ChannelFrame@rrr.channel const&)'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::recv_frame()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::rusty_mark_forgotten() const'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::send_frame(rrr::ChannelFrame@rrr.channel const&)'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::signal_pending_recv()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::try_pop()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::wait_for_signal()'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::~FiberChannel()'),
+                ('T', 'rrr::OwnedFrame@rrr.fiber_channel::default_()'),
+                ('T', 'rrr::fiberchannel_owned_copy@rrr.fiber_channel(rrr::ChannelFrame@rrr.channel const&)'),
+            }
+        ),
+    ),
+    "rrr.threading": AbiSpec(
+        surface=frozenset(
+            {
+                "export struct SpinLock;",
+                "export using AtomicBool = rusty::sync::atomic::AtomicBool;",
+                "export using Ordering = rusty::sync::atomic::Ordering;",
+                "export void cpu_pause();",
+                "static SpinLock new_();",
+                "void lock() const;",
+                "void unlock() const;",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('T', 'rrr::Pthread_cond_broadcast@rrr.threading(pthread_cond_t*)'),
+                ('T', 'rrr::Pthread_cond_destroy@rrr.threading(pthread_cond_t*)'),
+                ('T', 'rrr::Pthread_cond_init@rrr.threading(pthread_cond_t*, pthread_condattr_t const*)'),
+                ('T', 'rrr::Pthread_cond_signal@rrr.threading(pthread_cond_t*)'),
+                ('T', 'rrr::Pthread_cond_wait@rrr.threading(pthread_cond_t*, pthread_mutex_t*)'),
+                ('T', 'rrr::Pthread_mutex_destroy@rrr.threading(pthread_mutex_t*)'),
+                ('T', 'rrr::Pthread_mutex_init@rrr.threading(pthread_mutex_t*, pthread_mutexattr_t const*)'),
+                ('T', 'rrr::Pthread_mutex_lock@rrr.threading(pthread_mutex_t*)'),
+                ('T', 'rrr::Pthread_mutex_unlock@rrr.threading(pthread_mutex_t*)'),
+                ('T', 'rrr::Pthread_spin_destroy@rrr.threading(int volatile*)'),
+                ('T', 'rrr::Pthread_spin_init@rrr.threading(int volatile*, int)'),
+                ('T', 'rrr::Pthread_spin_lock@rrr.threading(int volatile*)'),
+                ('T', 'rrr::Pthread_spin_unlock@rrr.threading(int volatile*)'),
+                ('T', 'rrr::SpinLock@rrr.threading::lock() const'),
+                ('T', 'rrr::SpinLock@rrr.threading::new_()'),
+                ('T', 'rrr::SpinLock@rrr.threading::unlock() const'),
+                ('T', 'rrr::cpu_pause@rrr.threading()'),
+            }
+        ),
+    ),
+    "rrr.debugging": AbiSpec(
+        surface=frozenset(
+            {
+                "export bool likely(bool value);",
+                "export bool unlikely(bool value);",
+                "export void print_stack_trace(FILE* stream = stderr);",
+                "export void verify_failed(std::string_view file, uint32_t line);",
+                "static BtCapture new_();",
+                "export template<typename Expr>",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('T', 'rrr::BtCapture@rrr.debugging::new_()'),
+                ('T', 'rrr::bt_capture@rrr.debugging()'),
+                ('T', 'rrr::bt_empty_string@rrr.debugging()'),
+                ('T', 'rrr::bt_index_prefix@rrr.debugging(int)'),
+                ('T', 'rrr::bt_render@rrr.debugging(rrr::BtCapture@rrr.debugging const&)'),
+                ('T', 'rrr::likely@rrr.debugging(bool)'),
+                ('T', 'rrr::print_stack_trace@rrr.debugging(_IO_FILE*)'),
+                ('T', 'rrr::unlikely@rrr.debugging(bool)'),
+                ('T', 'rrr::verify_failed@rrr.debugging(std::__1::basic_string_view<char, std::__1::char_traits<char> >, unsigned int)'),
+            }
+        ),
+    ),
+    "rrr.any_message": AbiSpec(
+        surface=frozenset(
+            {
+                "export struct AnyMessage;",
+                "void save(rrr::BinaryWriteArchive& archive) const;",
+                "void load(rrr::BinaryReadArchive& archive);",
+                "bool is_a() const;",
+                "rusty::Option<rusty::Arc<T>> unpack() const;",
+                "static AnyMessage pack_as(std::string name, rusty::Arc<T> value);",
+                "static AnyMessage pack(rusty::Arc<T> value);",
+                "export void serialize(const AnyMessage& message, rrr::BinaryWriteArchive& archive)",
+                "export void deserialize(AnyMessage& message, rrr::BinaryReadArchive& archive)",
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('T', 'rrr::AnyMessage@rrr.any_message::load(rrr::BinaryReadArchive@rrr.serializable&)'),
+                ('T', 'rrr::AnyMessage@rrr.any_message::save(rrr::BinaryWriteArchive@rrr.serializable&) const'),
+                ('T', 'rrr::any_message_registry::clear_for_testing@rrr.any_message()'),
+                ('T', 'rrr::any_message_registry::create@rrr.any_message(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&)'),
+                ('T', 'rrr::any_message_registry::is_registered_name@rrr.any_message(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> > const&)'),
+                ('T', 'rrr::any_message_registry::is_registered_type@rrr.any_message(std::__1::type_index)'),
+                ('T', 'rrr::any_message_registry::name_for_type_owned@rrr.any_message(std::__1::type_index)'),
+                ('T', 'rrr::any_message_registry::register_type@rrr.any_message(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >, std::__1::type_index, rusty::Function<rusty::Arc<rrr::SerializableBase@rrr.serializable> ()>)'),
+                ('T', 'rrr::deserialize@rrr.any_message(rrr::AnyMessage@rrr.any_message&, rrr::BinaryReadArchive@rrr.serializable&)'),
+                ('T', 'rrr::serialize@rrr.any_message(rrr::AnyMessage@rrr.any_message const&, rrr::BinaryWriteArchive@rrr.serializable&)'),
+            }
+        ),
+    ),
 }
 
 # Extra raw entries emitted by the C++ ABI for constructor/destructor aliases.
@@ -1502,6 +1872,47 @@ RAW_ABI_ALIASES = {
             "T",
             "rrr::OneTimeJob@rrr.misc::OneTimeJob(rrr::OneTimeJob@rrr.misc&&)",
         ),
+    ),
+    "rrr.channel": tuple(
+        ("T", symbol)
+        for symbol in (
+            "rrr::ChannelFactoryBase@rrr.channel::~ChannelFactoryBase()",
+            "rrr::ChannelFactoryBase@rrr.channel::~ChannelFactoryBase()",
+            "rrr::ChannelListenerBase@rrr.channel::~ChannelListenerBase()",
+            "rrr::ChannelListenerBase@rrr.channel::~ChannelListenerBase()",
+            "rrr::ChannelConnectionBase@rrr.channel::~ChannelConnectionBase()",
+            "rrr::ChannelConnectionBase@rrr.channel::~ChannelConnectionBase()",
+        )
+    ),
+    "rrr.epoll_wrapper": tuple(
+        ("T", symbol)
+        for symbol in (
+            "rrr::Epoll@rrr.epoll_wrapper::Epoll()",
+            "rrr::Pollable@rrr.epoll_wrapper::~Pollable()",
+            "rrr::Pollable@rrr.epoll_wrapper::~Pollable()",
+        )
+    ),
+    "rrr.pollable_proxy": (
+        ("T", "rrr::PollableBase@rrr.pollable_proxy::~PollableBase()"),
+        ("T", "rrr::PollableBase@rrr.pollable_proxy::~PollableBase()"),
+    ),
+    "rrr.inmemory_channel": tuple(
+        ("T", symbol)
+        for symbol in (
+            "rrr::InMemoryChannelShim@rrr.inmemory_channel::InMemoryChannelShim(rusty::Arc<rrr::InMemoryChannel@rrr.inmemory_channel>)",
+            "rrr::InMemoryChannelShim@rrr.inmemory_channel::InMemoryChannelShim(rrr::InMemoryChannelShim@rrr.inmemory_channel&&)",
+            "rrr::InMemoryFactoryShim@rrr.inmemory_channel::InMemoryFactoryShim(rusty::Arc<rrr::InMemoryFactory@rrr.inmemory_channel>)",
+            "rrr::InMemoryFactoryShim@rrr.inmemory_channel::InMemoryFactoryShim(rrr::InMemoryFactoryShim@rrr.inmemory_channel&&)",
+            "rrr::InMemoryListenerShim@rrr.inmemory_channel::InMemoryListenerShim(rusty::Arc<rrr::InMemoryListener@rrr.inmemory_channel>)",
+            "rrr::InMemoryListenerShim@rrr.inmemory_channel::InMemoryListenerShim(rrr::InMemoryListenerShim@rrr.inmemory_channel&&)",
+        )
+    ),
+    "rrr.fiber_channel": (
+        (
+            "T",
+            "rrr::FiberChannel@rrr.fiber_channel::FiberChannel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)",
+        ),
+        ("T", "rrr::FiberChannel@rrr.fiber_channel::~FiberChannel()"),
     ),
 }
 
@@ -2735,6 +3146,7 @@ def importer_source() -> str:
 #include <string>
 #include <string_view>
 #include <thread>
+#include <typeindex>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -2744,20 +3156,26 @@ def importer_source() -> str:
 import rusty;
 import rrr.callback_wrapper;
 import rrr.basetypes;
+import rrr.callbacks;
+import rrr.channel;
 import rrr.circuit_breaker;
 import rrr.completion_tracker;
 import rrr.connection_metrics;
 import rrr.connection_state;
 import rrr.errors;
+import rrr.epoll_wrapper;
 import rrr.fiber;
+import rrr.fiber_channel;
 import rrr.frame_codec;
 import rrr.future;
 import rrr.heartbeat;
 import rrr.idempotency;
+import rrr.inmemory_channel;
 import rrr.internal_protocol;
 import rrr.load_balancer;
 import rrr.logging;
 import rrr.misc;
+import rrr.pollable_proxy;
 import rrr.rand;
 import rrr.reconnect_policy;
 import rrr.request_options;
@@ -2765,7 +3183,10 @@ import rrr.request_queue;
 import rrr.serializable;
 import rrr.serializable_envelope;
 import rrr.stat;
+import rrr.threading;
 import rrr.utils;
+import rrr.debugging;
+import rrr.any_message;
 
 static std::int32_t rand_raw_value = 0;
 static std::uint32_t rand_raw_draws = 0;
@@ -3115,6 +3536,76 @@ static_assert(std::is_same_v<
               decltype(&rrr::get_ncpu), std::int32_t (*)()>);
 static_assert(std::is_same_v<
               decltype(&rrr::format_thousands), std::string (*)(double)>);
+
+static_assert(std::is_same_v<
+              std::underlying_type_t<rrr::ChannelError>, std::int32_t>);
+static_assert(sizeof(rrr::ChannelFrame) == 16);
+static_assert(alignof(rrr::ChannelFrame) == 8);
+static_assert(offsetof(rrr::ChannelFrame, payload) == 0);
+static_assert(offsetof(rrr::ChannelFrame, size) == 8);
+static_assert(std::is_abstract_v<rrr::ChannelFactoryBase>);
+static_assert(std::is_abstract_v<rrr::ChannelListenerBase>);
+static_assert(std::is_abstract_v<rrr::ChannelConnectionBase>);
+static_assert(std::is_same_v<
+              decltype(&rrr::channel_error_to_string),
+              std::string_view (*)(rrr::ChannelError)>);
+
+static_assert(std::is_abstract_v<rrr::Pollable>);
+static_assert(std::is_same_v<
+              decltype(&rrr::Epoll::fd),
+              std::int32_t (rrr::Epoll::*)() const>);
+static_assert(std::is_same_v<
+              decltype(&rrr::epoll_bump_remove_count), void (*)()>);
+static_assert(std::is_abstract_v<rrr::PollableBase>);
+static_assert(std::is_same_v<rrr::PollableProxy,
+                             rusty::Box<rrr::PollableBase>>);
+
+static_assert(std::is_same_v<
+              decltype(&rrr::ConnectionCallbacks::new_),
+              rrr::ConnectionCallbacks (*)()>);
+static_assert(std::is_same_v<
+              decltype(&rrr::CallbackManager::new_),
+              rrr::CallbackManager (*)()>);
+static_assert(std::is_same_v<
+              decltype(&rrr::CallbackManager::callback_count),
+              std::size_t (rrr::CallbackManager::*)() const>);
+
+static_assert(std::is_base_of_v<rrr::ChannelConnectionBase,
+                                rrr::InMemoryChannelShim>);
+static_assert(std::is_base_of_v<rrr::ChannelListenerBase,
+                                rrr::InMemoryListenerShim>);
+static_assert(std::is_base_of_v<rrr::ChannelFactoryBase,
+                                rrr::InMemoryFactoryShim>);
+static_assert(std::is_same_v<
+              decltype(&rrr::InMemorySwitchboard::new_),
+              rrr::InMemorySwitchboard (*)()>);
+
+static_assert(std::is_same_v<
+              decltype(&rrr::FiberChannel::recv_frame),
+              rusty::Option<rrr::OwnedFrame> (rrr::FiberChannel::*)()>);
+static_assert(std::is_same_v<
+              decltype(&rrr::FiberChannel::is_closed),
+              bool (rrr::FiberChannel::*)() const>);
+
+static_assert(rrr::SpinLock::is_send && rrr::SpinLock::is_sync);
+static_assert(std::is_same_v<
+              decltype(&rrr::SpinLock::new_), rrr::SpinLock (*)()>);
+static_assert(std::is_same_v<
+              decltype(&rrr::cpu_pause), void (*)()>);
+
+static_assert(std::is_same_v<decltype(&rrr::likely), bool (*)(bool)>);
+static_assert(std::is_same_v<decltype(&rrr::unlikely), bool (*)(bool)>);
+static_assert(std::is_same_v<
+              decltype(&rrr::print_stack_trace), void (*)(FILE*)>);
+
+static_assert(sizeof(rrr::AnyMessage) == 40);
+static_assert(alignof(rrr::AnyMessage) == 8);
+static_assert(std::is_same_v<
+              decltype(&rrr::AnyMessage::save),
+              void (rrr::AnyMessage::*)(rrr::BinaryWriteArchive&) const>);
+static_assert(std::is_same_v<
+              decltype(&rrr::AnyMessage::load),
+              void (rrr::AnyMessage::*)(rrr::BinaryReadArchive&)>);
 
 static_assert(std::is_same_v<rrr::i8, std::int8_t>);
 static_assert(std::is_same_v<rrr::i16, std::int16_t>);
@@ -6066,6 +6557,42 @@ int main() {
         rrr::format_thousands(-1234567.89) != "-1,234,567.89" ||
         rrr::format_thousands(999.999) != "1,000.00") {
         return 239;
+    }
+    if (rrr::channel_error_to_string(rrr::ChannelError::None) != "None" ||
+        rrr::channel_error_to_string(rrr::ChannelError::Timeout) != "Timeout" ||
+        rrr::channel_error_to_string(
+            static_cast<rrr::ChannelError>(-1)) != "Unknown") {
+        return 240;
+    }
+    const auto remove_count_before = rrr::epoll_remove_count.load(
+        rusty::sync::atomic::Ordering::SeqCst);
+    rrr::epoll_bump_remove_count();
+    if (rrr::epoll_remove_count.load(
+            rusty::sync::atomic::Ordering::SeqCst) !=
+        remove_count_before + 1) {
+        return 241;
+    }
+    auto callback_manager = rrr::CallbackManager::new_();
+    if (callback_manager.has_callbacks() ||
+        callback_manager.callback_count() != 0) {
+        return 242;
+    }
+    auto switchboard = rrr::InMemorySwitchboard::new_();
+    if (switchboard.find_listener("missing").is_some()) {
+        return 243;
+    }
+    auto spin_lock = rrr::SpinLock::new_();
+    spin_lock.lock();
+    spin_lock.unlock();
+    rrr::cpu_pause();
+    if (!rrr::likely(true) || rrr::unlikely(false)) {
+        return 244;
+    }
+    rrr::any_message_registry::clear_for_testing();
+    if (rrr::any_message_registry::is_registered_name("missing") ||
+        rrr::any_message_registry::is_registered_type(
+            std::type_index(typeid(int)))) {
+        return 245;
     }
     return 0;
 }

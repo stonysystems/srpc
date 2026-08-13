@@ -33,6 +33,48 @@ DRIVER = load_script("extract_rrr_rust", "scripts/extract_rrr_rust.py")
 GATE = load_script("check_rrr_crate_mode", "scripts/check_rrr_crate_mode.py")
 
 
+class GateStaticContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.modules = DRIVER.load_manifest(ROOT, ROOT / "rust-modules.toml")
+
+    def test_every_manifest_module_has_all_exhaustive_ratchets(self) -> None:
+        manifest = {module.cpp_module for module in self.modules}
+        self.assertEqual(set(GATE.ABI_SPECS), manifest)
+        self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
+        self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
+        self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
+        self.assertEqual(
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 519
+        )
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 519)
+        GATE.require_importer_coverage(self.modules)
+
+    def test_each_promoted_module_has_surface_and_raw_abi_ratchets(self) -> None:
+        expected = {
+            "rrr.channel": (13, 20),
+            "rrr.epoll_wrapper": (22, 26),
+            "rrr.pollable_proxy": (4, 7),
+            "rrr.callbacks": (27, 28),
+            "rrr.inmemory_channel": (68, 75),
+            "rrr.fiber_channel": (17, 20),
+            "rrr.threading": (17, 18),
+            "rrr.debugging": (9, 10),
+            "rrr.any_message": (10, 11),
+        }
+        for module, (unique_count, raw_count) in expected.items():
+            with self.subTest(module=module):
+                spec = GATE.ABI_SPECS[module]
+                self.assertGreaterEqual(len(spec.surface), 4)
+                self.assertEqual(len(spec.symbols), unique_count)
+                raw = Counter(spec.symbols)
+                raw.update(GATE.RAW_ABI_ALIASES.get(module, ()))
+                raw[("T", f"initializer for module {module}")] += 1
+                self.assertEqual(sum(raw.values()), raw_count)
+                GATE.require_all_module_raw_symbols(
+                    module, "fixture", list(raw.elements())
+                )
+
+
 class GateContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -81,7 +123,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 332)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 519)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -181,7 +223,7 @@ class GateContractTests(unittest.TestCase):
                 finally:
                     temporary.cleanup()
 
-    def test_all_six_promoted_modules_pin_unique_and_raw_counts(self) -> None:
+    def test_all_promoted_modules_pin_unique_and_raw_counts(self) -> None:
         expected = {
             "rrr.serializable_envelope": (0, 1),
             "rrr.future": (0, 1),
@@ -189,6 +231,15 @@ class GateContractTests(unittest.TestCase):
             "rrr.idempotency": (36, 39),
             "rrr.fiber": (8, 9),
             "rrr.misc": (18, 23),
+            "rrr.channel": (13, 20),
+            "rrr.epoll_wrapper": (22, 26),
+            "rrr.pollable_proxy": (4, 7),
+            "rrr.callbacks": (27, 28),
+            "rrr.inmemory_channel": (68, 75),
+            "rrr.fiber_channel": (17, 20),
+            "rrr.threading": (17, 18),
+            "rrr.debugging": (9, 10),
+            "rrr.any_message": (10, 11),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):
