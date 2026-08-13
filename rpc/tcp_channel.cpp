@@ -671,14 +671,14 @@ fn tcpconn_drain_outbound_locked(conn: &TcpConnection, buf: &mut TcpOutBuf) -> C
     let mut offset: usize = 0;
     let mut blocked = false;
     while !blocked && offset < buf.len() {
-        let n = tcpconn_send_bytes(conn, buf, offset);
-        if n > 0 {
-            offset += n as usize;
-        } else if n == 0 {
+        let io = tcpconn_send_bytes(conn, buf, offset);
+        if io.count > 0 {
+            offset += io.count as usize;
+        } else if io.count == 0 {
             // send returning 0 with bytes remaining = transport reset.
             return ChannelError::ConnectionReset;
         } else {
-            let err = tcpconn_last_errno();
+            let err = io.error;
             if err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK {
                 blocked = true;
             } else if err == TCP_ERR_INTERRUPTED {
@@ -822,21 +822,21 @@ fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
     let mut draining = true;
     while draining {
         let scratch = tcpconn_scratch();
-        let n = tcpconn_recv_bytes(conn, scratch);
-        if n > 0 {
-            tcpconn_append_inbound(conn, n as usize);
+        let io = tcpconn_recv_bytes(conn, scratch);
+        if io.count > 0 {
+            tcpconn_append_inbound(conn, io.count as usize);
             any_progress = true;
-            if (n as usize) < kRecvScratchBytes {
+            if (io.count as usize) < kRecvScratchBytes {
                 draining = false;
             }
-        } else if n == 0 {
+        } else if io.count == 0 {
             // Peer closed cleanly: no on_error, just the close latch.
             conn.closed_.store(true, Ordering::Release);
             tcpconn_reset_fd(conn);
             tcpconn_deliver_on_closed_locked(conn, ChannelError::None);
             return false;
         } else {
-            let err = tcpconn_last_errno();
+            let err = io.error;
             if err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK {
                 draining = false;
             } else if err == TCP_ERR_INTERRUPTED {
@@ -924,14 +924,29 @@ fn tcpconn_scratch() -> *mut RecvScratch {
     unsafe { srpc_tcp_recv_scratch() as *mut RecvScratch }
 }
 
-fn tcpconn_recv_bytes(conn: &TcpConnection, s: *mut RecvScratch) -> i64 {
+struct TcpIoResult {
+    count: i64,
+    error: i32,
+}
+
+fn tcpconn_recv_bytes(conn: &TcpConnection, s: *mut RecvScratch) -> TcpIoResult {
     let fd = conn.fd_.lock().unwrap();
     if !fd.is_valid() {
-        return 0;
+        return TcpIoResult { count: 0, error: 0 };
     }
     // SAFETY: `s` is the current thread's full RecvScratch allocation and
     // the descriptor remains owned while the mutex guard is held.
-    unsafe { srpc_tcp_recv_bytes(fd.as_raw_fd(), (*s).arr.as_mut_ptr(), kRecvScratchBytes) }
+    let count = unsafe {
+        srpc_tcp_recv_bytes(fd.as_raw_fd(), (*s).arr.as_mut_ptr(), kRecvScratchBytes)
+    };
+    // Capture errno before this scope drops/unlocks the fd guard. A contended
+    // mutex unlock may enter libc/futex code and overwrite the syscall errno.
+    let error = if count < 0 {
+        unsafe { srpc_tcp_last_errno() }
+    } else {
+        0
+    };
+    TcpIoResult { count, error }
 }
 
 fn tcpconn_append_inbound(conn: &TcpConnection, n: usize) {
@@ -1001,13 +1016,23 @@ fn tcpconn_handle_error(conn: &TcpConnection) {
     tcpconn_close(conn);
 }
 
-fn tcpconn_send_bytes(conn: &TcpConnection, buf: &mut TcpOutBuf, offset: usize) -> i64 {
+fn tcpconn_send_bytes(conn: &TcpConnection, buf: &mut TcpOutBuf, offset: usize) -> TcpIoResult {
     let fd = conn.fd_.lock().unwrap();
     if !fd.is_valid() {
-        return 0;
+        return TcpIoResult { count: 0, error: 0 };
     }
     let remaining = buf.len() - offset;
-    unsafe { srpc_tcp_send_bytes(fd.as_raw_fd(), buf.as_ptr().add(offset), remaining) }
+    let count = unsafe {
+        srpc_tcp_send_bytes(fd.as_raw_fd(), buf.as_ptr().add(offset), remaining)
+    };
+    // See the recv path: errno belongs to the failed syscall and must be
+    // sampled before the guard's unlock path can execute.
+    let error = if count < 0 {
+        unsafe { srpc_tcp_last_errno() }
+    } else {
+        0
+    };
+    TcpIoResult { count, error }
 }
 
 // Drop the prefix that send(2) actually accepted.
@@ -1079,16 +1104,30 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
     let mut any_progress = false;
     let mut accepting = true;
     while accepting {
+        // A user thread may close the listener between readiness delivery and
+        // this drain loop. Do not begin another accept after that latch wins.
+        if lst.closed_.load(Ordering::Acquire) {
+            break;
+        }
         let mut step = tcplistener_accept_step_new();
         let rc = tcplistener_accept_step(lst, &raw mut step);
         if rc == 1 {
+            let mut accepted = tcplistener_take_proxy(&mut step);
+            // close() sets the latch before waiting for the listener mutex.
+            // Recheck after accept_step releases that mutex so a close that
+            // won during accept cannot be followed by a late on_accept.
+            if lst.closed_.load(Ordering::Acquire) {
+                accepted.close();
+                accepting = false;
+                continue;
+            }
             any_progress = true;
             let callback = {
                 let guard = lst.on_accept_.lock().unwrap();
                 (*guard).clone()
             };
             if callback.has_value() {
-                callback.callable()(tcplistener_take_proxy(&mut step));
+                callback.callable()(accepted);
             }
         } else if rc == 0 {
             accepting = false;

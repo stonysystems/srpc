@@ -1,10 +1,12 @@
 #![allow(unsafe_code)]
 
-use rrr::channel::{ChannelError, OnClosedCallback};
+use rrr::channel::{ChannelError, OnAcceptCallback, OnClosedCallback};
 use rrr::tcp_channel::{kTcpConnectionOutboundHighWaterDefault, TcpConnection, TcpListener};
 use rusty::CallbackWrapper;
+use std::net::TcpStream;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::Duration;
@@ -159,4 +161,49 @@ fn closed_callback_can_replace_itself_without_deadlocking() {
     close.join().unwrap();
     assert!(connection.is_closed());
     assert_eq!(connection.fd(), -1);
+}
+
+#[test]
+fn close_return_never_precedes_a_new_accept_callback() {
+    for _ in 0..128 {
+        let listener = Arc::new(TcpListener::new());
+        assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::None);
+
+        let close_returned = Arc::new(AtomicBool::new(false));
+        let late_callback = Arc::new(AtomicBool::new(false));
+        let close_returned_in_callback = Arc::clone(&close_returned);
+        let late_callback_in_callback = Arc::clone(&late_callback);
+        let callback: OnAcceptCallback = CallbackWrapper::from_callable(Box::new(move |_proxy| {
+            if close_returned_in_callback.load(Ordering::SeqCst) {
+                late_callback_in_callback.store(true, Ordering::SeqCst);
+            }
+        }));
+        listener.set_on_accept(callback);
+
+        let _client = TcpStream::connect(listener.local_address()).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+
+        let read_listener = Arc::clone(&listener);
+        let read_barrier = Arc::clone(&barrier);
+        let read = thread::spawn(move || {
+            read_barrier.wait();
+            read_listener.handle_read()
+        });
+
+        let close_listener = Arc::clone(&listener);
+        let close_barrier = Arc::clone(&barrier);
+        let close_returned_in_thread = Arc::clone(&close_returned);
+        let close = thread::spawn(move || {
+            close_barrier.wait();
+            close_listener.close();
+            close_returned_in_thread.store(true, Ordering::SeqCst);
+        });
+
+        barrier.wait();
+        close.join().unwrap();
+        let _ = read.join().unwrap();
+        assert!(!late_callback.load(Ordering::SeqCst));
+        assert!(listener.is_closed());
+        assert_eq!(listener.fd(), -1);
+    }
 }
