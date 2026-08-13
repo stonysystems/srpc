@@ -303,8 +303,8 @@ class GateContractTests(unittest.TestCase):
 class ExtractionContractTests(unittest.TestCase):
     def test_checked_in_manifest_is_unique_and_physical(self) -> None:
         modules = DRIVER.load_manifest(ROOT, ROOT / "rust-modules.toml")
-        self.assertEqual(len(modules), 23)
-        self.assertEqual(len({module.cpp_module for module in modules}), 23)
+        self.assertEqual(len(modules), 32)
+        self.assertEqual(len({module.cpp_module for module in modules}), 32)
         self.assertTrue(all(module.canonical_source_label for module in modules))
 
     def test_duplicate_ownership_and_path_escape_are_rejected(self) -> None:

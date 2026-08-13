@@ -136,18 +136,9 @@ set(RRR_INLINE_MODULE_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp
 )
 set(RRR_EXPECTED_INLINE_MODULES
-    debugging
-    threading
-    any_message
     serializable
-    epoll_wrapper
     reactor
-    callbacks
-    channel
     client
-    fiber_channel
-    inmemory_channel
-    pollable_proxy
     server
     tcp_channel
 )

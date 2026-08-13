@@ -16,18 +16,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 RUSTY_CPP_PIN = "29418811b7dc530bd3fe3936fe20ebc16aeb9a16"
 EXPECTED_INLINE_SOURCES = {
-    "base/debugging.cpp": "debugging",
-    "base/threading.cpp": "threading",
-    "misc/any_message.cpp": "any_message",
     "misc/serializable.cpp": "serializable",
-    "reactor/epoll_wrapper.cc": "epoll_wrapper",
     "reactor/reactor.cpp": "reactor",
-    "rpc/callbacks.cpp": "callbacks",
-    "rpc/channel.cpp": "channel",
     "rpc/client.cpp": "client",
-    "rpc/fiber_channel.cpp": "fiber_channel",
-    "rpc/inmemory_channel.cpp": "inmemory_channel",
-    "rpc/pollable_proxy.cpp": "pollable_proxy",
     "rpc/server.cpp": "server",
     "rpc/tcp_channel.cpp": "tcp_channel",
 }
@@ -168,10 +159,10 @@ class StandaloneGoal0Tests(unittest.TestCase):
                 )
 
             self.assertEqual(check().returncode, 0)
-            carrier = scratch / "base/debugging.cpp"
+            carrier = scratch / "misc/serializable.cpp"
             original = carrier.read_text(encoding="utf-8")
             carrier.write_text(
-                original.replace("#if RUSTYCPP_RUST", "#if 0", 1),
+                original.replace("\n#if RUSTYCPP_RUST", "\n#if 0", 1),
                 encoding="utf-8",
             )
             removed_block = check()

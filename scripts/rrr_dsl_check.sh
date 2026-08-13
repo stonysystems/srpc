@@ -29,24 +29,15 @@ if [[ ! -x "$TRANSPILER" ]]; then
 fi
 
 EXPECTED_FILES=(
-  base/debugging.cpp
-  base/threading.cpp
-  misc/any_message.cpp
   misc/serializable.cpp
   reactor/epoll_platform_linux.cc
-  reactor/epoll_wrapper.cc
   reactor/reactor.cpp
-  rpc/callbacks.cpp
-  rpc/channel.cpp
   rpc/client.cpp
-  rpc/fiber_channel.cpp
-  rpc/inmemory_channel.cpp
-  rpc/pollable_proxy.cpp
   rpc/server.cpp
   rpc/tcp_channel.cpp
 )
-EXPECTED_FILE_COUNT=15
-EXPECTED_BLOCK_COUNT=326
+EXPECTED_FILE_COUNT=6
+EXPECTED_BLOCK_COUNT=248
 
 mapfile -t FILES < <(grep -rl '#if RUSTYCPP_RUST' base misc reactor rpc \
                        --include='*.cpp' --include='*.cc' \
