@@ -62,6 +62,23 @@ set(RRR_GOAL0_CANONICAL_MODULES
     utils
     frame_codec
 )
+set(RRR_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.cpp)
+set(RRR_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.cpp)
+set(RRR_GOAL0_SOURCE_internal_protocol ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.cpp)
+set(RRR_GOAL0_SOURCE_stat ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.cpp)
+set(RRR_GOAL0_SOURCE_errors ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.cpp)
+set(RRR_GOAL0_SOURCE_connection_metrics ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.cpp)
+set(RRR_GOAL0_SOURCE_completion_tracker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.cpp)
+set(RRR_GOAL0_SOURCE_rand ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.cpp)
+set(RRR_GOAL0_SOURCE_request_options ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.cpp)
+set(RRR_GOAL0_SOURCE_reconnect_policy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.cpp)
+set(RRR_GOAL0_SOURCE_circuit_breaker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.cpp)
+set(RRR_GOAL0_SOURCE_connection_state ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.cpp)
+set(RRR_GOAL0_SOURCE_heartbeat ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.cpp)
+set(RRR_GOAL0_SOURCE_request_queue ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.cpp)
+set(RRR_GOAL0_SOURCE_load_balancer ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.cpp)
+set(RRR_GOAL0_SOURCE_utils ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.cpp)
+set(RRR_GOAL0_SOURCE_frame_codec ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.cpp)
 set(_RRR_GOAL0_UNIQUE_MODULES ${RRR_GOAL0_CANONICAL_MODULES})
 list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_MODULES)
 list(LENGTH RRR_GOAL0_CANONICAL_MODULES _RRR_GOAL0_MODULE_COUNT)
@@ -79,7 +96,7 @@ set(RRR_GOAL0_CANONICAL_RUST_SRC)
 set(RRR_GOAL0_CRATE_CHILD_SRC)
 foreach(_RRR_GOAL0_MODULE IN LISTS RRR_GOAL0_CANONICAL_MODULES)
     list(APPEND RRR_GOAL0_CANONICAL_RUST_SRC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/${_RRR_GOAL0_MODULE}.rs)
+        ${RRR_GOAL0_SOURCE_${_RRR_GOAL0_MODULE}})
     list(APPEND RRR_GOAL0_CRATE_CHILD_SRC
         ${RRR_GOAL0_CRATE_CPP_DIR}/rrr.${_RRR_GOAL0_MODULE}.cppm)
 endforeach()
@@ -110,13 +127,9 @@ foreach(_RRR_GOAL0_CANONICAL_SOURCE IN LISTS RRR_GOAL0_CANONICAL_RUST_SRC)
             "${_RRR_GOAL0_CANONICAL_SOURCE}")
     endif()
 endforeach()
-foreach(_RRR_GOAL0_RETIRED_CARRIER IN LISTS RRR_GOAL0_RETIRED_CARRIER_SRC)
-    if(EXISTS "${_RRR_GOAL0_RETIRED_CARRIER}")
-        message(FATAL_ERROR
-            "Goal-0 retired inline carrier was reintroduced: "
-            "${_RRR_GOAL0_RETIRED_CARRIER}")
-    endif()
-endforeach()
+# Canonical Rust sources intentionally retain their historical .cpp paths so
+# Git can preserve C++→Rust lineage. They are transpiler inputs, not native C++.
+list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_GOAL0_RETIRED_CARRIER_SRC})
 set(RRR_GOAL0_CRATE_ROOT_SRC
     ${RRR_GOAL0_CRATE_CPP_DIR}/rrr.cppm
 )

@@ -4,68 +4,68 @@ schema_version = 2
 
 [[module]]
 cpp_module = "rrr.basetypes"
-source = "src/rrr/src/basetypes.rs"
+source = "base/basetypes.cpp"
 
 [[module]]
 cpp_module = "rrr.callback_wrapper"
-source = "src/rrr/src/callback_wrapper.rs"
+source = "base/callback_wrapper.cpp"
 
 [[module]]
 cpp_module = "rrr.internal_protocol"
-source = "src/rrr/src/internal_protocol.rs"
+source = "rpc/internal_protocol.cpp"
 
 [[module]]
 cpp_module = "rrr.stat"
-source = "src/rrr/src/stat.rs"
+source = "misc/stat.cpp"
 
 [[module]]
 cpp_module = "rrr.errors"
-source = "src/rrr/src/errors.rs"
+source = "rpc/errors.cpp"
 
 [[module]]
 cpp_module = "rrr.connection_metrics"
-source = "src/rrr/src/connection_metrics.rs"
+source = "rpc/connection_metrics.cpp"
 
 [[module]]
 cpp_module = "rrr.completion_tracker"
-source = "src/rrr/src/completion_tracker.rs"
+source = "rpc/completion_tracker.cpp"
 
 [[module]]
 cpp_module = "rrr.rand"
-source = "src/rrr/src/rand.rs"
+source = "misc/rand.cpp"
 
 [[module]]
 cpp_module = "rrr.request_options"
-source = "src/rrr/src/request_options.rs"
+source = "rpc/request_options.cpp"
 
 [[module]]
 cpp_module = "rrr.reconnect_policy"
-source = "src/rrr/src/reconnect_policy.rs"
+source = "rpc/reconnect_policy.cpp"
 
 [[module]]
 cpp_module = "rrr.circuit_breaker"
-source = "src/rrr/src/circuit_breaker.rs"
+source = "rpc/circuit_breaker.cpp"
 
 [[module]]
 cpp_module = "rrr.connection_state"
-source = "src/rrr/src/connection_state.rs"
+source = "rpc/connection_state.cpp"
 
 [[module]]
 cpp_module = "rrr.heartbeat"
-source = "src/rrr/src/heartbeat.rs"
+source = "rpc/heartbeat.cpp"
 
 [[module]]
 cpp_module = "rrr.request_queue"
-source = "src/rrr/src/request_queue.rs"
+source = "rpc/request_queue.cpp"
 
 [[module]]
 cpp_module = "rrr.load_balancer"
-source = "src/rrr/src/load_balancer.rs"
+source = "rpc/load_balancer.cpp"
 
 [[module]]
 cpp_module = "rrr.utils"
-source = "src/rrr/src/utils.rs"
+source = "rpc/utils.cpp"
 
 [[module]]
 cpp_module = "rrr.frame_codec"
-source = "src/rrr/src/frame_codec.rs"
+source = "rpc/frame_codec.cpp"
