@@ -118,12 +118,12 @@ pub struct InMemoryConnectionStateInner {
 
 fn empty_connection_inner() -> InMemoryConnectionStateInner {
     InMemoryConnectionStateInner {
-        a_peer_address: "".to_owned(),
+        a_peer_address: "".to_string(),
         a_on_frame: OnFrameCallback::default(),
         a_on_closed: OnClosedCallback::default(),
         a_on_error: OnErrorCallback::default(),
         a_closed: false,
-        b_peer_address: "".to_owned(),
+        b_peer_address: "".to_string(),
         b_on_frame: OnFrameCallback::default(),
         b_on_closed: OnClosedCallback::default(),
         b_on_error: OnErrorCallback::default(),
@@ -406,7 +406,7 @@ pub struct InMemoryListenerInnerState {
 
 fn empty_listener_inner() -> InMemoryListenerInnerState {
     InMemoryListenerInnerState {
-        local_address: "".to_owned(),
+        local_address: "".to_string(),
         closed: false,
         on_accept: OnAcceptCallback::default(),
         on_error: OnErrorCallback::default(),
@@ -500,12 +500,12 @@ fn inmemory_listener_listen_with_weak(
             return channel_error_internal();
         }
         weak = self_weak.unwrap();
-        guard.local_address = address.to_owned();
+        guard.local_address = address.to_string();
     }
 
     if !listener
         .switchboard_
-        .register_listener(address.to_owned(), weak)
+        .register_listener(address.to_string(), weak)
     {
         let mut guard = listener.inner_.lock().unwrap();
         guard.local_address.clear();
@@ -550,7 +550,8 @@ pub struct InMemoryListenerShim {
 #[cpp_inherit]
 impl ChannelListenerBase for InMemoryListenerShim {
     fn listen(&mut self, address: &str) -> ChannelError {
-        let self_weak: std::sync::Weak<InMemoryListener> = Arc::downgrade(&self.listener_);
+        let self_weak: std::sync::Weak<InMemoryListener> =
+            rusty::sync::downgrade(self.listener_.clone());
         inmemory_listener_listen_with_weak(&self.listener_, address, Some(self_weak))
     }
 
@@ -595,7 +596,7 @@ impl InMemoryFactory {
     }
 
     pub fn backend_name(&self) -> LegacyStdString {
-        "inmemory".to_owned()
+        "inmemory".to_string()
     }
 
     pub fn connect(&self, address: &str) -> ConnectResult {
@@ -608,7 +609,7 @@ impl InMemoryFactory {
 }
 
 pub fn inmemory_factory_connect(factory: &InMemoryFactory, address: &str) -> ConnectResult {
-    let address_string: LegacyStdString = address.to_owned();
+    let address_string: LegacyStdString = address.to_string();
     let listener_option: Option<Arc<InMemoryListener>> =
         factory.switchboard_.find_listener(&address_string);
     if listener_option.is_none() {
@@ -621,7 +622,8 @@ pub fn inmemory_factory_connect(factory: &InMemoryFactory, address: &str) -> Con
 
     static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(0_u64);
     let client_id: u64 = CLIENT_COUNTER.fetch_add(1_u64, Ordering::Relaxed);
-    let client_address: LegacyStdString = "inmemory://client-".to_owned() + &client_id.to_string();
+    let mut client_address: LegacyStdString = "inmemory://client-".to_string();
+    client_address += &client_id.to_string();
     let client_side_option: Option<Arc<InMemoryChannel>> =
         inmemory_listener_accept_for_connect(&listener, &client_address);
     if client_side_option.is_none() {

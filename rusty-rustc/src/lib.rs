@@ -85,6 +85,12 @@ pub struct PthreadCondAttr {
 }
 
 pub mod sync {
+    pub use ::std::sync::{Arc, Weak};
+
+    pub fn downgrade<T>(arc: Arc<T>) -> Weak<T> {
+        Arc::downgrade(&arc)
+    }
+
     pub mod atomic {
         pub use ::std::sync::atomic::{AtomicBool, Ordering};
     }

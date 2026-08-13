@@ -104,7 +104,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "rrr.epoll_wrapper": "cc34a8e6c7d6105970eeec9326921c01c42329676127b1b4fc4eb7c12b48edb2",
     "rrr.pollable_proxy": "5bfff3cbfb69b4b0f23797f97eff5a290360baa630edd7f301c22b09d827474a",
     "rrr.callbacks": "16230a47b7800cc977dfaa2b7867272adbd0a7687c274f1dc3b0d92fb3210efd",
-    "rrr.inmemory_channel": "4b7da8930ab09e0e61d1f2edfb88279034827782d5292b5b94c102017f83ba50",
+    "rrr.inmemory_channel": "4c38f83c0911f47ee0951d949ceb3a921ca68712e22807014ba4a437765709d1",
     "rrr.fiber_channel": "1413f35b9afb49f1c14776ae81895b56e43ccf83598159f42daa960bf46aa140",
     "rrr.threading": "91f4a45f99886d4a83b7242d7afa511afc96f485f3e0ecc6c52263b49671fdd7",
     "rrr.debugging": "618aa01b631cd28ff5e61f171ba1af7e4790cf2f3618b874dff6b5b6ecf30435",
@@ -1616,6 +1616,7 @@ ABI_SPECS = {
     "rrr.inmemory_channel": AbiSpec(
         surface=frozenset(
             {
+                '#include "base/rustc_markers.hpp"',
                 "export struct InMemoryChannel;",
                 "export struct InMemorySwitchboard;",
                 "export struct InMemoryListener;",
@@ -2410,27 +2411,28 @@ def require_cpp_surfaces(
                 raise GateError(
                     "rustc-only StdVector facade leaked into generated FrameCodec"
                 )
-        misc_preamble = '#include "base/rustc_markers.hpp"'
-        if module.cpp_module == "rrr.misc":
-            if text.count(misc_preamble) != 1:
+        marker_preamble = '#include "base/rustc_markers.hpp"'
+        marker_preamble_owners = {"rrr.misc", "rrr.inmemory_channel"}
+        if module.cpp_module in marker_preamble_owners:
+            if text.count(marker_preamble) != 1:
                 raise GateError(
-                    "generated rrr.misc must contain exactly one structured "
+                    f"generated {module.cpp_module} must contain exactly one structured "
                     "rustc-marker preamble include"
                 )
             ordered = (
                 text.find("\nmodule;\n"),
-                text.find(misc_preamble),
+                text.find(marker_preamble),
                 text.find("#include <cstdint>"),
-                text.find("export module rrr.misc;"),
+                text.find(f"export module {module.cpp_module};"),
             )
             if -1 in ordered or list(ordered) != sorted(ordered):
                 raise GateError(
-                    "generated rrr.misc marker preamble is not between the "
+                    f"generated {module.cpp_module} marker preamble is not between the "
                     "global module fragment and standard includes"
                 )
-        elif misc_preamble in text:
+        elif marker_preamble in text:
             raise GateError(
-                f"misc rustc-marker preamble leaked into {module.cpp_module}"
+                f"rustc-marker preamble leaked into {module.cpp_module}"
             )
 
         # Leakage checks must be independent of module-specific dependency

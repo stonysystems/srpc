@@ -59,6 +59,12 @@ includes = [
 ]
 
 [[module]]
+name = "rrr.inmemory_channel"
+includes = [
+    { path = "base/rustc_markers.hpp", form = "quote" },
+]
+
+[[module]]
 name = "rrr.epoll_wrapper"
 includes = [
     { path = "rusty/os/fd.hpp", form = "angle" },
