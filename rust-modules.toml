@@ -101,3 +101,7 @@ source = "rpc/channel.cpp"
 [[module]]
 cpp_module = "rrr.epoll_wrapper"
 source = "reactor/epoll_wrapper.cc"
+
+[[module]]
+cpp_module = "rrr.pollable_proxy"
+source = "rpc/pollable_proxy.cpp"

@@ -16,6 +16,11 @@ use ::std::time::Duration;
 
 pub use rusty_cpp_markers::cpp_inherit;
 
+/// Rust-only model of the C++ runtime's owning allocation helper.
+pub fn make_box<T>(value: T) -> Box<T> {
+    Box::new(value)
+}
+
 /// Rust-only callback-wrapper spelling for canonical cross-module facades.
 pub struct CallbackWrapper<F> {
     inner: Option<::std::sync::Arc<F>>,
