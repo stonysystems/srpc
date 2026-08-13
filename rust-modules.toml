@@ -117,3 +117,7 @@ source = "rpc/inmemory_channel.cpp"
 [[module]]
 cpp_module = "rrr.fiber_channel"
 source = "rpc/fiber_channel.cpp"
+
+[[module]]
+cpp_module = "rrr.threading"
+source = "base/threading.cpp"

@@ -32,6 +32,14 @@ includes = [
 ]
 
 [[module]]
+name = "rrr.threading"
+includes = [
+    { path = "pthread.h", form = "angle" },
+    { path = "misc/srpc_timing.h", form = "quote" },
+    { path = "rusty/sync/atomic.hpp", form = "angle" },
+]
+
+[[module]]
 name = "rrr.utils"
 includes = [
     { path = "netdb.h", form = "angle" },

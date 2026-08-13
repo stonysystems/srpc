@@ -56,6 +56,40 @@ impl<F> Default for CallbackWrapper<F> {
     }
 }
 
+/// Opaque rustc-only models of the native pthread types used by the
+/// canonical threading wrapper. The checked C++ type map restores the native
+/// typedef spellings; canonical Rust only passes pointers to these values.
+#[repr(C)]
+pub struct PthreadSpinlock {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct PthreadMutex {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct PthreadMutexAttr {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct PthreadCond {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct PthreadCondAttr {
+    _opaque: [u8; 0],
+}
+
+pub mod sync {
+    pub mod atomic {
+        pub use ::std::sync::atomic::{AtomicBool, Ordering};
+    }
+}
+
 thread_local! {
     static REACTOR_CURRENT_FIBER: RefCell<Option<Rc<ReactorFiber>>> = const { RefCell::new(None) };
     static REACTOR_SLEEP_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -222,6 +256,12 @@ pub mod sys {
         /// resolves this path to `rusty::sys::env::hostname()`.
         pub fn hostname() -> String {
             ::std::env::var("HOSTNAME").unwrap_or_default()
+        }
+    }
+
+    pub mod time {
+        pub fn sleep_us(microseconds: u64) {
+            ::std::thread::sleep(::std::time::Duration::from_micros(microseconds));
         }
     }
 }
