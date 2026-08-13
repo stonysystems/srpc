@@ -160,6 +160,35 @@ impl<A, B> StdPair<A, B> {
 /// Rust-only facade spelling mapped to the public `std::string` ABI.
 pub type LoggingString = std::string;
 
+/// Opaque rustc-only model mapped to libc's `FILE` in generated C++.
+#[repr(C)]
+pub struct CFile {
+    _opaque: [u8; 0],
+}
+
+/// Rust-side model of `std::source_location` used by Debugging tests.
+pub struct SourceLocation {
+    file: &'static str,
+    line: u32,
+}
+
+impl SourceLocation {
+    pub fn current() -> SourceLocation {
+        SourceLocation {
+            file: file!(),
+            line: line!(),
+        }
+    }
+
+    pub fn file_name(&self) -> &'static str {
+        self.file
+    }
+
+    pub fn line(&self) -> u32 {
+        self.line
+    }
+}
+
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
 
@@ -172,6 +201,12 @@ pub mod sys {
         pub fn hostname() -> String {
             ::std::env::var("HOSTNAME").unwrap_or_default()
         }
+    }
+}
+
+pub mod panic {
+    pub fn do_panic(message: crate::std::string) -> ! {
+        ::std::panic::panic_any(message.to_rust_string())
     }
 }
 
@@ -361,6 +396,11 @@ pub mod std {
 
         pub fn resize(&mut self, size: usize) {
             self.0.get_mut().resize(size, 0);
+        }
+
+        /// Rustc-only signature model of `std::string::c_str`.
+        pub fn c_str(&self) -> *const i8 {
+            core::ptr::null()
         }
 
         /// # Safety

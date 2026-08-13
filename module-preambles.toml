@@ -49,3 +49,10 @@ name = "rrr.misc"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
 ]
+
+[[module]]
+name = "rrr.debugging"
+includes = [
+    { path = "stdio.h", form = "angle" },
+    { path = "source_location", form = "angle" },
+]
