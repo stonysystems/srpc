@@ -85,3 +85,7 @@ source = "base/logging.cpp"
 [[module]]
 cpp_module = "rrr.idempotency"
 source = "rpc/idempotency.cpp"
+
+[[module]]
+cpp_module = "rrr.fiber"
+source = "reactor/fiber.cpp"

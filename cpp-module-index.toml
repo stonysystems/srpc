@@ -15,6 +15,14 @@ callable_signatures = ["size_t(int32_t,uint8_t*)"]
 kind = "function"
 callable_signatures = ["int32_t(const uint8_t*)"]
 
+[modules."rrr::basetypes".symbols.Time]
+kind = "type"
+callable_signatures = []
+
+[modules."rrr::basetypes".symbols."Time::now"]
+kind = "function"
+callable_signatures = ["uint64_t(bool)"]
+
 [modules."rrr::logging"]
 namespace = "rrr"
 
@@ -28,6 +36,22 @@ namespace = "rrr"
 [modules."rrr::reactor".symbols.create_sp_box_event]
 kind = "function_template"
 callable_signatures = ["rusty::Arc<BoxEvent<T>>()"]
+
+[modules."rrr::reactor".symbols.Fiber]
+kind = "type"
+callable_signatures = []
+
+[modules."rrr::reactor".symbols."Fiber::current_fiber"]
+kind = "method"
+callable_signatures = ["rusty::Option<rusty::Rc<Fiber>>()"]
+
+[modules."rrr::reactor".symbols."Fiber::yield_"]
+kind = "method"
+callable_signatures = ["void()"]
+
+[modules."rrr::reactor".symbols.fiber_sleep]
+kind = "function"
+callable_signatures = ["void(uint64_t)"]
 
 [modules."rrr::debugging"]
 namespace = "rrr"

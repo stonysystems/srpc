@@ -7,12 +7,44 @@
 //! omits it from generated C++ because the production definitions already
 //! live in the rusty runtime headers.
 
-use ::std::cell::Cell;
+use ::std::cell::{Cell, RefCell};
 use ::std::marker::PhantomData;
 use ::std::ops::{Deref, DerefMut, Index};
 use ::std::rc::Rc;
 use ::std::sync::{Condvar, Mutex};
 use ::std::time::Duration;
+
+thread_local! {
+    static REACTOR_CURRENT_FIBER: RefCell<Option<Rc<ReactorFiber>>> = const { RefCell::new(None) };
+    static REACTOR_SLEEP_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Rust-only model of the `rrr.reactor` module's `Fiber` class.
+///
+/// The checked type map restores the existing `rrr::Fiber` spelling for C++;
+/// this state exists only for direct rustc tests of `rrr.fiber`.
+pub struct ReactorFiber {
+    pub id: Cell<u64>,
+    yields: Cell<u64>,
+}
+
+impl ReactorFiber {
+    /// # Safety
+    ///
+    /// Reading the reactor's thread-local handle has no caller precondition.
+    #[allow(unsafe_code)]
+    pub unsafe fn current_fiber() -> Option<Rc<ReactorFiber>> {
+        REACTOR_CURRENT_FIBER.with(|slot| slot.borrow().clone())
+    }
+
+    /// # Safety
+    ///
+    /// The receiver must be a live reactor fiber.
+    #[allow(unsafe_code)]
+    pub unsafe fn yield_(&self) {
+        self.yields.set(self.yields.get().wrapping_add(1));
+    }
+}
 
 /// Rust-only model of the `rrr.reactor` module's `BoxEvent<T>` template.
 ///
@@ -146,6 +178,23 @@ pub mod sys {
 #[allow(clippy::missing_safety_doc)]
 pub mod rrr {
     pub mod basetypes {
+        pub struct Time;
+
+        impl Time {
+            /// # Safety
+            ///
+            /// Both clock selectors are valid; `unsafe` records the foreign
+            /// named-module boundary used by canonical Fiber code.
+            #[allow(unsafe_code)]
+            pub unsafe fn now(_monotonic: bool) -> u64 {
+                use ::std::time::{SystemTime, UNIX_EPOCH};
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros() as u64
+            }
+        }
+
         #[allow(non_snake_case)]
         pub mod SparseInt {
             #[allow(unsafe_code)]
@@ -184,8 +233,12 @@ pub mod rrr {
     }
 
     pub mod reactor {
-        use crate::ReactorBoxEvent;
+        use crate::{ReactorBoxEvent, ReactorFiber, REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS};
+        use ::std::cell::Cell;
+        use ::std::rc::Rc;
         use ::std::sync::Arc;
+
+        pub type Fiber = ReactorFiber;
 
         /// # Safety
         ///
@@ -194,6 +247,33 @@ pub mod rrr {
         #[allow(unsafe_code)]
         pub unsafe fn create_sp_box_event<T>() -> Arc<ReactorBoxEvent<T>> {
             Arc::new(ReactorBoxEvent::new())
+        }
+
+        /// # Safety
+        ///
+        /// Every microsecond duration is accepted by the production reactor.
+        #[allow(unsafe_code)]
+        pub unsafe fn fiber_sleep(microseconds: u64) {
+            REACTOR_SLEEP_CALLS.with(|calls| calls.borrow_mut().push(microseconds));
+        }
+
+        /// Install a test fiber for the duration of `body`.
+        pub fn with_test_fiber<R>(id: u64, body: impl FnOnce() -> R) -> (R, u64) {
+            let fiber = Rc::new(ReactorFiber {
+                id: Cell::new(id),
+                yields: Cell::new(0),
+            });
+            let previous = REACTOR_CURRENT_FIBER.with(|slot| slot.replace(Some(Rc::clone(&fiber))));
+            let result = body();
+            REACTOR_CURRENT_FIBER.with(|slot| {
+                slot.replace(previous);
+            });
+            (result, fiber.yields.get())
+        }
+
+        /// Return and clear durations recorded by the rustc-only sleep model.
+        pub fn take_test_sleep_calls() -> Vec<u64> {
+            REACTOR_SLEEP_CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut()))
         }
     }
 
