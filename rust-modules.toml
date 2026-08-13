@@ -97,3 +97,7 @@ source = "base/misc.cpp"
 [[module]]
 cpp_module = "rrr.channel"
 source = "rpc/channel.cpp"
+
+[[module]]
+cpp_module = "rrr.epoll_wrapper"
+source = "reactor/epoll_wrapper.cc"

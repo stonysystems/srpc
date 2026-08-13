@@ -49,3 +49,10 @@ name = "rrr.misc"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
 ]
+
+[[module]]
+name = "rrr.epoll_wrapper"
+includes = [
+    { path = "rusty/os/fd.hpp", form = "angle" },
+    { path = "rusty/sync/atomic.hpp", form = "angle" },
+]

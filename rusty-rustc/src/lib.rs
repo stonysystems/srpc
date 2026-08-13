@@ -198,6 +198,15 @@ pub type LoggingString = std::string;
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
 
+/// Rust-only spelling for APIs imported from the C++ `rusty` module.
+pub mod rusty {
+    pub mod os {
+        pub mod fd {
+            pub type OwnedFd = std::os::fd::OwnedFd;
+        }
+    }
+}
+
 /// Rust-side model of helpers supplied by the C++ rusty runtime.
 pub mod sys {
     pub mod env {

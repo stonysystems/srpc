@@ -87,3 +87,14 @@ callable_signatures = ["std::pair<A,B>(A,B)"]
 [modules.std.symbols.cout]
 kind = "object"
 callable_signatures = []
+
+[modules.rusty]
+namespace = "rusty"
+
+[modules.rusty.symbols."os::fd::OwnedFd"]
+kind = "type"
+callable_signatures = []
+
+[modules.rusty.symbols."os::fd::OwnedFd::from_raw_fd"]
+kind = "function"
+callable_signatures = ["OwnedFd(int)"]

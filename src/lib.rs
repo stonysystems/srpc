@@ -18,6 +18,8 @@ pub mod completion_tracker;
 pub mod connection_metrics;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod connection_state;
+#[allow(dead_code, non_snake_case, non_upper_case_globals, clippy::new_without_default)]
+pub mod epoll_wrapper;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod errors;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
