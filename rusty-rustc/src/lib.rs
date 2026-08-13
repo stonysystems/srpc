@@ -70,6 +70,8 @@ pub struct ReactorFiber {
     yields: Cell<u64>,
 }
 
+pub type ReactorIntEvent = rrr::reactor::IntEvent;
+
 impl ReactorFiber {
     /// # Safety
     ///
@@ -291,9 +293,46 @@ pub mod rrr {
         use crate::{ReactorBoxEvent, ReactorFiber, REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS};
         use ::std::cell::Cell;
         use ::std::rc::Rc;
-        use ::std::sync::Arc;
+        use ::std::sync::{Arc, Condvar, Mutex};
 
         pub type Fiber = ReactorFiber;
+
+        /// Rust-only model of the reactor's fiber-aware integer event.
+        pub struct IntEvent {
+            value: Mutex<i32>,
+            target: i32,
+            ready: Condvar,
+        }
+
+        impl IntEvent {
+            pub fn set(&self, next: i32) -> i32 {
+                let mut value = self.value.lock().unwrap();
+                let previous = *value;
+                *value = next;
+                self.ready.notify_all();
+                previous
+            }
+
+            pub fn wait(&self) {
+                let mut value = self.value.lock().unwrap();
+                while *value < self.target {
+                    value = self.ready.wait(value).unwrap();
+                }
+            }
+        }
+
+        /// # Safety
+        ///
+        /// Every integer target is valid; `unsafe` records the foreign module
+        /// boundary used by canonical FiberChannel code.
+        #[allow(unsafe_code)]
+        pub unsafe fn create_sp_int_event(target: i32) -> Arc<IntEvent> {
+            Arc::new(IntEvent {
+                value: Mutex::new(0),
+                target,
+                ready: Condvar::new(),
+            })
+        }
 
         /// # Safety
         ///

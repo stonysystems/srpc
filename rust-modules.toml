@@ -113,3 +113,7 @@ source = "rpc/callbacks.cpp"
 [[module]]
 cpp_module = "rrr.inmemory_channel"
 source = "rpc/inmemory_channel.cpp"
+
+[[module]]
+cpp_module = "rrr.fiber_channel"
+source = "rpc/fiber_channel.cpp"
