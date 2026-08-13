@@ -1139,24 +1139,26 @@ struct SerializableRegistryMap {
     map: rusty::HashMap<i32, rusty::SerializableRegistryFactory>,
 }
 
-static SERIALIZABLE_REGISTRY: rusty::Mutex<SerializableRegistryMap> =
-    rusty::Mutex::new(SerializableRegistryMap {
+fn registry() -> &'static rusty::Mutex<SerializableRegistryMap> {
+    static R: rusty::Mutex<SerializableRegistryMap> = rusty::Mutex::new(SerializableRegistryMap {
         map: rusty::HashMap::new(),
     });
+    &R
+}
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_register_factory(
     kind: i32,
     factory: rusty::SerializableRegistryFactory,
 ) {
-    let mut guard = SERIALIZABLE_REGISTRY.lock().unwrap();
+    let mut guard = registry().lock().unwrap();
     (*guard).map.insert(kind, factory);
 }
 
 #[allow(clippy::explicit_auto_deref)]
 #[allow(unsafe_code)]
 pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy {
-    let guard = SERIALIZABLE_REGISTRY.lock().unwrap();
+    let guard = registry().lock().unwrap();
     let entry = (*guard).map.get(&kind);
     unsafe { cpp_debugging::verify(entry.is_some()) };
     entry.unwrap()()
@@ -1164,12 +1166,12 @@ pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy 
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_is_registered_impl(kind: i32) -> bool {
-    let guard = SERIALIZABLE_REGISTRY.lock().unwrap();
+    let guard = registry().lock().unwrap();
     (*guard).map.get(&kind).is_some()
 }
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_clear_impl() {
-    let mut guard = SERIALIZABLE_REGISTRY.lock().unwrap();
+    let mut guard = registry().lock().unwrap();
     (*guard).map.clear();
 }
