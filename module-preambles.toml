@@ -49,3 +49,9 @@ name = "rrr.misc"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
 ]
+
+[[module]]
+name = "rrr.serializable"
+includes = [
+    { path = "misc/serializable_support.hpp", form = "quote" },
+]
