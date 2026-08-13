@@ -122,10 +122,6 @@ callable_signatures = ["const T*()"]
 kind = "function_template"
 callable_signatures = ["rusty::Arc<T>()"]
 
-[modules.rusty.symbols.type_id_hash_code]
-kind = "function"
-callable_signatures = ["size_t(std::type_index)"]
-
 [modules.std]
 namespace = "std"
 
@@ -136,9 +132,6 @@ callable_signatures = ["std::pair<A,B>(A,B)"]
 [modules.std.symbols.cout]
 kind = "object"
 callable_signatures = []
-
-[modules.rusty]
-namespace = "rusty"
 
 [modules.rusty.symbols."os::fd::OwnedFd"]
 kind = "type"

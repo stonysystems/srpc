@@ -450,6 +450,110 @@ pub mod rrr {
         pub use crate::{BinaryReadArchive, BinaryWriteArchive};
         use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};
 
+        fn encoded_length_size(value: usize) -> usize {
+            if value <= 63 {
+                1
+            } else if value <= 8_191 {
+                2
+            } else if value <= 1_048_575 {
+                3
+            } else if value <= 134_217_727 {
+                4
+            } else if value <= 17_179_869_183 {
+                5
+            } else if value <= 2_199_023_255_551 {
+                6
+            } else if value <= 281_474_976_710_655 {
+                7
+            } else if value <= 36_028_797_018_963_967 {
+                8
+            } else {
+                9
+            }
+        }
+
+        fn sparse_size(byte0: u8) -> usize {
+            if byte0 & 0x80 == 0 {
+                1
+            } else if byte0 & 0xc0 == 0x80 {
+                2
+            } else if byte0 & 0xe0 == 0xc0 {
+                3
+            } else if byte0 & 0xf0 == 0xe0 {
+                4
+            } else if byte0 & 0xf8 == 0xf0 {
+                5
+            } else if byte0 & 0xfc == 0xf8 {
+                6
+            } else if byte0 & 0xfe == 0xfc {
+                7
+            } else if byte0 == 0xfe {
+                8
+            } else {
+                9
+            }
+        }
+
+        #[allow(non_camel_case_types)]
+        pub struct Serialize_;
+
+        impl Serialize_ {
+            #[allow(clippy::ptr_arg)]
+            #[allow(unsafe_code)]
+            pub unsafe fn serialize(value: &String, archive: &mut BinaryWriteArchive) {
+                let size = encoded_length_size(value.len());
+                let bits = value.len() as u64;
+                let mut encoded = [0u8; 9];
+                if size <= 7 {
+                    for (index, byte) in encoded[..size].iter_mut().enumerate() {
+                        *byte = (bits >> (8 * (size - 1 - index))) as u8;
+                    }
+                    encoded[0] &= 0xff >> size;
+                    if size > 1 {
+                        encoded[0] |= 0xff << (9 - size);
+                    }
+                } else {
+                    for index in 0..8 {
+                        encoded[1 + index] = (bits >> (8 * (7 - index))) as u8;
+                    }
+                    encoded[0] = if size == 8 { 0xfe } else { 0xff };
+                }
+                unsafe { archive.write_bytes(encoded.as_ptr(), size) };
+                unsafe { archive.write_bytes(value.as_ptr(), value.len()) };
+            }
+        }
+
+        #[allow(non_camel_case_types)]
+        pub struct Deserialize_;
+
+        impl Deserialize_ {
+            #[allow(unsafe_code)]
+            pub unsafe fn deserialize(value: &mut String, archive: &mut BinaryReadArchive) {
+                let mut encoded = [0u8; 9];
+                unsafe { archive.read_or_abort(encoded.as_mut_ptr(), 1) };
+                let size = sparse_size(encoded[0]);
+                if size > 1 {
+                    unsafe { archive.read_or_abort(encoded.as_mut_ptr().add(1), size - 1) };
+                }
+                let length = if size < 8 {
+                    let mut bits = 0u64;
+                    for index in 0..size - 1 {
+                        bits |= (encoded[size - 1 - index] as u64) << (8 * index);
+                    }
+                    bits | (((encoded[0] & (0xff >> size)) as u64) << (8 * (size - 1)))
+                } else {
+                    let mut bits = 0u64;
+                    for index in 0..8 {
+                        bits |= (encoded[8 - index] as u64) << (8 * index);
+                    }
+                    bits
+                } as usize;
+                let mut bytes = vec![0u8; length];
+                unsafe { archive.read_or_abort(bytes.as_mut_ptr(), bytes.len()) };
+                *value = String::from_utf8(bytes).expect("valid UTF-8 AnyMessage type name");
+            }
+        }
+
         #[allow(unsafe_code)]
         pub unsafe fn serializable_holder_of<T: 'static>(
             _base: *const SerializableBase,
@@ -693,6 +797,14 @@ pub struct BinaryWriteArchive {
 }
 
 impl BinaryWriteArchive {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Append a raw byte range to this archive.
     ///
     /// # Safety
@@ -724,8 +836,16 @@ pub struct BinaryReadArchive {
 }
 
 impl BinaryReadArchive {
+    pub fn new(bytes: &[u8]) -> Self {
+        Self::from_bytes(bytes.to_vec())
+    }
+
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self { bytes, offset: 0 }
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
     }
 
     /// Copy the requested archive bytes into a raw destination.
