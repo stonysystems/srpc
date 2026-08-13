@@ -559,7 +559,7 @@ impl<T1, T2> Serialize for rusty::StdPair<T1, T2> {
 
 #[allow(non_snake_case, unsafe_code)]
 pub mod Serialize_ {
-    use super::{BinaryWriteArchive, cpp};
+    use super::{cpp, BinaryWriteArchive};
     use cpp::rusty as cpp_rusty;
 
     fn adl_serialize_bridge<T>(value: &T, archive: &mut BinaryWriteArchive) {
@@ -964,7 +964,7 @@ impl<K: Default, V: Default> Deserialize for rusty::SerializableStdUnorderedMap<
 
 #[allow(non_snake_case, unsafe_code)]
 pub mod Deserialize_ {
-    use super::{BinaryReadArchive, cpp};
+    use super::{cpp, BinaryReadArchive};
     use cpp::rusty as cpp_rusty;
 
     fn adl_deserialize_bridge<T>(value: &mut T, archive: &mut BinaryReadArchive) {
@@ -1138,26 +1138,24 @@ struct SerializableRegistryMap {
     map: rusty::HashMap<i32, rusty::SerializableRegistryFactory>,
 }
 
-fn registry() -> &'static rusty::Mutex<SerializableRegistryMap> {
-    static R: rusty::Mutex<SerializableRegistryMap> = rusty::Mutex::new(SerializableRegistryMap {
+static SERIALIZABLE_REGISTRY: rusty::Mutex<SerializableRegistryMap> =
+    rusty::Mutex::new(SerializableRegistryMap {
         map: rusty::HashMap::new(),
     });
-    &R
-}
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_register_factory(
     kind: i32,
     factory: rusty::SerializableRegistryFactory,
 ) {
-    let mut guard = registry().lock().unwrap();
+    let mut guard = SERIALIZABLE_REGISTRY.lock().unwrap();
     (*guard).map.insert(kind, factory);
 }
 
 #[allow(clippy::explicit_auto_deref)]
 #[allow(unsafe_code)]
 pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy {
-    let guard = registry().lock().unwrap();
+    let guard = SERIALIZABLE_REGISTRY.lock().unwrap();
     let entry = (*guard).map.get(&kind);
     unsafe { cpp_debugging::verify(entry.is_some()) };
     entry.unwrap()()
@@ -1165,12 +1163,12 @@ pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy 
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_is_registered_impl(kind: i32) -> bool {
-    let guard = registry().lock().unwrap();
+    let guard = SERIALIZABLE_REGISTRY.lock().unwrap();
     (*guard).map.get(&kind).is_some()
 }
 
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_clear_impl() {
-    let mut guard = registry().lock().unwrap();
+    let mut guard = SERIALIZABLE_REGISTRY.lock().unwrap();
     (*guard).map.clear();
 }
