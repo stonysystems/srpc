@@ -1,621 +1,488 @@
-module;
+//! Open-set, name-tagged serializable payload envelope.
+//!
+//! This valid-Rust owner preserves the public surface of the legacy
+//! `rrr.any_message` C++ module: `AnyMessage` remains a two-field aggregate,
+//! factories remain move-only callables, public type identity remains
+//! `TypeId`/`std::type_index`, and the wire format remains
+//! `[v64 string length][type name][payload bytes]`.
 
-#include <cstdint>
-#include <cstdlib>
+#![allow(
+    unsafe_code,
+    unused_unsafe,
+    clippy::missing_safety_doc,
+    clippy::slow_vector_initialization,
+    clippy::unnecessary_get_then_check,
+    clippy::unnecessary_unwrap
+)]
 
-#include <rusty/fn.hpp>
-#include <rusty/function.hpp>
-#include <rusty/option.hpp>
-#include <rusty/result.hpp>
-#include <rusty/rusty.hpp>  // rusty::Mutex (was transitively via SpinMutex/rrr.threading)
+use cpp::rrr::debugging;
+use cpp::rrr::serializable;
+use cpp::rusty as cpp_rusty;
+use std::any::TypeId;
+use std::sync::Arc;
 
-export module rrr.any_message;
+type LegacyStdString = String;
 
-import std;
-import rusty;
-import rrr.debugging;
-import rrr.serializable;
-import rrr.threading;
+pub type SerializableProxy = Arc<dyn serializable::SerializableBase>;
 
-// @safe - AnyMessage: rusty::Arc-backed typed wire payload; the
-// runtime AnyMessageRegistry maps registered names to factory
-// closures. Methods that drive a Marshal operator<</>> chain
-// (`save`, `load`, the four free operator helpers), recover a checked raw
-// holder pointer (`unpack`), or escape a raw
-// `const std::string*` (`name_for_type` and its callers) carry
-// per-method `// @unsafe` below.
-/*RUSTYCPP:GEN-DISPATCH-BEGIN*/
-namespace rusty { namespace detail {
-RUSTY_METHOD_DISPATCH(unwrap)
-} } // namespace rusty::detail (issue #31 deref_call dispatch)
-/*RUSTYCPP:GEN-DISPATCH-END*/
-
-export namespace rrr {
-
-
-struct AnyMessage;
-
-// The registry namespace is defined further down (it needs SerializableProxy
-// and the Mutex-guarded map), but AnyMessage::load — DSL, above it — calls
-// create(). Forward-declare just that one entry point.
-using SerializableProxy = rusty::Arc<SerializableBase>;
-namespace any_message_registry {
-rusty::Option<SerializableProxy> create(const std::string& name);
-}  // namespace any_message_registry
-
-// The generic backing free fns must be DECLARED before the generated
-// template methods below: `pack`/`pack_as` take only std::shared_ptr<T>
-// arguments, so for a non-rrr T argument-dependent lookup never
-// considers namespace rrr — ordinary lookup at the template definition
-// point has to find these. (is_a/unpack pass `(*this)` and would be
-// found by ADL, declared here anyway for uniformity.) Definitions
-// (inline) follow the registry declarations below.
-template <typename T> bool anymessage_is_a(const AnyMessage& self);
-template <typename T> rusty::Option<rusty::Arc<T>> anymessage_unpack(const AnyMessage& self);
-template <typename T> AnyMessage anymessage_pack_as(std::string name, rusty::Arc<T> val);
-template <typename T> AnyMessage anymessage_pack(rusty::Arc<T> val);
-
-// `AnyMessage` — typed wire payload `[v64 type_name] [payload bytes]`.
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is
-// the source of truth; the transpiler regenerates the matching
-// `/*RUSTYCPP:GEN-BEGIN ... END*/` block.
-//
-// Behavioral diffs from the original C++ class:
-//   * The `is_a(std::string_view)` overload and the `type_name()`
-//     accessor are DROPPED — zero callers repo-wide, and a Rust impl
-//     block cannot hold two fns named `is_a` anyway.
-//   * The private 2-arg ctor is gone; the struct is a plain public
-//     aggregate (`AnyMessage m;` default-construct sites in rcc_rpc.h
-//     keep working — both members default-construct). pack_as builds
-//     the aggregate directly.
-//   * The generic methods delegate to anymessage_* template free fns
-//     (found by ADL at instantiation, the clientconn_request_*
-//     precedent); pack/pack_as return AnyMessage BY VALUE — rcc_rpc.h
-//     stores AnyMessage by value and every caller stored the result
-//     into such a field, so the former shared_ptr return was one heap
-//     allocation + immediate deref-copy per pack.
-#if RUSTYCPP_RUST
-struct AnyMessage {
-    type_name_: std::string,
-    payload_: Option<SerializableProxy>,
+#[cfg_attr(not(any()), derive(Clone, Default))]
+pub struct AnyMessage {
+    pub type_name_: LegacyStdString,
+    pub payload_: Option<SerializableProxy>,
 }
 
 impl AnyMessage {
-    // Wire ops. The payload's bytes come from the inner T's
-    // `save`/`load` via the proxy facade.
-    fn save(&self, ar: &mut BinaryWriteArchive) {
-        rrr::Serialize_::serialize(self.type_name_, ar);
+    pub fn save(&self, archive: &mut serializable::BinaryWriteArchive) {
+        unsafe { serializable::Serialize_::serialize(&self.type_name_, archive) };
         if self.payload_.is_some() {
-            // Named Arc type so the call lowers to `->save` (playbook §7.13):
-            // the element type is lost through Option::as_ref().unwrap().
-            let payload: &rusty::Arc<SerializableBase> = self.payload_.as_ref().unwrap();
-            payload.save(ar);
+            let payload = self.payload_.as_ref().unwrap();
+            let base =
+                unsafe { cpp_rusty::Arc::<dyn serializable::SerializableBase>::get(payload) };
+            unsafe { (*base).save(archive) };
         }
     }
 
-    fn load(&mut self, ar: &mut BinaryReadArchive) {
-        rrr::Deserialize_::deserialize(self.type_name_, ar);
-        let proxy_opt = any_message_registry::create(self.type_name_);
-        // The C++ wrote `verify(cond && "unknown type name on wire...")`.
-        // That string is never printed — rrr's verify() reports only file
-        // and line under NDEBUG, and asserts on `ok` otherwise — so it was
-        // documentation for the reader, and stays that way here: an
-        // unknown type name means the sender registered a type the
-        // receiver does not know.
-        verify(proxy_opt.is_some());
-        let mut proxy: rusty::Arc<SerializableBase> = proxy_opt.unwrap();
-        // Unique-owner mutation window: the proxy is factory-fresh, so
-        // get_mut() hands back the &mut that Arc otherwise withholds.
-        proxy.get_mut().unwrap().load(ar);
-        self.payload_ = rusty::Some(proxy);
+    pub fn load(&mut self, archive: &mut serializable::BinaryReadArchive) {
+        unsafe { serializable::Deserialize_::deserialize(&mut self.type_name_, archive) };
+        let proxy_option = any_message_registry::create(&self.type_name_);
+        unsafe { debugging::verify(proxy_option.is_some()) };
+        let mut proxy = proxy_option.unwrap();
+        Arc::get_mut(&mut proxy).unwrap().load(archive);
+        self.payload_ = Some(proxy);
     }
 
-    // True iff this AnyMessage carries a value of type T (i.e., the
-    // wire-carried type_name matches T's registered name).
-    fn is_a<T: 'static>(&self) -> bool {
+    pub fn is_a<T: 'static>(&self) -> bool {
         anymessage_is_a::<T>(self)
     }
 
-    // Recover the typed payload. Returns nullptr if T is not the
-    // carried type, or if T was never registered.
-    fn unpack<T: 'static>(&self) -> Option<Arc<T>> {
+    pub fn unpack<T>(&self) -> Option<Arc<T>>
+    where
+        T: serializable::SerializablePayload + 'static,
+    {
         anymessage_unpack::<T>(self)
     }
 
-    // Build an AnyMessage holding `val` under an explicit `name`. The
-    // name does NOT need to have been pre-registered — pack_as is the
-    // escape hatch for ad-hoc names. The receiver still needs a
-    // factory registered under the same name to deserialize.
-    fn pack_as<T: 'static>(name: std::string, val: Arc<T>) -> AnyMessage {
-        anymessage_pack_as(name, val)
+    pub fn pack_as<T>(name: LegacyStdString, value: Arc<T>) -> AnyMessage
+    where
+        T: serializable::SerializablePayload + 'static,
+    {
+        anymessage_pack_as::<T>(name, value)
     }
 
-    // Build an AnyMessage using T's registered name. Aborts via
-    // verify() if T was not registered with `reg_any_message_as<T>(...)`.
-    fn pack<T: 'static>(val: Arc<T>) -> AnyMessage {
-        anymessage_pack(val)
-    }
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.message version=1 rust_sha256=429ddd71c4f911c35e8c80cd4f1170da475eb3a66334721509e1c2da700ac806*/
-struct AnyMessage;
-
-struct AnyMessage {
-    std::string type_name_;
-    rusty::Option<SerializableProxy> payload_;
-
-    void save(BinaryWriteArchive& ar) const;
-    void load(BinaryReadArchive& ar);
-    template<typename T>
-    bool is_a() const;
-    template<typename T>
-    rusty::Option<rusty::Arc<T>> unpack() const;
-    template<typename T>
-    static AnyMessage pack_as(std::string name, rusty::Arc<T> val);
-    template<typename T>
-    static AnyMessage pack(rusty::Arc<T> val);
-};
-
-
-void AnyMessage::save(BinaryWriteArchive& ar) const {
-    rrr::Serialize_::serialize(this->type_name_, ar);
-    if (this->payload_.is_some()) {
-        const rusty::Arc<SerializableBase>& payload = this->payload_.as_ref().unwrap();
-        payload->save(ar);
+    pub fn pack<T>(value: Arc<T>) -> AnyMessage
+    where
+        T: serializable::SerializablePayload + 'static,
+    {
+        anymessage_pack::<T>(value)
     }
 }
 
-void AnyMessage::load(BinaryReadArchive& ar) {
-    rrr::Deserialize_::deserialize(this->type_name_, ar);
-    auto proxy_opt = any_message_registry::create(this->type_name_);
-    verify(proxy_opt.is_some());
-    rusty::Arc<SerializableBase> proxy = proxy_opt.unwrap();
-    proxy.get_mut().unwrap().load(ar);
-    this->payload_ = rusty::Option<SerializableProxy>(std::move(proxy));
+pub mod any_message_registry {
+    use super::{cpp_rusty, debugging, LegacyStdString, SerializableProxy};
+    use std::any::TypeId;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    pub type Factory = Box<dyn FnMut() -> SerializableProxy + Send + Sync>;
+
+    struct RegistryMap {
+        by_name: HashMap<LegacyStdString, Factory>,
+        name_by_type_hash: HashMap<usize, LegacyStdString>,
+    }
+
+    fn registry() -> &'static Mutex<Option<RegistryMap>> {
+        static REGISTRY: Mutex<Option<RegistryMap>> = Mutex::new(None);
+        &REGISTRY
+    }
+
+    fn map_mut<'a>(
+        guard: &'a mut std::sync::MutexGuard<'_, Option<RegistryMap>>,
+    ) -> &'a mut RegistryMap {
+        if guard.is_none() {
+            **guard = Some(RegistryMap {
+                by_name: HashMap::new(),
+                name_by_type_hash: HashMap::new(),
+            });
+        }
+        guard.as_mut().unwrap()
+    }
+
+    pub fn register_type(name: LegacyStdString, type_id: TypeId, factory: self::Factory) -> i32 {
+        let mut guard = registry().lock().unwrap();
+        let hash = unsafe { cpp_rusty::type_id_hash_code(type_id) };
+        let map = map_mut(&mut guard);
+        unsafe { debugging::verify(map.by_name.get(&name).is_none()) };
+        if map.name_by_type_hash.get(&hash).is_none() {
+            map.name_by_type_hash.insert(hash, name.clone());
+        }
+        map.by_name.insert(name, factory);
+        0_i32
+    }
+
+    pub fn create(name: &LegacyStdString) -> Option<SerializableProxy> {
+        let mut guard = registry().lock().unwrap();
+        let map = map_mut(&mut guard);
+        match map.by_name.get_mut(name) {
+            Some(factory) => Some(factory()),
+            None => None,
+        }
+    }
+
+    pub fn name_for_type_owned(type_id: TypeId) -> LegacyStdString {
+        let mut guard = registry().lock().unwrap();
+        let hash = unsafe { cpp_rusty::type_id_hash_code(type_id) };
+        let map = map_mut(&mut guard);
+        match map.name_by_type_hash.get(&hash) {
+            Some(name) => name.clone(),
+            None => Default::default(),
+        }
+    }
+
+    pub fn is_registered_name(name: &LegacyStdString) -> bool {
+        let mut guard = registry().lock().unwrap();
+        map_mut(&mut guard).by_name.get(name).is_some()
+    }
+
+    pub fn is_registered_type(type_id: TypeId) -> bool {
+        let mut guard = registry().lock().unwrap();
+        let hash = unsafe { cpp_rusty::type_id_hash_code(type_id) };
+        map_mut(&mut guard).name_by_type_hash.get(&hash).is_some()
+    }
+
+    pub fn clear_for_testing() {
+        let mut guard = registry().lock().unwrap();
+        let map = map_mut(&mut guard);
+        map.by_name.clear();
+        map.name_by_type_hash.clear();
+    }
 }
 
-template<typename T>
-bool AnyMessage::is_a() const {
-    return anymessage_is_a<T>((*this));
+pub fn reg_any_message_as<T>(name: LegacyStdString) -> i32
+where
+    T: serializable::SerializablePayload + Default + 'static,
+{
+    let factory: any_message_registry::Factory = Box::new(|| -> SerializableProxy {
+        let pointer = unsafe { cpp_rusty::arc_make_default::<T>() };
+        let holder = unsafe { serializable::details::SerializableSharedPtrHolder::<T>(pointer) };
+        let concrete: Arc<serializable::details::SerializableSharedPtrHolder<T>> = Arc::new(holder);
+        concrete
+    });
+    any_message_registry::register_type(name, TypeId::of::<T>(), factory)
 }
 
-template<typename T>
-rusty::Option<rusty::Arc<T>> AnyMessage::unpack() const {
-    return anymessage_unpack<T>((*this));
-}
-
-template<typename T>
-AnyMessage AnyMessage::pack_as(std::string name, rusty::Arc<T> val) {
-    return anymessage_pack_as(std::move(name), std::move(val));
-}
-
-template<typename T>
-AnyMessage AnyMessage::pack(rusty::Arc<T> val) {
-    return anymessage_pack(std::move(val));
-}
-/*RUSTYCPP:GEN-END id=any_message.message*/
-
-// Runtime registry: maps registered type-name string → factory and
-// std::type_index → registered name. Stored behind a rusty::Mutex
-// (registrations run at static init time, lookups are concurrent
-// across reactor threads during RPC dispatch).
-// @safe - see file header.
-// `any_message_registry` was a class with only static methods + a
-// public Factory typedef and no fields. Converted to a namespace so
-// the inventory reflects what it actually is — a namespace-scoped
-// API over the file-static rusty::Mutex<AnyMessageRegistryMap> below.
-namespace any_message_registry {
-
-// rusty::Function is move-only; the registry stores each factory by
-// move and invokes it under the registry's rusty::Mutex inside `create()`.
-using Factory = rusty::Function<SerializableProxy()>;
-
-// Register `T` under `name`. Returns 0 so it can sit at namespace
-// scope as a static-initializer return value:
-//   static int _reg = any_message_registry::register_type(...);
-// Aborts if `name` is already registered to a different type, or
-// if `T` is already registered under a different name.
-int register_type(std::string name,
-                  std::type_index ti,
-                  Factory factory);
-
-// Create a fresh payload proxy for the given name. None if the
-// name is not registered.
-rusty::Option<SerializableProxy> create(const std::string& name);
-
-// Look up the registered name for type `ti`. Returns "" if the
-// type was not registered (owned copy — no borrow escapes the
-// registry mutex; Marshal-era pointer-return reshaped away).
-std::string name_for_type_owned(std::type_index ti);
-
-bool is_registered_name(const std::string& name);
-bool is_registered_type(std::type_index ti);
-
-// Test helper: clear the registry. Not thread-safe; use only
-// between tests in single-threaded fixtures.
-void clear_for_testing();
-
-}  // namespace any_message_registry
-
-// Register T under `name` so:
-//   * `AnyMessage::pack(make_shared<T>())` knows what name to stamp.
-//   * `AnyMessage::load` can construct a fresh T-shaped payload when
-//     the wire bytes carry `name`.
-//
-// The factory wraps a fresh Arc<T> in a holder-shaped proxy —
-// same shape `SerializableEnvelope` uses, so unpack semantics match.
-//
-// Returns 0 — suitable for `static int _reg = reg_any_message_as<T>("...");`.
-
-// ---- Inlines that rely on the registry ------------------------------
-//
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is the
-// source of truth; the transpiler regenerates the matching
-// `RUSTYCPP:GEN-BEGIN ... END` block.
-//
-// Behavioral diffs from the hand-written C++ these replace:
-//   * `reg_any_message_as` returns `int32_t` rather than `int` (the same
-//     type on every supported target; every call site discards it).
-//   * its factory lambda gains a `[&]` capture-default it never uses —
-//     the closure captures nothing, exactly as the `[]` form did.
-#if RUSTYCPP_RUST
-fn reg_any_message_as<T: 'static>(name: std::string) -> i32 {
-    any_message_registry::register_type(
-        name,
-        std::any::TypeId::of::<T>(),
-        || -> SerializableProxy {
-            let sp = rusty::Arc::<T>::make();
-            rusty::Arc::<details::SerializableSharedPtrHolder<T>>::make(sp)
-        })
-}
-
-fn anymessage_is_a<T: 'static>(self_: &AnyMessage) -> bool {
-    let name: std::string =
-        any_message_registry::name_for_type_owned(std::any::TypeId::of::<T>());
+pub fn anymessage_is_a<T: 'static>(message: &AnyMessage) -> bool {
+    let name = any_message_registry::name_for_type_owned(TypeId::of::<T>());
     if name.is_empty() {
         return false;
     }
-    self_.type_name_ == name
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.2 version=1 rust_sha256=ab3dd312a1954b178a677f612a7646bec8f3d79a786b51daab7c077b910c46bc*/
-template<typename T>
-int32_t reg_any_message_as(std::string name);
-
-template<typename T>
-int32_t reg_any_message_as(std::string name) {
-    return any_message_registry::register_type(std::move(name), std::type_index(typeid(T)), [&]() -> SerializableProxy {
-auto sp = rusty::Arc<T>::make();
-return rusty::Arc<details::SerializableSharedPtrHolder<T>>::make(std::move(sp));
-});
+    message.type_name_ == name
 }
 
-template<typename T>
-bool anymessage_is_a(const AnyMessage& self_) {
-    const std::string name = any_message_registry::name_for_type_owned(std::type_index(typeid(T)));
-    if (rusty::is_empty(name)) {
-        return false;
-    }
-    return rusty::detail::deref_if_pointer_like(self_.type_name_) == rusty::detail::deref_if_pointer_like(name);
-}
-/*RUSTYCPP:GEN-END id=any_message.2*/
-
-// Recover the typed payload. Returns None if T is not the carried type,
-// if T was never registered, or if the message carries no payload.
-//
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is the
-// source of truth; the transpiler regenerates the matching
-// `RUSTYCPP:GEN-BEGIN ... END` block. The forward declaration at the top
-// of this file stays load-bearing -- the GEN emits only the definition,
-// while `AnyMessage::unpack<T>`'s GEN (above) names `anymessage_unpack<T>`
-// with explicit template arguments and needs the name visible there.
-//
-// INVARIANT: `payload_` is always holder-shaped -- every construction path
-// and every any_message_registry factory wraps the payload in a
-// SerializableSharedPtrHolder<T>, so one checked TypeId cast suffices with no
-// direct-SerializableBase fallback.
-#if RUSTYCPP_RUST
-fn anymessage_unpack<T: 'static>(self_: &AnyMessage) -> rusty::Option<rusty::Arc<T>> {
-    if !anymessage_is_a::<T>(self_) {
+pub fn anymessage_unpack<T>(message: &AnyMessage) -> Option<Arc<T>>
+where
+    T: serializable::SerializablePayload + 'static,
+{
+    if !anymessage_is_a::<T>(message) || message.payload_.is_none() {
         return None;
     }
-    if self_.payload_.is_none() {
+    let payload = message.payload_.as_ref().unwrap();
+    let base = unsafe { cpp_rusty::Arc::<dyn serializable::SerializableBase>::get(payload) };
+    let holder = unsafe { serializable::serializable_holder_of::<T>(base) };
+    if holder.is_null() {
         return None;
     }
-    let h = serializable_holder_of::<T>(self_.payload_.as_ref().unwrap().get());
-    if h.is_null() {
-        return None;
+    Some(unsafe { (*holder).ptr.clone() })
+}
+
+pub fn anymessage_pack_as<T>(name: LegacyStdString, value: Arc<T>) -> AnyMessage
+where
+    T: serializable::SerializablePayload + 'static,
+{
+    let holder = unsafe { serializable::details::SerializableSharedPtrHolder::<T>(value) };
+    let concrete: Arc<serializable::details::SerializableSharedPtrHolder<T>> = Arc::new(holder);
+    let payload: SerializableProxy = concrete;
+    AnyMessage {
+        type_name_: name,
+        payload_: Some(payload),
     }
-    Some(unsafe { (*h).ptr.clone() })
 }
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.unpack version=1 rust_sha256=708ed16abfc06c6c4a2c3f37b7d0c3b2f0a8ec6747edbdce0cb2101228e231d3*/
-template<typename T>
-rusty::Option<rusty::Arc<T>> anymessage_unpack(const AnyMessage& self_) {
-    if (rusty::detail::rust_not(anymessage_is_a<T>(self_))) {
-        return rusty::Option<rusty::Arc<T>>{rusty::None};
+
+pub fn anymessage_pack<T>(value: Arc<T>) -> AnyMessage
+where
+    T: serializable::SerializablePayload + 'static,
+{
+    let name = any_message_registry::name_for_type_owned(TypeId::of::<T>());
+    unsafe { debugging::verify(!name.is_empty()) };
+    anymessage_pack_as::<T>(name, value)
+}
+
+pub fn serialize(message: &AnyMessage, archive: &mut serializable::BinaryWriteArchive) {
+    message.save(archive);
+}
+
+pub fn deserialize(message: &mut AnyMessage, archive: &mut serializable::BinaryReadArchive) {
+    message.load(archive);
+}
+
+// Cargo-only implementations of the reserved `cpp::` imports. The C++
+// consumer suppresses this module and binds the names through the module-local
+// fail-closed symbol index.
+#[allow(dead_code)]
+pub mod cpp {
+    pub mod rrr {
+        pub mod debugging {
+            pub unsafe fn verify(value: bool) {
+                assert!(value);
+            }
+        }
+
+        pub mod serializable {
+            use std::any::Any;
+            use std::sync::Arc;
+
+            pub struct BinaryWriteArchive {
+                bytes: Vec<u8>,
+            }
+
+            impl BinaryWriteArchive {
+                pub fn new() -> BinaryWriteArchive {
+                    BinaryWriteArchive { bytes: Vec::new() }
+                }
+
+                pub fn write_bytes(&mut self, bytes: &[u8]) {
+                    self.bytes.extend_from_slice(bytes);
+                }
+
+                pub fn as_bytes(&self) -> &[u8] {
+                    &self.bytes
+                }
+
+                pub fn into_bytes(self) -> Vec<u8> {
+                    self.bytes
+                }
+            }
+
+            pub struct BinaryReadArchive {
+                bytes: Vec<u8>,
+                position: usize,
+            }
+
+            impl BinaryReadArchive {
+                pub fn new(bytes: &[u8]) -> BinaryReadArchive {
+                    BinaryReadArchive {
+                        bytes: bytes.to_vec(),
+                        position: 0_usize,
+                    }
+                }
+
+                pub fn read_exact(&mut self, output: &mut [u8]) {
+                    let end = self.position + output.len();
+                    assert!(end <= self.bytes.len(), "archive underflow");
+                    output.copy_from_slice(&self.bytes[self.position..end]);
+                    self.position = end;
+                }
+
+                pub fn remaining(&self) -> usize {
+                    self.bytes.len() - self.position
+                }
+            }
+
+            pub trait SerializablePayload: Any + Send + Sync {
+                fn save(&self, archive: &mut BinaryWriteArchive);
+                fn load(&mut self, archive: &mut BinaryReadArchive);
+                fn kind(&self) -> i32;
+            }
+
+            pub trait SerializableBase: Any + Send + Sync {
+                fn save(&self, archive: &mut BinaryWriteArchive);
+                fn load(&mut self, archive: &mut BinaryReadArchive);
+                fn kind(&self) -> i32;
+                fn as_any(&self) -> &dyn Any;
+            }
+
+            pub mod details {
+                use super::{
+                    Any, Arc, BinaryReadArchive, BinaryWriteArchive, SerializableBase,
+                    SerializablePayload,
+                };
+
+                pub struct SerializableSharedPtrHolder<T> {
+                    pub ptr: Arc<T>,
+                }
+
+                #[allow(non_snake_case)]
+                pub unsafe fn SerializableSharedPtrHolder<T>(
+                    ptr: Arc<T>,
+                ) -> SerializableSharedPtrHolder<T> {
+                    SerializableSharedPtrHolder { ptr }
+                }
+
+                impl<T: SerializablePayload> SerializableBase for SerializableSharedPtrHolder<T> {
+                    fn save(&self, archive: &mut BinaryWriteArchive) {
+                        self.ptr.save(archive);
+                    }
+
+                    fn load(&mut self, archive: &mut BinaryReadArchive) {
+                        Arc::get_mut(&mut self.ptr).unwrap().load(archive);
+                    }
+
+                    fn kind(&self) -> i32 {
+                        self.ptr.kind()
+                    }
+
+                    fn as_any(&self) -> &dyn Any {
+                        self
+                    }
+                }
+            }
+
+            pub unsafe fn serializable_holder_of<T: 'static>(
+                base: *const dyn SerializableBase,
+            ) -> *const details::SerializableSharedPtrHolder<T> {
+                let base_ref = &*base;
+                match base_ref
+                    .as_any()
+                    .downcast_ref::<details::SerializableSharedPtrHolder<T>>()
+                {
+                    Some(holder) => holder,
+                    None => core::ptr::null(),
+                }
+            }
+
+            fn sparse_size(byte0: u8) -> usize {
+                if (byte0 & 0x80_u8) == 0_u8 {
+                    1_usize
+                } else if (byte0 & 0xC0_u8) == 0x80_u8 {
+                    2_usize
+                } else if (byte0 & 0xE0_u8) == 0xC0_u8 {
+                    3_usize
+                } else if (byte0 & 0xF0_u8) == 0xE0_u8 {
+                    4_usize
+                } else if (byte0 & 0xF8_u8) == 0xF0_u8 {
+                    5_usize
+                } else if (byte0 & 0xFC_u8) == 0xF8_u8 {
+                    6_usize
+                } else if (byte0 & 0xFE_u8) == 0xFC_u8 {
+                    7_usize
+                } else if byte0 == 0xFE_u8 {
+                    8_usize
+                } else {
+                    9_usize
+                }
+            }
+
+            fn write_length(length: usize, archive: &mut BinaryWriteArchive) {
+                let value = i64::try_from(length).unwrap();
+                let bits = value as u64;
+                let size = if value <= 63_i64 {
+                    1_usize
+                } else if value <= 8_191_i64 {
+                    2_usize
+                } else if value <= 1_048_575_i64 {
+                    3_usize
+                } else if value <= 134_217_727_i64 {
+                    4_usize
+                } else if value <= 17_179_869_183_i64 {
+                    5_usize
+                } else if value <= 2_199_023_255_551_i64 {
+                    6_usize
+                } else if value <= 281_474_976_710_655_i64 {
+                    7_usize
+                } else if value <= 36_028_797_018_963_967_i64 {
+                    8_usize
+                } else {
+                    9_usize
+                };
+                let mut encoded = [0_u8; 9];
+                if size <= 7_usize {
+                    for (index, byte) in encoded[..size].iter_mut().enumerate() {
+                        *byte = (bits >> (8_usize * (size - 1_usize - index))) as u8;
+                    }
+                    encoded[0] &= 0xFF_u8 >> size;
+                    if size > 1_usize {
+                        encoded[0] |= 0xFF_u8 << (9_usize - size);
+                    }
+                } else {
+                    for index in 0_usize..8_usize {
+                        encoded[1_usize + index] = (bits >> (8_usize * (7_usize - index))) as u8;
+                    }
+                    encoded[0] = if size == 8_usize { 0xFE_u8 } else { 0xFF_u8 };
+                }
+                archive.write_bytes(&encoded[..size]);
+            }
+
+            fn read_length(archive: &mut BinaryReadArchive) -> usize {
+                let mut encoded = [0_u8; 9];
+                archive.read_exact(&mut encoded[..1]);
+                let size = sparse_size(encoded[0]);
+                if size > 1_usize {
+                    archive.read_exact(&mut encoded[1..size]);
+                }
+                let value = if size < 8_usize {
+                    let mut bits = 0_u64;
+                    for index in 0_usize..size - 1_usize {
+                        bits |= (encoded[size - 1_usize - index] as u64) << (8_usize * index);
+                    }
+                    let top = encoded[0] & (0xFF_u8 >> size);
+                    bits | ((top as u64) << (8_usize * (size - 1_usize)))
+                } else {
+                    let mut bits = 0_u64;
+                    for index in 0_usize..8_usize {
+                        bits |= (encoded[8_usize - index] as u64) << (8_usize * index);
+                    }
+                    bits
+                };
+                usize::try_from(value).unwrap()
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct Serialize_;
+
+            impl Serialize_ {
+                pub unsafe fn serialize(value: &String, archive: &mut BinaryWriteArchive) {
+                    write_length(value.len(), archive);
+                    archive.write_bytes(value.as_bytes());
+                }
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct Deserialize_;
+
+            impl Deserialize_ {
+                pub unsafe fn deserialize(value: &mut String, archive: &mut BinaryReadArchive) {
+                    let length = read_length(archive);
+                    let mut bytes = Vec::with_capacity(length);
+                    bytes.resize(length, 0_u8);
+                    archive.read_exact(&mut bytes);
+                    *value = String::from_utf8(bytes).unwrap();
+                }
+            }
+        }
     }
-    if (self_.payload_.is_none()) {
-        return rusty::Option<rusty::Arc<T>>{rusty::None};
+
+    pub mod rusty {
+        use std::any::TypeId;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use std::marker::PhantomData;
+        use std::sync::Arc as NativeArc;
+
+        pub struct Arc<T: ?Sized>(PhantomData<*const T>);
+
+        impl<T: ?Sized> Arc<T> {
+            pub unsafe fn get(value: &NativeArc<T>) -> *const T {
+                NativeArc::as_ptr(value)
+            }
+        }
+
+        pub unsafe fn arc_make_default<T: Default>() -> NativeArc<T> {
+            NativeArc::new(T::default())
+        }
+
+        pub fn type_id_hash_code(type_id: TypeId) -> usize {
+            let mut hasher = DefaultHasher::new();
+            type_id.hash(&mut hasher);
+            hasher.finish() as usize
+        }
     }
-    const auto h = serializable_holder_of<T>(self_.payload_.as_ref().unwrap().get());
-    if ((h == nullptr)) {
-        return rusty::Option<rusty::Arc<T>>{rusty::None};
-    }
-    return rusty::Option<rusty::Arc<T>>(rusty::clone((rusty::detail::deref_if_pointer_like(h)).ptr));
 }
-/*RUSTYCPP:GEN-END id=any_message.unpack*/
-
-// @unsafe - aggregate-constructs the AnyMessage (returned by value;
-// callers store it directly in rcc_rpc.h fields).
-//
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is the
-// source of truth; the transpiler regenerates the matching
-// `RUSTYCPP:GEN-BEGIN ... END` block. This is the only anymessage_* template
-// with no RTTI, hence the only one convertible.
-//
-// TRAP, probe-verified at pin da6e9bf4: the `let` annotation MUST be the
-// `SerializableProxy` ALIAS, never the spelled-out
-// `rusty::Arc<SerializableBase>`. Spelling the same template head as the
-// turbofish makes the transpiler substitute the ANNOTATION's type argument
-// into the call, silently emitting `rusty::Arc<SerializableBase>::make(val)`
-// — a different, wrong factory. Through the alias it emits the intended
-// `rusty::Arc<details::SerializableSharedPtrHolder<T>>::make(...)`, and the
-// Arc<Derived> -> Arc<Base> upcast happens in Arc's implicit converting ctor
-// (one refcount bump, exactly as the hand-written version did).
-#if RUSTYCPP_RUST
-fn anymessage_pack_as<T: 'static>(name: std::string, val: rusty::Arc<T>) -> AnyMessage {
-    let payload: SerializableProxy =
-        rusty::Arc::<details::SerializableSharedPtrHolder<T>>::make(val);
-    AnyMessage { type_name_: name, payload_: rusty::Some(payload) }
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.pack_as version=1 rust_sha256=1ed93ccbd459798928d26bd46661eabe611bb6e833ea3ba5e56a8edd11f858be*/
-template<typename T>
-AnyMessage anymessage_pack_as(std::string name, rusty::Arc<T> val) {
-    SerializableProxy payload = rusty::Arc<details::SerializableSharedPtrHolder<T>>::make(std::move(val));
-    return AnyMessage{.type_name_ = std::move(name), .payload_ = rusty::Option<SerializableProxy>(std::move(payload))};
-}
-/*RUSTYCPP:GEN-END id=any_message.pack_as*/
-
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is the
-// source of truth; the transpiler regenerates the matching
-// `RUSTYCPP:GEN-BEGIN ... END` block. Runtime type identity is the valid-Rust
-// `std::any::TypeId::of::<T>()`, lowered to C++ RTTI by rusty-cpp.
-//
-// The verify() loses its trailing `&& "AnyMessage::pack<T>: T not
-// registered. Call reg_any_message_as<T>('name') at static init."` string
-// literal — rrr's verify() reports file + line only and never printed it,
-// the same trade `AnyMessage::load` above already made.
-#if RUSTYCPP_RUST
-fn anymessage_pack<T: 'static>(val: rusty::Arc<T>) -> AnyMessage {
-    let name: std::string =
-        any_message_registry::name_for_type_owned(std::any::TypeId::of::<T>());
-    verify(!name.is_empty());
-    anymessage_pack_as::<T>(name, val)
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.4 version=1 rust_sha256=0316ddf033c429543ddc1de87398f4ba58b4ba56f1d881637fef772a2bfcb49a*/
-template<typename T>
-AnyMessage anymessage_pack(rusty::Arc<T> val) {
-    const std::string name = any_message_registry::name_for_type_owned(std::type_index(typeid(T)));
-    verify(rusty::detail::rust_not(rusty::is_empty(name)));
-    return anymessage_pack_as<T>(std::move(name), std::move(val));
-}
-/*RUSTYCPP:GEN-END id=any_message.4*/
-
-// ---- Free archive serde fns + operator forwarders --------------------
-
-// Phase 8 batch 4 (endgame straggler): serde free functions own the
-// AnyMessage wire format; the operators below are forwarders kept until the
-// operator layer is deleted. The two serde fns are LIVE — rcc_rpc.h's
-// generated structs reach them via `rrr::Serialize_::serialize(o.md_graph,
-// ar)` — so they outlive the operators and must not be deleted with them.
-//
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is the
-// source of truth; the transpiler regenerates the matching
-// `RUSTYCPP:GEN-BEGIN ... END` block. Both bodies are one-line delegations,
-// which the DSL emits UNQUALIFIED in the enclosing namespace — exactly what
-// the Serialize_ / ADL bridge needs. `&AnyMessage` lowers to
-// `const AnyMessage&` and `&mut AnyMessage` to `AnyMessage&`, so the two
-// exported signatures are unchanged; the only delta is the dropped `inline`,
-// harmless for a definition attached to this module interface unit.
-//
-// @unsafe - both forward into save/load, which drive a Marshal
-// operator<< / operator>> chain.
-#if RUSTYCPP_RUST
-fn serialize(am: &AnyMessage, ar: &mut BinaryWriteArchive) {
-    am.save(ar);
-}
-
-fn deserialize(am: &mut AnyMessage, ar: &mut BinaryReadArchive) {
-    am.load(ar);
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.serde version=1 rust_sha256=f6c50f6c35be66f123993360f3f50cea9c4ab21cb634d3414ed11025f009a7e0*/
-void serialize(const AnyMessage& am, BinaryWriteArchive& ar) {
-    am.save(ar);
-}
-
-void deserialize(AnyMessage& am, BinaryReadArchive& ar) {
-    am.load(ar);
-}
-/*RUSTYCPP:GEN-END id=any_message.serde*/
-
-
-
-}  // export namespace rrr
-
-// ============================================================================
-// Implementation (formerly any_message.cpp's body)
-// ============================================================================
-// @safe - impl namespace. The two AnyMessage save/load entries below
-// inherit class @safe but carry per-method `// @unsafe` for the
-// Marshal operator chain + shared_ptr deref. The registry helpers
-// inherit class @safe directly except `create` and `name_for_type`,
-// which return raw pointer / forward an Option-of-pointer deref.
-namespace rrr {
-
-// @unsafe - `ar << type_name_` Marshal operator<< chain + raw
-// shared_ptr deref to call payload_->save.
-
-// @unsafe - `ar >> type_name_` Marshal operator>> chain + raw
-// shared_ptr deref to call payload_->load.
-
-namespace {
-
-// Authored as inline Rust DSL: the `#if RUSTYCPP_RUST` block below is
-// the source of truth; the transpiler regenerates the matching
-// `/*RUSTYCPP:GEN-BEGIN ... END*/` block with the C++ struct. Tier-2.2
-// of the rrr trait/struct sweep — a TU-local POD that just bundles
-// two HashMaps. The struct stays inside this anonymous namespace so
-// `registry()` and the impl functions below all see it.
-#if RUSTYCPP_RUST
-struct AnyMessageRegistryMap {
-    by_name: rusty::HashMap<std::string, any_message_registry::Factory>,
-    name_by_type_hash: rusty::HashMap<usize, std::string>,
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.1 version=1 rust_sha256=f0e25eabe80e818d24f9dadec699373e8c69ffb0471bf45f49fd33840ee8923c*/
-struct AnyMessageRegistryMap;
-
-struct AnyMessageRegistryMap {
-    rusty::HashMap<std::string, any_message_registry::Factory> by_name;
-    rusty::HashMap<size_t, std::string> name_by_type_hash;
-};
-/*RUSTYCPP:GEN-END id=any_message.1*/
-
-// @unsafe - Returns a reference into a process-wide static singleton; the
-// caller treats the returned reference as `'static`-lifetime, which
-// rusty-cpp doesn't model.
-//
-// Authored as inline Rust DSL: the Meyers-singleton shape IS expressible —
-// `static NAME: T = init;` lowers to a block-scope C++ static, and the
-// `&mut NAME` TAIL expression lowers to a plain `return NAME;` (spelling
-// `return NAME;` in the DSL instead emits `return std::move(NAME)`, which
-// would gut the process-lifetime object on the first call). rusty::Mutex
-// has no default ctor (unlike the retired SpinMutex), so it is seeded with
-// an empty registry map explicitly.
-#if RUSTYCPP_RUST
-fn registry() -> &mut rusty::Mutex<AnyMessageRegistryMap> {
-    static R: rusty::Mutex<AnyMessageRegistryMap> = rusty::Mutex::new(AnyMessageRegistryMap {});
-    &mut R
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.5 version=1 rust_sha256=8411f2bc9c0188bd0f70ab448aedabdae86bf878ac0331205d1503f849e88dc9*/
-rusty::Mutex<AnyMessageRegistryMap>& registry() {
-    static rusty::Mutex<AnyMessageRegistryMap> R = rusty::Mutex<AnyMessageRegistryMap>::new_(AnyMessageRegistryMap{});
-    return R;
-}
-/*RUSTYCPP:GEN-END id=any_message.5*/
-
-}  // namespace
-
-
-// Registry API, authored as inline Rust DSL (register_type's old
-// "name used twice" kernel reason dissolves with name.clone(); the
-// duplicate-name verify loses its string-literal message — diagnostic
-// only).
-// Reopened namespace: the DSL emits unqualified definitions, which
-// must land inside any_message_registry to define the declared API.
-namespace any_message_registry {
-#if RUSTYCPP_RUST
-fn register_type(name: std::string, ti: std::type_index, factory: Factory) -> i32 {
-    let mut guard = registry().lock().unwrap();
-    let hash: usize = ti.hash_code();
-    verify((*guard).by_name.get(&name).is_none());
-    if (*guard).name_by_type_hash.get(&hash).is_none() {
-        (*guard).name_by_type_hash.insert(hash, name.clone());
-    }
-    (*guard).by_name.insert(name, factory);
-    0
-}
-
-fn create(name: &std::string) -> Option<SerializableProxy> {
-    let mut guard = registry().lock().unwrap();
-    let entry = (*guard).by_name.get(name);
-    if entry.is_none() {
-        return None;
-    }
-    Some(entry.unwrap()())
-}
-
-fn name_for_type_owned(ti: std::type_index) -> std::string {
-    let guard = registry().lock().unwrap();
-    let entry = (*guard).name_by_type_hash.get(ti.hash_code());
-    if entry.is_none() {
-        return Default::default();
-    }
-    entry.unwrap()
-}
-
-fn is_registered_name(name: &std::string) -> bool {
-    let guard = registry().lock().unwrap();
-    (*guard).by_name.get(name).is_some()
-}
-
-fn is_registered_type(ti: std::type_index) -> bool {
-    let guard = registry().lock().unwrap();
-    (*guard).name_by_type_hash.get(ti.hash_code()).is_some()
-}
-
-fn clear_for_testing() {
-    let mut guard = registry().lock().unwrap();
-    (*guard).by_name.clear();
-    (*guard).name_by_type_hash.clear();
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=any_message.registry_queries version=1 rust_sha256=74c3c7e34a747d74f8042b369ed48f4fff809431a70c6cefb3ed90d95fc3ca77*/
-std::string name_for_type_owned(std::type_index ti);
-bool is_registered_name(const std::string& name);
-bool is_registered_type(std::type_index ti);
-void clear_for_testing();
-
-int32_t register_type(std::string name, std::type_index ti, Factory factory) {
-    auto&& guard = rusty::deref_call(registry().lock(), rusty::detail::__mdisp_unwrap{});
-    const size_t hash = ti.hash_code();
-    verify((rusty::detail::deref_if_pointer_like(guard)).by_name.get(name).is_none());
-    if ((rusty::detail::deref_if_pointer_like(guard)).name_by_type_hash.get(hash).is_none()) {
-        (rusty::detail::deref_if_pointer_like(guard)).name_by_type_hash.insert(std::move(hash), rusty::clone(name));
-    }
-    (rusty::detail::deref_if_pointer_like(guard)).by_name.insert(std::move(name), std::move(factory));
-    return static_cast<int32_t>(0);
-}
-
-rusty::Option<SerializableProxy> create(const std::string& name) {
-    auto&& guard = rusty::deref_call(registry().lock(), rusty::detail::__mdisp_unwrap{});
-    auto entry = (rusty::detail::deref_if_pointer_like(guard)).by_name.get(name);
-    if (entry.is_none()) {
-        return rusty::Option<SerializableProxy>{rusty::None};
-    }
-    return rusty::Option<SerializableProxy>(entry.unwrap()());
-}
-
-std::string name_for_type_owned(std::type_index ti) {
-    const auto&& guard = rusty::deref_call(registry().lock(), rusty::detail::__mdisp_unwrap{});
-    auto entry = (rusty::detail::deref_if_pointer_like(guard)).name_by_type_hash.get(ti.hash_code());
-    if (entry.is_none()) {
-        return rusty::default_like<std::string>();
-    }
-    return entry.unwrap();
-}
-
-bool is_registered_name(const std::string& name) {
-    const auto&& guard = rusty::deref_call(registry().lock(), rusty::detail::__mdisp_unwrap{});
-    return (rusty::detail::deref_if_pointer_like(guard)).by_name.get(name).is_some();
-}
-
-bool is_registered_type(std::type_index ti) {
-    const auto&& guard = rusty::deref_call(registry().lock(), rusty::detail::__mdisp_unwrap{});
-    return (rusty::detail::deref_if_pointer_like(guard)).name_by_type_hash.get(ti.hash_code()).is_some();
-}
-
-void clear_for_testing() {
-    auto&& guard = rusty::deref_call(registry().lock(), rusty::detail::__mdisp_unwrap{});
-    (rusty::detail::deref_if_pointer_like(guard)).by_name.clear();
-    (rusty::detail::deref_if_pointer_like(guard)).name_by_type_hash.clear();
-}
-/*RUSTYCPP:GEN-END id=any_message.registry_queries*/
-}  // namespace any_message_registry
-
-}  // namespace rrr

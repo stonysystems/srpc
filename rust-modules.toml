@@ -125,3 +125,7 @@ source = "base/threading.cpp"
 [[module]]
 cpp_module = "rrr.debugging"
 source = "base/debugging.cpp"
+
+[[module]]
+cpp_module = "rrr.any_message"
+source = "misc/any_message.cpp"
