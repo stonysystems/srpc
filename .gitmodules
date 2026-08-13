@@ -1,0 +1,4 @@
+[submodule "third-party/rusty-cpp"]
+	path = third-party/rusty-cpp
+	url = https://github.com/shuaimu/rusty-cpp.git
+	branch = goal0-rustc-runtime-facade

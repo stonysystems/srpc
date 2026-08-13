@@ -1,9 +1,120 @@
+cmake_minimum_required(VERSION 3.30)
+
+# CMake's import-std support is experimental and must be enabled before the
+# project command. SRPC requires the same Clang/libc++ module configuration as
+# the historical Mako build.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.4)
+    set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
+        "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
+else()
+    set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
+        "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
+endif()
+
+set(SRPC_CLANG22_HINTS
+    /home/linuxbrew/.linuxbrew/opt/llvm@22/bin
+    $ENV{HOMEBREW_PREFIX}/opt/llvm@22/bin
+    /opt/homebrew/opt/llvm@22/bin
+    /usr/local/opt/llvm@22/bin
+)
+if(DEFINED ENV{HOME})
+    list(APPEND SRPC_CLANG22_HINTS $ENV{HOME}/.linuxbrew/opt/llvm@22/bin)
+endif()
+if(NOT DEFINED CMAKE_C_COMPILER)
+    find_program(SRPC_CLANG NAMES clang-22 clang
+        HINTS ${SRPC_CLANG22_HINTS} NO_DEFAULT_PATH)
+    if(NOT SRPC_CLANG)
+        find_program(SRPC_CLANG NAMES clang-22)
+    endif()
+    if(NOT SRPC_CLANG)
+        message(FATAL_ERROR "SRPC requires Clang 22 or newer")
+    endif()
+    set(CMAKE_C_COMPILER "${SRPC_CLANG}" CACHE FILEPATH "SRPC C compiler")
+endif()
+if(NOT DEFINED CMAKE_CXX_COMPILER)
+    find_program(SRPC_CLANGXX NAMES clang++-22 clang++
+        HINTS ${SRPC_CLANG22_HINTS} NO_DEFAULT_PATH)
+    if(NOT SRPC_CLANGXX)
+        find_program(SRPC_CLANGXX NAMES clang++-22)
+    endif()
+    if(NOT SRPC_CLANGXX)
+        message(FATAL_ERROR "SRPC requires Clang 22 or newer")
+    endif()
+    set(CMAKE_CXX_COMPILER "${SRPC_CLANGXX}" CACHE FILEPATH "SRPC C++ compiler")
+endif()
+
+get_filename_component(SRPC_CLANG_BINDIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+get_filename_component(SRPC_CLANG_ROOT "${SRPC_CLANG_BINDIR}" DIRECTORY)
+set(SRPC_BREW_LIBCXX_FLAGS "")
+if(EXISTS "${SRPC_CLANG_ROOT}/lib/libc++.so" AND
+   SRPC_CLANG_ROOT MATCHES "(Cellar|opt)/llvm")
+    set(SRPC_BREW_LIBCXX_FLAGS
+        "-L${SRPC_CLANG_ROOT}/lib -Wl,-rpath,${SRPC_CLANG_ROOT}/lib")
+endif()
+set(CMAKE_CXX_FLAGS_INIT "-stdlib=libc++")
+set(CMAKE_EXE_LINKER_FLAGS_INIT
+    "-stdlib=libc++ ${SRPC_BREW_LIBCXX_FLAGS}")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT
+    "-stdlib=libc++ ${SRPC_BREW_LIBCXX_FLAGS}")
+
+project(srpc LANGUAGES C CXX ASM)
+
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR
+   CMAKE_CXX_COMPILER_VERSION VERSION_LESS 22.0)
+    message(FATAL_ERROR
+        "SRPC requires Clang 22 or newer; found "
+        "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+endif()
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_CXX_MODULE_STD ON)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>)
+add_link_options(-stdlib=libc++ -lc++abi)
+
+include(CTest)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+find_program(CARGO_EXECUTABLE NAMES cargo REQUIRED)
+
+set(ENABLE_BORROW_CHECKING OFF CACHE BOOL "Enable RustyCpp borrow checking")
+set(RUSTYCPP_BUILD_TYPE "release" CACHE STRING "rusty-cpp build type")
+set(SRPC_RUSTY_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp")
+if(NOT EXISTS "${SRPC_RUSTY_CPP_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "rusty-cpp is missing; run `git submodule update --init --recursive`")
+endif()
+include("${SRPC_RUSTY_CPP_DIR}/cmake/RustyCppSubmodule.cmake")
+include("${SRPC_RUSTY_CPP_DIR}/cmake/RustyCppTranspiler.cmake")
+create_rustycpp_transpiler_build_target()
+add_subdirectory(third-party/rusty-cpp EXCLUDE_FROM_ALL)
+foreach(_rusty_port_target IN ITEMS
+    vec_port btree_port rc_port hashbrown_port rusty_async rusty
+    binary_heap_port vec_deque_port cell_port string_port arc_port
+    linked_list_port)
+    if(TARGET ${_rusty_port_target})
+        set_target_properties(${_rusty_port_target} PROPERTIES CXX_EXTENSIONS ON)
+    endif()
+endforeach()
+
+set(BENCH_CXXFLAGS
+    -w
+    -Wreturn-type
+    -MD
+    -MP
+    -DRUSTYCPP_DISABLE_ARC_LOG
+    -DREUSE_FIBER
+    -O2
+    -g
+    -fno-omit-frame-pointer
+)
+
 # rrr: STATIC library compiled from .cpp/.cc implementation units.
 # Files migrated to C++23 named modules keep their .cpp/.cc extension
 # but are wired in via FILE_SET CXX_MODULES below (RRR_MODULE_SRC).
 # They are explicitly removed from the regular source glob to avoid
 # double-compile. Migration is incremental and measurement-gated — see
-# docs/dev/srpc_module_migration_plan.md.
+# the Goal-0 migration notes in this repository.
 file(GLOB RRR_BENCH_SRC
     "${CMAKE_CURRENT_SOURCE_DIR}/base/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/misc/*.cpp"
@@ -35,7 +146,7 @@ set(RRR_INLINE_MODULE_SRC
 )
 list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_INLINE_MODULE_SRC})
 
-# These twenty-three modules are owned by canonical Rust sources. rusty-cpp generates
+# These modules are owned by canonical Rust sources. rusty-cpp generates
 # their complete C++ module interfaces; no hand-authored carrier remains.
 set(RRR_GOAL0_CANONICAL_MODULES
     basetypes
@@ -89,10 +200,10 @@ set(_RRR_GOAL0_UNIQUE_MODULES ${RRR_GOAL0_CANONICAL_MODULES})
 list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_MODULES)
 list(LENGTH RRR_GOAL0_CANONICAL_MODULES _RRR_GOAL0_MODULE_COUNT)
 list(LENGTH _RRR_GOAL0_UNIQUE_MODULES _RRR_GOAL0_UNIQUE_MODULE_COUNT)
-if(NOT _RRR_GOAL0_MODULE_COUNT EQUAL 23 OR
-   NOT _RRR_GOAL0_UNIQUE_MODULE_COUNT EQUAL 23)
+if(_RRR_GOAL0_MODULE_COUNT EQUAL 0 OR
+   NOT _RRR_GOAL0_MODULE_COUNT EQUAL _RRR_GOAL0_UNIQUE_MODULE_COUNT)
     message(FATAL_ERROR
-        "Goal-0 canonical module inventory must contain twenty-three unique names")
+        "Goal-0 canonical module inventory must contain unique names")
 endif()
 
 set(RRR_GOAL0_CRATE_CPP_DIR
@@ -154,21 +265,24 @@ list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC)
 list(LENGTH _RRR_GOAL0_UNIQUE_CANONICAL_RUST_SRC
     _RRR_GOAL0_UNIQUE_CANONICAL_COUNT)
 list(LENGTH _RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC _RRR_GOAL0_UNIQUE_CHILD_COUNT)
-if(NOT _RRR_GOAL0_CANONICAL_COUNT EQUAL 23 OR
-   NOT _RRR_GOAL0_CHILD_COUNT EQUAL 23 OR
-   NOT _RRR_GOAL0_UNIQUE_CANONICAL_COUNT EQUAL 23 OR
-   NOT _RRR_GOAL0_UNIQUE_CHILD_COUNT EQUAL 23)
+if(NOT _RRR_GOAL0_CANONICAL_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT OR
+   NOT _RRR_GOAL0_CHILD_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT OR
+   NOT _RRR_GOAL0_UNIQUE_CANONICAL_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT OR
+   NOT _RRR_GOAL0_UNIQUE_CHILD_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT)
     message(FATAL_ERROR
-        "Goal-0 crate production must own exactly twenty-three unique "
-        "Rust/generated providers")
+        "Goal-0 crate production must own one unique Rust/generated "
+        "provider pair per canonical module")
 endif()
 
-# Production combines the remaining inline carriers with the twenty-three
+# Production always combines the remaining inline carriers with the canonical
 # generated providers. The partial crate root remains compile-only until all
-# 37 surviving named modules are canonical Rust.
+# 37 retained named modules are canonical Rust (CPUInfo was removed entirely).
 set(RRR_MODULE_SRC ${RRR_INLINE_MODULE_SRC} ${RRR_GOAL0_CRATE_CHILD_SRC})
 set(RRR_MODULE_BASE_DIRS
-    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/base
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc
+    ${CMAKE_CURRENT_SOURCE_DIR}/reactor
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc
     ${RRR_GOAL0_CRATE_CPP_DIR}
 )
 set_source_files_properties(${RRR_GOAL0_CRATE_CHILD_SRC}
@@ -176,10 +290,12 @@ set_source_files_properties(${RRR_GOAL0_CRATE_CHILD_SRC}
 
 list(LENGTH RRR_INLINE_MODULE_SRC _RRR_INLINE_MODULE_COUNT)
 list(LENGTH RRR_MODULE_SRC _RRR_PRODUCTION_MODULE_COUNT)
-if(NOT _RRR_INLINE_MODULE_COUNT EQUAL 14 OR
+math(EXPR _RRR_EXPECTED_INLINE_COUNT
+    "37 - ${_RRR_GOAL0_MODULE_COUNT}")
+if(NOT _RRR_INLINE_MODULE_COUNT EQUAL _RRR_EXPECTED_INLINE_COUNT OR
    NOT _RRR_PRODUCTION_MODULE_COUNT EQUAL 37)
     message(FATAL_ERROR
-        "Goal-0 production must contain 14 inline and twenty-three generated modules")
+        "Goal-0 production must contain all 37 retained module providers")
 endif()
 list(FIND RRR_MODULE_SRC "${RRR_GOAL0_CRATE_ROOT_SRC}" _RRR_GOAL0_ROOT_INDEX)
 if(NOT _RRR_GOAL0_ROOT_INDEX EQUAL -1)
@@ -211,12 +327,12 @@ if(NOT TARGET rusty)
     add_library(rusty STATIC)
     target_sources(rusty PUBLIC
         FILE_SET CXX_MODULES
-        BASE_DIRS ${CMAKE_SOURCE_DIR}/third-party/rusty-cpp/include
+        BASE_DIRS ${SRPC_RUSTY_CPP_DIR}/include
         FILES
-        ${CMAKE_SOURCE_DIR}/third-party/rusty-cpp/include/rusty/rusty.cppm
+        ${SRPC_RUSTY_CPP_DIR}/include/rusty/rusty.cppm
     )
     target_include_directories(rusty PUBLIC
-        ${CMAKE_SOURCE_DIR}/third-party/rusty-cpp/include
+        ${SRPC_RUSTY_CPP_DIR}/include
     )
     target_compile_features(rusty PUBLIC cxx_std_23)
     # Mako-default toolchain uses `-std=gnu++23` (CMAKE_CXX_EXTENSIONS=ON
@@ -243,6 +359,7 @@ add_library(rrr_goal0_rand_c_kernel STATIC EXCLUDE_FROM_ALL
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_rand.c
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_timing.c
 )
+set_target_properties(rrr_goal0_rand_c_kernel PROPERTIES CXX_MODULE_STD OFF)
 target_include_directories(rrr_goal0_rand_c_kernel PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/misc
 )
@@ -250,6 +367,7 @@ target_link_libraries(rrr_goal0_rand_c_kernel PUBLIC pthread)
 add_executable(rrr_goal0_rand_kernel_smoke EXCLUDE_FROM_ALL
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/rand_kernel_smoke.c
 )
+set_target_properties(rrr_goal0_rand_kernel_smoke PROPERTIES CXX_MODULE_STD OFF)
 target_include_directories(rrr_goal0_rand_kernel_smoke PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -278,30 +396,16 @@ if(NOT TARGET rrr)
         ${CMAKE_CURRENT_SOURCE_DIR}/base/srpc_base.c
         ${CMAKE_CURRENT_SOURCE_DIR}/reactor/srpc_fiber.c
     )
-    # `src/compat` ships shims that fix third-party header gotchas
-    # without modifying the submodule (e.g.
-    # `compat/rusty/function.hpp` adds `#include <cstdlib>` before
-    # delegating to the upstream `rusty/function.hpp` via
-    # `#include_next`). It MUST come BEFORE
-    # `third-party/rusty-cpp/include` on the include path so the
-    # shim wins for the names it overrides — use the BEFORE keyword
-    # since target_include_directories(... PUBLIC ...) otherwise
-    # appends (root-level include_directories() entries already place
-    # third-party before src/compat).
-    target_include_directories(rrr BEFORE PUBLIC
-        ${CMAKE_SOURCE_DIR}/src/compat
-    )
     target_include_directories(rrr PUBLIC
-        ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/src/rrr
-        ${CMAKE_SOURCE_DIR}/third-party/rusty-cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${SRPC_RUSTY_CPP_DIR}/include
     )
     target_compile_options(rrr PUBLIC ${RRR_CXXFLAGS})
     target_link_libraries(rrr pthread rusty)
     target_sources(rrr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
 
     # Remaining hand-authored RRR C++ module units for borrow checking. The
-    # Twenty-three canonical Rust modules are checked by rustc and are not duplicated
+    # canonical Rust modules are checked by rustc and are not duplicated
     # here as generated C++ providers.
     set(RRR_BORROW_SRC
         # base/
@@ -343,9 +447,8 @@ if(NOT TARGET rrr)
         add_library(rrr_borrow OBJECT ${RRR_BORROW_SRC})
         set_target_properties(rrr_borrow PROPERTIES EXCLUDE_FROM_ALL YES)
         target_include_directories(rrr_borrow PUBLIC
-            ${CMAKE_SOURCE_DIR}/src
-            ${CMAKE_SOURCE_DIR}/src/rrr
-            ${CMAKE_SOURCE_DIR}/third-party/rusty-cpp/include
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${SRPC_RUSTY_CPP_DIR}/include
         )
         target_compile_options(rrr_borrow PUBLIC ${RRR_CXXFLAGS})
 
@@ -395,16 +498,16 @@ find_program(RRR_CARGO_EXECUTABLE NAMES cargo REQUIRED)
 add_custom_target(rrr_goal0_source_gate
     COMMAND
         "${RRR_BASH_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/scripts/rrr_dsl_check.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rrr_dsl_check.sh"
         "${RUSTYCPP_TRANSPILER}"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/scripts/extract_rrr_rust.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extract_rrr_rust.py"
         --check
         --transpiler "${RUSTYCPP_TRANSPILER}"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/scripts/tests/test_extract_rrr_rust.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_standalone.py"
     COMMAND
         "${CMAKE_COMMAND}"
         -E env
@@ -424,7 +527,7 @@ add_custom_target(rrr_goal0_source_gate
         --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
         --
         -D warnings
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Checking remaining inline Rust and canonical rustc crate sources"
     USES_TERMINAL
     VERBATIM
@@ -447,7 +550,7 @@ add_custom_target(rrr_goal0_transpiler_fingerprint
         "${CMAKE_COMMAND}"
         "-DINPUT=${RUSTYCPP_TRANSPILER}"
         "-DOUTPUT=${RRR_GOAL0_TRANSPILER_FINGERPRINT}"
-        -P "${CMAKE_SOURCE_DIR}/scripts/update_file_fingerprint.cmake"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/update_file_fingerprint.cmake"
     BYPRODUCTS "${RRR_GOAL0_TRANSPILER_FINGERPRINT}"
     COMMENT "Fingerprinting the Goal-0 rusty-cpp emitter"
     VERBATIM
@@ -471,7 +574,7 @@ file(GENERATE
 
 # Crate mode emits all children and the partial root in one invocation. Both
 # the production target and dual gate consume this one build-tree generation.
-# Only the twenty-three child .cppm files enter RRR_MODULE_SRC. The dual gate compiles
+# Only child .cppm files enter RRR_MODULE_SRC. The dual gate compiles
 # rrr.cppm after its children in temporary storage, but production never does.
 set(RRR_GOAL0_CRATE_GENERATED_OUTPUTS
     ${RRR_GOAL0_CRATE_CHILD_SRC}
@@ -521,7 +624,7 @@ add_custom_command(
         "${RRR_GOAL0_CPP_MODULE_INDEX}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
         ${RRR_GOAL0_CANONICAL_RUST_SRC}
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Generating Goal-0 rrr crate C++ child modules"
     USES_TERMINAL
     VERBATIM
@@ -577,7 +680,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         --link-flag=-lc++abi
     )
     separate_arguments(_RRR_GOAL0_BREW_LINK_FLAGS
-        NATIVE_COMMAND "${MAKO_BREW_LIBCXX_FLAGS}")
+        NATIVE_COMMAND "${SRPC_BREW_LIBCXX_FLAGS}")
     foreach(_RRR_GOAL0_LINK_FLAG IN LISTS _RRR_GOAL0_BREW_LINK_FLAGS)
         list(APPEND RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS
             "--link-flag=${_RRR_GOAL0_LINK_FLAG}")
@@ -588,17 +691,21 @@ add_custom_target(rrr_goal0_dual_compile ALL
     COMMAND "$<TARGET_FILE:rrr_goal0_rand_kernel_smoke>"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/scripts/check_rrr_crate_mode.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_rrr_crate_mode.py"
         --transpiler "${RUSTYCPP_TRANSPILER}"
         --generated-dir "${RRR_GOAL0_CRATE_CPP_DIR}"
         --production-library "$<TARGET_FILE:rrr>"
         --runtime-module-root
             "${CMAKE_BINARY_DIR}/third-party/rusty-cpp/CMakeFiles"
+        --dependency-module-root
+            "${CMAKE_BINARY_DIR}/CMakeFiles"
+        --configured-module-map-root
+            "${CMAKE_BINARY_DIR}"
         ${RRR_GOAL0_RUNTIME_LIBRARY_ARGS}
         ${RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS}
         --clang "${CMAKE_CXX_COMPILER}"
         --nm "${CMAKE_NM}"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Checking whole rrr crate through rustc and rusty-cpp"
     USES_TERMINAL
     VERBATIM
@@ -609,3 +716,24 @@ add_dependencies(rrr_goal0_dual_compile
     rrr_goal0_rand_kernel_smoke
     ${RRR_GOAL0_RUNTIME_TARGETS}
 )
+
+if(BUILD_TESTING)
+    add_test(
+        NAME srpc_goal0_standalone_structure
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_standalone.py"
+    )
+    set_tests_properties(srpc_goal0_standalone_structure PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(
+        NAME srpc_goal0_cargo
+        COMMAND "${CMAKE_COMMAND}" -E env RUSTFLAGS=-Dwarnings
+            "${CARGO_EXECUTABLE}" test --locked --workspace --all-targets
+    )
+    set_tests_properties(srpc_goal0_cargo PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(
+        NAME srpc_goal0_rand_kernel_smoke
+        COMMAND "$<TARGET_FILE:rrr_goal0_rand_kernel_smoke>"
+    )
+endif()

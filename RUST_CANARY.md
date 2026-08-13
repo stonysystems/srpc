@@ -1,6 +1,6 @@
 # `rrr` canonical Rust canary
 
-The Cargo package is the canonical source for twenty-one production modules:
+The Cargo package is the canonical source for twenty-three production modules:
 
 - `rrr.basetypes`
 - `rrr.callback_wrapper`
@@ -23,6 +23,8 @@ The Cargo package is the canonical source for twenty-one production modules:
 - `rrr.future`
 - `rrr.logging`
 - `rrr.idempotency`
+- `rrr.fiber`
+- `rrr.misc`
 
 Their canonical Rust sources retain the historical `.cpp` paths recorded in
 `rust-modules.toml`; `src/*.rs` symlinks let rustc consume those exact bytes,
@@ -31,13 +33,13 @@ generated `.cppm` children are the only C++ production providers for these
 modules. The inert `cpp_abi` markers remain part of the canonical Rust where a
 legacy C++ surface needs an adapter.
 
-This is still partial Goal 0. These twenty-one modules account for 101 former
-inline blocks and 2,831 lines in the fixed surviving enrollment baseline; their
-canonical files currently contain 3,298 nonblank, non-`//` Rust lines. The
-remaining 16 named modules and 17 module-source units still contain 336 inline
-DSL blocks and 8,395 nonblank, non-`//` DSL lines. After removal of the obsolete
+This is still partial Goal 0. These twenty-three modules account for 111 former
+inline blocks and 2,930 lines in the fixed surviving enrollment baseline; their
+canonical files currently contain 3,440 nonblank, non-`//` Rust lines. The
+remaining 14 named modules and 15 module-source units still contain 326 inline
+DSL blocks and 8,296 nonblank, non-`//` DSL lines. After removal of the obsolete
 CPUInfo carrier, the fixed surviving baseline is 437 blocks and 11,226 lines.
-A successful Cargo build therefore proves the canonical twenty-one-module slice,
+A successful Cargo build therefore proves the canonical twenty-three-module slice,
 not the entire standalone SRPC module inventory.
 
 ## Ownership and source census
@@ -49,7 +51,7 @@ entry is a symlink shim only; it is never an independent source owner.
 
 `scripts/extract_rrr_rust.py` now validates canonical sources and generates
 only the crate index, `src/lib.rs`, from that manifest. It does not regenerate
-the twenty-one module bodies from C++. Check mode requires the Rust source census to
+the twenty-three module bodies from C++. Check mode requires the Rust source census to
 be exactly the manifest sources plus `lib.rs`, and requires every canonical
 source to retain exact UTF-8/LF bytes; the driver rejects CRLF rather than
 normalizing it. Schema 1 remains only for focused legacy-driver tests; future
@@ -62,8 +64,8 @@ cargo build --locked --manifest-path third-party/rusty-cpp/Cargo.toml \
   --release -p rusty-cpp-transpiler
 python3 scripts/extract_rrr_rust.py --write
 python3 scripts/extract_rrr_rust.py --check
-cargo test --locked --workspace --manifest-path src/rrr/Cargo.toml --all-targets
-cargo clippy --locked --workspace --manifest-path src/rrr/Cargo.toml \
+cargo test --locked --workspace --manifest-path Cargo.toml --all-targets
+cargo clippy --locked --workspace --manifest-path Cargo.toml \
   --all-targets -- -D warnings
 ```
 
@@ -78,27 +80,28 @@ source:
 ```
 
 The conventional direct-module layout is intentional. For example,
-`src/rrr/src/callback_wrapper.rs` owns `pub mod detail`, so ordinary crate
-lowering produces `rrr::detail::CallbackWrapper`; it does not invent an
-`srpc.extracted.*` namespace. Never recreate the discarded top-level
-`crates/srpc` hand port.
+`base/callback_wrapper.cpp` (exposed to Cargo as `src/callback_wrapper.rs`)
+owns `pub mod detail`, so ordinary crate lowering produces
+`rrr::detail::CallbackWrapper`; it does not invent an `srpc.extracted.*`
+namespace. Never recreate the discarded top-level `crates/srpc` hand port.
 
 ## Generated production modules
 
-One rusty-cpp crate invocation generates the twenty-one child interfaces and the
+One rusty-cpp crate invocation generates the twenty-three child interfaces and the
 partial root:
 
 ```sh
-mako_root="$(git rev-parse --show-toplevel)"
-rusty-cpp-transpiler --crate "${mako_root}/src/rrr/Cargo.toml" \
-  --output-dir "${mako_root}/build/src/rrr/goal0-crate-cpp" \
+srpc_root="$(git rev-parse --show-toplevel)"
+"${srpc_root}/third-party/rusty-cpp/target/release/rusty-cpp-transpiler" \
+  --crate "${srpc_root}/Cargo.toml" \
+  --output-dir "${srpc_root}/build-goal0/goal0-crate-cpp" \
   --cxx-namespace rrr \
-  --module-preamble "${mako_root}/src/rrr/module-preambles.toml" \
-  --type-map "${mako_root}/src/rrr/rust-type-map.toml" \
-  --cpp-module-index "${mako_root}/src/rrr/cpp-module-index.toml"
+  --module-preamble "${srpc_root}/module-preambles.toml" \
+  --type-map "${srpc_root}/rust-type-map.toml" \
+  --cpp-module-index "${srpc_root}/cpp-module-index.toml"
 ```
 
-Production always compiles the twenty-one generated children alongside the 16
+Production always compiles the twenty-three generated children alongside the 14
 remaining inline C++ modules. There is no OFF/ON provider substitution and no
 legacy inline-reference archive. The generated `rrr.cppm` root is compiled by
 the gate after all children as an import-closure proof, but remains outside the
@@ -120,6 +123,8 @@ that cannot be inferred from ordinary Rust imports:
   `addrinfo*` ownership surface;
 - `rrr.frame_codec` receives direct `<vector>` and `<rusty/io.hpp>` includes
   for its legacy `std::vector<uint8_t>`-backed cursor surface.
+- `rrr.misc` receives the local `base/rustc_markers.hpp` compatibility macro
+  that preserves direct `OneTimeJob : Job` inheritance in generated C++.
 
 The gate requires each include exactly once, in the global module fragment,
 and rejects leakage into any sibling or the partial root. `rrr.rand` privately
@@ -136,7 +141,7 @@ adapted `RandomGenerator` owner. The retry counter uses explicit wrapping so
 debug rustc and unsigned C++ agree at `u32::MAX`.
 
 `rrr.connection_state` and `rrr.heartbeat` use the exact local Cargo package
-`rusty` at `src/rrr/rusty-rustc` to make the runtime's move-only Function type
+`rusty` at `rusty-rustc` to make the runtime's move-only Function type
 rustc-visible. The facade represents a genuinely empty callback and the exact
 Fn/FnMut call distinction without emitting a duplicate C++ package: crate
 generation must omit both a `rusty` child and any CMake dependency edge.
@@ -196,6 +201,18 @@ The generator and cache use `Cell`, so the generated marker surface records
 the generator as Send but not Sync and deliberately grants neither marker to
 the cache; both require external synchronization when shared.
 
+`rrr.fiber` retains the `this_fiber` compatibility namespace and privately
+imports the existing `rrr.reactor` owner for current-fiber lookup, yielding,
+and sleep operations. The rustc-only reactor facade provides a scoped test
+fiber without emitting a second C++ provider; generated C++ keeps the
+historical `Option<Rc<Fiber>>`, `uint64_t`, and void function surfaces.
+
+`rrr.misc` retains the heterogeneous `clamp` template, `Job`/`OneTimeJob`
+inheritance and callback state machine, CPU-count seam, and two-decimal
+thousands formatter. Sysconf and fixed-buffer formatting stay behind the
+plain-C `srpc_get_ncpu` and `srpc_format_fixed_2` boundary; rustc exercises
+the exact state, conversion, rounding, separator, and negative-zero behavior.
+
 Rand retains its generated C++ ABI façades: `Vec<u8>` is adapted to a
 byte-preserving `std::string`, and `RandWeightVec` is adapted to
 `std::vector<double>` with a const-reference selection parameter. The semantic
@@ -210,12 +227,13 @@ FrameCodec adds only its audited zero-copy view and raw-byte copy scopes.
 
 The Goal-0 source gate performs four distinct checks:
 
-1. `rrr_dsl_check.sh` verifies drift for the 336 blocks that still live in
+1. `rrr_dsl_check.sh` verifies drift for the 326 blocks that still live in
    inline carriers.
 2. The schema-2 ownership check verifies the canonical manifest, source
    census, generated `lib.rs`, and toolchain identity.
-3. The Python contract suite exercises the manifest, preamble, dependency,
-   unsafe-boundary, retired-carrier, invalidation, and fail-closed checks.
+3. The standalone structural suite rejects Mako checkout dependencies and
+   verifies the exact rusty-cpp gitlink, manifest/CMake inventory, and
+   historical-source symlinks.
 4. Cargo test and clippy with `-D warnings` compile, test, and lint the whole
    workspace, including the rustc-only runtime facade.
 
@@ -229,15 +247,18 @@ The combined importer is linked and run against both paths. This is an
 artifact/build-integration comparison, not an independent second source
 implementation. Rust tests provide the source-level behavioral oracle; exact
 surface, layout, symbol, and C++ runtime ratchets protect the translated side.
+The direct lane resolves configured BMIs and archive members only for the 14
+still-inline dependency modules; every canonical provider is an independently
+compiled generated object placed ahead of that support archive.
 
-The current provider-owned strong symbol surface is exactly 306 unique symbols:
+The current provider-owned strong symbol surface is exactly 332 unique symbols:
 28 from `basetypes`; six each from `internal_protocol`, `stat`, and `errors`; 39 from
 `connection_metrics`; 30 from `completion_tracker`; 12 from `rand`; 12 from
 `request_options`; 11 from `reconnect_policy`; 20 from `circuit_breaker`; 13
 from `connection_state`; 19 from `heartbeat`; 27 from `request_queue`; six from
 `load_balancer`; 11 from `utils`; 17 from `frame_codec`; seven from `logging`;
-36 from `idempotency`; and zero from the importer-instantiated callback and
-Future templates or SerializableEnvelope.
+36 from `idempotency`; eight from `fiber`; 18 from `misc`; and zero from the
+importer-instantiated callback and Future templates or SerializableEnvelope.
 The basetypes provider has 29 raw entries including its module initializer.
 The completion provider has 33 raw entries after constructor aliases and its
 module initializer; rand and request options each have 13 raw entries including
@@ -249,7 +270,9 @@ raw entries after constructor/destructor aliases and its module initializer;
 frame codec has 18 raw entries including its module initializer. Logging has
 eight strong entries including its module initializer. Idempotency
 has 39 raw entries after constructor aliases and its module initializer,
-representing 36 unique strong symbols.
+representing 36 unique strong symbols. Fiber has nine raw entries including
+its module initializer. Misc has 23 raw strong entries after constructor and
+destructor aliases plus its module initializer, representing 18 unique symbols.
 Both direct-generated and production artifacts must match
 those exact censuses.
 
@@ -300,6 +323,10 @@ The runtime ratchets retain the established contracts for:
   copy/move traits, complete method signatures, native-endian key wire bytes,
   strict expiry, LRU update/eviction behavior, disabled mode, and wrapping
   counters and sequences.
+- `this_fiber` context identity/current/yield behavior plus microsecond,
+  millisecond, second, and deadline sleep conversions at unsigned boundaries.
+- heterogeneous clamp conversion, `OneTimeJob` trait dispatch/state, CPU-count
+  seam, and exact thousands formatting including rounding and negative zero.
 
 The generated output must report zero hand slots. A separate executable links
 the real `srpc_rand.c`/`srpc_timing.c` kernels and checks draw range, teardown,

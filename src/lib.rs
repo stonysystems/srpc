@@ -19,9 +19,9 @@ pub mod connection_state;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod errors;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-pub mod frame_codec;
-#[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod fiber;
+#[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
+pub mod frame_codec;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod future;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
