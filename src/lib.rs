@@ -5,36 +5,36 @@
 #![deny(unsafe_code)]
 
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../base/basetypes.cpp"] pub mod basetypes;
+pub mod basetypes;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../base/callback_wrapper.cpp"] pub mod callback_wrapper;
+pub mod callback_wrapper;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/circuit_breaker.cpp"] pub mod circuit_breaker;
+pub mod circuit_breaker;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/completion_tracker.cpp"] pub mod completion_tracker;
+pub mod completion_tracker;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/connection_metrics.cpp"] pub mod connection_metrics;
+pub mod connection_metrics;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/connection_state.cpp"] pub mod connection_state;
+pub mod connection_state;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/errors.cpp"] pub mod errors;
+pub mod errors;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/frame_codec.cpp"] pub mod frame_codec;
+pub mod frame_codec;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/heartbeat.cpp"] pub mod heartbeat;
+pub mod heartbeat;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/internal_protocol.cpp"] pub mod internal_protocol;
+pub mod internal_protocol;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/load_balancer.cpp"] pub mod load_balancer;
+pub mod load_balancer;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../misc/rand.cpp"] pub mod rand;
+pub mod rand;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/reconnect_policy.cpp"] pub mod reconnect_policy;
+pub mod reconnect_policy;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/request_options.cpp"] pub mod request_options;
+pub mod request_options;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/request_queue.cpp"] pub mod request_queue;
+pub mod request_queue;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../misc/stat.cpp"] pub mod stat;
+pub mod stat;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
-#[path = "../rpc/utils.cpp"] pub mod utils;
+pub mod utils;
