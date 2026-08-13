@@ -129,14 +129,12 @@ file(GLOB RRR_BENCH_SRC
 # an inline carrier. Keep this census complete so none is also compiled through
 # the regular source glob.
 set(RRR_INLINE_MODULE_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp
 )
 set(RRR_EXPECTED_INLINE_MODULES
-    serializable
     reactor
     client
     server
@@ -205,6 +203,7 @@ set(RRR_GOAL0_CANONICAL_MODULES
     load_balancer
     utils
     frame_codec
+    serializable
     serializable_envelope
     future
     logging
@@ -238,6 +237,7 @@ set(RRR_GOAL0_SOURCE_request_queue ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue
 set(RRR_GOAL0_SOURCE_load_balancer ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.cpp)
 set(RRR_GOAL0_SOURCE_utils ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.cpp)
 set(RRR_GOAL0_SOURCE_frame_codec ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.cpp)
+set(RRR_GOAL0_SOURCE_serializable ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp)
 set(RRR_GOAL0_SOURCE_serializable_envelope ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.cpp)
 set(RRR_GOAL0_SOURCE_future ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.cpp)
 set(RRR_GOAL0_SOURCE_logging ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.cpp)
@@ -293,6 +293,7 @@ set(RRR_GOAL0_RETIRED_CARRIER_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.cpp
