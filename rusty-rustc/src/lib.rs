@@ -16,6 +16,41 @@ use ::std::time::Duration;
 
 pub use rusty_cpp_markers::cpp_inherit;
 
+/// Rust-only callback-wrapper spelling for canonical cross-module facades.
+pub struct CallbackWrapper<F> {
+    inner: Option<::std::sync::Arc<F>>,
+}
+
+impl<F> CallbackWrapper<F> {
+    pub fn from_callable(callable: F) -> Self {
+        Self {
+            inner: Some(::std::sync::Arc::new(callable)),
+        }
+    }
+
+    pub fn has_value(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    pub fn callable(&self) -> &F {
+        self.inner.as_deref().unwrap()
+    }
+}
+
+impl<F> Clone for CallbackWrapper<F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<F> Default for CallbackWrapper<F> {
+    fn default() -> Self {
+        Self { inner: None }
+    }
+}
+
 thread_local! {
     static REACTOR_CURRENT_FIBER: RefCell<Option<Rc<ReactorFiber>>> = const { RefCell::new(None) };
     static REACTOR_SLEEP_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };

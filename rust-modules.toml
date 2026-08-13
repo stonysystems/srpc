@@ -93,3 +93,7 @@ source = "reactor/fiber.cpp"
 [[module]]
 cpp_module = "rrr.misc"
 source = "base/misc.cpp"
+
+[[module]]
+cpp_module = "rrr.channel"
+source = "rpc/channel.cpp"

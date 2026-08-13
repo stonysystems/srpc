@@ -1,6 +1,7 @@
 LegacyAddrInfo = "addrinfo"
 LegacyCChar = "std::string::value_type"
 LegacyStdString = "std::string"
+LegacyCallbackWrapper = "::rrr::detail::CallbackWrapper"
 BinaryReadArchive = "BinaryReadArchive"
 BinaryWriteArchive = "BinaryWriteArchive"
 SerializableBase = "SerializableBase"
@@ -8,6 +9,7 @@ SerializableProxy = "SerializableProxy"
 SerializableSharedPtrHolder = "details::SerializableSharedPtrHolder"
 
 [rusty]
+CallbackWrapper = "::rrr::detail::CallbackWrapper"
 StdVector = "std::vector"
 BinaryReadArchive = "BinaryReadArchive"
 BinaryWriteArchive = "BinaryWriteArchive"

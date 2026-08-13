@@ -9,6 +9,8 @@ pub mod basetypes;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod callback_wrapper;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
+pub mod channel;
+#[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod circuit_breaker;
 #[allow(dead_code, non_upper_case_globals, clippy::new_without_default)]
 pub mod completion_tracker;
