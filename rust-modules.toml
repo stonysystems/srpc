@@ -89,3 +89,7 @@ source = "rpc/idempotency.cpp"
 [[module]]
 cpp_module = "rrr.fiber"
 source = "reactor/fiber.cpp"
+
+[[module]]
+cpp_module = "rrr.misc"
+source = "base/misc.cpp"

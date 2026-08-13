@@ -14,6 +14,8 @@ use ::std::rc::Rc;
 use ::std::sync::{Condvar, Mutex};
 use ::std::time::Duration;
 
+pub use rusty_cpp_markers::cpp_inherit;
+
 thread_local! {
     static REACTOR_CURRENT_FIBER: RefCell<Option<Rc<ReactorFiber>>> = const { RefCell::new(None) };
     static REACTOR_SLEEP_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -375,6 +377,15 @@ pub mod std {
             // SAFETY: direct-rustc facade callers do not access this model
             // concurrently; the generated C++ uses `std::string` instead.
             unsafe { (&*self.0.get()).len() }
+        }
+
+        /// Clone the facade bytes into an ordinary Rust string for tests.
+        #[allow(unsafe_code)]
+        pub fn to_rust_string(&self) -> ::std::string::String {
+            // SAFETY: direct-rustc facade callers do not mutate this model
+            // concurrently; production maps the type to `std::string`.
+            let bytes = unsafe { (&*self.0.get()).clone() };
+            ::std::string::String::from_utf8(bytes).expect("valid UTF-8 in std::string facade")
         }
     }
 

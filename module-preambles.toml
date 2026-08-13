@@ -43,3 +43,9 @@ includes = [
     { path = "vector", form = "angle" },
     { path = "rusty/io.hpp", form = "angle" },
 ]
+
+[[module]]
+name = "rrr.misc"
+includes = [
+    { path = "base/rustc_markers.hpp", form = "quote" },
+]
