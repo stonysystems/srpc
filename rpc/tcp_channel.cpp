@@ -12,7 +12,7 @@
 
 use rusty::cpp_inherit;
 use rusty::StdArcGetMutExt as _;
-use std::os::fd::{AsRawFd, IntoRawFd};
+use std::os::fd::IntoRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
 
@@ -1058,7 +1058,7 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
     let mut accepting = true;
     while accepting {
         let mut step = tcplistener_accept_step_new();
-        let rc = tcplistener_accept_step(lst, &mut step);
+        let rc = tcplistener_accept_step(lst, &raw mut step);
         if rc == 1 {
             any_progress = true;
             let guard = lst.on_accept_.lock().unwrap();

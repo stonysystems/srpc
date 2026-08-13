@@ -151,6 +151,23 @@ pub struct RustcTcpListener {
     inner: Option<::std::net::TcpListener>,
 }
 
+/// Rustc-only borrowed descriptor view for a possibly-unbound TCP listener.
+///
+/// Production `rusty::net::TcpListener` stores an invalid/default
+/// `rusty::os::fd::OwnedFd`, whose borrowed view reports `-1`. Rust's standard
+/// `BorrowedFd` cannot represent that state, so the facade uses this tiny view
+/// to preserve the production API's pre-bind behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustcBorrowedFd {
+    raw: i32,
+}
+
+impl RustcBorrowedFd {
+    pub fn as_raw_fd(&self) -> i32 {
+        self.raw
+    }
+}
+
 impl RustcTcpListener {
     pub fn bind(address: RustcSocketAddrV4) -> Result<Self, RustcIoError> {
         ::std::net::TcpListener::bind(address)
@@ -207,9 +224,10 @@ impl RustcTcpListener {
         self.inner.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 
-    pub fn as_owned_fd(&self) -> ::std::os::fd::BorrowedFd<'_> {
-        use ::std::os::fd::AsFd;
-        self.inner.as_ref().unwrap().as_fd()
+    pub fn as_owned_fd(&self) -> RustcBorrowedFd {
+        RustcBorrowedFd {
+            raw: self.as_raw_fd(),
+        }
     }
 }
 
