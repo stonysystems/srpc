@@ -47,6 +47,12 @@ callable_signatures = ["const Holder<T>*(const SerializableBase*)"]
 kind = "function"
 callable_signatures = ["SerializableProxy(int32_t)"]
 
+[modules."rrr::serializable".symbols.BinaryWriteArchive]
+kind = "type"
+
+[modules."rrr::serializable".symbols.BinaryReadArchive]
+kind = "type"
+
 [modules.std]
 namespace = "std"
 

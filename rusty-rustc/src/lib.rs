@@ -198,6 +198,7 @@ pub mod rrr {
     }
 
     pub mod serializable {
+        pub use crate::{BinaryReadArchive, BinaryWriteArchive};
         use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};
 
         #[allow(unsafe_code)]
@@ -421,25 +422,85 @@ impl<T: ?Sized> Arc<T> {
     }
 }
 
-pub struct BinaryWriteArchive;
-
-impl BinaryWriteArchive {
-    /// # Safety
-    ///
-    /// `data` must denote `len` readable bytes.
-    #[allow(unsafe_code)]
-    pub unsafe fn write_bytes(&mut self, _data: *const u8, _len: usize) {}
+/// Rust-only test model for the binary archive supplied by
+/// `rrr.serializable` in production C++.
+#[derive(Default)]
+pub struct BinaryWriteArchive {
+    bytes: Vec<u8>,
 }
 
-pub struct BinaryReadArchive;
-
-impl BinaryReadArchive {
+impl BinaryWriteArchive {
+    /// Append a raw byte range to this archive.
+    ///
     /// # Safety
     ///
-    /// `data` must denote `len` writable bytes.
+    /// When `length` is nonzero, `pointer` must be non-null and reference
+    /// `length` readable, initialized bytes for the duration of this call.
     #[allow(unsafe_code)]
-    pub unsafe fn read_exact(&mut self, _data: *mut u8, _len: usize) -> bool {
-        false
+    pub unsafe fn write_bytes(&mut self, pointer: *const u8, length: usize) {
+        if length == 0 {
+            return;
+        }
+
+        // SAFETY: upheld by the caller contract above. The early return keeps
+        // the zero-length case independent of raw-pointer validity.
+        let bytes = unsafe { ::std::slice::from_raw_parts(pointer, length) };
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+/// Rust-only test model for the binary archive supplied by
+/// `rrr.serializable` in production C++.
+pub struct BinaryReadArchive {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+impl BinaryReadArchive {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    /// Copy the requested archive bytes into a raw destination.
+    ///
+    /// # Safety
+    ///
+    /// When `length` is nonzero, `pointer` must be non-null and reference
+    /// `length` writable bytes which do not overlap this archive's storage.
+    #[allow(unsafe_code)]
+    pub unsafe fn read_exact(&mut self, pointer: *mut u8, length: usize) -> bool {
+        let Some(end) = self.offset.checked_add(length) else {
+            return false;
+        };
+        let Some(source) = self.bytes.get(self.offset..end) else {
+            return false;
+        };
+
+        if length != 0 {
+            // SAFETY: upheld by the caller contract above. The nonzero guard
+            // keeps an empty copy independent of raw-pointer validity.
+            let destination = unsafe { ::std::slice::from_raw_parts_mut(pointer, length) };
+            destination.copy_from_slice(source);
+        }
+        self.offset = end;
+        true
+    }
+
+    /// Copy the next archive bytes or abort this Rust-only model.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold the same destination contract as `read_exact`.
+    #[allow(unsafe_code)]
+    pub unsafe fn read_or_abort(&mut self, pointer: *mut u8, length: usize) {
+        assert!(
+            unsafe { self.read_exact(pointer, length) },
+            "binary archive source is truncated"
+        );
     }
 }
 

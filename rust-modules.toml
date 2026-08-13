@@ -81,3 +81,7 @@ source = "reactor/future.cpp"
 [[module]]
 cpp_module = "rrr.logging"
 source = "base/logging.cpp"
+
+[[module]]
+cpp_module = "rrr.idempotency"
+source = "rpc/idempotency.cpp"
