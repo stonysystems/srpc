@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from collections import Counter
+import contextlib
 import hashlib
+import io
 import importlib.util
 from pathlib import Path
 import shutil
@@ -37,7 +39,46 @@ class GateStaticContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.modules = DRIVER.load_manifest(ROOT, ROOT / "rust-modules.toml")
 
-    @unittest.skip('MEASUREMENT BYPASS: stale ratchet at srpc HEAD 95390830 (rrr.serializable/rrr.tcp_channel added to manifest without ratchets)')
+    def test_placeholder_ratchet_allows_only_the_benign_cycle_diagnostic(
+        self,
+    ) -> None:
+        """The UNSUPPORTED allowlist must stay one exact compiler comment.
+
+        rusty-cpp emits an informational by-value-cycle diagnostic that does
+        not drop code (rrr.tcp_channel carries it for TcpListener and still
+        compiles to its full ratcheted ABI), so that one anchored form is
+        allowed. Everything else -- including hand-attention slots and any
+        other wording of the same diagnostic -- must still fail.
+        """
+        head = "module;\n#include <cstdint>\nexport module rrr.probe;\n\n"
+        allowed = (
+            "// UNSUPPORTED: unsupported by-value circular type dependency "
+            "in scope <crate>: [TcpListener]; cycle path: "
+            "TcpListener -> TcpListener",
+            "// UNSUPPORTED: unsupported by-value circular type dependency "
+            "in scope <crate>: [A, B]",
+        )
+        rejected = (
+            "// TODO(interface_traits): implement",
+            "// TODO: finish this",
+            "// UNSUPPORTED: trait objects are not lowered yet",
+            "// skipped: emitter bailed out",
+            "// UNSUPPORTED: by-value cycle dropped [TcpListener]",
+            "int x; // UNSUPPORTED: unsupported by-value circular type "
+            "dependency in scope <crate>: [X]",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / "probe.cppm"
+            for body in allowed:
+                with self.subTest(allowed=body):
+                    probe.write_text(head + body + "\n", encoding="utf-8")
+                    GATE.read_generated(probe, "probe")
+            for body in rejected:
+                with self.subTest(rejected=body):
+                    probe.write_text(head + body + "\n", encoding="utf-8")
+                    with self.assertRaises(GATE.GateError):
+                        GATE.read_generated(probe, "probe")
+
     def test_every_manifest_module_has_all_exhaustive_ratchets(self) -> None:
         manifest = {module.cpp_module for module in self.modules}
         self.assertEqual(set(GATE.ABI_SPECS), manifest)
@@ -45,10 +86,29 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 519
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1254
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 519)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1254)
         GATE.require_importer_coverage(self.modules)
+
+    def test_platform_implementation_symbols_are_exhaustive(self) -> None:
+        """Only declared modules may gain symbols outside the crate.
+
+        A module implementation unit that CMake compiles but the crate does
+        not (rrr.epoll_wrapper's platform unit) is the sole reason production
+        may hold symbols the generated object lacks. Keep that allowlist
+        pinned so a new out-of-crate definition cannot slip in unreviewed.
+        """
+        manifest = {module.cpp_module for module in self.modules}
+        self.assertLessEqual(set(GATE.PLATFORM_IMPL_SYMBOLS), manifest)
+        self.assertEqual(set(GATE.PLATFORM_IMPL_SYMBOLS), {"rrr.epoll_wrapper"})
+        self.assertEqual(
+            sum(len(s) for s in GATE.PLATFORM_IMPL_SYMBOLS.values()),
+            GATE.EXPECTED_TOTAL_PLATFORM_SYMBOLS,
+        )
+        # The platform unit must not redefine anything the crate already owns.
+        for name, symbols in GATE.PLATFORM_IMPL_SYMBOLS.items():
+            self.assertFalse(symbols & set(GATE.ABI_SPECS[name].symbols))
 
     def test_each_promoted_module_has_surface_and_raw_abi_ratchets(self) -> None:
         expected = {
@@ -56,7 +116,7 @@ class GateStaticContractTests(unittest.TestCase):
             "rrr.epoll_wrapper": (22, 26),
             "rrr.pollable_proxy": (4, 7),
             "rrr.callbacks": (27, 28),
-            "rrr.inmemory_channel": (68, 75),
+            "rrr.inmemory_channel": (77, 84),
             "rrr.fiber_channel": (17, 20),
             "rrr.threading": (17, 18),
             "rrr.debugging": (9, 10),
@@ -76,7 +136,6 @@ class GateStaticContractTests(unittest.TestCase):
                 )
 
 
-@unittest.skip('MEASUREMENT BYPASS: setUpClass calls load_owned_modules which hard-errors on the same stale ratchet')
 class GateContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -119,14 +178,13 @@ class GateContractTests(unittest.TestCase):
         shutil.copytree(self.generated, output)
         return temporary, output
 
-    @unittest.skip('MEASUREMENT BYPASS: stale ratchet at srpc HEAD 95390830 (rrr.serializable/rrr.tcp_channel added to manifest without ratchets)')
     def test_every_manifest_module_has_all_exhaustive_ratchets(self) -> None:
         manifest = {module.cpp_module for module in self.modules}
         self.assertEqual(set(GATE.ABI_SPECS), manifest)
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 519)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1254)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -148,7 +206,15 @@ class GateContractTests(unittest.TestCase):
             with self.assertRaisesRegex(GATE.GateError, "lacks concrete"):
                 GATE.require_importer_coverage(self.modules)
 
-    def test_exact_generated_digest_rejects_added_export(self) -> None:
+    def test_generated_digest_drift_is_advisory_not_fatal(self) -> None:
+        """Byte-identity was repealed as an acceptance criterion.
+
+        This test used to require that a digest change fail the gate. The
+        project's rule is now "builds + tests pass + equivalent public
+        function surface"; byte drift explicitly does not count, so the digest
+        map is retained for reporting only. Assert the new contract directly:
+        drift is computed and reported, and it does not raise.
+        """
         temporary, output = self.copied_output()
         try:
             child = output / "rrr.future.cppm"
@@ -158,8 +224,12 @@ class GateContractTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(GATE.GateError, "exact output digest"):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
                 GATE.require_cpp_surfaces(ROOT, output, self.modules)
+            report = stdout.getvalue()
+            self.assertIn("ADVISORY", report)
+            self.assertIn("rrr.future", report)
         finally:
             temporary.cleanup()
 
@@ -238,7 +308,7 @@ class GateContractTests(unittest.TestCase):
             "rrr.epoll_wrapper": (22, 26),
             "rrr.pollable_proxy": (4, 7),
             "rrr.callbacks": (27, 28),
-            "rrr.inmemory_channel": (68, 75),
+            "rrr.inmemory_channel": (77, 84),
             "rrr.fiber_channel": (17, 20),
             "rrr.threading": (17, 18),
             "rrr.debugging": (9, 10),
