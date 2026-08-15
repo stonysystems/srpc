@@ -46,6 +46,7 @@ use cpp::rrr::{debugging as cpp_debugging, logging as cpp_logging};
 use cpp::std as cpp_std;
 use rusty as cpp;
 
+type LegacyStdString = String;
 pub type SrcFileCStr = &'static str;
 pub type EventTestFn = rusty::Function<dyn Fn(i32) -> bool>;
 pub type FiberFn = rusty::Function<dyn FnMut()>;
@@ -99,7 +100,14 @@ fn verify(value: bool) {
     unsafe { cpp_debugging::verify(value) };
 }
 
-fn log_line(level: i32, line: i32, file: *const i8, message: String) {
+// NOT named `log_line`: the imported `rrr::logging::log_line` lands in the
+// same C++ namespace `rrr`, so a same-named local wrapper joins its overload
+// set and the forwarding call below resolves back to ITSELF. The parameter is
+// `LegacyStdString` (the established alias every other module uses for a
+// value that crosses into the C++ logger) rather than `String`, so the
+// forward is a plain `const std::string&` bind instead of an impossible
+// `rusty::String` -> `std::string` conversion.
+fn reactor_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
     // The production logger consumes the message synchronously and retains no
     // borrow; the owned Rust value therefore has exactly the required extent.
     unsafe { cpp_logging::log_line(level, line, file, &message) };
@@ -278,7 +286,7 @@ impl<Type: Clone + Default + 'static> EventCore for BoxEvent<Type> {
 }
 
 fn boxevent_make<Type: Clone + Default + 'static>() -> Arc<BoxEvent<Type>> {
-    let sp = Arc::new(BoxEvent {
+    let sp: Arc<BoxEvent<Type>> = Arc::new(BoxEvent::<Type> {
         status_: Cell::new(EventStatus::INIT),
         owner_thread_: rusty::thread::current_id(),
         state_: EventState::new(),
@@ -1277,7 +1285,7 @@ fn stackless_wake_shutdown_begin<WakeDomain>(reactor: &Reactor) {
         }
         if drained > 0u64 {
             g_stackless_cancel.pending_wakes.fetch_add(drained, rusty::sync::atomic::Ordering::Relaxed);
-            log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::teardown] cancelling {} admitted stackless wake(s) that will never be delivered", drained));
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::teardown] cancelling {} admitted stackless wake(s) that will never be delivered", drained));
         }
     }
 }
@@ -1534,7 +1542,7 @@ impl Reactor {
     }
 
     pub fn display_waiting_ev(&self) {
-        log_line(Log::INFO, 0i32, core::ptr::null(), format!("waiting_events_: {}, composite_events_: {}",
+        reactor_log_line(Log::INFO, 0i32, core::ptr::null(), format!("waiting_events_: {}, composite_events_: {}",
                  self.waiting_events_.borrow().len(), self.composite_events_.borrow().len()));
     }
 
@@ -1542,8 +1550,8 @@ impl Reactor {
         let mut guard = self.fibers_.borrow_mut();
         let inserted = guard.insert(fiber_registry_key(fiber), fiber.clone()).is_none();
         if !inserted {
-            unsafe { log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!")); }
-            unsafe { log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), REUSING_FIBER)); }
+            unsafe { reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!")); }
+            unsafe { reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), REUSING_FIBER)); }
         }
         verify(inserted);
         verify(guard.len() > 0usize);
@@ -1599,7 +1607,7 @@ impl Reactor {
             // silent: the caller believes it has scheduled work that will now
             // never run, and anything waiting on that work must be told.
             g_stackless_cancel.rejected_spawns.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
-            log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::register_stackless_poller] cancelling a spawn refused during teardown; the task and its completion callback are destroyed now, so waiters are released with an error instead of blocking forever"));
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::register_stackless_poller] cancelling a spawn refused during teardown; the task and its completion callback are destroyed now, so waiters are released with an error instead of blocking forever"));
             return STACKLESS_UNREGISTERED_SLOT;
         }
         let scanned: usize = 0usize;
@@ -1749,7 +1757,7 @@ impl Reactor {
 impl Drop for Reactor {
     fn drop(&mut self) {
         verify(rusty::thread::current_id() == self.thread_id_.get());
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
                   self.all_events_.borrow().len(), self.fibers_.borrow().len()));
         // Reject new foreign wakes first. Destroy every Task-bearing closure
         // while its stable Context/Waker binding still exists, then retire the
@@ -1778,7 +1786,7 @@ impl Drop for Reactor {
         if outstanding > 0u64 || admitted > 0u64 {
             g_stackless_cancel.teardown_tasks.fetch_add(outstanding, rusty::sync::atomic::Ordering::Relaxed);
             g_stackless_cancel.admitted_completions.fetch_add(admitted, rusty::sync::atomic::Ordering::Relaxed);
-            log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] cancelling {} outstanding stackless task(s) and {} already-admitted completion(s); their callbacks and captures are destroyed below, which is how waiters learn this failed rather than hanging",
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] cancelling {} outstanding stackless task(s) and {} already-admitted completion(s); their callbacks and captures are destroyed below, which is how waiters learn this failed rather than hanging",
                       outstanding, admitted));
         }
         // Drop Task/coroutine frames after releasing the RefCell borrow:
@@ -1790,7 +1798,7 @@ impl Drop for Reactor {
         };
         drop(retired_tasks);
         stackless_wake_unregister::<()>(self);
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Destructor body complete, about to destroy member variables"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Destructor body complete, about to destroy member variables"));
     }
 }
 
@@ -1819,7 +1827,7 @@ where
     };
     let state: Arc<StacklessResultTaskState<T, OnReady>> = Arc::new(ts);
     let completion_ticket = early_ticket.clone();
-    let poller = rusty::Function::<dyn FnMut(&mut rusty::Context) -> bool>::from_callable(move |ctx: &mut rusty::Context| -> bool {
+    let poller = StacklessPollFn::from_callable(move |ctx: &mut rusty::Context| -> bool {
         // Scoped so the task borrow is released before on_ready runs.
         let poll_result = state.task.borrow_mut().poll(ctx);
         if !poll_result.is_ready() {
@@ -1986,38 +1994,38 @@ impl PollThread {
     // Explicit shutdown: send CmdShutdown, join unless self-join.
     pub fn shutdown(&self) {
         let main_tid: i64 = unsafe { syscall(SYS_gettid) };
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from TID={}", main_tid as i32));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from TID={}", main_tid as i32));
         if self.shutdown_called_.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
-            log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Already called, returning"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Already called, returning"));
             return;
         }
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Sending CmdShutdown"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Sending CmdShutdown"));
         self.sender_.send(PollCommand::Shutdown);
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] CmdShutdown sent"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] CmdShutdown sent"));
         // Thread-safe read of the poll thread's id.
         let current_tid = rusty::thread::current_id();
         let poll_tid = u64_to_thread_id(
             self.poll_thread_id_bits_.load(rusty::sync::atomic::Ordering::Acquire));
         if current_tid == poll_tid {
-            log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from poll thread, skipping join"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from poll thread, skipping join"));
             return;
         }
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Acquiring join_handle lock..."));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Acquiring join_handle lock..."));
         // Scoped so the guard drops BEFORE the "Released" log below, as the
         // C++ block did.
         {
             let mut guard = self.join_handle_.lock().unwrap();
-            log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] join_handle lock acquired"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] join_handle lock acquired"));
             if (*guard).is_some() {
-                log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Calling thread.join()..."));
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Calling thread.join()..."));
                 (*guard).take().unwrap().join();
-                log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] thread.join() completed!"));
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] thread.join() completed!"));
             } else {
-                log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] join_handle is None, thread already joined"));
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] join_handle is None, thread already joined"));
             }
         }
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Released join_handle lock"));
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Complete"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Released join_handle lock"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Complete"));
     }
 
     pub fn add_proxy(&self, poll: PollableProxy) {
@@ -2043,7 +2051,7 @@ impl PollThread {
     pub fn update_mode(&self, fd: i32, new_mode: i32) {
         let result = self.sender_.send(PollCommand::UpdateMode { fd: fd, new_mode: new_mode });
         if result.is_err() {
-            unsafe { log_line(Log::ERROR, 0i32, core::ptr::null(), format!("PollThread::update_mode: send failed! Channel disconnected?")); }
+            unsafe { reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("PollThread::update_mode: send failed! Channel disconnected?")); }
         }
     }
 
@@ -2379,7 +2387,7 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
             }
             ev.core_status().set(EventStatus::READY);
         } else if ev.core_status().get() == EventStatus::READY {
-            log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("event status ready, triggered?"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("event status ready, triggered?"));
         } else if ev.core_status().get() == EventStatus::DONE {
             // do nothing
         } else if ev.core_status().get() == EventStatus::TIMEOUT {
@@ -2631,7 +2639,7 @@ fn fiber_run_wrapper(fb: &Fiber, y: *mut fiber_yield_t) {
         fiber_fn_clear(&fb.func_);
         fb.status_.set(FiberStatus::FINISHED);
         if fb.needs_finalize_.get() {
-            log_line(Log::INFO, 0i32, core::ptr::null(), format!("Warning: We did not deal with backlog issues"));
+            reactor_log_line(Log::INFO, 0i32, core::ptr::null(), format!("Warning: We did not deal with backlog issues"));
             fb.needs_finalize_.set(false);
         }
         reactor_dec_active_fibers();
@@ -2802,7 +2810,7 @@ fn stackless_profile_report_periodic() {
     if reg_calls > 0u64 {
         avg_scan = (reg_scans as f64) / (reg_calls as f64);
     }
-    log_line(Log::INFO, 0i32, core::ptr::null(), format!("[async-prof] reg_calls={} avg_scan={:.2} reuse={} new={} max_slots={} poll_calls={} poll_ready={} enqueue_calls={}",
+    reactor_log_line(Log::INFO, 0i32, core::ptr::null(), format!("[async-prof] reg_calls={} avg_scan={:.2} reuse={} new={} max_slots={} poll_calls={} poll_ready={} enqueue_calls={}",
         reg_calls, avg_scan, reg_reuse, reg_new, max_slots, poll_calls, poll_ready, enqueue_calls));
 }
 
@@ -2875,12 +2883,12 @@ fn reactor_make() -> Rc<Reactor> {
 
 fn reactor_log_create(disk: bool) {
     if disk {
-        log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a disk fiber scheduler"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a disk fiber scheduler"));
         return;
     }
-    log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a fiber scheduler"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a fiber scheduler"));
     if !REUSING_FIBER {
-        log_line(Log::WARN, 0i32, core::ptr::null(), format!("reusing fiber not enabled!"));
+        reactor_log_line(Log::WARN, 0i32, core::ptr::null(), format!("reusing fiber not enabled!"));
     }
 }
 
@@ -2945,7 +2953,7 @@ fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFil
         self_.n_created_fibers_.set(self_.n_created_fibers_.get() + 1i64);
         if self_.n_created_fibers_.get() % 1024i64 == 0i64 {
             unsafe {
-                log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("created {}, busy {}, idle {} fibers on server {}, recent {}:{}",
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("created {}, busy {}, idle {} fibers on server {}, recent {}:{}",
                                self_.n_created_fibers_.get(),
                                self_.n_busy_fibers_.get(),
                                self_.n_idle_fibers_.get(),
@@ -3020,7 +3028,7 @@ fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     };
     let state: Arc<StacklessVoidTaskState> = Arc::new(ts);
     let completion_ticket = early_ticket.clone();
-    let poller = rusty::Function::<dyn FnMut(&mut rusty::Context) -> bool>::from_callable(move |ctx: &mut rusty::Context| -> bool {
+    let poller = StacklessPollFn::from_callable(move |ctx: &mut rusty::Context| -> bool {
         // Scoped so the task borrow is released before the ready-path store.
         let mut ready: bool = false;
         {
@@ -3078,7 +3086,7 @@ fn pollworker_snapshot_fds(w: &mut PollThreadWorker) -> Vec<i32> {
 }
 
 fn pollworker_poll_loop(w: &mut PollThreadWorker) {
-    log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Starting poll loop"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Starting poll loop"));
     while !w.stop_ {
         pollworker_trigger_job(w);
 
@@ -3092,7 +3100,15 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         });
         for (fd, ready_events) in ready_batch {
             let mut write_mode: Option<i32> = None;
-            if let Some(p) = w.fd_to_pollable_.get_mut(&fd) {
+            // Spelled with the explicit `&mut Box<dyn PollableBase>` binding
+            // rather than `if let Some(p) = …`, matching the two blocks below.
+            // An if-let payload carries no annotation, and the emitter does not
+            // model `HashMap::get_mut`'s return type, so `p` lowers untyped and
+            // the auto-deref Rust performs here (`Box<dyn PollableBase>` ->
+            // `dyn PollableBase`) is not reproduced. Same code either way.
+            let opt = w.fd_to_pollable_.get_mut(&fd);
+            if opt.is_some() {
+                let p: &mut Box<dyn PollableBase> = opt.unwrap();
                 if (ready_events & PollReady::READABLE) != 0i32 {
                     p.handle_read();
                 }
@@ -3107,7 +3123,9 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
                 pollworker_do_update_mode(w, fd, new_mode);
             }
             if (ready_events & PollReady::ERROR) != 0i32 {
-                if let Some(p) = w.fd_to_pollable_.get_mut(&fd) {
+                let err_opt = w.fd_to_pollable_.get_mut(&fd);
+                if err_opt.is_some() {
+                    let p: &mut Box<dyn PollableBase> = err_opt.unwrap();
                     p.handle_error();
                 }
             }
@@ -3180,7 +3198,7 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         }
     }
 
-    log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Exited while loop (stop_=true), starting cleanup"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Exited while loop (stop_=true), starting cleanup"));
     // Shutdown cleanup — unregister all remaining pollables. Only the
     // keys matter here, so the proxies are never touched.
     let rest = pollworker_snapshot_fds(w);
@@ -3195,7 +3213,7 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
     w.fd_to_pollable_.clear();
     w.mode_.clear();
     w.pending_remove_.clear();
-    log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Cleanup complete, poll_loop exiting"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Cleanup complete, poll_loop exiting"));
 }
 
 fn pollworker_process_commands(self_: &mut PollThreadWorker) {
@@ -3421,9 +3439,9 @@ fn pollthread_create() -> Arc<PollThread> {
 
 fn pollthread_drop(pt: &PollThread) {
     let tid: i64 = unsafe { syscall(SYS_gettid) };
-    log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor called from TID={}", tid as i32));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor called from TID={}", tid as i32));
     pt.shutdown();
-    log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor complete"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor complete"));
 }
 
 fn fiber_yield_invoke(y: &mut fiber_yield_t) {
