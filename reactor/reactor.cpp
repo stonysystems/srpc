@@ -68,13 +68,6 @@ pub type StacklessProfileCountUsize = rusty::sync::atomic::AtomicUsize;
 // production C++ declaration must retain the distinct built-in `char` type.
 // `rust-type-map.toml` maps this established facade name to C++ `char`.
 type LegacyCChar = i8;
-// Linux's variadic syscall entry point is declared with C `long`, which is
-// ABI-sized like i64 on the accepted LP64 targets but remains a distinct C++
-// type.  Preserve that declaration spelling through the checked type map.
-type LegacyCLong = i64;
-
-pub const REUSING_FIBER: bool = true;
-const SYS_gettid: LegacyCLong = 186;
 
 type srpc_fiber_ctx = rusty::ReactorFiberContext;
 type srpc_fiber = rusty::ReactorFiberState;
@@ -90,7 +83,32 @@ unsafe extern "C" {
     fn srpc_fiber_resume(fiber: *mut srpc_fiber);
     fn srpc_fiber_yield(fiber: *mut srpc_fiber);
     fn getenv(name: *const LegacyCChar) -> *mut LegacyCChar;
-    fn syscall(number: LegacyCLong, ...) -> LegacyCLong;
+    // Reactor platform / build-configuration facade; see reactor/srpc_fiber.h.
+    // Neither fact can be a Rust constant: `SYS_gettid`'s number is
+    // arch-specific and `REUSING_FIBER` is a build flag, and canonical Rust
+    // has to compile under rustc where neither macro exists.  The C shim is
+    // compiled by the same build, with the same flags, against the same
+    // platform headers, so it answers for the library that is actually built.
+    fn srpc_reactor_gettid() -> i64;
+    fn srpc_reactor_reusing_fiber() -> i32;
+}
+
+// The calling thread's kernel thread id.  Replaces `syscall(SYS_gettid)` with
+// the literal 186, which is correct only on x86-64 Linux.
+fn current_thread_gettid() -> i64 {
+    // The shim takes no arguments, touches no Rust state, and cannot fail.
+    unsafe { srpc_reactor_gettid() }
+}
+
+// The historical `REUSING_FIBER` macro:
+//     #if defined(REUSE_FIBER) || defined(REUSE_CORO)
+// Deliberately NOT a `pub const`: the incumbent public surface had no such
+// entity, and a module-exported constant would freeze one build's answer
+// under the name of a macro that consumers can still define differently.
+fn reusing_fiber() -> bool {
+    // Same contract as above: an argument-free query over a compile-time
+    // constant in the shim translation unit.
+    unsafe { srpc_reactor_reusing_fiber() != 0 }
 }
 
 fn verify(value: bool) {
@@ -1543,7 +1561,7 @@ impl Reactor {
         let inserted = guard.insert(fiber_registry_key(fiber), fiber.clone()).is_none();
         if !inserted {
             unsafe { log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!")); }
-            unsafe { log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), REUSING_FIBER)); }
+            unsafe { log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), reusing_fiber())); }
         }
         verify(inserted);
         verify(guard.len() > 0usize);
@@ -1551,7 +1569,7 @@ impl Reactor {
 
     pub fn recycle(&self, fiber: &mut Rc<Fiber>) {
         // Fixes fibers not being recycled when they don't finish immediately.
-        if REUSING_FIBER {
+        if reusing_fiber() {
             fiber.status_.set(FiberStatus::RECYCLED);
             let empty_fn: rusty::Function<dyn FnMut()> = Default::default();
             *fiber.func_.borrow_mut() = empty_fn;
@@ -1985,7 +2003,7 @@ impl PollThread {
 
     // Explicit shutdown: send CmdShutdown, join unless self-join.
     pub fn shutdown(&self) {
-        let main_tid: i64 = unsafe { syscall(SYS_gettid) };
+        let main_tid: i64 = current_thread_gettid();
         log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from TID={}", main_tid as i32));
         if self.shutdown_called_.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
             log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Already called, returning"));
@@ -2879,7 +2897,7 @@ fn reactor_log_create(disk: bool) {
         return;
     }
     log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a fiber scheduler"));
-    if !REUSING_FIBER {
+    if !reusing_fiber() {
         log_line(Log::WARN, 0i32, core::ptr::null(), format!("reusing fiber not enabled!"));
     }
 }
@@ -2928,7 +2946,7 @@ fn reactor_tls_set_running(fiber: &Rc<Fiber>) {
 
 fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
     let mut available_guard = self_.available_fibers_.borrow_mut();
-    if REUSING_FIBER && available_guard.len() > 0usize {
+    if reusing_fiber() && available_guard.len() > 0usize {
         self_.n_idle_fibers_.set(self_.n_idle_fibers_.get() - 1i64);
         let fiber: Rc<Fiber> = available_guard.pop().unwrap();
         // Cell/RefCell interior mutability re-stamps the recycled fiber
@@ -3420,7 +3438,7 @@ fn pollthread_create() -> Arc<PollThread> {
 }
 
 fn pollthread_drop(pt: &PollThread) {
-    let tid: i64 = unsafe { syscall(SYS_gettid) };
+    let tid: i64 = current_thread_gettid();
     log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor called from TID={}", tid as i32));
     pt.shutdown();
     log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor complete"));

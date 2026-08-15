@@ -1,6 +1,5 @@
 LegacyAddrInfo = "addrinfo"
 LegacyCChar = "std::string::value_type"
-LegacyCLong = "long"
 LegacyStdString = "std::string"
 LegacyCallbackWrapper = "::rrr::detail::CallbackWrapper"
 LegacyChannelConnectionBase = "rrr::ChannelConnectionBase"
