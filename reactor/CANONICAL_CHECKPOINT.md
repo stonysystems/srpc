@@ -137,6 +137,10 @@ Additional source-fidelity corrections made after the first emitted-C++ audit:
   mapped to C++ `long`.  This removes the prior `int64_t`/`long` source
   mismatch on the accepted LP64 target; the compiler still drops the required
   ellipsis and therefore still fails the native C declaration gate.
+  SUPERSEDED: the variadic `syscall` declaration and the `LegacyCLong` facade
+  are deleted outright — the only caller was `syscall(SYS_gettid)`, now the
+  non-variadic `srpc_reactor_gettid()` C seam.  See the configuration-fidelity
+  resolution at the end of this document.
 - `QuorumDanglingVec` now uses the existing `rusty::StdPair` facade and checked
   `std::make_pair` import.  Frozen output is exactly
   `rusty::Vec<std::pair<uint16_t, int64_t>>`, matching the incumbent callback
@@ -415,9 +419,41 @@ symbol oracles (including all global `janus` identities), TLS and native
 runtime races, ASan, TSan, and independent review.  Rust facade containers
 intentionally do not claim the incumbent C++ storage layout.
 
-Two configuration-fidelity items are also explicit promotion gates rather
-than silently accepted constants: `REUSING_FIBER` is currently fixed true to
-match this accepted build's `-DREUSE_FIBER`, and `SYS_gettid = 186` is the
-x86-64 Linux value rather than the incumbent platform-header macro.  A
-portable/configurable facade or target-conditional proof is required before a
+Two configuration-fidelity items were also explicit promotion gates rather
+than silently accepted constants: `REUSING_FIBER` was fixed true to match this
+accepted build's `-DREUSE_FIBER`, and `SYS_gettid = 186` was the x86-64 Linux
+value rather than the incumbent platform-header macro.  A
+portable/configurable facade or target-conditional proof was required before a
 cross-architecture/configuration claim.
+
+**RESOLVED** — both are now answered by the reactor's own plain-C seam,
+`reactor/srpc_fiber.c` (declared in `reactor/srpc_fiber.h`, which the
+`rrr.reactor` module preamble already includes):
+
+  * `srpc_reactor_gettid()` returns `syscall(SYS_gettid)` using
+    `<sys/syscall.h>`'s number *for the target being compiled*.  No syscall
+    number appears in portable source, so aarch64 (178) and i386 (224) are
+    correct without a per-target source edit.  The variadic `syscall`
+    declaration and its `LegacyCLong` facade are deleted from the canonical
+    Rust along with it, retiring that half of native-C-ABI frontier item 2.
+  * `srpc_reactor_reusing_fiber()` evaluates the incumbent predicate
+    `#if defined(REUSE_FIBER) || defined(REUSE_CORO)` verbatim, in a
+    translation unit compiled with the library's own flags.  A build without
+    `-DREUSE_FIBER` therefore behaves as it always did.
+
+The Rust side is a private `fn reusing_fiber() -> bool` and a private
+`fn current_thread_gettid() -> i64`.  Deliberately *not* `pub`: the incumbent
+public surface exposed a preprocessor macro, not an exported constant, and
+`export constexpr bool REUSING_FIBER = true;` was both a surface addition and
+a value frozen at library-build time under the name of a macro a consumer can
+still define differently.  Removing the name from the module's export list
+restores macro-equivalence at the public surface; the configuration answer
+now lives in exactly one place, the compiled library.
+
+Verified: generated `rrr.reactor.cppm` differs from the pre-fix generation by
+39 lines and the other 35 generated modules are byte-identical; the emitted
+construct (global-module-fragment include + module-purview `extern "C"`
+redeclaration + the two facades) compiles, links and runs under clang 22.1.8
+with the correct answer for both `-DREUSE_FIBER` and `-UREUSE_FIBER`; and the
+Cargo lane is unchanged at 38 suites / 133 tests / 0 failed with identical
+warning and error sets.
