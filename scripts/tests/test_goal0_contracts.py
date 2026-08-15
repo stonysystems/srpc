@@ -355,7 +355,6 @@ class GateContractTests(unittest.TestCase):
 
 
 class ExtractionContractTests(unittest.TestCase):
-    @unittest.skip('MEASUREMENT BYPASS: stale census constant 33 vs manifest 34 at srpc HEAD 95390830')
     def test_checked_in_manifest_is_unique_and_physical(self) -> None:
         modules = DRIVER.load_manifest(ROOT, ROOT / "rust-modules.toml")
         self.assertEqual(len(modules), 34)
