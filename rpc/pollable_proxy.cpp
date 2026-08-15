@@ -3,7 +3,7 @@
 use rusty::cpp_inherit;
 use std::sync::Arc;
 
-pub trait PollableBase {
+pub trait PollableBase: Send {
     fn fd(&self) -> i32;
     fn poll_mode(&self) -> i32;
     fn content_size(&mut self) -> usize;

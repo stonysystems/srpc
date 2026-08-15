@@ -7,12 +7,17 @@
 //! omits it from generated C++ because the production definitions already
 //! live in the rusty runtime headers.
 
-use ::std::cell::{Cell, RefCell};
+pub use ::std::boxed::Box;
+pub use ::std::cell::{Cell, RefCell, RefMut};
+pub use ::std::collections::{VecDeque};
 use ::std::marker::PhantomData;
 use ::std::ops::{Deref, DerefMut, Index};
-use ::std::rc::Rc;
+pub use ::std::option::Option;
+pub use ::std::option::Option::{None, Some};
+pub use ::std::rc::Rc;
 use ::std::sync::Condvar;
 use ::std::time::Duration;
+pub use ::std::vec::Vec;
 
 pub use rusty_cpp_markers::cpp_inherit;
 
@@ -87,7 +92,206 @@ pub mod sync {
     }
 
     pub mod atomic {
-        pub use ::std::sync::atomic::{AtomicBool, Ordering};
+        pub use ::std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    }
+
+    pub mod mpsc {
+        pub use ::std::sync::mpsc::{channel, Receiver, Sender};
+    }
+}
+
+pub mod marker {
+    pub use ::std::marker::PhantomPinned;
+}
+
+pub mod rc {
+    pub use ::std::rc::{Rc, Weak};
+}
+
+pub mod port {
+    pub mod rc {
+        pub use ::std::rc::Rc;
+    }
+}
+
+pub mod thread {
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    #[repr(transparent)]
+    pub struct ThreadId(pub u64);
+
+    impl ThreadId {
+        pub fn as_native(self) -> u64 {
+            self.0
+        }
+    }
+
+    pub struct JoinHandle<T>(::std::thread::JoinHandle<T>);
+
+    impl<T> JoinHandle<T> {
+        pub fn join(self) {
+            let _ = self.0.join();
+        }
+    }
+
+    pub fn current_id() -> ThreadId {
+        // The production facade preserves the platform-native id.  Direct
+        // rustc needs only stable equality within one execution, so derive a
+        // deterministic numeric token from ThreadId's Debug representation.
+        let text = ::std::format!("{:?}", ::std::thread::current().id());
+        let value = text
+            .trim_start_matches("ThreadId(")
+            .trim_end_matches(')')
+            .parse::<u64>()
+            .unwrap_or(0);
+        ThreadId(value)
+    }
+
+    pub fn spawn<F, A, R>(function: F, argument: A) -> JoinHandle<R>
+    where
+        F: FnOnce(A) -> R + Send + 'static,
+        A: Send + 'static,
+        R: Send + 'static,
+    {
+        JoinHandle(::std::thread::spawn(move || function(argument)))
+    }
+}
+
+pub struct Waker {
+    // The production `rusty::Waker` stores a copyable `std::function` and its
+    // `wake()` member is const.  Model that contract directly so a retained
+    // waker may be invoked concurrently without an `FnMut` aliasing hole.
+    pub wake_fn: Box<dyn Fn() + Send + Sync>,
+}
+
+impl Waker {
+    pub fn wake(&self) {
+        (self.wake_fn)();
+    }
+}
+
+pub struct Context {
+    pub waker: *mut Waker,
+}
+
+/// Rustc-side x86-64 layout model for the plain-C fiber context.
+#[repr(C)]
+pub struct ReactorFiberContext {
+    pub rsp: *mut core::ffi::c_void,
+    pub rip: *mut core::ffi::c_void,
+    pub rbx: usize,
+    pub rbp: usize,
+    pub r12: usize,
+    pub r13: usize,
+    pub r14: usize,
+    pub r15: usize,
+}
+
+/// Rustc-side layout model for `::srpc_fiber` from `reactor/srpc_fiber.h`.
+#[repr(C)]
+pub struct ReactorFiberState {
+    pub caller_ctx: ReactorFiberContext,
+    pub fiber_ctx: ReactorFiberContext,
+    pub stack_mapping: *mut core::ffi::c_void,
+    pub stack_mapping_bytes: usize,
+    pub state: i32,
+    pub entry_fn: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub entry_arg: *mut core::ffi::c_void,
+}
+
+pub struct Poll<T> {
+    pub ready: bool,
+    pub value: T,
+}
+
+impl<T> Poll<T> {
+    pub fn ready_with(value: T) -> Self {
+        Self { ready: true, value }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    pub fn is_pending(&self) -> bool {
+        !self.ready
+    }
+}
+
+impl<T: Default> Poll<T> {
+    pub fn pending() -> Self {
+        Self {
+            ready: false,
+            value: T::default(),
+        }
+    }
+}
+
+pub struct Task<T> {
+    poller: Box<dyn FnMut(&mut Context) -> Poll<T>>,
+}
+
+/// Rustc-only storage model for the reactor's `std::set<Arc<Job>>` slot.
+///
+/// The production type map lowers `ReactorJobSet<T>` to `std::set<T>`; this
+/// vector-backed model preserves the set's pointer-identity semantics for
+/// direct Rust checking without requiring `dyn Job: Ord`.
+pub struct ReactorJobSet<T> {
+    entries: Vec<T>,
+}
+
+pub trait ReactorJobSetKey {
+    fn same_identity(&self, other: &Self) -> bool;
+}
+
+impl<T: ?Sized> ReactorJobSetKey for ::std::sync::Arc<T> {
+    fn same_identity(&self, other: &Self) -> bool {
+        ::std::sync::Arc::ptr_eq(self, other)
+    }
+}
+
+impl<T> Default for ReactorJobSet<T> {
+    fn default() -> Self {
+        Self { entries: Vec::new() }
+    }
+}
+
+impl<T: ReactorJobSetKey> ReactorJobSet<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, value: T) {
+        if !self
+            .entries
+            .iter()
+            .any(|existing| existing.same_identity(&value))
+        {
+            self.entries.push(value);
+        }
+    }
+
+    pub fn erase(&mut self, value: T) {
+        self.entries
+            .retain(|existing| !existing.same_identity(&value));
+    }
+
+    pub fn iter(&self) -> ::std::slice::Iter<'_, T> {
+        self.entries.iter()
+    }
+}
+
+impl<T> Task<T> {
+    pub fn from_poller<F>(poller: F) -> Self
+    where
+        F: FnMut(&mut Context) -> Poll<T> + 'static,
+    {
+        Self {
+            poller: Box::new(poller),
+        }
+    }
+
+    pub fn poll(&mut self, context: &mut Context) -> Poll<T> {
+        (self.poller)(context)
     }
 }
 
@@ -1938,11 +2142,27 @@ impl Function<dyn FnMut()> {
     }
 }
 
-impl<A: 'static> Function<dyn FnMut(A)> {
+impl Function<dyn FnMut(i32)> {
     /// Erases a mutable one-argument callback.
     pub fn from_callable<C>(callback: C) -> Self
     where
-        C: FnMut(A) + 'static,
+        C: FnMut(i32) + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl<A: ?Sized + 'static, R: 'static> Function<dyn FnMut(&mut A) -> R> {
+    /// Erases a mutable callback whose argument is borrowed for the duration
+    /// of each call.  This separate higher-ranked form models C++ callbacks
+    /// such as `Function<bool(Context&)>` without requiring a `'static`
+    /// reference at the Rust call site.
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: for<'a> FnMut(&'a mut A) -> R + 'static,
     {
         Self {
             inner: Some(Box::new(callback)),

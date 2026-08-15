@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
 
 use rrr::misc::{clamp, format_thousands, get_ncpu, Job, OneTimeJob};
-use std::cell::Cell;
 use std::cmp::Ordering;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
@@ -70,10 +70,10 @@ fn heterogeneous_clamp_keeps_the_legacy_template_shape() {
 
 #[test]
 fn one_time_job_preserves_state_and_trait_dispatch() {
-    let calls = Rc::new(Cell::new(0_u32));
-    let observed = Rc::clone(&calls);
+    let calls = Arc::new(AtomicU32::new(0_u32));
+    let observed = Arc::clone(&calls);
     let mut concrete = OneTimeJob::new(Box::new(move || {
-        observed.set(observed.get() + 1);
+        observed.fetch_add(1, AtomicOrdering::Relaxed);
     }));
     let job: &mut dyn Job = &mut concrete;
 
@@ -82,11 +82,11 @@ fn one_time_job_preserves_state_and_trait_dispatch() {
     job.Work();
     assert!(!job.Ready());
     assert!(job.Done());
-    assert_eq!(calls.get(), 1);
+    assert_eq!(calls.load(AtomicOrdering::Relaxed), 1);
 
     // The historical class does not suppress an explicit second Work call.
     job.Work();
-    assert_eq!(calls.get(), 2);
+    assert_eq!(calls.load(AtomicOrdering::Relaxed), 2);
 }
 
 #[test]
