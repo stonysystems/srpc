@@ -129,7 +129,7 @@ include("${SRPC_RUSTY_CPP_DIR}/cmake/RustyCppTranspiler.cmake")
 create_rustycpp_transpiler_build_target()
 add_subdirectory(third-party/rusty-cpp EXCLUDE_FROM_ALL)
 foreach(_rusty_port_target IN ITEMS
-    vec_port btree_port rc_port hashbrown_port rusty_async rusty
+    vec_port btree_port rc_port std_port std_port_hashbrown rusty_async rusty
     binary_heap_port vec_deque_port cell_port string_port arc_port
     linked_list_port)
     if(TARGET ${_rusty_port_target})
@@ -456,13 +456,12 @@ list(REMOVE_ITEM RRR_BENCH_SRC
 
 set(RRR_CXXFLAGS ${BENCH_CXXFLAGS})
 
-# The `rusty` umbrella module — defined here (not upstream in rusty-cpp)
-# because rusty-cpp ships rusty.cppm only as a header on the include
-# path, leaving consumers responsible for compiling it as a named
-# C++20 module unit. We re-export the transpiled port libraries
-# (vec_port, btree_port, rc_port, hashbrown_port, rusty_async) so that
-# `import rusty;` in rrr sources resolves rusty::Vec / Rc / BTreeMap
-# / HashMap / etc. via the umbrella's `using` aliases.
+# The `rusty` umbrella module — historically defined here because the
+# 29122d04-lineage rusty-cpp shipped rusty.cppm only as a header on the
+# include path. The converged goal0-on-main rusty-cpp defines the `rusty`
+# umbrella target itself (linking std_port instead of the deleted
+# hashbrown_port, #177), so this block is now a fallback that only fires
+# if upstream ever stops providing the target.
 if(NOT TARGET rusty)
     add_library(rusty STATIC)
     target_sources(rusty PUBLIC
@@ -484,7 +483,7 @@ if(NOT TARGET rusty)
         -O3 -DNDEBUG -march=native -std=gnu++23
     )
     target_link_libraries(rusty PUBLIC
-        vec_port btree_port rc_port hashbrown_port rusty_async
+        vec_port btree_port rc_port std_port rusty_async
         binary_heap_port vec_deque_port cell_port string_port arc_port
         linked_list_port
     )
@@ -771,7 +770,8 @@ set(RRR_GOAL0_RUNTIME_TARGETS
     vec_port
     btree_port
     rc_port
-    hashbrown_port
+    std_port
+    std_port_hashbrown
     binary_heap_port
     vec_deque_port
     cell_port

@@ -1,6 +1,7 @@
 version = 1
 
 [modules."rrr::basetypes"]
+cpp_module = "rrr.basetypes"
 namespace = "rrr"
 
 [modules."rrr::basetypes".symbols."SparseInt::buf_size"]
@@ -32,6 +33,7 @@ kind = "function"
 callable_signatures = ["uint64_t(bool)"]
 
 [modules."rrr::logging"]
+cpp_module = "rrr.logging"
 namespace = "rrr"
 
 [modules."rrr::logging".symbols.log_line]
@@ -39,6 +41,7 @@ kind = "function"
 callable_signatures = ["void(int32_t,int32_t,const int8_t*,const std::string&)"]
 
 [modules."rrr::reactor"]
+cpp_module = "rrr.reactor"
 namespace = "rrr"
 
 [modules."rrr::reactor".symbols.create_sp_box_event]
@@ -106,9 +109,11 @@ kind = "function"
 callable_signatures = ["rusty::Rc<Fiber>(rusty::Function<void()>,const char*,int64_t)"]
 
 [modules."rrr::debugging"]
+cpp_module = "rrr.debugging"
 namespace = "rrr"
 
 [modules."rrr::rand"]
+cpp_module = "rrr.rand"
 namespace = "rrr"
 
 [modules."rrr::rand".symbols."RandomGenerator::rand"]
@@ -120,9 +125,11 @@ kind = "function_template"
 callable_signatures = ["void(bool)"]
 
 [modules."rrr::errors"]
+cpp_module = "rrr.errors"
 namespace = "rrr"
 
 [modules."rrr::serializable"]
+cpp_module = "rrr.serializable"
 namespace = "rrr"
 
 [modules."rrr::serializable".symbols.make_sink_proxy]
@@ -163,6 +170,7 @@ kind = "function_template"
 callable_signatures = ["void(std::string&,BinaryReadArchive&)"]
 
 [modules.rusty]
+cpp_module = "rusty"
 namespace = "rusty"
 
 [modules.rusty.symbols."Arc::get"]
@@ -174,6 +182,7 @@ kind = "function_template"
 callable_signatures = ["rusty::Arc<T>()"]
 
 [modules.std]
+cpp_module = "std"
 namespace = "std"
 
 [modules.std.symbols.make_pair]
