@@ -806,7 +806,7 @@ impl fiber_task_t {
     #[cfg_attr(any(), cpp_explicit)]
     pub fn new(fn_: FiberTaskFn) -> fiber_task_t {
         fiber_task_t {
-            fn_: fn_,
+            fn_,
             yield_: fiber_yield_t { task_: core::ptr::null_mut() },
             // srpc_fiber_init overwrites every field before use. Its C ABI
             // representation consists only of nullable pointers/integers, so
@@ -2105,7 +2105,7 @@ impl PollThread {
     pub fn remove_fd(&self, fd: i32) {
         // Err == the poll worker exited; the fd it would unregister is gone too.
         let _dropped_when_worker_gone =
-            self.sender_.send(PollCommand::RemovePollable { fd: fd });
+            self.sender_.send(PollCommand::RemovePollable { fd });
     }
 
     // Thread-safe close: removes from epoll, closes socket, drops
@@ -2113,11 +2113,11 @@ impl PollThread {
     pub fn request_close(&self, fd: i32) {
         // Err == the poll worker exited; it already closed everything it owned.
         let _dropped_when_worker_gone =
-            self.sender_.send(PollCommand::ClosePollable { fd: fd });
+            self.sender_.send(PollCommand::ClosePollable { fd });
     }
 
     pub fn update_mode(&self, fd: i32, new_mode: i32) {
-        let result = self.sender_.send(PollCommand::UpdateMode { fd: fd, new_mode: new_mode });
+        let result = self.sender_.send(PollCommand::UpdateMode { fd, new_mode });
         if result.is_err() {
             reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("PollThread::update_mode: send failed! Channel disconnected?"));
         }
@@ -2126,7 +2126,7 @@ impl PollThread {
     pub fn add(&self, job: Arc<dyn Job>) {
         // Err == the poll worker exited; there is no loop left to run the job.
         let _dropped_when_worker_gone =
-            self.sender_.send(PollCommand::AddJob { job: job });
+            self.sender_.send(PollCommand::AddJob { job });
     }
 
     // For testing — worker state is not reachable across the channel.
