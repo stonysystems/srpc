@@ -3036,7 +3036,17 @@ fn fiber_current_fiber() -> Option<Rc<Fiber>> {
     Some((*guard).as_ref()?.clone())
 }
 
-fn fiber_create_run_impl(func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
+// `pub` restores the incumbent carrier's visibility. In the hand-written
+// reactor/reactor.cpp this declaration lived inside `export namespace rrr`
+// (line 1899 of the c6c55ba carrier), so importers could name it; the
+// promotion to canonical Rust dropped the `pub` and made it module-private.
+// rrr.server calls it by name through cpp-module-index.toml
+// (`[modules."rrr::reactor".symbols.fiber_create_run_impl]`, kind =
+// "function"), which only resolves against an exported declaration. The
+// strong symbol itself is unchanged and was already in the reactor ratchet
+// and in the frozen incumbent oracle (line 197 of
+// /var/tmp/reactor-incumbent-owned.unique.demangled).
+pub fn fiber_create_run_impl(func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
     let reactor_rc = Reactor::get_reactor();
     reactor_create_run_fiber_at_impl(&reactor_rc, func, file, line)
 }
