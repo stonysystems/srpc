@@ -73,6 +73,46 @@ set(CMAKE_CXX_MODULE_STD ON)
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>)
 add_link_options(-stdlib=libc++ -lc++abi)
 
+# Sanitizer configuration for the Goal-0 runtime test battery.
+#
+# reactor/CANONICAL_CHECKPOINT.md makes ASan and TSan runtime coverage a
+# promotion gate.  A sanitized reactor cannot be produced by adding flags to
+# the test executables alone: the reactor lives in librrr.a and in the BMIs
+# that the tests import, so the whole tree (rrr, the generated crate providers
+# and the rusty runtime ports) has to be instrumented with the same flags.
+# This is therefore a whole-configuration switch; configure a *separate* build
+# directory per sanitizer, e.g.
+#
+#   cmake -S . -B build-asan -G Ninja -DSRPC_SANITIZER=address
+#   cmake -S . -B build-tsan -G Ninja -DSRPC_SANITIZER=thread
+#
+# and build the battery targets there.  The ABI/symbol oracles deliberately
+# stay on the un-sanitized production configuration: sanitizer runtimes add
+# their own strong symbols and interceptors, so a sanitized archive is not the
+# artifact those oracles are about.
+set(SRPC_SANITIZER "none" CACHE STRING
+    "Sanitizer for the whole build: none|address|thread|undefined")
+set_property(CACHE SRPC_SANITIZER PROPERTY STRINGS
+    none address thread undefined)
+if(NOT SRPC_SANITIZER STREQUAL "none")
+    if(SRPC_SANITIZER STREQUAL "address")
+        set(SRPC_SANITIZER_FLAGS -fsanitize=address -fno-omit-frame-pointer)
+    elseif(SRPC_SANITIZER STREQUAL "thread")
+        set(SRPC_SANITIZER_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
+    elseif(SRPC_SANITIZER STREQUAL "undefined")
+        set(SRPC_SANITIZER_FLAGS
+            -fsanitize=undefined -fno-sanitize-recover=all
+            -fno-omit-frame-pointer)
+    else()
+        message(FATAL_ERROR
+            "Unknown SRPC_SANITIZER '${SRPC_SANITIZER}'; expected "
+            "none|address|thread|undefined")
+    endif()
+    add_compile_options(${SRPC_SANITIZER_FLAGS})
+    add_link_options(${SRPC_SANITIZER_FLAGS})
+    message(STATUS "SRPC sanitizer build: ${SRPC_SANITIZER}")
+endif()
+
 include(CTest)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 find_program(CARGO_EXECUTABLE NAMES cargo REQUIRED)
@@ -790,7 +830,178 @@ add_dependencies(rrr_goal0_dual_compile
     ${RRR_GOAL0_RUNTIME_TARGETS}
 )
 
+# ---------------------------------------------------------------------------
+# Goal-0 runtime test battery.
+#
+# reactor/CANONICAL_CHECKPOINT.md makes generated-C++ multithread/TLS runtime
+# coverage a hard promotion gate and names the exact eight incumbent suites
+# below.  All eight sources have always lived in tests/, but nothing in this
+# build ever compiled or ran them, so that gate had nothing to run.
+#
+# These targets link the CURRENT production librrr.a — whose `rrr.reactor`
+# provider is still the hand-written inline carrier `reactor/reactor.cpp` —
+# which is precisely the incumbent baseline a promoted canonical-Rust Reactor
+# has to be compared against.  They do not require the canonical Rust Reactor
+# to compile.
+# ---------------------------------------------------------------------------
+set(SRPC_GTEST_ROOT
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party/googletest/googletest)
+set(SRPC_RUNTIME_BATTERY_AVAILABLE OFF)
+if(EXISTS ${SRPC_GTEST_ROOT}/src/gtest-all.cc AND
+   EXISTS ${SRPC_GTEST_ROOT}/include/gtest/gtest.h)
+    set(SRPC_RUNTIME_BATTERY_AVAILABLE ON)
+else()
+    message(WARNING
+        "Vendored GoogleTest not found at ${SRPC_GTEST_ROOT}; the Goal-0 "
+        "runtime test battery will NOT be built. Run "
+        "`git submodule update --init --recursive`.")
+endif()
+
+if(SRPC_RUNTIME_BATTERY_AVAILABLE)
+    # GoogleTest is compiled from its own sources rather than through its
+    # CMakeLists so it inherits this project's exact Clang/libc++ ABI.  A
+    # distro libgtest.a is built against libstdc++ and will not link.
+    # GoogleTest itself must not consume the std module: it is ordinary
+    # header-including C++ and CXX_MODULE_STD would add a needless std BMI
+    # dependency to every one of its TUs.
+    if(NOT TARGET srpc_gtest)
+        add_library(srpc_gtest STATIC ${SRPC_GTEST_ROOT}/src/gtest-all.cc)
+        set_target_properties(srpc_gtest PROPERTIES CXX_MODULE_STD OFF)
+        target_include_directories(srpc_gtest PUBLIC
+            ${SRPC_GTEST_ROOT}/include
+            ${SRPC_GTEST_ROOT}
+        )
+        target_compile_options(srpc_gtest PRIVATE ${BENCH_CXXFLAGS})
+        target_compile_definitions(srpc_gtest PUBLIC GTEST_HAS_PTHREAD=1)
+        target_link_libraries(srpc_gtest PUBLIC pthread)
+    endif()
+    if(NOT TARGET srpc_gtest_main)
+        add_library(srpc_gtest_main STATIC ${SRPC_GTEST_ROOT}/src/gtest_main.cc)
+        set_target_properties(srpc_gtest_main PROPERTIES CXX_MODULE_STD OFF)
+        target_compile_options(srpc_gtest_main PRIVATE ${BENCH_CXXFLAGS})
+        target_link_libraries(srpc_gtest_main PUBLIC srpc_gtest pthread)
+    endif()
+
+    # name -> source. Exactly the eight suites named by the checkpoint.
+    set(SRPC_RUNTIME_BATTERY
+        test_reactor
+        test_reactor_extended
+        test_reactor_minimal
+        test_timeout_race
+        test_and_event
+        test_fiber
+        test_fiber_runtime
+        test_rpc_pollthread_proxy_storage
+    )
+    set(SRPC_BATTERY_SRC_test_reactor                    tests/test_reactor.cc)
+    set(SRPC_BATTERY_SRC_test_reactor_extended           tests/test_reactor_extended.cc)
+    set(SRPC_BATTERY_SRC_test_reactor_minimal            tests/test_reactor_minimal.cc)
+    set(SRPC_BATTERY_SRC_test_timeout_race               tests/test_timeout_race.cc)
+    set(SRPC_BATTERY_SRC_test_and_event                  tests/test_and_event.cc)
+    set(SRPC_BATTERY_SRC_test_fiber                      tests/fiber_test.cc)
+    set(SRPC_BATTERY_SRC_test_fiber_runtime              tests/fiber_runtime.cc)
+    set(SRPC_BATTERY_SRC_test_rpc_pollthread_proxy_storage
+        tests/rpc_pollthread_proxy_storage_test.cc)
+
+    # Suites that define their own `int main`. Everything else links
+    # gtest_main. test_reactor_minimal is a plain program with no gtest at all.
+    set(SRPC_BATTERY_OWN_MAIN
+        test_reactor
+        test_reactor_extended
+        test_reactor_minimal
+        test_timeout_race
+        test_and_event
+        test_fiber
+        test_fiber_runtime
+    )
+
+    # The battery programs are this build's first pure module *consumers*.
+    # CMake 4.4 cannot collate their dyndep: their link closure contains both
+    # `rrr` (whose module reference map resolves `std` to
+    # @cmake_cxx_std@synth_0) and the plain rusty/port targets (which resolve
+    # `std` to @synth_1, because they compile -O3 -march=native).  That is a
+    # hard "Disagreement of the location of the 'std' module" error, and
+    # neither side of the divergence may be flattened: the ports really are
+    # built -march=native, and rrr's flags produce the gated production ABI.
+    # So the battery opts out of the scanner and is handed the exact module
+    # map rrr itself was built against; see scripts/emit_module_map.py.
+    set(SRPC_BATTERY_MODMAP
+        ${CMAKE_CURRENT_BINARY_DIR}/goal0-battery-modules.modmap)
+    add_custom_command(
+        OUTPUT ${SRPC_BATTERY_MODMAP}
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
+            --build-dir "${CMAKE_BINARY_DIR}"
+            --modules-json
+                "${CMAKE_BINARY_DIR}/CMakeFiles/rrr.dir/CXXModules.json"
+            --output "${SRPC_BATTERY_MODMAP}"
+        DEPENDS
+            rrr
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
+        COMMENT "Collecting the rrr module map for the Goal-0 runtime battery"
+        VERBATIM
+    )
+    add_custom_target(srpc_battery_modmap DEPENDS ${SRPC_BATTERY_MODMAP})
+
+    foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY)
+        set(_battery_source
+            ${CMAKE_CURRENT_SOURCE_DIR}/${SRPC_BATTERY_SRC_${_battery_target}})
+        if(NOT EXISTS "${_battery_source}")
+            message(FATAL_ERROR
+                "Goal-0 runtime battery source is missing: ${_battery_source}")
+        endif()
+        add_executable(${_battery_target} ${_battery_source})
+        # Scanning off: the modmap above already names every BMI, including
+        # `std`, so CMake must not also attach one of its synthesised std
+        # variants and re-derive a (conflicting) module graph.
+        set_target_properties(${_battery_target} PROPERTIES
+            CXX_SCAN_FOR_MODULES OFF
+            CXX_MODULE_STD OFF)
+        target_include_directories(${_battery_target} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        )
+        # The response file is attached to the SOURCE, not the target.  A
+        # target-level compile option would join that target's compile-settings
+        # signature, and CMake then feeds that whole signature -- `@file` and
+        # all -- into a synthesised `@cmake_cxx_std@synth_N` std module
+        # compile, which runs before the file is generated and dies with
+        # "no such file or directory: '@.../goal0-battery-modules.modmap'".
+        set_source_files_properties(${_battery_source} PROPERTIES
+            COMPILE_OPTIONS "@${SRPC_BATTERY_MODMAP}"
+            OBJECT_DEPENDS "${SRPC_BATTERY_MODMAP}")
+        target_link_libraries(${_battery_target} PRIVATE rrr pthread)
+        add_dependencies(${_battery_target} srpc_battery_modmap)
+        list(FIND SRPC_BATTERY_OWN_MAIN ${_battery_target} _battery_own_main)
+        if(_battery_own_main EQUAL -1)
+            target_link_libraries(${_battery_target} PRIVATE srpc_gtest_main)
+        endif()
+        if(NOT _battery_target STREQUAL "test_reactor_minimal")
+            target_link_libraries(${_battery_target} PRIVATE srpc_gtest)
+        endif()
+    endforeach()
+
+    add_custom_target(srpc_runtime_battery
+        DEPENDS ${SRPC_RUNTIME_BATTERY}
+        COMMENT "Goal-0 runtime test battery (incumbent reactor)"
+    )
+endif()
+
 if(BUILD_TESTING)
+    if(SRPC_RUNTIME_BATTERY_AVAILABLE)
+        foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY)
+            add_test(NAME ${_battery_target}
+                COMMAND "$<TARGET_FILE:${_battery_target}>")
+            # These suites drive real epoll poll threads, fibers and timeouts.
+            # Serialise them and give the slowest (ReactorLoadTest/StressTest)
+            # room, but keep a hard cap so a livelock reports as a failure
+            # rather than hanging the run.
+            set_tests_properties(${_battery_target} PROPERTIES
+                TIMEOUT 600
+                RUN_SERIAL TRUE
+                LABELS "runtime_battery")
+        endforeach()
+    endif()
     add_test(
         NAME srpc_goal0_standalone_structure
         COMMAND "${Python3_EXECUTABLE}"
