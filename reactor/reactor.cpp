@@ -1047,6 +1047,26 @@ pub fn stackless_cancel_report<WakeDomain>() -> StacklessCancelReport {
     }
 }
 
+// MEASURED allow (clippy::extra_unused_type_parameters).  `WakeDomain` is not
+// dead: it is the domain tag that gives each wake domain its OWN
+// `static thread_local` in the emitted C++, because these lower to
+//     template<typename WakeDomain> ... { static thread_local ... OWNERS ...; }
+// Dropping it collapses every domain onto one slot AND moves the ABI: the four
+// functions stop being templates, so they stop being weak/linkonce
+// instantiations and become provider-owned STRONG symbols.  Measured on the
+// real object (R/M/T1-rrr.reactor.*): 301 -> 305 unique demangled strong
+// symbols, only-AFTER = 4 —
+//     rrr::stackless_wake_owners_slot@rrr.reactor()
+//     rrr::stackless_wake_reactor_key@rrr.reactor(rrr::Reactor const&)
+//     rrr::stackless_wake_request@rrr.reactor(Arc<StacklessWakeIngress> const&,
+//                                             Arc<StacklessWakeTicket> const&)
+//     rrr::stackless_wake_binding_context@rrr.reactor(Box<StacklessWakeBinding>&)
+// which the frozen incumbent oracle does not have.  The removal also cascades:
+// four more `WakeDomain` parameters become "unused" the moment these four go,
+// and clippy's own --fix leaves the crate not compiling (E0107 x4,
+// R/M/fix-T1.log) because it does not update the turbofish call sites.
+// The C++ ABI contract wins.
+#[allow(clippy::extra_unused_type_parameters)]
 fn stackless_wake_owners_slot<WakeDomain>() -> *mut *mut Vec<StacklessWakeOwner> {
     // Keep only a trivially destructible pointer in TLS.  A function-local
     // Vec would be constructed after the namespace TLS Reactor Rc and hence
@@ -1095,10 +1115,14 @@ fn stackless_wake_release_empty_storage<WakeDomain>(owners_ptr: *mut Vec<Stackle
     }
 }
 
+// MEASURED allow — see the `extra_unused_type_parameters` note on `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
 fn stackless_wake_reactor_key<WakeDomain>(reactor: &Reactor) -> usize {
     reactor as *const Reactor as usize
 }
 
+// MEASURED allow — see the `extra_unused_type_parameters` note on `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
 fn stackless_wake_request<WakeDomain>(ingress: &Arc<StacklessWakeIngress>, ticket: &Arc<StacklessWakeTicket>) {
     if !ingress.accepting.load(rusty::sync::atomic::Ordering::Acquire) {
         return;
@@ -1174,6 +1198,8 @@ fn stackless_wake_make_binding<WakeDomain>(ingress: Arc<StacklessWakeIngress>) -
     binding
 }
 
+// MEASURED allow — see the `extra_unused_type_parameters` note on `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
 fn stackless_wake_binding_context<WakeDomain>(binding: &mut Box<StacklessWakeBinding>) -> &mut rusty::Context {
     &mut binding.context
 }
@@ -2527,6 +2553,28 @@ fn event_state_seed(st: &EventState) {
     }
 }
 
+// MEASURED allow (clippy::arc_with_non_send_sync).  Clippy is right that these
+// event types are not Send+Sync — they hold `Cell`/`RefCell`/`Rc` and are
+// owner-thread-only by design — and that Rust would prefer `Rc`.  `Rc` is not
+// available to us: `Arc<T>` IS the reactor's historical handle type on the
+// wire, and swapping it moves the ABI.
+//
+// The experiment (R/M/gen-ARCPROBE, R/M/obj-ARCPROBE.log): flipping just
+// `never_event_make` to `Rc` changes the exported declaration from
+//     rusty::Arc<NeverEvent> never_event_make();
+// to
+//     rusty::Rc<NeverEvent> never_event_make();
+// and the module then fails to compile at the very first consumer,
+// `reactor_setup_sp_event<NeverEvent>` ("no known conversion from
+// 'rusty::Rc<NeverEvent>' to 'rusty::Arc<NeverEvent>'").  Eighteen entries of
+// the frozen incumbent symbol oracle carry `rusty::Arc` in their mangled
+// signature, and `Reactor`'s own constructor embeds four
+// `rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable>>>` fields, so
+// the layout oracle moves too.  The C++ ABI contract wins.
+//
+// Each of the eight factories carries the allow on its own item; this note is
+// the shared reason.
+#[allow(clippy::arc_with_non_send_sync)]
 fn never_event_make() -> Arc<NeverEvent> {
     let sp = Arc::new(NeverEvent {
         status_: Cell::new(EventStatus::INIT),
@@ -2539,6 +2587,8 @@ fn never_event_make() -> Arc<NeverEvent> {
     sp
 }
 
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 fn timeout_event_make(wait_us: u64) -> Arc<TimeoutEvent> {
     let sp = Arc::new(TimeoutEvent {
         status_: Cell::new(EventStatus::INIT),
@@ -2553,6 +2603,8 @@ fn timeout_event_make(wait_us: u64) -> Arc<TimeoutEvent> {
     sp
 }
 
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 fn int_event_make(target: i32) -> Arc<IntEvent> {
     let sp = Arc::new(IntEvent {
         status_: Cell::new(EventStatus::INIT),
@@ -2573,6 +2625,8 @@ fn int_event_make(target: i32) -> Arc<IntEvent> {
 // types" (R/M/gen-B2.log).  The explicit new()+push()+push() is the supported
 // spelling.  Scoped to this item.
 #[allow(clippy::vec_init_then_push)]
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<WaitAny> {
     let mut events: Vec<Arc<dyn EventPollable>> =
         Vec::<Arc<dyn EventPollable>>::new();
@@ -2590,6 +2644,8 @@ fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<Wai
     sp
 }
 
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 fn waitall_make() -> Arc<WaitAll> {
     let sp = Arc::new(WaitAll {
         status_: Cell::new(EventStatus::INIT),
@@ -2603,6 +2659,8 @@ fn waitall_make() -> Arc<WaitAll> {
     sp
 }
 
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 fn waitall_make_from(evs: &Vec<Arc<dyn EventPollable>>) -> Arc<WaitAll> {
     let mut events: Vec<Arc<dyn EventPollable>> =
         Vec::<Arc<dyn EventPollable>>::with_capacity(evs.len());
@@ -3122,6 +3180,8 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
     fiber
 }
 
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
@@ -3196,6 +3256,8 @@ fn pollworker_snapshot_fds(w: &mut PollThreadWorker) -> Vec<i32> {
     fds
 }
 
+// MEASURED allow — see the `borrowed_box` note on `pollable_proxy_fd`.
+#[allow(clippy::borrowed_box)]
 fn pollworker_poll_loop(w: &mut PollThreadWorker) {
     reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Starting poll loop".to_string());
     while !w.stop_ {
@@ -3481,6 +3543,15 @@ fn pollworker_process_pending_removals(w: &mut PollThreadWorker) {
     }
 }
 
+// MEASURED allow (clippy::borrowed_box).  `&Box<dyn PollableBase>` is the
+// annotation the emitter needs: `PollableProxy` IS `rusty::Box<PollableBase>`
+// in C++, and the emitter cannot perform Rust's `Box<T>` -> `&T` auto-deref in
+// a binding.  Narrowing to `&dyn PollableBase` emits
+//     const PollableBase& b = p;   // p is rusty::Box<PollableBase>
+// and the module fails to compile -- 3 errors, "no viable conversion from
+// 'const ::rrr::PollableProxy' (aka 'const rusty::Box<PollableBase>') to
+// 'const PollableBase'" (R/M/obj-BB1.log).  The C++ ABI contract wins.
+#[allow(clippy::borrowed_box)]
 fn pollable_proxy_fd(p: &PollableProxy) -> i32 {
     let b: &Box<dyn PollableBase> = p;
     b.fd()
@@ -3498,6 +3569,8 @@ fn pollworker_take_removals(w: &mut PollThreadWorker) -> Vec<i32> {
     v
 }
 
+// MEASURED allow — see the `borrowed_box` note on `pollable_proxy_fd`.
+#[allow(clippy::borrowed_box)]
 fn pollable_proxy_mode(p: &PollableProxy) -> i32 {
     let b: &Box<dyn PollableBase> = p;
     b.poll_mode()
@@ -3607,6 +3680,8 @@ fn fiber_task_body_invoke(f: &mut FiberTaskFn, y: &mut fiber_yield_t) {
 }
 
 #[cfg_attr(any(), cpp_namespace(::janus))]
+// MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
+#[allow(clippy::arc_with_non_send_sync)]
 pub fn quorum_event_make(n_total: i32, quorum: i32) -> Arc<QuorumEvent> {
     let sp = Arc::new(QuorumEvent {
         status_: Cell::new(EventStatus::INIT),
