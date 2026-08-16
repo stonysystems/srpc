@@ -15,9 +15,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 RUSTY_CPP_PIN = "29122d04bcc39df912dce542ca1404e1eb199fd3"
-EXPECTED_INLINE_SOURCES = {
-    "rpc/client.cpp": "client",
-}
+# Every production module is now a canonical Rust provider: the inline
+# carrier inventory is EMPTY, and the negative controls below are what
+# keep an empty inventory from becoming a vacuous check.
+EXPECTED_INLINE_SOURCES: dict[str, str] = {}
 EXPECTED_DSL_SOURCES = {
     *EXPECTED_INLINE_SOURCES,
     "reactor/epoll_platform_linux.cc",
@@ -119,13 +120,38 @@ class StandaloneGoal0Tests(unittest.TestCase):
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         with (ROOT / "rust-modules.toml").open("rb") as stream:
             manifest = tomllib.load(stream)
+        # The inline inventory is empty, so the drift to reject is a carrier
+        # REAPPEARING -- a canonical provider silently re-served from a
+        # hand-written inline unit.
         mutated = cmake.replace(
-            "${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp\n)",
-            "${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp\n)",
+            "set(RRR_INLINE_MODULE_SRC\n)",
+            "set(RRR_INLINE_MODULE_SRC\n"
+            "    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp\n)",
             1,
         )
         self.assertNotEqual(mutated, cmake)
         with self.assertRaisesRegex(AssertionError, "drifted or duplicated"):
+            validate_provider_inventory(mutated, manifest)
+
+    def test_empty_inline_inventory_is_not_a_vacuous_check(self) -> None:
+        """An empty expected inventory must still reject a stray module NAME.
+
+        `RRR_INLINE_MODULE_SRC` and `RRR_EXPECTED_INLINE_MODULES` are checked
+        independently; with both empty it would be easy for the pair to drift
+        apart unnoticed.
+        """
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        with (ROOT / "rust-modules.toml").open("rb") as stream:
+            manifest = tomllib.load(stream)
+        self.assertEqual(EXPECTED_INLINE_SOURCES, {})
+        validate_provider_inventory(cmake, manifest)
+        mutated = cmake.replace(
+            "set(RRR_EXPECTED_INLINE_MODULES\n)",
+            "set(RRR_EXPECTED_INLINE_MODULES\n    client\n)",
+            1,
+        )
+        self.assertNotEqual(mutated, cmake)
+        with self.assertRaisesRegex(AssertionError, "inline module-name inventory"):
             validate_provider_inventory(mutated, manifest)
 
     def test_dsl_census_fails_closed_on_removed_block_or_carrier(self) -> None:
@@ -155,7 +181,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
                 )
 
             self.assertEqual(check().returncode, 0)
-            carrier = scratch / "rpc/client.cpp"
+            carrier = scratch / "reactor/epoll_platform_linux.cc"
             original = carrier.read_text(encoding="utf-8")
             carrier.write_text(
                 original.replace("\n#if RUSTYCPP_RUST", "\n#if 0", 1),
@@ -165,7 +191,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
             self.assertNotEqual(removed_block.returncode, 0)
             self.assertIn("block census mismatch", removed_block.stderr)
             carrier.write_text(original, encoding="utf-8")
-            os.unlink(scratch / "rpc/client.cpp")
+            os.unlink(scratch / "reactor/epoll_platform_linux.cc")
             removed_carrier = check()
             self.assertNotEqual(removed_carrier.returncode, 0)
             self.assertIn("carrier census mismatch", removed_carrier.stderr)

@@ -48,7 +48,7 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
     r"in scope [^:\n]+: \[[^\]\n]*\](?:; cycle path: [^\n]*)?$",
     re.MULTILINE,
 )
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1639
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1897
 
 # ---------------------------------------------------------------------------
 # rrr.reactor: the ONE deliberate addition over the frozen incumbent oracle.
@@ -81,6 +81,335 @@ EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1639
 # SECOND unreviewed addition cannot hide behind this one.
 REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
     {("T", "rrr::EventState@rrr.reactor::new_()")}
+)
+
+# ---------------------------------------------------------------------------
+# rrr.client incumbent-oracle delta -- ENFORCED, not decorative.
+#
+# CLIENT_INCUMBENT_ORACLE is the frozen symbol set of the module as it stood
+# before the promotion (the hand-written `export namespace rrr` module at
+# c6c55ba, compiled to R/incumbent-client.o and read back with this gate's own
+# module_symbols()).  219 symbols.
+#
+# The promoted module owns 258.  require_client_oracle_deltas() below asserts
+# the difference is EXACTLY the two sets that follow, in both directions, so a
+# second unreviewed addition or a silent removal cannot hide behind the
+# reviewed ones.
+#
+# ADDITIONS (40) fall in three groups, none of which displaces an incumbent
+# symbol -- every one of the incumbent's other 218 symbols is present verbatim:
+#   * 20 named constants (CLIENT_ERR_*, CLIENT_POLL_*, CLIENT_RAND_MAX,
+#     CLIENT_INT_MIN, CLIENT_INTERNAL_HEARTBEAT_RPC_ID,
+#     CLIENT_REQUEST_QUEUE_REJECTED_ERROR).  The incumbent spelled these as
+#     bare libc errno values at each use site and exported no symbol for them.
+#   * 14 module-local helper functions the promotion factored out
+#     (client_text* formatting, client_rand, client_verify, client_log_line,
+#     client_sink_proxy / client_source_proxy, make_pending_queue,
+#     clientpool_select).  The incumbent inlined each of these.
+#   * 5 lowerings of Rust `Clone`/`Default` impls (BufferingConfig::clone,
+#     KeepaliveConfig::clone, PoolConfig::clone, FutureAttr::clone,
+#     FutureAttr::default_).  The incumbent used C++ implicit copy
+#     construction and aggregate initialization, which emit no symbol.
+#
+# The ONE removal is a signature change with its counterpart in the additions:
+#     rrr::ClientConnection::bind_factory(Box<ChannelFactoryBase>)
+#  -> rrr::ClientConnection::bind_factory(Box<ChannelFactoryBase>) const
+# It is recorded rather than reverted.  The Rust body mutates only through
+# `self.factory_`'s Mutex, so `&self` is the correct receiver and `const` is
+# the honest C++ for it.  Restoring the non-const spelling means `&mut self`,
+# which means getting a `&mut ClientConnection` out of the Arc -- and that is
+# only possible with the incumbent's `Arc::make` + `get_mut()` mint window,
+# which the promotion deliberately replaced with `Arc::new_cyclic`.  After
+# new_cyclic the payload holds its own `weak_self_`, so `get_mut()` returns
+# None by construction.  Reverting the qualifier would mean reverting the
+# construction, so this is left as a reviewed, enforced ABI change.
+#
+# The other seven original removals were NOT accepted: five were restored by
+# the C21d compiler fix in the pinned rusty-cpp (abbreviated-template `auto`
+# parameters emit no symbol) and two were re-signaturings restored in the
+# canonical Rust (make_write_archive's pointer parameter and
+# invoke_error_callback's `const std::string&`).
+CLIENT_INCUMBENT_ORACLE = frozenset(
+    {
+        ('R', 'rrr::kAsyncSlotCount@rrr.client'),
+        ('T', 'rrr::BufferingConfig@rrr.client::defaults()'),
+        ('T', 'rrr::BufferingConfig@rrr.client::disabled()'),
+        ('T', 'rrr::BufferingConfig@rrr.client::new_()'),
+        ('T', 'rrr::BufferingConfig@rrr.client::to_queue_config() const'),
+        ('T', 'rrr::Client@rrr.client::Client(rrr::Client@rrr.client&&)'),
+        ('T', 'rrr::Client@rrr.client::Client(rusty::RefCell<rusty::Option<rusty::Arc<rrr::ClientConnection@rrr.client>>>, rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Cell<int>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rusty::Cell<rrr::HeartbeatConfig@rrr.heartbeat>, rusty::Cell<rrr::CircuitBreakerConfig@rrr.circuit_breaker>, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::ConnectionMetrics@rrr.connection_metrics)'),
+        ('T', 'rrr::Client@rrr.client::add_on_connected(rusty::Function<void () const>) const'),
+        ('T', 'rrr::Client@rrr.client::add_on_disconnected(rusty::Function<void () const>) const'),
+        ('T', 'rrr::Client@rrr.client::add_on_error(rusty::Function<void (rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const>) const'),
+        ('T', 'rrr::Client@rrr.client::add_on_reconnected(rusty::Function<void (bool) const>) const'),
+        ('T', 'rrr::Client@rrr.client::add_on_reconnecting(rusty::Function<void () const>) const'),
+        ('T', 'rrr::Client@rrr.client::check_server_instance(unsigned long) const'),
+        ('T', 'rrr::Client@rrr.client::circuit_breaker_config() const'),
+        ('T', 'rrr::Client@rrr.client::circuit_breaker_state() const'),
+        ('T', 'rrr::Client@rrr.client::clear_connection_callbacks() const'),
+        ('T', 'rrr::Client@rrr.client::clear_pending_requests(int) const'),
+        ('T', 'rrr::Client@rrr.client::client_mode() const'),
+        ('T', 'rrr::Client@rrr.client::close() const'),
+        ('T', 'rrr::Client@rrr.client::connect(signed char const*, bool) const'),
+        ('T', 'rrr::Client@rrr.client::connected() const'),
+        ('T', 'rrr::Client@rrr.client::connection() const'),
+        ('T', 'rrr::Client@rrr.client::connection_state() const'),
+        ('T', 'rrr::Client@rrr.client::create(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::Client@rrr.client::handle_free(long) const'),
+        ('T', 'rrr::Client@rrr.client::has_connection() const'),
+        ('T', 'rrr::Client@rrr.client::has_pending_channel_factory() const'),
+        ('T', 'rrr::Client@rrr.client::heartbeat_config() const'),
+        ('T', 'rrr::Client@rrr.client::host() const'),
+        ('T', 'rrr::Client@rrr.client::is_idle(unsigned long, unsigned long) const'),
+        ('T', 'rrr::Client@rrr.client::is_reconnecting() const'),
+        ('T', 'rrr::Client@rrr.client::keepalive_config() const'),
+        ('T', 'rrr::Client@rrr.client::metrics() const'),
+        ('T', 'rrr::Client@rrr.client::new_(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::Client@rrr.client::operator=(rrr::Client@rrr.client&&)'),
+        ('T', 'rrr::Client@rrr.client::pause() const'),
+        ('T', 'rrr::Client@rrr.client::pending_request_count() const'),
+        ('T', 'rrr::Client@rrr.client::reconnect(rusty::Function<void (bool)>) const'),
+        ('T', 'rrr::Client@rrr.client::resume() const'),
+        ('T', 'rrr::Client@rrr.client::rpc_id() const'),
+        ('T', 'rrr::Client@rrr.client::rusty_mark_forgotten() const'),
+        ('T', 'rrr::Client@rrr.client::server_instance_id() const'),
+        ('T', 'rrr::Client@rrr.client::set_buffering_config(rrr::BufferingConfig@rrr.client const&) const'),
+        ('T', 'rrr::Client@rrr.client::set_channel_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>) const'),
+        ('T', 'rrr::Client@rrr.client::set_circuit_breaker(rrr::CircuitBreakerConfig@rrr.circuit_breaker const&) const'),
+        ('T', 'rrr::Client@rrr.client::set_client_mode(bool) const'),
+        ('T', 'rrr::Client@rrr.client::set_heartbeat(rrr::HeartbeatConfig@rrr.heartbeat const&) const'),
+        ('T', 'rrr::Client@rrr.client::set_keepalive(rrr::KeepaliveConfig@rrr.client const&) const'),
+        ('T', 'rrr::Client@rrr.client::set_on_server_restart(rusty::Function<void (unsigned long, unsigned long)>) const'),
+        ('T', 'rrr::Client@rrr.client::set_reconnect_policy(rrr::ReconnectPolicy@rrr.reconnect_policy const&) const'),
+        ('T', 'rrr::Client@rrr.client::set_rpc_id(int) const'),
+        ('T', 'rrr::Client@rrr.client::set_time(long) const'),
+        ('T', 'rrr::Client@rrr.client::set_timeout(unsigned long) const'),
+        ('T', 'rrr::Client@rrr.client::set_valid(bool) const'),
+        ('T', 'rrr::Client@rrr.client::time() const'),
+        ('T', 'rrr::Client@rrr.client::timeout() const'),
+        ('T', 'rrr::Client@rrr.client::try_reconnect_if_needed() const'),
+        ('T', 'rrr::Client@rrr.client::validate_connection() const'),
+        ('T', 'rrr::Client@rrr.client::~Client()'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<long, rusty::Arc<rrr::Future@rrr.client>, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
+        ('T', 'rrr::ClientConnection@rrr.client::abort_reconnect()'),
+        ('T', 'rrr::ClientConnection@rrr.client::allow_request_with_circuit_metrics() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::apply_keepalive_options()'),
+        ('T', 'rrr::ClientConnection@rrr.client::bind_channel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::bind_channel_direct(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::bind_channel_via_poll_thread(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>)'),
+        ('T', 'rrr::ClientConnection@rrr.client::buffering_config() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::channel_reconnect_attempts_count() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::check_pending_write_update() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::check_server_instance(unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::circuit_breaker_config() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::circuit_breaker_state() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::clear_pending_requests(int) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::close() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::connect(signed char const*) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::connect_via_factory(signed char const*) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::connected() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::connection_state() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::content_size() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::decode_response_and_notify(unsigned char const*, unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::dispatch_frame_via_channel(unsigned char const*, unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::enqueue_heartbeat_probe() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::fail_pending_future(long, int) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::fd() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::force_connected_for_testing()'),
+        ('T', 'rrr::ClientConnection@rrr.client::handle_error() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::handle_free(long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::handle_read() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::handle_write() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::heartbeat_config() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::host() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::install_self_weak_for_testing(rusty::sync::Weak<rrr::ClientConnection@rrr.client>)'),
+        ('T', 'rrr::ClientConnection@rrr.client::invalidate_pending_futures() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::invoke_connected_callback() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::invoke_disconnected_callback() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::invoke_error_callback(int, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::invoke_reconnected_callback(bool) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::invoke_reconnecting_callback() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::is_channel_mode() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::is_closed() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::is_factory_bound() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::is_idle(unsigned long, unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::is_reconnecting() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::keepalive_config() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::last_activity_time() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::map_system_error(int)'),
+        ('T', 'rrr::ClientConnection@rrr.client::mark_closing() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::metrics() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::on_channel_closed_fan_out() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::on_request_dispatched(unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::on_response_received(unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::operator=(rrr::ClientConnection@rrr.client&&)'),
+        ('T', 'rrr::ClientConnection@rrr.client::pause() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::pending_future_count() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::pending_request_count() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::poll_mode() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::reconnect(rusty::Function<void (bool)>) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::reconnect_policy() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::record_circuit_result(int) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::record_circuit_state_transition(rrr::CircuitState@rrr.circuit_breaker, rrr::CircuitState@rrr.circuit_breaker) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::replay_pending_requests() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::replay_pending_requests_for_test() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::reset_channel_mode_for_reconnect() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::resume() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::run_recv_loop() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::rusty_mark_forgotten() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::server_instance_id() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_buffering_config(rrr::BufferingConfig@rrr.client const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_callback_manager(rusty::Arc<rrr::CallbackManager@rrr.callbacks> const&)'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_circuit_breaker_config(rrr::CircuitBreakerConfig@rrr.circuit_breaker const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_heartbeat_config(rrr::HeartbeatConfig@rrr.heartbeat const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_keepalive(rrr::KeepaliveConfig@rrr.client const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_on_server_restart(rusty::Function<void (unsigned long, unsigned long)>) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_reconnect_address_for_testing(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::set_reconnect_policy(rrr::ReconnectPolicy@rrr.reconnect_policy const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::should_trip_circuit_for_error(int)'),
+        ('T', 'rrr::ClientConnection@rrr.client::update_last_activity(unsigned long) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::update_pending_queue_config_for_test(rrr::RequestQueueConfig@rrr.request_queue const&) const'),
+        ('T', 'rrr::ClientConnection@rrr.client::validate_connection() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::~ClientConnection()'),
+        ('T', 'rrr::ClientPool@rrr.client::ClientPool(rrr::ClientPool@rrr.client&&)'),
+        ('T', 'rrr::ClientPool@rrr.client::ClientPool(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::PoolState@rrr.client>, rusty::Mutex<rrr::PoolConfig@rrr.client>)'),
+        ('T', 'rrr::ClientPool@rrr.client::address_count() const'),
+        ('T', 'rrr::ClientPool@rrr.client::close_all_idle(unsigned long) const'),
+        ('T', 'rrr::ClientPool@rrr.client::close_idle_clients(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, unsigned long) const'),
+        ('T', 'rrr::ClientPool@rrr.client::get_client(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+        ('T', 'rrr::ClientPool@rrr.client::get_healthy_client_count(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+        ('T', 'rrr::ClientPool@rrr.client::is_client_healthy(rusty::Arc<rrr::Client@rrr.client> const&) const'),
+        ('T', 'rrr::ClientPool@rrr.client::new_(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rrr::PoolConfig@rrr.client)'),
+        ('T', 'rrr::ClientPool@rrr.client::operator=(rrr::ClientPool@rrr.client&&)'),
+        ('T', 'rrr::ClientPool@rrr.client::pool_config() const'),
+        ('T', 'rrr::ClientPool@rrr.client::remove_all_unhealthy() const'),
+        ('T', 'rrr::ClientPool@rrr.client::remove_unhealthy_clients(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+        ('T', 'rrr::ClientPool@rrr.client::rusty_mark_forgotten() const'),
+        ('T', 'rrr::ClientPool@rrr.client::set_pool_config(rrr::PoolConfig@rrr.client) const'),
+        ('T', 'rrr::ClientPool@rrr.client::total_client_count() const'),
+        ('T', 'rrr::ClientPool@rrr.client::~ClientPool()'),
+        ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
+        ('T', 'rrr::Future@rrr.client::add_completion_callback(rusty::Function<void ()>) const'),
+        ('T', 'rrr::Future@rrr.client::create(long, rrr::FutureAttr@rrr.client)'),
+        ('T', 'rrr::Future@rrr.client::get_error_code() const'),
+        ('T', 'rrr::Future@rrr.client::get_options() const'),
+        ('T', 'rrr::Future@rrr.client::get_reply() const'),
+        ('T', 'rrr::Future@rrr.client::get_retry_count() const'),
+        ('T', 'rrr::Future@rrr.client::get_timeout_type() const'),
+        ('T', 'rrr::Future@rrr.client::get_xid() const'),
+        ('T', 'rrr::Future@rrr.client::increment_retry_count()'),
+        ('T', 'rrr::Future@rrr.client::notify_ready(rusty::Arc<rrr::Future@rrr.client>) const'),
+        ('T', 'rrr::Future@rrr.client::ready() const'),
+        ('T', 'rrr::Future@rrr.client::safe_release(rusty::Arc<rrr::Future@rrr.client>)'),
+        ('T', 'rrr::Future@rrr.client::set_options(rrr::RequestOptions@rrr.request_options const&) const'),
+        ('T', 'rrr::Future@rrr.client::set_timeout_type(rrr::TimeoutType@rrr.request_options)'),
+        ('T', 'rrr::Future@rrr.client::should_retry() const'),
+        ('T', 'rrr::Future@rrr.client::timed_out() const'),
+        ('T', 'rrr::Future@rrr.client::timed_wait(double) const'),
+        ('T', 'rrr::Future@rrr.client::wait() const'),
+        ('T', 'rrr::Future@rrr.client::wait_with_options() const'),
+        ('T', 'rrr::FutureAttr@rrr.client::new_(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rusty::Arc<rrr::Future@rrr.client>) const>>)'),
+        ('T', 'rrr::FutureState@rrr.client::new_()'),
+        ('T', 'rrr::KeepaliveConfig@rrr.client::aggressive()'),
+        ('T', 'rrr::KeepaliveConfig@rrr.client::disabled()'),
+        ('T', 'rrr::KeepaliveConfig@rrr.client::new_()'),
+        ('T', 'rrr::KeepaliveConfig@rrr.client::relaxed()'),
+        ('T', 'rrr::PoolConfig@rrr.client::aggressive()'),
+        ('T', 'rrr::PoolConfig@rrr.client::conservative()'),
+        ('T', 'rrr::PoolConfig@rrr.client::defaults()'),
+        ('T', 'rrr::PoolConfig@rrr.client::new_()'),
+        ('T', 'rrr::PoolConfig@rrr.client::no_health_check()'),
+        ('T', 'rrr::PoolState@rrr.client::new_()'),
+        ('T', 'rrr::classify_request_failure@rrr.client(int)'),
+        ('T', 'rrr::clientconn_addr_to_string@rrr.client(signed char const*)'),
+        ('T', 'rrr::clientconn_bind_channel_via_poll_thread@rrr.client(rrr::ClientConnection@rrr.client const&, rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+        ('T', 'rrr::clientconn_connect_via_factory@rrr.client(rrr::ClientConnection@rrr.client const&, signed char const*)'),
+        ('T', 'rrr::clientconn_decode_response_and_notify@rrr.client(rrr::ClientConnection@rrr.client const&, unsigned char const*, unsigned long)'),
+        ('T', 'rrr::clientconn_dispatch_frame_via_channel@rrr.client(rrr::ClientConnection@rrr.client const&, unsigned char const*, unsigned long)'),
+        ('T', 'rrr::clientconn_enqueue_heartbeat_probe@rrr.client(rrr::ClientConnection@rrr.client const&)'),
+        ('T', 'rrr::clientconn_fiber_channel_ptr@rrr.client(rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>> const&)'),
+        ('T', 'rrr::clientconn_make_fiber_channel@rrr.client(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+        ('T', 'rrr::clientconn_map_system_error@rrr.client(int)'),
+        ('T', 'rrr::clientconn_monotonic_ms_now@rrr.client()'),
+        ('T', 'rrr::clientconn_reconnect@rrr.client(rrr::ClientConnection@rrr.client const&, rusty::Function<void (bool)>)'),
+        ('T', 'rrr::clientconn_recv_job_entry@rrr.client(rusty::sync::Weak<rrr::ClientConnection@rrr.client>)'),
+        ('T', 'rrr::clientconn_run_recv_loop@rrr.client(rrr::ClientConnection@rrr.client const&)'),
+        ('T', 'rrr::clientpool_close_all_idle@rrr.client(rrr::ClientPool@rrr.client const&, unsigned long)'),
+        ('T', 'rrr::clientpool_close_idle_clients@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, unsigned long)'),
+        ('T', 'rrr::clientpool_connect_client@rrr.client(rusty::Arc<rrr::Client@rrr.client> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+        ('T', 'rrr::clientpool_get_client@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+        ('T', 'rrr::clientpool_get_healthy_client_count@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+        ('T', 'rrr::clientpool_is_client_healthy_with@rrr.client(rrr::PoolConfig@rrr.client, rusty::Arc<rrr::Client@rrr.client> const&)'),
+        ('T', 'rrr::clientpool_remove_all_unhealthy@rrr.client(rrr::ClientPool@rrr.client const&)'),
+        ('T', 'rrr::clientpool_remove_unhealthy_clients@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+        ('T', 'rrr::make_prefilled_cb_slots@rrr.client()'),
+        ('T', 'rrr::make_write_archive@rrr.client(rrr::BufferSink@rrr.serializable*)'),
+        ('T', 'rrr::reply_buffer_empty@rrr.client()'),
+        ('T', 'rrr::reply_buffer_fill@rrr.client(rrr::ReplyBuffer@rrr.client&, std::__1::span<unsigned char const, 18446744073709551615ul>)'),
+        ('T', 'rrr::request_copy_reply@rrr.client(rusty::Arc<rrr::Future@rrr.client> const&, rusty::Arc<rrr::Future@rrr.client> const&)'),
+    }
+)
+
+CLIENT_INCUMBENT_ORACLE_ADDITIONS = frozenset(
+    {
+        ('R', 'rrr::CLIENT_ERR_AGAIN@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_BROKEN_PIPE@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_BUSY@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_CANCELED@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_CONNECTION_ABORTED@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_CONNECTION_REFUSED@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_CONNECTION_RESET@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_HOST_UNREACHABLE@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_INVALID_ARGUMENT@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_IO@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_NETWORK_UNREACHABLE@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_NOT_CONNECTED@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_TIMED_OUT@rrr.client'),
+        ('R', 'rrr::CLIENT_ERR_WOULD_BLOCK@rrr.client'),
+        ('R', 'rrr::CLIENT_INTERNAL_HEARTBEAT_RPC_ID@rrr.client'),
+        ('R', 'rrr::CLIENT_INT_MIN@rrr.client'),
+        ('R', 'rrr::CLIENT_POLL_NO_CHANGE@rrr.client'),
+        ('R', 'rrr::CLIENT_POLL_READ@rrr.client'),
+        ('R', 'rrr::CLIENT_RAND_MAX@rrr.client'),
+        ('R', 'rrr::CLIENT_REQUEST_QUEUE_REJECTED_ERROR@rrr.client'),
+        ('T', 'rrr::BufferingConfig@rrr.client::clone() const'),
+        ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>) const'),
+        ('T', 'rrr::FutureAttr@rrr.client::clone() const'),
+        ('T', 'rrr::FutureAttr@rrr.client::default_()'),
+        ('T', 'rrr::KeepaliveConfig@rrr.client::clone() const'),
+        ('T', 'rrr::PoolConfig@rrr.client::clone() const'),
+        ('T', 'rrr::client_log_line@rrr.client(int, int, signed char const*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>)'),
+        ('T', 'rrr::client_rand@rrr.client(int, int)'),
+        ('T', 'rrr::client_sink_proxy@rrr.client(rrr::BufferSink@rrr.serializable&)'),
+        ('T', 'rrr::client_source_proxy@rrr.client(rrr::BufferSource@rrr.serializable&)'),
+        ('T', 'rrr::client_text@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_text_i32@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, int, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_text_str@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_text_str_i32@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, int, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_text_str_pair@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_text_u32_str@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, unsigned int, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_text_u64_pair@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, unsigned long, std::__1::basic_string_view<char, std::__1::char_traits<char>>, unsigned long, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+        ('T', 'rrr::client_verify@rrr.client(bool)'),
+        ('T', 'rrr::clientpool_select@rrr.client(rrr::LoadBalancingStrategy@rrr.load_balancer, rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::Client@rrr.client>, rusty::alloc::Global> const&, rrr::LoadBalancerState@rrr.load_balancer const&, unsigned long)'),
+        ('T', 'rrr::make_pending_queue@rrr.client(rrr::RequestQueueConfig@rrr.request_queue const&)'),
+    }
+)
+
+CLIENT_INCUMBENT_ORACLE_REMOVALS = frozenset(
+    {
+        ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>)'),
+    }
+)
+
+# (incumbent spelling, current spelling) for the one reviewed signature change.
+CLIENT_INCUMBENT_ORACLE_SIGNATURE_CHANGES = (
+    (
+        ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>)'),
+        ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>) const'),
+    ),
 )
 
 # These maps are intentionally exhaustive. Adding a canonical manifest module
@@ -173,6 +502,30 @@ EXPECTED_IMPORTS = {
         "rrr.serializable",
         "rrr.tcp_channel",
     ],
+    "rrr.client": [
+        'rusty',
+        'rrr.basetypes',
+        'rrr.callback_wrapper',
+        'rrr.callbacks',
+        'rrr.channel',
+        'rrr.circuit_breaker',
+        'rrr.connection_metrics',
+        'rrr.connection_state',
+        'rrr.errors',
+        'rrr.fiber_channel',
+        'rrr.heartbeat',
+        'rrr.load_balancer',
+        'rrr.logging',
+        'rrr.misc',
+        'rrr.rand',
+        'rrr.reactor',
+        'rrr.reconnect_policy',
+        'rrr.request_options',
+        'rrr.request_queue',
+        'rrr.serializable',
+        'rrr.tcp_channel',
+        'rrr.debugging',
+    ],
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
@@ -215,6 +568,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     # advisory; this keeps the advisory list honest rather than permanently noisy.
     "rrr.reactor": "c183ebd7170f0c1604a4401d6e5db75c78b6cd2707e4683a59fea1d3933f2681",
     "rrr.server": "3e5de5e8ecd419ed950fc4c7d58c7a9299d132869ee46cf7dd2fda18cda8e8d3",
+    "rrr.client": "ad2e478e56e6d9c6d5d48568f059deabeb18f6bb540a760170726948c4b7972f",
 }
 
 IMPORTER_USE_MARKERS = {
@@ -254,6 +608,7 @@ IMPORTER_USE_MARKERS = {
     "rrr.tcp_channel": "rrr::kTcpConnectionOutboundHighWaterDefault",
     "rrr.reactor": "rrr::EventStatus",
     "rrr.server": "rrr::kDefaultDrainTimeoutMs",
+    "rrr.client": "rrr::CLIENT_INTERNAL_HEARTBEAT_RPC_ID",
 }
 
 
@@ -3151,6 +3506,290 @@ ABI_SPECS = {
             }
         ),
     ),
+    "rrr.client": AbiSpec(
+        # The canonical Rust marks its top-level items `pub`, which is what
+        # the emitter turns into `export`. Before that this module exported
+        # nothing at all and `rrr.cppm` re-exported an empty surface.
+        surface=frozenset(
+            {
+                'export module rrr.client;',
+                'export struct ClientConnection;',
+                'export struct Client;',
+                'export struct ClientPool;',
+                'export struct Future;',
+                'export enum class DisconnectBehavior;',
+                'export constexpr int32_t CLIENT_INTERNAL_HEARTBEAT_RPC_ID = std::numeric_limits<int32_t>::min();',
+                'export constexpr size_t kAsyncSlotCount = static_cast<size_t>(16384);',
+                'export using FutureResult = rusty::Result<rusty::Arc<Future>, int32_t>;',
+                'export using AsyncReplyCallback = rusty::Function<void(int32_t, const uint8_t*, size_t)>;',
+                'export using WeakClientConnection = rusty::sync::Weak<ClientConnection>;',
+                'export std::string client_text(std::string_view text);',
+                'export int32_t client_rand(int32_t min, int32_t max);',
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('R', 'rrr::CLIENT_ERR_AGAIN@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_BROKEN_PIPE@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_BUSY@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_CANCELED@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_CONNECTION_ABORTED@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_CONNECTION_REFUSED@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_CONNECTION_RESET@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_HOST_UNREACHABLE@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_INVALID_ARGUMENT@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_IO@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_NETWORK_UNREACHABLE@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_NOT_CONNECTED@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_TIMED_OUT@rrr.client'),
+                ('R', 'rrr::CLIENT_ERR_WOULD_BLOCK@rrr.client'),
+                ('R', 'rrr::CLIENT_INTERNAL_HEARTBEAT_RPC_ID@rrr.client'),
+                ('R', 'rrr::CLIENT_INT_MIN@rrr.client'),
+                ('R', 'rrr::CLIENT_POLL_NO_CHANGE@rrr.client'),
+                ('R', 'rrr::CLIENT_POLL_READ@rrr.client'),
+                ('R', 'rrr::CLIENT_RAND_MAX@rrr.client'),
+                ('R', 'rrr::CLIENT_REQUEST_QUEUE_REJECTED_ERROR@rrr.client'),
+                ('R', 'rrr::kAsyncSlotCount@rrr.client'),
+                ('T', 'rrr::BufferingConfig@rrr.client::clone() const'),
+                ('T', 'rrr::BufferingConfig@rrr.client::defaults()'),
+                ('T', 'rrr::BufferingConfig@rrr.client::disabled()'),
+                ('T', 'rrr::BufferingConfig@rrr.client::new_()'),
+                ('T', 'rrr::BufferingConfig@rrr.client::to_queue_config() const'),
+                ('T', 'rrr::Client@rrr.client::Client(rrr::Client@rrr.client&&)'),
+                ('T', 'rrr::Client@rrr.client::Client(rusty::RefCell<rusty::Option<rusty::Arc<rrr::ClientConnection@rrr.client>>>, rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Cell<int>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rusty::Cell<rrr::HeartbeatConfig@rrr.heartbeat>, rusty::Cell<rrr::CircuitBreakerConfig@rrr.circuit_breaker>, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::ConnectionMetrics@rrr.connection_metrics)'),
+                ('T', 'rrr::Client@rrr.client::add_on_connected(rusty::Function<void () const>) const'),
+                ('T', 'rrr::Client@rrr.client::add_on_disconnected(rusty::Function<void () const>) const'),
+                ('T', 'rrr::Client@rrr.client::add_on_error(rusty::Function<void (rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const>) const'),
+                ('T', 'rrr::Client@rrr.client::add_on_reconnected(rusty::Function<void (bool) const>) const'),
+                ('T', 'rrr::Client@rrr.client::add_on_reconnecting(rusty::Function<void () const>) const'),
+                ('T', 'rrr::Client@rrr.client::check_server_instance(unsigned long) const'),
+                ('T', 'rrr::Client@rrr.client::circuit_breaker_config() const'),
+                ('T', 'rrr::Client@rrr.client::circuit_breaker_state() const'),
+                ('T', 'rrr::Client@rrr.client::clear_connection_callbacks() const'),
+                ('T', 'rrr::Client@rrr.client::clear_pending_requests(int) const'),
+                ('T', 'rrr::Client@rrr.client::client_mode() const'),
+                ('T', 'rrr::Client@rrr.client::close() const'),
+                ('T', 'rrr::Client@rrr.client::connect(signed char const*, bool) const'),
+                ('T', 'rrr::Client@rrr.client::connected() const'),
+                ('T', 'rrr::Client@rrr.client::connection() const'),
+                ('T', 'rrr::Client@rrr.client::connection_state() const'),
+                ('T', 'rrr::Client@rrr.client::create(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+                ('T', 'rrr::Client@rrr.client::handle_free(long) const'),
+                ('T', 'rrr::Client@rrr.client::has_connection() const'),
+                ('T', 'rrr::Client@rrr.client::has_pending_channel_factory() const'),
+                ('T', 'rrr::Client@rrr.client::heartbeat_config() const'),
+                ('T', 'rrr::Client@rrr.client::host() const'),
+                ('T', 'rrr::Client@rrr.client::is_idle(unsigned long, unsigned long) const'),
+                ('T', 'rrr::Client@rrr.client::is_reconnecting() const'),
+                ('T', 'rrr::Client@rrr.client::keepalive_config() const'),
+                ('T', 'rrr::Client@rrr.client::metrics() const'),
+                ('T', 'rrr::Client@rrr.client::new_(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+                ('T', 'rrr::Client@rrr.client::operator=(rrr::Client@rrr.client&&)'),
+                ('T', 'rrr::Client@rrr.client::pause() const'),
+                ('T', 'rrr::Client@rrr.client::pending_request_count() const'),
+                ('T', 'rrr::Client@rrr.client::reconnect(rusty::Function<void (bool)>) const'),
+                ('T', 'rrr::Client@rrr.client::resume() const'),
+                ('T', 'rrr::Client@rrr.client::rpc_id() const'),
+                ('T', 'rrr::Client@rrr.client::rusty_mark_forgotten() const'),
+                ('T', 'rrr::Client@rrr.client::server_instance_id() const'),
+                ('T', 'rrr::Client@rrr.client::set_buffering_config(rrr::BufferingConfig@rrr.client const&) const'),
+                ('T', 'rrr::Client@rrr.client::set_channel_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>) const'),
+                ('T', 'rrr::Client@rrr.client::set_circuit_breaker(rrr::CircuitBreakerConfig@rrr.circuit_breaker const&) const'),
+                ('T', 'rrr::Client@rrr.client::set_client_mode(bool) const'),
+                ('T', 'rrr::Client@rrr.client::set_heartbeat(rrr::HeartbeatConfig@rrr.heartbeat const&) const'),
+                ('T', 'rrr::Client@rrr.client::set_keepalive(rrr::KeepaliveConfig@rrr.client const&) const'),
+                ('T', 'rrr::Client@rrr.client::set_on_server_restart(rusty::Function<void (unsigned long, unsigned long)>) const'),
+                ('T', 'rrr::Client@rrr.client::set_reconnect_policy(rrr::ReconnectPolicy@rrr.reconnect_policy const&) const'),
+                ('T', 'rrr::Client@rrr.client::set_rpc_id(int) const'),
+                ('T', 'rrr::Client@rrr.client::set_time(long) const'),
+                ('T', 'rrr::Client@rrr.client::set_timeout(unsigned long) const'),
+                ('T', 'rrr::Client@rrr.client::set_valid(bool) const'),
+                ('T', 'rrr::Client@rrr.client::time() const'),
+                ('T', 'rrr::Client@rrr.client::timeout() const'),
+                ('T', 'rrr::Client@rrr.client::try_reconnect_if_needed() const'),
+                ('T', 'rrr::Client@rrr.client::validate_connection() const'),
+                ('T', 'rrr::Client@rrr.client::~Client()'),
+                ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
+                ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+                ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<long, rusty::Arc<rrr::Future@rrr.client>, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
+                ('T', 'rrr::ClientConnection@rrr.client::abort_reconnect()'),
+                ('T', 'rrr::ClientConnection@rrr.client::allow_request_with_circuit_metrics() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::apply_keepalive_options()'),
+                ('T', 'rrr::ClientConnection@rrr.client::bind_channel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::bind_channel_direct(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::bind_channel_via_poll_thread(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::buffering_config() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::channel_reconnect_attempts_count() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::check_pending_write_update() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::check_server_instance(unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::circuit_breaker_config() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::circuit_breaker_state() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::clear_pending_requests(int) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::close() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::connect(signed char const*) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::connect_via_factory(signed char const*) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::connected() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::connection_state() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::content_size() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::decode_response_and_notify(unsigned char const*, unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::dispatch_frame_via_channel(unsigned char const*, unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::enqueue_heartbeat_probe() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::fail_pending_future(long, int) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::fd() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::force_connected_for_testing()'),
+                ('T', 'rrr::ClientConnection@rrr.client::handle_error() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::handle_free(long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::handle_read() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::handle_write() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::heartbeat_config() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::host() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::install_self_weak_for_testing(rusty::sync::Weak<rrr::ClientConnection@rrr.client>)'),
+                ('T', 'rrr::ClientConnection@rrr.client::invalidate_pending_futures() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::invoke_connected_callback() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::invoke_disconnected_callback() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::invoke_error_callback(int, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::invoke_reconnected_callback(bool) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::invoke_reconnecting_callback() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::is_channel_mode() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::is_closed() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::is_factory_bound() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::is_idle(unsigned long, unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::is_reconnecting() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::keepalive_config() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::last_activity_time() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::map_system_error(int)'),
+                ('T', 'rrr::ClientConnection@rrr.client::mark_closing() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::metrics() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::on_channel_closed_fan_out() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::on_request_dispatched(unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::on_response_received(unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::operator=(rrr::ClientConnection@rrr.client&&)'),
+                ('T', 'rrr::ClientConnection@rrr.client::pause() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::pending_future_count() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::pending_request_count() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::poll_mode() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::reconnect(rusty::Function<void (bool)>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::reconnect_policy() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::record_circuit_result(int) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::record_circuit_state_transition(rrr::CircuitState@rrr.circuit_breaker, rrr::CircuitState@rrr.circuit_breaker) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::replay_pending_requests() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::replay_pending_requests_for_test() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::reset_channel_mode_for_reconnect() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::resume() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::run_recv_loop() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::rusty_mark_forgotten() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::server_instance_id() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_buffering_config(rrr::BufferingConfig@rrr.client const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_callback_manager(rusty::Arc<rrr::CallbackManager@rrr.callbacks> const&)'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_circuit_breaker_config(rrr::CircuitBreakerConfig@rrr.circuit_breaker const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_heartbeat_config(rrr::HeartbeatConfig@rrr.heartbeat const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_keepalive(rrr::KeepaliveConfig@rrr.client const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_on_server_restart(rusty::Function<void (unsigned long, unsigned long)>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_reconnect_address_for_testing(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::set_reconnect_policy(rrr::ReconnectPolicy@rrr.reconnect_policy const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::should_trip_circuit_for_error(int)'),
+                ('T', 'rrr::ClientConnection@rrr.client::update_last_activity(unsigned long) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::update_pending_queue_config_for_test(rrr::RequestQueueConfig@rrr.request_queue const&) const'),
+                ('T', 'rrr::ClientConnection@rrr.client::validate_connection() const'),
+                ('T', 'rrr::ClientConnection@rrr.client::~ClientConnection()'),
+                ('T', 'rrr::ClientPool@rrr.client::ClientPool(rrr::ClientPool@rrr.client&&)'),
+                ('T', 'rrr::ClientPool@rrr.client::ClientPool(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::PoolState@rrr.client>, rusty::Mutex<rrr::PoolConfig@rrr.client>)'),
+                ('T', 'rrr::ClientPool@rrr.client::address_count() const'),
+                ('T', 'rrr::ClientPool@rrr.client::close_all_idle(unsigned long) const'),
+                ('T', 'rrr::ClientPool@rrr.client::close_idle_clients(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, unsigned long) const'),
+                ('T', 'rrr::ClientPool@rrr.client::get_client(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+                ('T', 'rrr::ClientPool@rrr.client::get_healthy_client_count(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+                ('T', 'rrr::ClientPool@rrr.client::is_client_healthy(rusty::Arc<rrr::Client@rrr.client> const&) const'),
+                ('T', 'rrr::ClientPool@rrr.client::new_(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rrr::PoolConfig@rrr.client)'),
+                ('T', 'rrr::ClientPool@rrr.client::operator=(rrr::ClientPool@rrr.client&&)'),
+                ('T', 'rrr::ClientPool@rrr.client::pool_config() const'),
+                ('T', 'rrr::ClientPool@rrr.client::remove_all_unhealthy() const'),
+                ('T', 'rrr::ClientPool@rrr.client::remove_unhealthy_clients(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
+                ('T', 'rrr::ClientPool@rrr.client::rusty_mark_forgotten() const'),
+                ('T', 'rrr::ClientPool@rrr.client::set_pool_config(rrr::PoolConfig@rrr.client) const'),
+                ('T', 'rrr::ClientPool@rrr.client::total_client_count() const'),
+                ('T', 'rrr::ClientPool@rrr.client::~ClientPool()'),
+                ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
+                ('T', 'rrr::Future@rrr.client::add_completion_callback(rusty::Function<void ()>) const'),
+                ('T', 'rrr::Future@rrr.client::create(long, rrr::FutureAttr@rrr.client)'),
+                ('T', 'rrr::Future@rrr.client::get_error_code() const'),
+                ('T', 'rrr::Future@rrr.client::get_options() const'),
+                ('T', 'rrr::Future@rrr.client::get_reply() const'),
+                ('T', 'rrr::Future@rrr.client::get_retry_count() const'),
+                ('T', 'rrr::Future@rrr.client::get_timeout_type() const'),
+                ('T', 'rrr::Future@rrr.client::get_xid() const'),
+                ('T', 'rrr::Future@rrr.client::increment_retry_count()'),
+                ('T', 'rrr::Future@rrr.client::notify_ready(rusty::Arc<rrr::Future@rrr.client>) const'),
+                ('T', 'rrr::Future@rrr.client::ready() const'),
+                ('T', 'rrr::Future@rrr.client::safe_release(rusty::Arc<rrr::Future@rrr.client>)'),
+                ('T', 'rrr::Future@rrr.client::set_options(rrr::RequestOptions@rrr.request_options const&) const'),
+                ('T', 'rrr::Future@rrr.client::set_timeout_type(rrr::TimeoutType@rrr.request_options)'),
+                ('T', 'rrr::Future@rrr.client::should_retry() const'),
+                ('T', 'rrr::Future@rrr.client::timed_out() const'),
+                ('T', 'rrr::Future@rrr.client::timed_wait(double) const'),
+                ('T', 'rrr::Future@rrr.client::wait() const'),
+                ('T', 'rrr::Future@rrr.client::wait_with_options() const'),
+                ('T', 'rrr::FutureAttr@rrr.client::clone() const'),
+                ('T', 'rrr::FutureAttr@rrr.client::default_()'),
+                ('T', 'rrr::FutureAttr@rrr.client::new_(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rusty::Arc<rrr::Future@rrr.client>) const>>)'),
+                ('T', 'rrr::FutureState@rrr.client::new_()'),
+                ('T', 'rrr::KeepaliveConfig@rrr.client::aggressive()'),
+                ('T', 'rrr::KeepaliveConfig@rrr.client::clone() const'),
+                ('T', 'rrr::KeepaliveConfig@rrr.client::disabled()'),
+                ('T', 'rrr::KeepaliveConfig@rrr.client::new_()'),
+                ('T', 'rrr::KeepaliveConfig@rrr.client::relaxed()'),
+                ('T', 'rrr::PoolConfig@rrr.client::aggressive()'),
+                ('T', 'rrr::PoolConfig@rrr.client::clone() const'),
+                ('T', 'rrr::PoolConfig@rrr.client::conservative()'),
+                ('T', 'rrr::PoolConfig@rrr.client::defaults()'),
+                ('T', 'rrr::PoolConfig@rrr.client::new_()'),
+                ('T', 'rrr::PoolConfig@rrr.client::no_health_check()'),
+                ('T', 'rrr::PoolState@rrr.client::new_()'),
+                ('T', 'rrr::classify_request_failure@rrr.client(int)'),
+                ('T', 'rrr::client_log_line@rrr.client(int, int, signed char const*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>)'),
+                ('T', 'rrr::client_rand@rrr.client(int, int)'),
+                ('T', 'rrr::client_sink_proxy@rrr.client(rrr::BufferSink@rrr.serializable&)'),
+                ('T', 'rrr::client_source_proxy@rrr.client(rrr::BufferSource@rrr.serializable&)'),
+                ('T', 'rrr::client_text@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_text_i32@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, int, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_text_str@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_text_str_i32@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, int, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_text_str_pair@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_text_u32_str@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, unsigned int, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_text_u64_pair@rrr.client(std::__1::basic_string_view<char, std::__1::char_traits<char>>, unsigned long, std::__1::basic_string_view<char, std::__1::char_traits<char>>, unsigned long, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::client_verify@rrr.client(bool)'),
+                ('T', 'rrr::clientconn_addr_to_string@rrr.client(signed char const*)'),
+                ('T', 'rrr::clientconn_bind_channel_via_poll_thread@rrr.client(rrr::ClientConnection@rrr.client const&, rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+                ('T', 'rrr::clientconn_connect_via_factory@rrr.client(rrr::ClientConnection@rrr.client const&, signed char const*)'),
+                ('T', 'rrr::clientconn_decode_response_and_notify@rrr.client(rrr::ClientConnection@rrr.client const&, unsigned char const*, unsigned long)'),
+                ('T', 'rrr::clientconn_dispatch_frame_via_channel@rrr.client(rrr::ClientConnection@rrr.client const&, unsigned char const*, unsigned long)'),
+                ('T', 'rrr::clientconn_enqueue_heartbeat_probe@rrr.client(rrr::ClientConnection@rrr.client const&)'),
+                ('T', 'rrr::clientconn_fiber_channel_ptr@rrr.client(rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>> const&)'),
+                ('T', 'rrr::clientconn_make_fiber_channel@rrr.client(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+                ('T', 'rrr::clientconn_map_system_error@rrr.client(int)'),
+                ('T', 'rrr::clientconn_monotonic_ms_now@rrr.client()'),
+                ('T', 'rrr::clientconn_reconnect@rrr.client(rrr::ClientConnection@rrr.client const&, rusty::Function<void (bool)>)'),
+                ('T', 'rrr::clientconn_recv_job_entry@rrr.client(rusty::sync::Weak<rrr::ClientConnection@rrr.client>)'),
+                ('T', 'rrr::clientconn_run_recv_loop@rrr.client(rrr::ClientConnection@rrr.client const&)'),
+                ('T', 'rrr::clientpool_close_all_idle@rrr.client(rrr::ClientPool@rrr.client const&, unsigned long)'),
+                ('T', 'rrr::clientpool_close_idle_clients@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, unsigned long)'),
+                ('T', 'rrr::clientpool_connect_client@rrr.client(rusty::Arc<rrr::Client@rrr.client> const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'rrr::clientpool_get_client@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'rrr::clientpool_get_healthy_client_count@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'rrr::clientpool_is_client_healthy_with@rrr.client(rrr::PoolConfig@rrr.client, rusty::Arc<rrr::Client@rrr.client> const&)'),
+                ('T', 'rrr::clientpool_remove_all_unhealthy@rrr.client(rrr::ClientPool@rrr.client const&)'),
+                ('T', 'rrr::clientpool_remove_unhealthy_clients@rrr.client(rrr::ClientPool@rrr.client const&, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'rrr::clientpool_select@rrr.client(rrr::LoadBalancingStrategy@rrr.load_balancer, rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::Client@rrr.client>, rusty::alloc::Global> const&, rrr::LoadBalancerState@rrr.load_balancer const&, unsigned long)'),
+                ('T', 'rrr::make_pending_queue@rrr.client(rrr::RequestQueueConfig@rrr.request_queue const&)'),
+                ('T', 'rrr::make_prefilled_cb_slots@rrr.client()'),
+                ('T', 'rrr::make_write_archive@rrr.client(rrr::BufferSink@rrr.serializable*)'),
+                ('T', 'rrr::reply_buffer_empty@rrr.client()'),
+                ('T', 'rrr::reply_buffer_fill@rrr.client(rrr::ReplyBuffer@rrr.client&, std::__1::span<unsigned char const, 18446744073709551615ul>)'),
+                ('T', 'rrr::request_copy_reply@rrr.client(rusty::Arc<rrr::Future@rrr.client> const&, rusty::Arc<rrr::Future@rrr.client> const&)'),
+            }
+        ),
+    ),
 }
 
 # Symbols that a module acquires in the production library from a hand-written
@@ -3985,6 +4624,19 @@ RAW_ABI_ALIASES = {
         ),
         ("T", "rrr::FiberChannel@rrr.fiber_channel::~FiberChannel()"),
     ),
+    "rrr.client": (
+        ('T', 'rrr::Client@rrr.client::Client(rrr::Client@rrr.client&&)'),
+        ('T', 'rrr::Client@rrr.client::Client(rusty::RefCell<rusty::Option<rusty::Arc<rrr::ClientConnection@rrr.client>>>, rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Cell<int>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rusty::Cell<rrr::HeartbeatConfig@rrr.heartbeat>, rusty::Cell<rrr::CircuitBreakerConfig@rrr.circuit_breaker>, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::ConnectionMetrics@rrr.connection_metrics)'),
+        ('T', 'rrr::Client@rrr.client::~Client()'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<long, rusty::Arc<rrr::Future@rrr.client>, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
+        ('T', 'rrr::ClientConnection@rrr.client::~ClientConnection()'),
+        ('T', 'rrr::ClientPool@rrr.client::ClientPool(rrr::ClientPool@rrr.client&&)'),
+        ('T', 'rrr::ClientPool@rrr.client::ClientPool(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::PoolState@rrr.client>, rusty::Mutex<rrr::PoolConfig@rrr.client>)'),
+        ('T', 'rrr::ClientPool@rrr.client::~ClientPool()'),
+        ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
+    ),
 }
 
 
@@ -4173,6 +4825,7 @@ def load_owned_modules(root: Path) -> list[extraction.ModuleEntry]:
                 )
         raise GateError("\n".join(details))
     require_reactor_oracle_additions()
+    require_client_oracle_deltas()
     return modules
 
 
@@ -4191,6 +4844,47 @@ def require_reactor_oracle_additions() -> None:
             "declared rrr.reactor incumbent-oracle addition(s) are not owned "
             "by the module any more: "
             + ", ".join(f"{kind} {name}" for kind, name in sorted(stale))
+        )
+
+
+def require_client_oracle_deltas() -> None:
+    """Keep the declared rrr.client incumbent-oracle delta honest.
+
+    The promoted module may differ from the frozen incumbent surface only by
+    the reviewed sets above.  Any other addition, and any removal that was not
+    reviewed, fails here rather than riding in silently -- which matters for
+    this module in particular, because it once exported nothing at all and
+    still compiled and produced an object.
+    """
+    owned = set(ABI_SPECS["rrr.client"].symbols)
+    added = owned - CLIENT_INCUMBENT_ORACLE
+    removed = CLIENT_INCUMBENT_ORACLE - owned
+    problems: list[str] = []
+    if added != set(CLIENT_INCUMBENT_ORACLE_ADDITIONS):
+        for kind, name in sorted(added - set(CLIENT_INCUMBENT_ORACLE_ADDITIONS)):
+            problems.append(f"unreviewed addition: {kind} {name}")
+        for kind, name in sorted(set(CLIENT_INCUMBENT_ORACLE_ADDITIONS) - added):
+            problems.append(f"stale declared addition: {kind} {name}")
+    if removed != set(CLIENT_INCUMBENT_ORACLE_REMOVALS):
+        for kind, name in sorted(removed - set(CLIENT_INCUMBENT_ORACLE_REMOVALS)):
+            problems.append(f"unreviewed removal: {kind} {name}")
+        for kind, name in sorted(set(CLIENT_INCUMBENT_ORACLE_REMOVALS) - removed):
+            problems.append(f"stale declared removal: {kind} {name}")
+    for incumbent_symbol, current_symbol in CLIENT_INCUMBENT_ORACLE_SIGNATURE_CHANGES:
+        if current_symbol not in owned:
+            problems.append(
+                "declared signature change lost its current spelling: "
+                f"{current_symbol[0]} {current_symbol[1]}"
+            )
+        if incumbent_symbol in owned:
+            problems.append(
+                "declared signature change is no longer a change (the incumbent "
+                f"spelling is owned again): {incumbent_symbol[0]} {incumbent_symbol[1]}"
+            )
+    if problems:
+        raise GateError(
+            "rrr.client incumbent-oracle delta is not the reviewed one:\n  "
+            + "\n  ".join(problems)
         )
 
 
@@ -5354,6 +6048,7 @@ import rrr.any_message;
 import rrr.tcp_channel;
 import rrr.reactor;
 import rrr.server;
+import rrr.client;
 
 static std::int32_t rand_raw_value = 0;
 static std::uint32_t rand_raw_draws = 0;
@@ -8769,6 +9464,12 @@ int main() {
         return 247;
     }
     if (rrr::kDefaultDrainTimeoutMs != static_cast<uint64_t>(30000)) {
+        return 248;
+    }
+    if (rrr::CLIENT_INTERNAL_HEARTBEAT_RPC_ID !=
+        std::numeric_limits<std::int32_t>::min() ||
+        rrr::CLIENT_ERR_TIMED_OUT != 110 ||
+        rrr::client_text("marker") != "marker") {
         return 247;
     }
     return 0;

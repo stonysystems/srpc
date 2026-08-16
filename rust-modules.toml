@@ -145,3 +145,7 @@ source = "reactor/reactor.cpp"
 [[module]]
 cpp_module = "rrr.server"
 source = "rpc/server.cpp"
+
+[[module]]
+cpp_module = "rrr.client"
+source = "rpc/client.cpp"

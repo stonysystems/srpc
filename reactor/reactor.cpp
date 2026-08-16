@@ -3617,18 +3617,23 @@ fn pollthread_create() -> Arc<PollThread> {
     let arc: Arc<PollThread> = Arc::new(seed);
     // rusty atomic ops are const, so a const* suffices through the Arc.
     let thread_id_address = (&arc.poll_thread_id_bits_ as *const rusty::sync::atomic::AtomicU64) as usize;
-    let handle = rusty::thread::spawn(move |rx: PollCmdReceiver| {
+    // One-argument spawn.  The production `rusty::thread::spawn` is variadic
+    // (`auto spawn(F&& func, Args&&... args)`), so both `spawn(f, rx)` and
+    // `spawn(f_capturing_rx)` lower to a valid call; the single-callable form
+    // is the one Rust can model, because Rust has no variadic functions and
+    // the canonical client already spells `spawn(move || { ... })`.
+    let handle = rusty::thread::spawn(move || {
         let tid = rusty::thread::current_id();
         let thread_id_ptr = thread_id_address as *const rusty::sync::atomic::AtomicU64;
         unsafe { (*thread_id_ptr).store(thread_id_to_u64(tid), rusty::sync::atomic::Ordering::Release) };
         // Raw TLS pointer (not a re-borrow) so fibers on this thread can
         // reach the worker while the borrow_mut guard is held.
-        let worker: Rc<RefCell<PollThreadWorker>> = PollThreadWorker::create(rx);
+        let worker: Rc<RefCell<PollThreadWorker>> = PollThreadWorker::create(receiver);
         let mut guard: RefMut<PollThreadWorker> = worker.borrow_mut();
         unsafe { g_current_poll_worker = &raw mut *guard };
         guard.poll_loop();
         unsafe { g_current_poll_worker = core::ptr::null_mut() };
-    }, receiver);
+    });
     {
         let mut slot = arc.join_handle_.lock().unwrap();
         *slot = Some(handle);

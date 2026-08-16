@@ -113,7 +113,23 @@ pub mod port {
     }
 }
 
+/// Rustc-only model of `rusty::thread`.
+///
+/// The production facade (`third-party/rusty-cpp/include/rusty/thread.hpp`)
+/// declares `auto spawn(F&& func, Args&&... args)` -- variadic -- and its
+/// `JoinHandle<T>` carries BOTH `join()` and `detach()`.  Rust has no variadic
+/// functions, so this model is the single-callable form, and every canonical
+/// caller spells that form.
+///
+/// The model type-checks the body and drops it rather than running it, and it
+/// deliberately does NOT require `Send`: the runtime's shared state is reached
+/// through `rusty::Cell`/`RefCell` handles that are `!Sync` in the rustc model
+/// but are the production C++ types the reactor already shares across its own
+/// threads.  Demanding `Send` here would reject the canonical client's
+/// connection bodies without describing anything true about the emitted C++.
 pub mod thread {
+    use ::std::marker::PhantomData;
+
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[repr(transparent)]
     pub struct ThreadId(pub u64);
@@ -124,12 +140,18 @@ pub mod thread {
         }
     }
 
-    pub struct JoinHandle<T>(::std::thread::JoinHandle<T>);
+    /// Model of the runtime's spawned-thread handle.
+    ///
+    /// Generic in the body's result so `JoinHandle<()>` -- the payload of the
+    /// reactor's `PollJoinSlot` -- names the same type production `spawn`
+    /// deduces for a void body.  `PhantomData<fn() -> T>` keeps the handle
+    /// unconditionally `Send + Sync`, which `PollThread`'s own
+    /// `assert_send_sync` requires.
+    pub struct JoinHandle<T>(PhantomData<fn() -> T>);
 
     impl<T> JoinHandle<T> {
-        pub fn join(self) {
-            let _ = self.0.join();
-        }
+        pub fn join(self) {}
+        pub fn detach(self) {}
     }
 
     pub fn current_id() -> ThreadId {
@@ -145,13 +167,13 @@ pub mod thread {
         ThreadId(value)
     }
 
-    pub fn spawn<F, A, R>(function: F, argument: A) -> JoinHandle<R>
+    /// Production C++ resolves this to the runtime's thread spawn.
+    pub fn spawn<F, R>(body: F) -> JoinHandle<R>
     where
-        F: FnOnce(A) -> R + Send + 'static,
-        A: Send + 'static,
-        R: Send + 'static,
+        F: FnOnce() -> R + 'static,
     {
-        JoinHandle(::std::thread::spawn(move || function(argument)))
+        drop(body);
+        JoinHandle(PhantomData)
     }
 }
 
@@ -486,6 +508,23 @@ impl ReactorFiber {
     #[allow(unsafe_code)]
     pub unsafe fn yield_(&self) {
         self.yields.set(self.yields.get().wrapping_add(1));
+    }
+
+    /// Model of the `rrr::Fiber::create_run_impl` static. Production C++
+    /// resolves it to the reactor carrier's own definition, which heap-
+    /// allocates the task and schedules it; the model runs nothing so a
+    /// direct-rustc check never starts a fiber.
+    ///
+    /// # Safety
+    ///
+    /// `file` must be null or a valid NUL-terminated path; `unsafe` otherwise
+    /// records the foreign named-module boundary.
+    #[allow(unsafe_code)]
+    pub unsafe fn create_run_impl<F>(_func: F, _file: *const i8, _line: i64) -> Option<Rc<ReactorFiber>>
+    where
+        F: FnMut() + 'static,
+    {
+        None
     }
 }
 
@@ -1391,6 +1430,40 @@ impl Condvar {
     }
 }
 
+/// `rusty::Cell<T>::get()` for a non-`Copy` payload. The runtime `Cell` copies
+/// its value out for any copy-constructible `T`; `::std::cell::Cell` restricts
+/// the inherent `get` to `Copy`, so canonical sources holding a
+/// `Cell<std::string>` need this extension to be checkable by rustc. The
+/// inherent method still wins wherever it applies, so `Cell<i32>::get` is
+/// untouched.
+pub trait RustyCellGet<T> {
+    fn get(&self) -> T;
+}
+
+impl<T: Clone> RustyCellGet<T> for ::std::cell::Cell<T> {
+    #[allow(unsafe_code)]
+    fn get(&self) -> T {
+        // SAFETY: `Cell` is `!Sync`, so no other thread can observe the cell,
+        // and the clone below does not re-enter it.
+        unsafe { (*self.as_ptr()).clone() }
+    }
+}
+
+/// `std::string::c_str()` — the NUL-terminated view the C++ type exposes and
+/// canonical sources hand to the C connect ladder. Rust's `String` is not
+/// NUL-terminated, so the model returns the buffer pointer: it type-checks the
+/// canonical body and keeps the emitted C++ calling the real `c_str()`.
+pub trait RustyStdStringCStr {
+    fn c_str(&self) -> *const i8;
+}
+
+impl RustyStdStringCStr for ::std::string::String {
+    fn c_str(&self) -> *const i8 {
+        self.as_ptr() as *const i8
+    }
+}
+
+
 /// Rust-only declarations for C++ modules imported by canonical rrr sources.
 /// The exact local `rusty` facade dependency is omitted from generated C++.
 #[allow(clippy::missing_safety_doc)]
@@ -1449,6 +1522,21 @@ pub mod rrr {
         }
     }
 
+    pub mod rand {
+        pub struct RandomGenerator;
+
+        impl RandomGenerator {
+            /// # Safety
+            ///
+            /// Records the foreign named-module boundary; the production
+            /// generator is a pure integer draw with no preconditions.
+            #[allow(unsafe_code)]
+            pub unsafe fn rand(min: i32, _max: i32) -> i32 {
+                min
+            }
+        }
+    }
+
     /// Compile-time-only namespace model used to retain the private
     /// `rrr.errors` named-module import in canonical callback generation.
     pub mod errors {}
@@ -1458,6 +1546,10 @@ pub mod rrr {
     /// generation. The wire constant itself is read through the crate path;
     /// only the provider edge is carried here.
     pub mod internal_protocol {}
+    /// `rrr.callback_wrapper` named-module import in canonical client
+    /// generation; the wrapper template itself is reached through the
+    /// `rusty::CallbackWrapper` facade type.
+    pub mod callback_wrapper {}
 
     pub mod logging {
         /// Rust-side no-op model of the production logging entry point.
@@ -1507,9 +1599,18 @@ pub mod rrr {
             /// # Safety
             ///
             /// `job` must be a well-formed owning job handle; the production
-            /// method moves it into the worker command queue.
+            /// method moves it into the worker command queue. The parameter is
+            /// generic because the C++ surface takes `rusty::Arc<Job>` and
+            /// canonical callers pass a concrete job whose Arc upcasts.
             #[allow(unsafe_code)]
-            pub unsafe fn add<J>(&self, _job: J) {}
+            pub unsafe fn add<J>(&self, _job: Arc<J>) {}
+
+            /// # Safety
+            ///
+            /// No caller-side precondition; `unsafe` records the foreign
+            /// named-module boundary.
+            #[allow(unsafe_code)]
+            pub unsafe fn shutdown(&self) {}
         }
 
         /// Rustc-only affinity model. Tests execute outside the poll worker.
@@ -1802,6 +1903,63 @@ pub mod std {
         }
     }
 
+    /// Equality/ordering/hash and value-copy for the byte model. The
+    /// production type is `std::string`, which is `Regular` and totally
+    /// ordered, so canonical sources use it as a map key, inside a `Cell`, and
+    /// compare it directly. The `UnsafeCell` interior blocks `derive`, so the
+    /// four traits are written out over the same byte view `size()` uses.
+    #[allow(unsafe_code)]
+    fn string_bytes(value: &string) -> &[u8] {
+        // SAFETY: identical to `size`/`to_rust_string` above -- direct-rustc
+        // facade callers do not mutate this model concurrently.
+        unsafe { (&*value.0.get()).as_slice() }
+    }
+
+    /// `std::string` converts to `std::string_view` implicitly in C++, which is
+    /// what canonical sources rely on when they hand a stored address to a
+    /// `&str` parameter. `Deref` is the Rust spelling of that implicit
+    /// conversion and is invisible to the emitter: deref coercion happens in
+    /// rustc's type checker, so the generated C++ call is unchanged.
+    impl ::std::ops::Deref for string {
+        type Target = str;
+
+        fn deref(&self) -> &str {
+            ::std::str::from_utf8(string_bytes(self)).unwrap_or("")
+        }
+    }
+
+    impl Clone for string {
+        fn clone(&self) -> Self {
+            Self(UnsafeCell::new(string_bytes(self).to_vec()))
+        }
+    }
+
+    impl PartialEq for string {
+        fn eq(&self, other: &Self) -> bool {
+            string_bytes(self) == string_bytes(other)
+        }
+    }
+
+    impl Eq for string {}
+
+    impl PartialOrd for string {
+        fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for string {
+        fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
+            string_bytes(self).cmp(string_bytes(other))
+        }
+    }
+
+    impl ::std::hash::Hash for string {
+        fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
+            string_bytes(self).hash(state);
+        }
+    }
+
     impl string {
         pub fn append<T: StringAppend>(&mut self, value: T) {
             value.append_to(self.0.get_mut());
@@ -1827,6 +1985,10 @@ pub mod std {
         #[allow(unsafe_code)]
         pub unsafe fn data(&self) -> *mut i8 {
             unsafe { (&mut *self.0.get()).as_mut_ptr().cast() }
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.size() == 0
         }
 
         #[allow(unsafe_code)]
