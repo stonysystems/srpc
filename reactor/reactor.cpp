@@ -24,6 +24,17 @@
     unused_imports,
     unused_mut,
 )]
+// The `static mut` thread-locals above are this file's rustc-side MODEL of the
+// generated C++ `thread_local` namespace variables (module header, paragraph 2).
+// Under that model every read is a shared reference to a `static mut`, so
+// `static_mut_refs` fires once per access — 15 times — for a hazard the real
+// lowering does not have: each C++ object is per-thread, so no two threads ever
+// alias one. The lint cannot be fixed per site: `thread_local!` changes the
+// generated storage, and dropping `mut` (rustc's own suggestion for the
+// `RefCell` one) does not compile, because a non-`mut` static requires `Sync`
+// and `RefCell<Option<Rc<Fiber>>>` is not. Native generated-C++ TLS, race and
+// teardown gates remain mandatory and are what actually check this.
+#![allow(static_mut_refs)]
 
 use rusty::cpp_inherit;
 use std::cell::{Cell, RefCell, RefMut};
@@ -96,6 +107,7 @@ unsafe extern "C" {
 
 // The calling thread's kernel thread id.  Replaces `syscall(SYS_gettid)` with
 // the literal 186, which is correct only on x86-64 Linux.
+#[cfg_attr(any(), cpp_internal)]
 fn current_thread_gettid() -> i64 {
     // The shim takes no arguments, touches no Rust state, and cannot fail.
     unsafe { srpc_reactor_gettid() }
@@ -106,13 +118,27 @@ fn current_thread_gettid() -> i64 {
 // Deliberately NOT a `pub const`: the incumbent public surface had no such
 // entity, and a module-exported constant would freeze one build's answer
 // under the name of a macro that consumers can still define differently.
+#[cfg_attr(any(), cpp_internal)]
 fn reusing_fiber() -> bool {
     // Same contract as above: an argument-free query over a compile-time
     // constant in the shim translation unit.
     unsafe { srpc_reactor_reusing_fiber() != 0 }
 }
 
-fn verify(value: bool) {
+// NOT named `verify`, for exactly the reason spelled out for
+// `reactor_log_line` below, and MEASURED here rather than assumed:
+// `rrr.debugging` exports `template<typename Expr> void verify(const Expr&,
+// source_location = current())` into the SAME C++ namespace `rrr`. A local
+// non-template `rrr::verify(bool)` is an exact match for a `bool` argument
+// and therefore BEATS that template in overload resolution — so the forward
+// below resolved back to ITSELF. Infinite recursion is UB, so at the
+// production `-O2` the whole body was deleted: `rrr::verify(bool)` compiled
+// to `push %rbp; mov %rsp,%rbp; pop %rbp; ret` and EVERY assertion in this
+// file silently did nothing, while an unoptimized build stack-overflowed.
+// The incumbent had no wrapper at all; it called the imported template
+// directly, which is what this rename restores.
+#[cfg_attr(any(), cpp_internal)]
+fn reactor_verify(value: bool) {
     // The checked foreign facade models the same abort-on-false contract as
     // the imported `rrr.debugging` provider.
     unsafe { cpp_debugging::verify(value) };
@@ -125,6 +151,7 @@ fn verify(value: bool) {
 // value that crosses into the C++ logger) rather than `String`, so the
 // forward is a plain `const std::string&` bind instead of an impossible
 // `rusty::String` -> `std::string` conversion.
+#[cfg_attr(any(), cpp_internal)]
 fn reactor_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
     // The production logger consumes the message synchronously and retains no
     // borrow; the owned Rust value therefore has exactly the required extent.
@@ -150,6 +177,13 @@ where
 pub static mut sp_reactor_th_: Option<Rc<Reactor>> = Option::<Rc<Reactor>>::None;
 #[cfg_attr(any(), thread_local)]
 pub static mut sp_disk_reactor_th_: Option<Rc<Reactor>> = Option::<Rc<Reactor>>::None;
+// MEASURED, not assumed: rustc's own `static_mut_refs` suggestion here —
+// "this type already provides interior mutability, so its binding doesn't
+// need to be declared as mutable" — DOES NOT COMPILE. A non-`mut` static
+// requires `Sync`, and `RefCell<Option<Rc<Fiber>>>` is neither. `static mut`
+// is how rustc models a C++ namespace-scope `thread_local` in this facade
+// (see the module header); the real per-thread storage comes from the
+// marker above. See the crate-level `static_mut_refs` allow below.
 #[cfg_attr(any(), thread_local)]
 pub static mut sp_running_fiber_th_: RefCell<Option<Rc<Fiber>>> = RefCell::new(Option::<Rc<Fiber>>::None);
 
@@ -187,6 +221,7 @@ impl EventState {
     }
 }
 
+#[cfg_attr(any(), cpp_internal)]
 pub trait EventPollable {
     fn test(&self) -> bool;
     fn is_ready(&self) -> bool;
@@ -902,6 +937,7 @@ pub struct StacklessTaskEntry {
     pub poll_once: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>,
 }
 
+#[cfg_attr(any(), cpp_internal)]
 const STACKLESS_UNREGISTERED_SLOT: usize = usize::MAX;
 
 struct StacklessWakeTicket {
@@ -1051,7 +1087,7 @@ fn stackless_wake_release_empty_storage<WakeDomain>(owners_ptr: *mut Vec<Stackle
         }
         if !has_active_owner {
             let slot = &mut *stackless_wake_owners_slot::<WakeDomain>();
-            verify(*slot == owners_ptr);
+            reactor_verify(*slot == owners_ptr);
             *slot = core::ptr::null_mut();
             drop(Box::from_raw(owners_ptr));
         }
@@ -1078,7 +1114,7 @@ fn stackless_wake_request<WakeDomain>(ingress: &Arc<StacklessWakeIngress>, ticke
 }
 
 fn stackless_wake_ingress<WakeDomain>(reactor: &Reactor) -> Arc<StacklessWakeIngress> {
-    verify(rusty::thread::current_id() == reactor.thread_id_.get());
+    reactor_verify(rusty::thread::current_id() == reactor.thread_id_.get());
     let key = stackless_wake_reactor_key::<WakeDomain>(reactor);
     let mut reusable: usize = STACKLESS_UNREGISTERED_SLOT;
     unsafe {
@@ -1151,7 +1187,7 @@ fn stackless_wake_attach<WakeDomain>(reactor: &Reactor, idx: usize, binding: Box
                 while owners[i].bindings.len() <= idx {
                     owners[i].bindings.push(None);
                 }
-                verify(owners[i].bindings[idx].is_none());
+                reactor_verify(owners[i].bindings[idx].is_none());
                 binding.ticket.slot.store(idx, rusty::sync::atomic::Ordering::Release);
                 owners[i].bindings[idx] = Some(binding);
                 return;
@@ -1159,7 +1195,7 @@ fn stackless_wake_attach<WakeDomain>(reactor: &Reactor, idx: usize, binding: Box
             i += 1usize;
         }
     }
-    verify(false);
+    reactor_verify(false);
 }
 
 fn stackless_wake_context_ptr<WakeDomain>(reactor: &Reactor, idx: usize) -> *mut rusty::Context {
@@ -1169,7 +1205,7 @@ fn stackless_wake_context_ptr<WakeDomain>(reactor: &Reactor, idx: usize) -> *mut
         let mut i: usize = 0usize;
         while i < owners.len() {
             if owners[i].reactor_key == key {
-                verify(idx < owners[i].bindings.len());
+                reactor_verify(idx < owners[i].bindings.len());
                 let binding = owners[i].bindings[idx].as_mut().unwrap();
                 return &raw mut binding.context;
             }
@@ -1411,7 +1447,7 @@ impl Reactor {
         reactor_tls_set_running(fiber);
     }
     pub fn run_loop(&self, infinite: bool, do_check_timeout: bool) {
-        verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
         self.looping_.set(infinite);
         loop {
             let mut found_ready_events = true;
@@ -1488,11 +1524,11 @@ impl Reactor {
                                     (*fibers_guard).contains_key(&fiber_registry_key(&fiber))
                                 };
                                 if known {
-                                    verify(fiber.status_.get() == FiberStatus::PAUSED);
+                                    reactor_verify(fiber.status_.get() == FiberStatus::PAUSED);
                                     if (*ev).status() == EventStatus::READY {
                                         (*ev).set_status(EventStatus::DONE);
                                     } else {
-                                        verify((*ev).status() == EventStatus::TIMEOUT);
+                                        reactor_verify((*ev).status() == EventStatus::TIMEOUT);
                                     }
                                     self.continue_fiber(&fiber);
                                 }
@@ -1539,7 +1575,7 @@ impl Reactor {
         {
             let guard = unsafe { sp_running_fiber_th_.borrow() };
             let running: &Rc<Fiber> = (*guard).as_ref().unwrap();
-            verify(!running.finished());
+            reactor_verify(!running.finished());
         }
         self.n_active_fibers_.set(self.n_active_fibers_.get() + 1i64);
         if fiber.status_.get() == FiberStatus::INIT {
@@ -1572,11 +1608,11 @@ impl Reactor {
         let mut guard = self.fibers_.borrow_mut();
         let inserted = guard.insert(fiber_registry_key(fiber), fiber.clone()).is_none();
         if !inserted {
-            unsafe { reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!")); }
-            unsafe { reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), reusing_fiber())); }
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!"));
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), reusing_fiber()));
         }
-        verify(inserted);
-        verify(guard.len() > 0usize);
+        reactor_verify(inserted);
+        reactor_verify(guard.len() > 0usize);
     }
 
     pub fn recycle(&self, fiber: &mut Rc<Fiber>) {
@@ -1593,7 +1629,7 @@ impl Reactor {
     }
 
     pub fn enqueue_stackless_task(&self, idx: usize) {
-        verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
         stackless_profile_note_enqueue();
         {
             let guard = self.stackless_tasks_.borrow();
@@ -1663,7 +1699,7 @@ impl Reactor {
     }
 
     pub fn process_stackless_tasks(&self) -> bool {
-        verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
         let ingress_ready = stackless_wake_take_pending::<()>(self);
         for idx in ingress_ready {
             self.enqueue_stackless_task(idx);
@@ -1753,7 +1789,7 @@ impl Reactor {
             let event = (*guard)[i].clone();
             if (*event).status() == EventStatus::WAIT {
                 let wakeup_time = (*event).wakeup_time();
-                verify(wakeup_time > 0u64);
+                reactor_verify(wakeup_time > 0u64);
                 if time_now >= wakeup_time {
                     if (*event).is_ready() {
                         (*event).set_status(EventStatus::READY);
@@ -1778,7 +1814,7 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
-        verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
                   self.all_events_.borrow().len(), self.fibers_.borrow().len()));
         // Reject new foreign wakes first. Destroy every Task-bearing closure
@@ -1828,7 +1864,7 @@ pub fn reactor_spawn_stackless_task_with_result<T: 'static, OnReady>(self_: &Rea
 where
     OnReady: FnMut(T) + 'static,
 {
-    verify(rusty::thread::current_id() == self_.thread_id_.get());
+    reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
     let mut early_binding = stackless_wake_make_binding::<()>(ingress);
     let early_ticket = early_binding.ticket.clone();
@@ -1891,7 +1927,7 @@ fn reactor_setup_sp_event<Ev: EventCore + 'static>(ev0: Arc<Ev>) -> Arc<Ev> {
     let mut ev = ev0;
     {
         let opt = Arc::get_mut(&mut ev);
-        verify(opt.is_some());
+        reactor_verify(opt.is_some());
         let m: &mut Ev = opt.unwrap();
         m.core_state_mut().__debug_creator = 1;
     }
@@ -2021,7 +2057,13 @@ impl PollThread {
             return;
         }
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Sending CmdShutdown"));
-        self.sender_.send(PollCommand::Shutdown);
+        // `Sender::send` fails ONLY when the receiver is gone (mpsc.hpp:87-96
+        // returns Err(Disconnected) iff !receiver_alive_), i.e. the poll
+        // worker has already exited. The join below is what actually ends the
+        // thread, so a dropped Shutdown command is unobservable. Discarded
+        // explicitly rather than silently: C++ never warned here, so the
+        // incumbent's identical discard was invisible.
+        let _dropped_when_worker_gone = self.sender_.send(PollCommand::Shutdown);
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] CmdShutdown sent"));
         // Thread-safe read of the poll thread's id.
         let current_tid = rusty::thread::current_id();
@@ -2050,34 +2092,44 @@ impl PollThread {
     }
 
     pub fn add_proxy(&self, poll: PollableProxy) {
-        self.sender_.send(PollCommand::AddPollable { pollable: poll });
+        // Err == the poll worker exited; there is no epoll set left to add to.
+        let _dropped_when_worker_gone =
+            self.sender_.send(PollCommand::AddPollable { pollable: poll });
     }
 
     pub fn remove(&self, poll: &mut dyn Pollable) {
-        self.sender_.send(PollCommand::RemovePollable { fd: poll.fd() });
+        // Err == the poll worker exited; the fd it would unregister is gone too.
+        let _dropped_when_worker_gone =
+            self.sender_.send(PollCommand::RemovePollable { fd: poll.fd() });
     }
 
     // fd-keyed variant (remove only reads .fd() anyway); lets
     // shim-only callers avoid the Pollable base entirely.
     pub fn remove_fd(&self, fd: i32) {
-        self.sender_.send(PollCommand::RemovePollable { fd: fd });
+        // Err == the poll worker exited; the fd it would unregister is gone too.
+        let _dropped_when_worker_gone =
+            self.sender_.send(PollCommand::RemovePollable { fd: fd });
     }
 
     // Thread-safe close: removes from epoll, closes socket, drops
     // proxy ownership.
     pub fn request_close(&self, fd: i32) {
-        self.sender_.send(PollCommand::ClosePollable { fd: fd });
+        // Err == the poll worker exited; it already closed everything it owned.
+        let _dropped_when_worker_gone =
+            self.sender_.send(PollCommand::ClosePollable { fd: fd });
     }
 
     pub fn update_mode(&self, fd: i32, new_mode: i32) {
         let result = self.sender_.send(PollCommand::UpdateMode { fd: fd, new_mode: new_mode });
         if result.is_err() {
-            unsafe { reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("PollThread::update_mode: send failed! Channel disconnected?")); }
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("PollThread::update_mode: send failed! Channel disconnected?"));
         }
     }
 
     pub fn add(&self, job: Arc<dyn Job>) {
-        self.sender_.send(PollCommand::AddJob { job: job });
+        // Err == the poll worker exited; there is no loop left to run the job.
+        let _dropped_when_worker_gone =
+            self.sender_.send(PollCommand::AddJob { job: job });
     }
 
     // For testing — worker state is not reachable across the channel.
@@ -2179,7 +2231,7 @@ impl QuorumEvent {
         if self.policy_.get() == QuorumPolicy::ALL_NO {
             return self.n_voted_no_.get() == self.n_total_;
         }
-        verify(self.n_total_ >= self.quorum_);
+        reactor_verify(self.n_total_ >= self.quorum_);
         let base = self.n_voted_no_.get() > (self.n_total_ - self.quorum_);
         if self.policy_.get() == QuorumPolicy::LEADER_AND {
             return base || self.n_leader_no_.get() > 0;
@@ -2341,12 +2393,12 @@ impl QuorumEventWrapper {
 }
 
 fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
-    verify(unsafe { sp_reactor_th_.is_some() });
+    reactor_verify(unsafe { sp_reactor_th_.is_some() });
     // `.clone()` binds a *value* Rc (not a reference): `*ident` lowers to a
     // deref only for value bindings, so `(*reactor_th).thread_id_` reaches
     // through the Rc.
     let reactor_th = unsafe { sp_reactor_th_.as_ref().unwrap().clone() };
-    verify((*reactor_th).thread_id_.get() == rusty::thread::current_id());
+    reactor_verify((*reactor_th).thread_id_.get() == rusty::thread::current_id());
     if ev.core_status().get() == EventStatus::DONE {
         return; // second use of the event
     }
@@ -2357,7 +2409,7 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         // The event may be created in a different fiber; for now only one
         // fiber can wait on an event. Capture the running fiber to wake later.
         let fiber_opt = Fiber::current_fiber();
-        verify(fiber_opt.is_some()); // can't wait outside a fiber
+        reactor_verify(fiber_opt.is_some()); // can't wait outside a fiber
         let fiber = fiber_opt.unwrap();
 
         let reactor_rc = Reactor::get_reactor();
@@ -2386,13 +2438,13 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         *ev.core_state().wp_fiber_.borrow_mut() = ::rusty::port::rc::Rc::<Fiber>::downgrade(&fiber);
         ev.core_status().set(EventStatus::WAIT);
         let fiber_status = (*fiber).status_.get();
-        verify(fiber_status != FiberStatus::FINISHED && fiber_status != FiberStatus::RECYCLED);
+        reactor_verify(fiber_status != FiberStatus::FINISHED && fiber_status != FiberStatus::RECYCLED);
         (*fiber).yield_();
     }
 }
 
 fn event_test_impl<W: EventCore>(ev: &W) -> bool {
-    verify(ev.core_state().__debug_creator != 0);
+    reactor_verify(ev.core_state().__debug_creator != 0);
     if ev.is_ready() {
         if ev.core_status().get() == EventStatus::INIT {
             ev.core_status().set(EventStatus::DONE);
@@ -2403,8 +2455,8 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
                 // races the owner's own Rc<Fiber> clones and corrupts the count.
                 // The upgraded handle is used only for this liveness assertion.
                 let option_fiber = ev.core_state().wp_fiber_.borrow().upgrade();
-                verify(option_fiber.is_some());
-                verify(ev.core_status().get() != EventStatus::DEBUG);
+                reactor_verify(option_fiber.is_some());
+                reactor_verify(ev.core_status().get() != EventStatus::DEBUG);
             }
             ev.core_status().set(EventStatus::READY);
         } else if ev.core_status().get() == EventStatus::READY {
@@ -2414,7 +2466,7 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
         } else if ev.core_status().get() == EventStatus::TIMEOUT {
             // do nothing
         } else {
-            verify(false);
+            reactor_verify(false);
         }
         return true;
     } else {
@@ -2427,7 +2479,7 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
 
 fn event_core_get_fiber_id() -> u64 {
     let fiber_opt = Fiber::current_fiber();
-    verify(fiber_opt.is_some());
+    reactor_verify(fiber_opt.is_some());
     (*fiber_opt.unwrap()).id.get()
 }
 
@@ -2651,11 +2703,11 @@ fn reactor_dec_active_fibers() {
 
 fn fiber_run_wrapper(fb: &Fiber, y: *mut fiber_yield_t) {
     fb.fiber_yield_.set(y);
-    verify(fiber_fn_present(&fb.func_));
+    reactor_verify(fiber_fn_present(&fb.func_));
     loop {
         let sz = reactor_live_fiber_count();
-        verify(sz > 0usize);
-        verify(fiber_fn_present(&fb.func_));
+        reactor_verify(sz > 0usize);
+        reactor_verify(fiber_fn_present(&fb.func_));
         fiber_fn_invoke(&fb.func_);
         fiber_fn_clear(&fb.func_);
         fb.status_.set(FiberStatus::FINISHED);
@@ -2671,12 +2723,12 @@ fn fiber_run_wrapper(fb: &Fiber, y: *mut fiber_yield_t) {
 fn fiber_run(fb: &Fiber) {
     {
         let tguard = fb.fiber_task_.borrow();
-        verify((*tguard).is_none());
+        reactor_verify((*tguard).is_none());
     }
-    verify(fb.status_.get() == FiberStatus::INIT);
+    reactor_verify(fb.status_.get() == FiberStatus::INIT);
     fb.status_.set(FiberStatus::STARTED);
     let sz = reactor_live_fiber_count();
-    verify(sz > 0usize);
+    reactor_verify(sz > 0usize);
     // The closure only reads through this pointer; keep the constness instead
     // of manufacturing a mutable pointer with a const-removal kernel.
     let self_ptr: *const Fiber = fb as *const Fiber;
@@ -2686,7 +2738,7 @@ fn fiber_run(fb: &Fiber) {
             // its Box. This also proves no RefCell borrow spans engine start.
             {
                 let tguard = (*self_ptr).fiber_task_.borrow();
-                verify((*tguard).is_none());
+                reactor_verify((*tguard).is_none());
             }
             fiber_run_wrapper(&*self_ptr, &raw mut *yy);
         }
@@ -2694,15 +2746,15 @@ fn fiber_run(fb: &Fiber) {
     fiber_install_task(&fb.fiber_task_, task);
     {
         let tguard = fb.fiber_task_.borrow();
-        verify((*tguard).is_some());
+        reactor_verify((*tguard).is_some());
     }
 }
 
 fn fiber_do_yield(fb: &Fiber) {
     let y: *mut fiber_yield_t = fb.fiber_yield_.get();
-    verify(!y.is_null());
+    reactor_verify(!y.is_null());
     let s = fb.status_.get();
-    verify(s == FiberStatus::STARTED || s == FiberStatus::RESUMED
+    reactor_verify(s == FiberStatus::STARTED || s == FiberStatus::RESUMED
         || s == FiberStatus::FINALIZING);
     fb.status_.set(FiberStatus::PAUSED);
     reactor_dec_active_fibers();
@@ -2711,10 +2763,10 @@ fn fiber_do_yield(fb: &Fiber) {
 
 fn fiber_do_continue(fb: &Fiber) {
     let s = fb.status_.get();
-    verify(s == FiberStatus::PAUSED || s == FiberStatus::RECYCLED);
+    reactor_verify(s == FiberStatus::PAUSED || s == FiberStatus::RECYCLED);
     {
         let tguard = fb.fiber_task_.borrow();
-        verify((*tguard).is_some());
+        reactor_verify((*tguard).is_some());
     }
     fb.status_.set(FiberStatus::RESUMED);
     fiber_task_invoke(&fb.fiber_task_);
@@ -2731,6 +2783,7 @@ fn fiber_do_finalize(fb: &Fiber) {
     fb.needs_finalize_.set(false);
 }
 
+#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_env() -> bool {
     let env: *const LegacyCChar = unsafe {
         getenv(b"MAKO_ASYNC_PROFILE\0".as_ptr() as *const LegacyCChar)
@@ -2741,6 +2794,7 @@ fn stackless_profile_env() -> bool {
     unsafe { *env != 0 as LegacyCChar && *env != 48 as LegacyCChar }
 }
 
+#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_enabled() -> bool {
     static ENABLED_STATE: rusty::sync::atomic::AtomicUsize =
         rusty::sync::atomic::AtomicUsize::new(0);
@@ -2799,10 +2853,12 @@ static g_stackless_profile: StacklessProfileCounters = StacklessProfileCounters 
     max_slots: rusty::sync::atomic::AtomicUsize::new(0usize),
 };
 
+#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_update_max_slots(slots: usize) {
     g_stackless_profile.max_slots.fetch_max(slots, rusty::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_report_periodic() {
     if !stackless_profile_enabled() {
         return;
@@ -2848,7 +2904,7 @@ fn reactor_poll_one(r: &Reactor, idx: usize, poll_fn: *mut StacklessPollFn) -> b
     // The binding is heap-stable and owned by the private owner-thread
     // registry. Task::poll may retain Context* until the Task is destroyed.
     let ctx_ptr = stackless_wake_context_ptr::<()>(r, idx);
-    verify(!ctx_ptr.is_null());
+    reactor_verify(!ctx_ptr.is_null());
     let ctx_ref: &mut rusty::Context = unsafe { &mut *ctx_ptr };
     unsafe { (*poll_fn)(ctx_ref) }
 }
@@ -2966,22 +3022,20 @@ fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFil
         *(*fiber).func_.borrow_mut() = func;
         // Keep the existing task/stack so continue_() can resume from the
         // fiber's yield point.
-        verify((*(*fiber).fiber_task_.borrow()).is_some());
+        reactor_verify((*(*fiber).fiber_task_.borrow()).is_some());
         (*fiber).status_.set(FiberStatus::RECYCLED);
         return fiber;
     } else {
         let fiber: Rc<Fiber> = Rc::new(Fiber::new(func));
         self_.n_created_fibers_.set(self_.n_created_fibers_.get() + 1i64);
         if self_.n_created_fibers_.get() % 1024i64 == 0i64 {
-            unsafe {
-                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("created {}, busy {}, idle {} fibers on server {}, recent {}:{}",
-                               self_.n_created_fibers_.get(),
-                               self_.n_busy_fibers_.get(),
-                               self_.n_idle_fibers_.get(),
-                               self_.server_id_.get(),
-                               file,
-                               line));
-            }
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("created {}, busy {}, idle {} fibers on server {}, recent {}:{}",
+                           self_.n_created_fibers_.get(),
+                           self_.n_busy_fibers_.get(),
+                           self_.n_idle_fibers_.get(),
+                           self_.server_id_.get(),
+                           file,
+                           line));
         }
         return fiber;
     }
@@ -3011,7 +3065,7 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
     if status == FiberStatus::INIT {
         (*fiber).run();
     } else {
-        verify(status == FiberStatus::RECYCLED);
+        reactor_verify(status == FiberStatus::RECYCLED);
         (*fiber).continue_();
     }
     if (*fiber).finished() {
@@ -3032,7 +3086,7 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
 }
 
 fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
-    verify(rusty::thread::current_id() == self_.thread_id_.get());
+    reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
     let mut early_binding = stackless_wake_make_binding::<()>(ingress);
     let early_ticket = early_binding.ticket.clone();
@@ -3423,6 +3477,7 @@ fn pollworker_update_mode(w: &mut PollThreadWorker, poll: &mut dyn Pollable, new
     pollworker_do_update_mode(w, poll.fd(), new_mode);
 }
 
+#[cfg_attr(any(), cpp_internal)]
 fn thread_id_to_u64(tid: rusty::thread::ThreadId) -> u64 {
     unsafe { core::mem::transmute::<rusty::thread::ThreadId, u64>(tid) }
 }
@@ -3465,7 +3520,7 @@ fn pollthread_drop(pt: &PollThread) {
 }
 
 fn fiber_yield_invoke(y: &mut fiber_yield_t) {
-    verify(!y.task_.is_null());
+    reactor_verify(!y.task_.is_null());
     unsafe { fiber_engine_yield(&mut (*y.task_).fib_); }
 }
 
@@ -3499,7 +3554,7 @@ fn fiber_engine_destroy(fib: *mut srpc_fiber) {
 }
 
 fn fiber_task_body_invoke(f: &mut FiberTaskFn, y: &mut fiber_yield_t) {
-    verify(!f.is_empty());
+    reactor_verify(!f.is_empty());
     (*f)(y);
 }
 

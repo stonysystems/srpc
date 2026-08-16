@@ -14,7 +14,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUSTY_CPP_PIN = "2b91ee84cd054b47b304c0b3ff92f5b54acabf68"
+RUSTY_CPP_PIN = "5f5af031a2de528961ee9cca81305180c9879b9c"
 EXPECTED_INLINE_SOURCES = {
     "rpc/client.cpp": "client",
     "rpc/server.cpp": "server",
