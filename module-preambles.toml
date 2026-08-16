@@ -65,6 +65,13 @@ includes = [
 ]
 
 [[module]]
+name = "rrr.server"
+includes = [
+    { path = "base/rustc_markers.hpp", form = "quote" },
+    { path = "rpc/srpc_server.h", form = "quote" },
+]
+
+[[module]]
 name = "rrr.tcp_channel"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },

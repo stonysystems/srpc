@@ -48,7 +48,7 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
     r"in scope [^:\n]+: \[[^\]\n]*\](?:; cycle path: [^\n]*)?$",
     re.MULTILINE,
 )
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1553
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1639
 
 # ---------------------------------------------------------------------------
 # rrr.reactor: the ONE deliberate addition over the frozen incumbent oracle.
@@ -158,6 +158,21 @@ EXPECTED_IMPORTS = {
         "rrr.pollable_proxy",
         "std",
     ],
+    # MEASURED from build/goal0-crate-cpp/rrr.server.cppm, not declared: the
+    # emitter writes `import rusty;` first and then the rrr.* set
+    # alphabetically. rrr.server needs no `import std;`.
+    "rrr.server": [
+        "rusty",
+        "rrr.basetypes",
+        "rrr.channel",
+        "rrr.debugging",
+        "rrr.internal_protocol",
+        "rrr.logging",
+        "rrr.misc",
+        "rrr.reactor",
+        "rrr.serializable",
+        "rrr.tcp_channel",
+    ],
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
@@ -199,6 +214,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     # 301 unique demangled strong symbols, same 29-row layout).  Digest drift is
     # advisory; this keeps the advisory list honest rather than permanently noisy.
     "rrr.reactor": "c183ebd7170f0c1604a4401d6e5db75c78b6cd2707e4683a59fea1d3933f2681",
+    "rrr.server": "3e5de5e8ecd419ed950fc4c7d58c7a9299d132869ee46cf7dd2fda18cda8e8d3",
 }
 
 IMPORTER_USE_MARKERS = {
@@ -237,6 +253,7 @@ IMPORTER_USE_MARKERS = {
     "rrr.serializable": "rrr::BinaryWriteArchive",
     "rrr.tcp_channel": "rrr::kTcpConnectionOutboundHighWaterDefault",
     "rrr.reactor": "rrr::EventStatus",
+    "rrr.server": "rrr::kDefaultDrainTimeoutMs",
 }
 
 
@@ -2835,6 +2852,119 @@ ABI_SPECS = {
             }
         ),
     ),
+    "rrr.server": AbiSpec(
+        surface=frozenset(
+            {
+                'export module rrr.server;',
+                'namespace rrr {',
+                'export enum class ShutdownPhase {',
+                'export enum class ServerConnStatus {',
+                'export struct Server {',
+                'export struct ServerConnection {',
+                'export struct RpcServiceContext {',
+                'export struct DeferredReply {',
+                'export struct PendingRequestGuard {',
+                'export struct Request {',
+                'export class Service {',
+                'export struct ShutdownState {',
+                'export struct ChannelSconns {',
+                'export using ServiceProxy = rusty::Box<Service>;',
+                'export using ServerReplyFn = rusty::Function<void(::rrr::BinaryWriteArchive&)>;',
+                'export constexpr uint64_t kDefaultDrainTimeoutMs = static_cast<uint64_t>(30000);',
+                'export void server_wait_for_shutdown_impl(const rusty::Mutex<ShutdownState>& state, const rusty::Box<rusty::Condvar>& cond);',
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('D', 'typeinfo for rrr::Service@rrr.server'),
+                ('D', 'vtable for rrr::Service@rrr.server'),
+                ('R', 'rrr::SERVER_ERR_ALREADY_EXISTS@rrr.server'),
+                ('R', 'rrr::SERVER_ERR_INVALID_ARGUMENT@rrr.server'),
+                ('R', 'rrr::SERVER_ERR_NO_ENTRY@rrr.server'),
+                ('R', 'rrr::kDefaultDrainTimeoutMs@rrr.server'),
+                ('R', 'typeinfo name for rrr::Service@rrr.server'),
+                ('T', 'rrr::DeferredReply@rrr.server::DeferredReply(rrr::DeferredReply@rrr.server&&)'),
+                ('T', 'rrr::DeferredReply@rrr.server::DeferredReply(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Option<rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>>, rusty::Option<rusty::Function<void ()>>)'),
+                ('T', 'rrr::DeferredReply@rrr.server::new_(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>, rusty::Function<void ()>)'),
+                ('T', 'rrr::DeferredReply@rrr.server::operator=(rrr::DeferredReply@rrr.server&&)'),
+                ('T', 'rrr::DeferredReply@rrr.server::reply()'),
+                ('T', 'rrr::DeferredReply@rrr.server::reply_error(int)'),
+                ('T', 'rrr::DeferredReply@rrr.server::run_async(rusty::Function<void ()>)'),
+                ('T', 'rrr::DeferredReply@rrr.server::rusty_mark_forgotten() const'),
+                ('T', 'rrr::DeferredReply@rrr.server::~DeferredReply()'),
+                ('T', 'rrr::PendingRequestGuard@rrr.server::PendingRequestGuard(rrr::PendingRequestGuard@rrr.server&&)'),
+                ('T', 'rrr::PendingRequestGuard@rrr.server::PendingRequestGuard(rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>)'),
+                ('T', 'rrr::PendingRequestGuard@rrr.server::operator=(rrr::PendingRequestGuard@rrr.server&&)'),
+                ('T', 'rrr::PendingRequestGuard@rrr.server::rusty_mark_forgotten() const'),
+                ('T', 'rrr::PendingRequestGuard@rrr.server::~PendingRequestGuard()'),
+                ('T', 'rrr::Request@rrr.server::attach_pending_guard(rusty::Arc<rusty::sync::atomic::detail::Atomic<int>> const&)'),
+                ('T', 'rrr::RpcServiceContext@rrr.server::new_(rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<int, unsigned long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashSet@hashbrown_port.set<int, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher>, rusty::port::vec::Vec@vec_port.vec<rusty::RefCell<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>>, rusty::alloc::Global>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long)'),
+                ('T', 'rrr::Server@rrr.server::Server(rrr::Server@rrr.server&&)'),
+                ('T', 'rrr::Server@rrr.server::Server(rusty::port::vec::Vec@vec_port.vec<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<int, unsigned long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashSet@hashbrown_port.set<int, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher>, rusty::Option<rusty::Arc<rrr::RpcServiceContext@rrr.server>>, rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::ShutdownState@rrr.server>, rusty::Box<rusty::Condvar, rusty::alloc::Global>, rusty::Cell<rrr::ShutdownPhase@rrr.server>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long, rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>, rusty::Option<rusty::Box<rrr::ChannelListenerBase@rrr.channel, rusty::alloc::Global>>, rusty::Arc<rusty::Mutex<rrr::ChannelSconns@rrr.server>>)'),
+                ('T', 'rrr::Server@rrr.server::add_shutdown_hook(rusty::Function<void ()>) const'),
+                ('T', 'rrr::Server@rrr.server::addr() const'),
+                ('T', 'rrr::Server@rrr.server::decrement_pending() const'),
+                ('T', 'rrr::Server@rrr.server::do_shutdown() const'),
+                ('T', 'rrr::Server@rrr.server::drain(unsigned long) const'),
+                ('T', 'rrr::Server@rrr.server::drop_heartbeat_replies() const'),
+                ('T', 'rrr::Server@rrr.server::get_bound_port() const'),
+                ('T', 'rrr::Server@rrr.server::graceful_shutdown(unsigned long)'),
+                ('T', 'rrr::Server@rrr.server::increment_pending() const'),
+                ('T', 'rrr::Server@rrr.server::instance_id() const'),
+                ('T', 'rrr::Server@rrr.server::is_channel_factory_bound() const'),
+                ('T', 'rrr::Server@rrr.server::new_(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>)'),
+                ('T', 'rrr::Server@rrr.server::operator=(rrr::Server@rrr.server&&)'),
+                ('T', 'rrr::Server@rrr.server::pending_request_count() const'),
+                ('T', 'rrr::Server@rrr.server::phase() const'),
+                ('T', 'rrr::Server@rrr.server::reg_fast_rpc(int, unsigned long)'),
+                ('T', 'rrr::Server@rrr.server::reg_rpc(int, unsigned long)'),
+                ('T', 'rrr::Server@rrr.server::reg_service(rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>)'),
+                ('T', 'rrr::Server@rrr.server::reg_service_proxy(rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>)'),
+                ('T', 'rrr::Server@rrr.server::rusty_mark_forgotten() const'),
+                ('T', 'rrr::Server@rrr.server::service_count() const'),
+                ('T', 'rrr::Server@rrr.server::set_channel_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>)'),
+                ('T', 'rrr::Server@rrr.server::set_drop_heartbeat_replies(bool) const'),
+                ('T', 'rrr::Server@rrr.server::start(signed char const*)'),
+                ('T', 'rrr::Server@rrr.server::stop_accepting()'),
+                ('T', 'rrr::Server@rrr.server::unreg(int)'),
+                ('T', 'rrr::Server@rrr.server::wait_for_shutdown() const'),
+                ('T', 'rrr::Server@rrr.server::~Server()'),
+                ('T', 'rrr::ServerConnection@rrr.server::ServerConnection(rusty::Arc<rrr::RpcServiceContext@rrr.server>, int)'),
+                ('T', 'rrr::ServerConnection@rrr.server::bind_channel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+                ('T', 'rrr::ServerConnection@rrr.server::close() const'),
+                ('T', 'rrr::ServerConnection@rrr.server::connected() const'),
+                ('T', 'rrr::ServerConnection@rrr.server::install_self_weak_for_testing(rusty::sync::Weak<rrr::ServerConnection@rrr.server>)'),
+                ('T', 'rrr::ServerConnection@rrr.server::is_channel_mode() const'),
+                ('T', 'rrr::ServerConnection@rrr.server::is_closed() const'),
+                ('T', 'rrr::ServerConnection@rrr.server::reply(rrr::Request@rrr.server const&, int, rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>) const'),
+                ('T', 'rrr::ServerConnection@rrr.server::run_async(rusty::Function<void ()>) const'),
+                ('T', 'rrr::Service@rrr.server::~Service()'),
+                ('T', 'rrr::make_empty_request_box@rrr.server()'),
+                ('T', 'rrr::make_service_proxy_from_box@rrr.server(rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>)'),
+                ('T', 'rrr::no_reply_writer@rrr.server()'),
+                ('T', 'rrr::request_fill_body@rrr.server(rrr::Request@rrr.server&, std::__1::span<unsigned char const, 18446744073709551615ul>)'),
+                ('T', 'rrr::sconn_decode_request_and_dispatch@rrr.server(rrr::ServerConnection@rrr.server const&, unsigned char const*, unsigned long)'),
+                ('T', 'rrr::sconn_dispatch_in_fiber@rrr.server(rusty::Arc<rrr::RpcServiceContext@rrr.server>, unsigned long, int, rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>)'),
+                ('T', 'rrr::sconn_dispatch_response_frame_via_channel@rrr.server(rrr::ServerConnection@rrr.server const&, unsigned char const*, unsigned long)'),
+                ('T', 'rrr::sconn_on_channel_closed@rrr.server(rusty::sync::Weak<rrr::ServerConnection@rrr.server> const&)'),
+                ('T', 'rrr::sconn_on_channel_error@rrr.server(rusty::sync::Weak<rrr::ServerConnection@rrr.server> const&, rrr::ChannelError@rrr.channel, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'rrr::sconn_on_channel_frame@rrr.server(rusty::sync::Weak<rrr::ServerConnection@rrr.server> const&, rrr::ChannelFrame@rrr.channel const&)'),
+                ('T', 'rrr::sconn_proxy_ptr@rrr.server(rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>> const&)'),
+                ('T', 'rrr::sconn_reply@rrr.server(rrr::ServerConnection@rrr.server const&, rrr::Request@rrr.server const&, int, rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>)'),
+                ('T', 'rrr::server_drain_impl@rrr.server(rusty::Cell<rrr::ShutdownPhase@rrr.server> const&, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>> const&, unsigned long)'),
+                ('T', 'rrr::server_dsl_addr_to_string@rrr.server(signed char const*)'),
+                ('T', 'rrr::server_generate_instance_id@rrr.server()'),
+                ('T', 'rrr::server_invoke_shutdown_hook_safely@rrr.server(rusty::Function<void ()>&)'),
+                ('T', 'rrr::server_now_nanos@rrr.server()'),
+                ('T', 'rrr::server_parse_port@rrr.server(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'rrr::server_random_u64@rrr.server()'),
+                ('T', 'rrr::server_resolve_poll_thread@rrr.server(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>)'),
+                ('T', 'rrr::server_run_shutdown_hooks@rrr.server(rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>> const&)'),
+                ('T', 'rrr::server_wait_for_shutdown_impl@rrr.server(rusty::Mutex<rrr::ShutdownState@rrr.server> const&, rusty::Box<rusty::Condvar, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::shutdown_phase_to_string@rrr.server(rrr::ShutdownPhase@rrr.server)'),
+            }
+        ),
+    ),
     "rrr.tcp_channel": AbiSpec(
         surface=frozenset(
             {
@@ -3148,6 +3278,56 @@ RAW_ABI_ALIASES = {
         (
             'T',
             'rrr::fiber_task_t@rrr.reactor::~fiber_task_t()',
+        ),
+    ),
+    "rrr.server": (
+        (
+            'T',
+            'rrr::DeferredReply@rrr.server::DeferredReply(rrr::DeferredReply@rrr.server&&)',
+        ),
+        (
+            'T',
+            'rrr::DeferredReply@rrr.server::DeferredReply(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Option<rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>>, rusty::Option<rusty::Function<void ()>>)',
+        ),
+        (
+            'T',
+            'rrr::DeferredReply@rrr.server::~DeferredReply()',
+        ),
+        (
+            'T',
+            'rrr::PendingRequestGuard@rrr.server::PendingRequestGuard(rrr::PendingRequestGuard@rrr.server&&)',
+        ),
+        (
+            'T',
+            'rrr::PendingRequestGuard@rrr.server::PendingRequestGuard(rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>)',
+        ),
+        (
+            'T',
+            'rrr::PendingRequestGuard@rrr.server::~PendingRequestGuard()',
+        ),
+        (
+            'T',
+            'rrr::Server@rrr.server::Server(rrr::Server@rrr.server&&)',
+        ),
+        (
+            'T',
+            'rrr::Server@rrr.server::Server(rusty::port::vec::Vec@vec_port.vec<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<int, unsigned long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashSet@hashbrown_port.set<int, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher>, rusty::Option<rusty::Arc<rrr::RpcServiceContext@rrr.server>>, rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::ShutdownState@rrr.server>, rusty::Box<rusty::Condvar, rusty::alloc::Global>, rusty::Cell<rrr::ShutdownPhase@rrr.server>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long, rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>, rusty::Option<rusty::Box<rrr::ChannelListenerBase@rrr.channel, rusty::alloc::Global>>, rusty::Arc<rusty::Mutex<rrr::ChannelSconns@rrr.server>>)',
+        ),
+        (
+            'T',
+            'rrr::Server@rrr.server::~Server()',
+        ),
+        (
+            'T',
+            'rrr::ServerConnection@rrr.server::ServerConnection(rusty::Arc<rrr::RpcServiceContext@rrr.server>, int)',
+        ),
+        (
+            'T',
+            'rrr::Service@rrr.server::~Service()',
+        ),
+        (
+            'T',
+            'rrr::Service@rrr.server::~Service()',
         ),
     ),
     "rrr.serializable": (
@@ -4359,12 +4539,14 @@ def require_cpp_surfaces(
                     "rustc-only StdVector facade leaked into generated FrameCodec"
                 )
         marker_preamble = '#include "base/rustc_markers.hpp"'
-        # module-preambles.toml is the source of truth; rrr.tcp_channel is
-        # the third declared owner of the rustc-marker preamble.
+        # module-preambles.toml is the source of truth; rrr.server is
+        # the fourth declared owner of the rustc-marker preamble (it uses
+        # `#[cpp_inherit]` for the Service trait's C++ inheritance).
         marker_preamble_owners = {
             "rrr.misc",
             "rrr.inmemory_channel",
             "rrr.tcp_channel",
+            "rrr.server",
         }
         if module.cpp_module in marker_preamble_owners:
             if text.count(marker_preamble) != 1:
@@ -5171,6 +5353,7 @@ import rrr.debugging;
 import rrr.any_message;
 import rrr.tcp_channel;
 import rrr.reactor;
+import rrr.server;
 
 static std::int32_t rand_raw_value = 0;
 static std::uint32_t rand_raw_draws = 0;
@@ -8583,6 +8766,9 @@ int main() {
         return 246;
     }
     if (static_cast<int>(rrr::EventStatus::READY) != 2) {
+        return 247;
+    }
+    if (rrr::kDefaultDrainTimeoutMs != static_cast<uint64_t>(30000)) {
         return 247;
     }
     return 0;

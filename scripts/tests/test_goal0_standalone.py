@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[2]
 RUSTY_CPP_PIN = "29122d04bcc39df912dce542ca1404e1eb199fd3"
 EXPECTED_INLINE_SOURCES = {
     "rpc/client.cpp": "client",
-    "rpc/server.cpp": "server",
 }
 EXPECTED_DSL_SOURCES = {
     *EXPECTED_INLINE_SOURCES,
@@ -121,8 +120,8 @@ class StandaloneGoal0Tests(unittest.TestCase):
         with (ROOT / "rust-modules.toml").open("rb") as stream:
             manifest = tomllib.load(stream)
         mutated = cmake.replace(
-            "${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp\n)",
             "${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp\n)",
+            "${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp\n)",
             1,
         )
         self.assertNotEqual(mutated, cmake)
@@ -166,7 +165,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
             self.assertNotEqual(removed_block.returncode, 0)
             self.assertIn("block census mismatch", removed_block.stderr)
             carrier.write_text(original, encoding="utf-8")
-            os.unlink(scratch / "rpc/server.cpp")
+            os.unlink(scratch / "rpc/client.cpp")
             removed_carrier = check()
             self.assertNotEqual(removed_carrier.returncode, 0)
             self.assertIn("carrier census mismatch", removed_carrier.stderr)

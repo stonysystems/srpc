@@ -31,10 +31,9 @@ fi
 EXPECTED_FILES=(
   reactor/epoll_platform_linux.cc
   rpc/client.cpp
-  rpc/server.cpp
 )
-EXPECTED_FILE_COUNT=3
-EXPECTED_BLOCK_COUNT=72
+EXPECTED_FILE_COUNT=2
+EXPECTED_BLOCK_COUNT=47
 
 mapfile -t FILES < <(grep -rl '#if RUSTYCPP_RUST' base misc reactor rpc \
                        --include='*.cpp' --include='*.cc' \

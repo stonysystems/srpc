@@ -98,7 +98,7 @@ pub type OnAcceptCallback =
     LegacyCallbackWrapper<Box<dyn Fn(self::ChannelConnectionProxy) + Send + Sync>>;
 
 /// Abstract accept loop implemented by transport listeners.
-pub trait ChannelListenerBase {
+pub trait ChannelListenerBase: Send + Sync {
     fn listen(&mut self, address: &str) -> self::ChannelError;
     fn close(&mut self);
     fn is_closed(&self) -> bool;

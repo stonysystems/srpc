@@ -15,7 +15,6 @@ use ::std::ops::{Deref, DerefMut, Index};
 pub use ::std::option::Option;
 pub use ::std::option::Option::{None, Some};
 pub use ::std::rc::Rc;
-use ::std::sync::Condvar;
 use ::std::time::Duration;
 pub use ::std::vec::Vec;
 
@@ -499,7 +498,7 @@ impl ReactorFiber {
 pub struct ReactorBoxEvent<T> {
     pub is_set_: Cell<bool>,
     value: Mutex<Option<T>>,
-    ready: Condvar,
+    ready: ::std::sync::Condvar,
     not_thread_safe: PhantomData<Rc<()>>,
 }
 
@@ -529,7 +528,7 @@ impl<T> ReactorBoxEvent<T> {
         ReactorBoxEvent {
             is_set_: Cell::new(false),
             value: Mutex::new(None),
-            ready: Condvar::new(),
+            ready: ::std::sync::Condvar::new(),
             not_thread_safe: PhantomData,
         }
     }
@@ -880,6 +879,20 @@ impl<K, V> HashMap<K, V> {
     pub fn iter(&self) -> ::std::slice::Iter<'_, (K, V)> {
         self.values.iter()
     }
+
+    pub fn contains_key(&self, key: &K) -> bool
+    where
+        K: PartialEq,
+    {
+        self.values.iter().any(|(candidate, _)| candidate == key)
+    }
+
+    pub fn remove(&mut self, key: &K)
+    where
+        K: PartialEq,
+    {
+        self.values.retain(|(candidate, _)| candidate != key);
+    }
 }
 
 /// Hash-set facade exposes the `map` field used by the historical encoder.
@@ -908,8 +921,28 @@ impl<T> HashSet<T> {
         self.map.clear();
     }
 
+    pub const fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+
     pub fn insert(&mut self, value: T) {
         self.map.insert(value, ());
+    }
+
+    pub fn contains(&self, value: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.map.contains_key(value)
+    }
+
+    pub fn remove(&mut self, value: &T)
+    where
+        T: PartialEq,
+    {
+        self.map.remove(value);
     }
 }
 
@@ -1238,12 +1271,123 @@ pub mod sys {
         pub fn sleep_us(microseconds: u64) {
             ::std::thread::sleep(::std::time::Duration::from_micros(microseconds));
         }
+
+        /// Production C++ resolves this to `rusty::sys::time::clock_monotonic_us()`.
+        pub fn clock_monotonic_us() -> u64 {
+            use ::std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64
+        }
+    }
+
+    pub mod process {
+        /// Production C++ resolves this to `rusty::sys::process::getpid()`.
+        pub fn getpid() -> i32 {
+            ::std::process::id() as i32
+        }
     }
 }
 
 pub mod panic {
+    /// Opaque model of the C++ `std::exception_ptr` payload carried out of a
+    /// caught unwind. Production C++ resolves the pair below to
+    /// `rusty::panic::catch_unwind` / `rusty::panic::payload_message`.
+    pub struct PanicPayload(Option<String>);
+
     pub fn do_panic(message: crate::std::string) -> ! {
         ::std::panic::panic_any(message.to_rust_string())
+    }
+
+    /// Run `body`, converting an unwind into `Err(PanicPayload)`.
+    pub fn catch_unwind<F: FnMut()>(body: F) -> Result<(), PanicPayload> {
+        let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(body));
+        match result {
+            Ok(()) => Ok(()),
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned());
+                Err(PanicPayload(message))
+            }
+        }
+    }
+
+    /// Recover a typed `std::exception::what()` message; an opaque payload
+    /// yields `None`.
+    pub fn payload_message(payload: PanicPayload) -> Option<String> {
+        payload.0
+    }
+}
+
+/// Handle-validity and emptiness predicates the runtime types carry but Rust's
+/// own owning handles cannot be without. `rusty::Box` / `rusty::Arc` expose
+/// `is_valid()` and `rusty::Function` exposes `is_empty()`; a Rust `Box` or
+/// `Arc` is never null and a Rust boxed closure is never empty, so the rustc
+/// models are constants. Canonical sources still spell the predicate so the
+/// generated C++ keeps checking handles that reach it from C++ callers.
+pub trait RustyHandleIsValid {
+    fn is_valid(&self) -> bool;
+}
+
+impl<T: ?Sized> RustyHandleIsValid for Box<T> {
+    fn is_valid(&self) -> bool {
+        true
+    }
+}
+
+impl<T: ?Sized> RustyHandleIsValid for ::std::sync::Arc<T> {
+    fn is_valid(&self) -> bool {
+        true
+    }
+}
+
+/// `rusty::Box<T>::get()` — the raw pointee pointer the runtime handle
+/// exposes. A Rust `Box` is never null, so this is an ordinary reborrow.
+pub trait RustyBoxGet<T: ?Sized> {
+    fn get(&self) -> *mut T;
+}
+
+impl<T: ?Sized> RustyBoxGet<T> for Box<T> {
+    fn get(&self) -> *mut T {
+        let borrowed: &T = self;
+        borrowed as *const T as *mut T
+    }
+}
+
+pub trait RustyFunctionIsEmpty {
+    fn is_empty(&self) -> bool;
+}
+
+impl<T: ?Sized> RustyFunctionIsEmpty for Box<T> {
+    fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+/// Rustc-only model of the runtime condition variable. Production C++ keeps
+/// using `rusty::Condvar`; this wrapper exists only so canonical sources can
+/// be checked by rustc.
+pub struct Condvar(::std::sync::Condvar);
+
+impl Condvar {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self(::std::sync::Condvar::new())
+    }
+
+    pub fn notify_all(&self) {
+        self.0.notify_all();
+    }
+
+    pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(
+        &self,
+        guard: ::std::sync::MutexGuard<'a, T>,
+        condition: F,
+    ) -> ::std::sync::LockResult<::std::sync::MutexGuard<'a, T>> {
+        self.0.wait_while(guard, condition)
     }
 }
 
@@ -1309,6 +1453,12 @@ pub mod rrr {
     /// `rrr.errors` named-module import in canonical callback generation.
     pub mod errors {}
 
+    /// Compile-time-only namespace model used to retain the exact
+    /// `rrr.internal_protocol` named-module import in canonical server
+    /// generation. The wire constant itself is read through the crate path;
+    /// only the provider edge is carried here.
+    pub mod internal_protocol {}
+
     pub mod logging {
         /// Rust-side no-op model of the production logging entry point.
         ///
@@ -1324,7 +1474,7 @@ pub mod rrr {
         use crate::{ReactorBoxEvent, ReactorFiber, REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS};
         use ::std::cell::Cell;
         use ::std::rc::Rc;
-        use ::std::sync::{Arc, Condvar, Mutex};
+        use ::std::sync::{Arc, Mutex};
 
         pub type Fiber = ReactorFiber;
 
@@ -1344,6 +1494,22 @@ pub mod rrr {
             /// `fd` must identify a pollable registered with this thread.
             #[allow(unsafe_code)]
             pub unsafe fn update_mode(&self, _fd: i32, _new_mode: i32) {}
+
+            /// # Safety
+            ///
+            /// No caller-side precondition; `unsafe` records the foreign
+            /// named-module boundary.
+            #[allow(unsafe_code)]
+            pub unsafe fn create() -> Arc<PollThread> {
+                Arc::new(PollThread)
+            }
+
+            /// # Safety
+            ///
+            /// `job` must be a well-formed owning job handle; the production
+            /// method moves it into the worker command queue.
+            #[allow(unsafe_code)]
+            pub unsafe fn add<J>(&self, _job: J) {}
         }
 
         /// Rustc-only affinity model. Tests execute outside the poll worker.
@@ -1351,11 +1517,26 @@ pub mod rrr {
             false
         }
 
+
+        /// # Safety
+        ///
+        /// `func` must be a well-formed owning closure; the production fiber
+        /// runtime takes ownership and runs it on a new stack. `file` must be
+        /// null or a NUL-terminated static string.
+        #[allow(unsafe_code)]
+        pub unsafe fn fiber_create_run_impl<F: FnMut()>(
+            mut func: F,
+            _file: *const i8,
+            _line: i64,
+        ) {
+            func();
+        }
+
         /// Rust-only model of the reactor's fiber-aware integer event.
         pub struct IntEvent {
             value: Mutex<i32>,
             target: i32,
-            ready: Condvar,
+            ready: ::std::sync::Condvar,
         }
 
         impl IntEvent {
@@ -1384,7 +1565,7 @@ pub mod rrr {
             Arc::new(IntEvent {
                 value: Mutex::new(0),
                 target,
-                ready: Condvar::new(),
+                ready: ::std::sync::Condvar::new(),
             })
         }
 
@@ -1427,6 +1608,27 @@ pub mod rrr {
 
     pub mod serializable {
         pub use crate::{BinaryReadArchive, BinaryWriteArchive};
+
+        /// # Safety
+        ///
+        /// `sink` must be non-null, uniquely borrowed, and remain alive and
+        /// unmoved for every use of the returned proxy. Production C++
+        /// resolves this to the `make_sink_proxy` overload set.
+        #[allow(unsafe_code)]
+        pub unsafe fn make_sink_proxy<S, P>(_sink: *mut S) -> P {
+            // The rustc facade never runs: the production emitter resolves
+            // this to the real `rrr::make_sink_proxy` overload set.
+            unreachable!("rustc-only serializable proxy facade")
+        }
+
+        /// # Safety
+        ///
+        /// Same borrow and lifetime contract as [`make_sink_proxy`], for the
+        /// read side.
+        #[allow(unsafe_code)]
+        pub unsafe fn make_source_proxy<S, P>(_source: *mut S) -> P {
+            unreachable!("rustc-only serializable proxy facade")
+        }
         use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};
 
         fn encoded_length_size(value: usize) -> usize {

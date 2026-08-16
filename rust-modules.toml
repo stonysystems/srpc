@@ -141,3 +141,7 @@ source = "rpc/tcp_channel.cpp"
 [[module]]
 cpp_module = "rrr.reactor"
 source = "reactor/reactor.cpp"
+
+[[module]]
+cpp_module = "rrr.server"
+source = "rpc/server.cpp"
