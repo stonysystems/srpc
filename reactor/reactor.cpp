@@ -2553,6 +2553,12 @@ fn int_event_make(target: i32) -> Arc<IntEvent> {
     sp
 }
 
+// MEASURED allow.  `vec![a, b]` is rejected by the transpiler outright, before
+// any output is written: "unexpanded macro invocation `vec` is not supported in
+// a file containing cpp_name because it can synthesize hidden calls, items, or
+// types" (R/M/gen-B2.log).  The explicit new()+push()+push() is the supported
+// spelling.  Scoped to this item.
+#[allow(clippy::vec_init_then_push)]
 fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<WaitAny> {
     let mut events: Vec<Arc<dyn EventPollable>> =
         Vec::<Arc<dyn EventPollable>>::new();
@@ -2797,6 +2803,12 @@ fn fiber_do_finalize(fb: &Fiber) {
     fb.needs_finalize_.set(false);
 }
 
+// MEASURED allow.  Clippy's `c"MAKO_ASYNC_PROFILE"` is the better Rust, but the
+// emitter has no lowering for C-string literals: it writes
+// `rusty::as_ptr((/* TODO: literal */))` and the module stops compiling
+// ("expected expression", R/M/obj-B2b.log).  The byte-string form lowers to a
+// real `std::array<uint8_t, 19>{{ 0x4d, ... , 0x00 }}`.  Scoped to this item.
+#[allow(clippy::manual_c_str_literals)]
 #[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_env() -> bool {
     let env: *const LegacyCChar = unsafe {
