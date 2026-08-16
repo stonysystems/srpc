@@ -206,14 +206,20 @@ set(_RRR_EXPECTED_INLINE_MODULES_SORTED ${RRR_EXPECTED_INLINE_MODULES})
 set(_RRR_ACTUAL_INLINE_MODULES_SORTED ${_RRR_ACTUAL_INLINE_MODULES})
 list(SORT _RRR_EXPECTED_INLINE_MODULES_SORTED)
 list(SORT _RRR_ACTUAL_INLINE_MODULES_SORTED)
-if(NOT _RRR_ACTUAL_INLINE_MODULES_SORTED STREQUAL
-       _RRR_EXPECTED_INLINE_MODULES_SORTED)
+# Quote both operands.  `set(X)` UNSETS X in CMake, so once every carrier is
+# canonical and both inventories are empty, the unquoted form compares the
+# literal variable NAMES -- which always differ -- and this guard fires on a
+# correct tree.  Quoting compares the (empty) values, which is what is meant.
+if(NOT "${_RRR_ACTUAL_INLINE_MODULES_SORTED}" STREQUAL
+       "${_RRR_EXPECTED_INLINE_MODULES_SORTED}")
     message(FATAL_ERROR
         "Goal-0 inline module declarations differ from the exact retained "
         "inventory; expected=${_RRR_EXPECTED_INLINE_MODULES_SORTED}; "
         "actual=${_RRR_ACTUAL_INLINE_MODULES_SORTED}")
 endif()
-list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_INLINE_MODULE_SRC})
+if(RRR_INLINE_MODULE_SRC)
+    list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_INLINE_MODULE_SRC})
+endif()
 
 # These modules are owned by canonical Rust sources. rusty-cpp generates
 # their complete C++ module interfaces; no hand-authored carrier remains.
@@ -547,7 +553,10 @@ if(NOT TARGET rrr)
     set(_RRR_INLINE_SORTED ${RRR_INLINE_MODULE_SRC})
     list(SORT _RRR_BORROW_SORTED)
     list(SORT _RRR_INLINE_SORTED)
-    if(NOT _RRR_BORROW_SORTED STREQUAL _RRR_INLINE_SORTED)
+    # Quoted for the same reason as the inline-inventory guard above: both
+    # lists are empty now that every carrier is canonical, and `set(X)` with
+    # no value unsets X, so the unquoted form would compare variable names.
+    if(NOT "${_RRR_BORROW_SORTED}" STREQUAL "${_RRR_INLINE_SORTED}")
         message(FATAL_ERROR
             "Borrow-check carriers must equal the remaining inline module "
             "inventory exactly")
