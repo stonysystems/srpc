@@ -7,9 +7,9 @@
 //! The legacy listener/socket-path was retired in 5g3 — this module
 //! is now purely the request/reply orchestration layer.
 
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
+#![allow(non_camel_case_types, non_snake_case)]
 #![allow(unsafe_code)]
-#![allow(clippy::arc_with_non_send_sync, clippy::new_without_default)]
+#![allow(clippy::arc_with_non_send_sync)]
 
 use rusty::cpp_inherit;
 use rusty::RustyBoxGet as _;
@@ -466,7 +466,10 @@ impl ServerConnection {
 pub struct DeferredReply {
     req_field: Box<Request>,
     weak_sconn_field: WeakServerConnection,
-    archive_reply_field: Option<Box<dyn FnMut(&mut BinaryWriteArchive)>>,
+    // `ServerReplyFn` is this exact type, declared above; naming it here
+    // keeps the field off `clippy::type_complexity` without inventing a
+    // second spelling for one C++ type.
+    archive_reply_field: Option<ServerReplyFn>,
     cleanup_field: Option<Box<dyn FnMut()>>,
 }
 
@@ -502,8 +505,7 @@ impl DeferredReply {
         }
         let cb = cb_opt.unwrap();
         let sconn_opt = self.weak_sconn_field.upgrade();
-        if sconn_opt.is_some() {
-            let sconn = sconn_opt.unwrap();
+        if let Some(sconn) = sconn_opt {
             (*sconn).reply(&self.req_field, 0i32, cb);
         } else {
             let message: LegacyStdString =
@@ -522,8 +524,7 @@ impl DeferredReply {
             return;
         }
         let sconn_opt = self.weak_sconn_field.upgrade();
-        if sconn_opt.is_some() {
-            let sconn = sconn_opt.unwrap();
+        if let Some(sconn) = sconn_opt {
             let no_writer: ServerReplyFn = no_reply_writer();
             (*sconn).reply(&self.req_field, error_code, no_writer);
         } else {
@@ -604,6 +605,16 @@ pub fn server_now_nanos() -> u64 {
 }
 
 /// Block until `do_shutdown()` flips the flag.
+//
+// MEASURED ABI PIN, not style. `clippy::borrowed_box` wants `&rusty::Condvar`
+// here. The incumbent carrier's generated C++ (rpc/server.cpp at c6c55ba,
+// line 1173) exports exactly
+//     void server_wait_for_shutdown_impl(const rusty::Mutex<ShutdownState>&,
+//                                        const rusty::Box<rusty::Condvar>&)
+// and taking the lint regenerates that declaration as `const rusty::Condvar&`
+// -- a different mangled symbol, i.e. one incumbent symbol removed and one
+// added. The `&Box<..>` spelling is the ABI.
+#[allow(clippy::borrowed_box)]
 pub fn server_wait_for_shutdown_impl(
     state: &rusty::Mutex<ShutdownState>,
     cond: &Box<rusty::Condvar>,
@@ -716,15 +727,15 @@ pub fn server_parse_port(text: &LegacyStdString) -> Option<i32> {
 /// The invoker catches a panicking hook and logs it, exactly as the old
 /// two-arm try/catch did.
 pub fn server_invoke_shutdown_hook_safely(hook: &mut ShutdownHook) {
-    let r = rusty::panic::catch_unwind(|| hook());
+    let r = rusty::panic::catch_unwind(hook);
     if r.is_ok() {
         return;
     }
     let msg = rusty::panic::payload_message(r.unwrap_err());
-    if msg.is_some() {
+    if let Some(text) = msg {
         let message: LegacyStdString = format!(
             "Server::graceful_shutdown: hook threw exception: {}",
-            msg.unwrap()
+            text
         );
         // SAFETY: the file pointer is null.
         unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
@@ -792,13 +803,13 @@ impl Drop for Server {
         }
         {
             let mut guard = self.channel_sconns_field.lock().unwrap();
-            (*guard).closed = true;
+            guard.closed = true;
             let mut i: usize = 0usize;
-            while i < (*guard).conns.len() {
-                (*(*guard).conns[i]).close();
+            while i < guard.conns.len() {
+                guard.conns[i].close();
                 i += 1usize;
             }
-            (*guard).conns.clear();
+            guard.conns.clear();
         }
         self.ctx_field = None;
     }
@@ -893,7 +904,7 @@ impl Server {
 
     pub fn do_shutdown(&self) {
         let mut guard = self.shutdown_state_field.lock().unwrap();
-        (*guard).shutdown = true;
+        guard.shutdown = true;
         self.shutdown_cond_field.notify_all();
     }
 
@@ -911,9 +922,7 @@ impl Server {
             return;
         }
         self.shutdown_phase_field.set(ShutdownPhase::STOP_ACCEPTING);
-        if self.channel_listener_field.is_some() {
-            let listener: &mut Box<dyn ChannelListenerBase> =
-                self.channel_listener_field.as_mut().unwrap();
+        if let Some(listener) = self.channel_listener_field.as_mut() {
             listener.close();
         }
     }
@@ -965,8 +974,8 @@ impl Server {
     }
 
     pub fn service_count(&self) -> usize {
-        if self.ctx_field.is_some() {
-            return self.ctx_field.as_ref().unwrap().services.len();
+        if let Some(ctx) = self.ctx_field.as_ref() {
+            return ctx.services.len();
         }
         self.pending_services_field.len()
     }
@@ -1072,13 +1081,13 @@ impl Server {
                         }
                         {
                             let mut guard = sconns_arc.lock().unwrap();
-                            if (*guard).closed {
+                            if guard.closed {
                                 // This accept lost the race against ~Server:
                                 // close the connection now or nobody ever will.
                                 (*sconn).close();
                                 return;
                             }
-                            (*guard).conns.push(sconn);
+                            guard.conns.push(sconn);
                         }
                     },
                 ) as Box<dyn Fn(ChannelConnectionProxy) + Send + Sync>));
@@ -1118,6 +1127,16 @@ impl Server {
         -1i32
     }
 
+    // MEASURED emitter pin, not style. `clippy::borrowed_box` wants the
+    // `&Box<..>` annotation below dropped. Regenerating without it emits
+    //     auto& listener = this->channel_listener_field.as_ref().unwrap();
+    //     const std::string local = listener.local_address();
+    // i.e. the emitter loses the pointer-like classification and calls through
+    // `.` instead of `->`. `rusty::Box` (third-party/rusty-cpp/include/rusty/
+    // box.hpp) exposes `operator*`/`operator->` and forwards no members, so
+    // that C++ does not compile. The annotation is what produces the
+    // incumbent's `listener->local_address()`.
+    #[allow(clippy::borrowed_box)]
     pub fn get_bound_port(&self) -> i32 {
         if self.channel_listener_field.is_none() {
             return -1i32;
@@ -1163,6 +1182,12 @@ impl Server {
         let mut i: usize = 0usize;
         while i < n {
             let mut guard = ctx.services[i].borrow_mut();
+            // MEASURED emitter pin, not style. `clippy::explicit_auto_deref` wants
+// `&mut guard`. Regenerating without the `*` emits
+//     rusty::Box<Service>& svc = guard;
+// binding the guard itself, not the boxed service, to a `rusty::Box<Service>&`.
+// The `*` is what produces the incumbent's `rusty::Box<Service>& svc = *guard;`.
+            #[allow(clippy::explicit_auto_deref)]
             let svc: &mut Box<dyn Service> = &mut *guard;
             callback(svc);
             i += 1usize;
@@ -1233,7 +1258,7 @@ pub unsafe fn sconn_on_channel_frame(weak: &ArcWeak<ServerConnection>, frame: &C
     }
     let sconn = sconn_opt.unwrap();
     // SAFETY: the channel-layer contract pins the payload for this callback.
-    unsafe { sconn_decode_request_and_dispatch(&*sconn, frame.payload, frame.size) };
+    unsafe { sconn_decode_request_and_dispatch(&sconn, frame.payload, frame.size) };
 }
 
 /// `on_closed` runs the existing close path so the connection transitions to
@@ -1292,6 +1317,12 @@ pub fn sconn_dispatch_in_fiber(
     let mut guard = ctx.services[svc_index].borrow_mut();
     // Concrete `Box<..>`, not the ServiceProxy alias: through the alias the
     // pointer-like check fails and the call lowers to `.` instead of `->`.
+    // MEASURED emitter pin, not style. `clippy::explicit_auto_deref` wants
+// `&mut guard`. Regenerating without the `*` emits
+//     rusty::Box<Service>& svc = guard;
+// binding the guard itself, not the boxed service, to a `rusty::Box<Service>&`.
+// The `*` is what produces the incumbent's `rusty::Box<Service>& svc = *guard;`.
+    #[allow(clippy::explicit_auto_deref)]
     let svc: &mut Box<dyn Service> = &mut *guard;
     svc.__dispatch__(rpc_id, req, weak_this);
 }
@@ -1390,6 +1421,12 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     if sconn.ctx_.fast_rpc_ids.contains(&rpc_id) {
         // Fast inline dispatch — no fiber spawn.
         let mut guard = sconn.ctx_.services[svc_index].borrow_mut();
+        // MEASURED emitter pin, not style. `clippy::explicit_auto_deref` wants
+// `&mut guard`. Regenerating without the `*` emits
+//     rusty::Box<Service>& svc = guard;
+// binding the guard itself, not the boxed service, to a `rusty::Box<Service>&`.
+// The `*` is what produces the incumbent's `rusty::Box<Service>& svc = *guard;`.
+        #[allow(clippy::explicit_auto_deref)]
         let svc: &mut Box<dyn Service> = &mut *guard;
         svc.__dispatch__(rpc_id, req_box, weak_this);
     } else {
