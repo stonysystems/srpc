@@ -810,7 +810,7 @@ impl ClientConnection {
             || abort_flag;
 
         if !user_initiated_closing {
-            self.invoke_error_callback(CLIENT_ERR_CONNECTION_RESET, "channel closed");
+            self.invoke_error_callback(CLIENT_ERR_CONNECTION_RESET, &client_text("channel closed"));
             self.state_machine_.force_state(ConnectionState::FAILED);
         }
 
@@ -885,7 +885,7 @@ impl ClientConnection {
         if !self.state_machine_.transition_to(ConnectionState::CONNECTING) {
             client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: cannot connect from state ",
                                connection_state_to_string(self.state_machine_.state()), ""));
-            self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, "invalid state for connect");
+            self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, &client_text("invalid state for connect"));
             return CLIENT_ERR_INVALID_ARGUMENT;
         }
 
@@ -896,7 +896,7 @@ impl ClientConnection {
         if !self.is_factory_bound() {
             client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("rrr::ClientConnection::connect: factory not bound. Channel mode requires a ChannelFactoryProxy installed via Client::set_channel_factory(...) or auto-installed by Client::connect (the latter happens unconditionally now)."));
             self.state_machine_.transition_to(ConnectionState::FAILED);
-            self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, "no channel factory bound");
+            self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, &client_text("no channel factory bound"));
             return CLIENT_ERR_INVALID_ARGUMENT;
         }
         self.connect_via_factory(addr)
@@ -1188,19 +1188,17 @@ impl ClientConnection {
         let after = self.circuit_breaker_.state();
         self.record_circuit_state_transition(before, after);
     }
-    fn invoke_error_callback(&self, err: i32, message: &str) {
+    // `&LegacyStdString`, NOT `&str`: the incumbent module exported
+    // `invoke_error_callback(int, std::string const&) const`, and `&str`
+    // re-signatures it to `std::string_view`. That is the classic
+    // natural-looking Rust-port improvement that silently breaks the C++ ABI,
+    // so the parameter keeps the mapped `const std::string&` spelling and the
+    // literal call sites build the owned string the incumbent also built.
+    fn invoke_error_callback(&self, err: i32, message: &LegacyStdString) {
         if !self.callback_manager_.is_valid() {
             return;
         }
-        // Declared, not inferred, and `to_string()` rather than `to_owned()`:
-        // `invoke_on_error` takes the mapped `const std::string&`, and only
-        // the annotation carries that spelling onto the local (see
-        // `client_text_str`). `to_owned()` additionally hard-codes
-        // `rusty::String::from(..)` as the initializer regardless of the
-        // declared type, while `to_string()` lowers to `rusty::to_string(..)`,
-        // which already yields `std::string`.
-        let owned_message: LegacyStdString = message.to_string();
-        (*self.callback_manager_).invoke_on_error(clientconn_map_system_error(err), &owned_message);
+        (*self.callback_manager_).invoke_on_error(clientconn_map_system_error(err), message);
     }
     fn invoke_disconnected_callback(&self) {
         if !self.callback_manager_.is_valid() {
@@ -1240,7 +1238,7 @@ impl ClientConnection {
             || abort_flag;
 
         if !user_initiated_closing {
-            self.invoke_error_callback(CLIENT_ERR_CONNECTION_RESET, "connection error");
+            self.invoke_error_callback(CLIENT_ERR_CONNECTION_RESET, &client_text("connection error"));
             self.state_machine_.force_state(ConnectionState::FAILED);
         }
         self.close();
@@ -2282,9 +2280,14 @@ where F: FnMut(&mut BinaryWriteArchive) {
 // aggregate, so a struct literal builds it — the same literal the three
 // other archive sites in this file already spell inline. The parameter
 // stays `*mut BufferSink` (not `&mut`) so the emitted signature keeps a
-// POINTER, which is what the caller's `&mut args_sink` lowers to.
-pub fn make_write_archive(sink: &mut BufferSink) -> BinaryWriteArchive {
-    BinaryWriteArchive { sink_: client_sink_proxy(sink) }
+// POINTER, which is what the caller's `&mut args_sink` lowers to -- and it
+// is what the incumbent module exported (`make_write_archive(BufferSink*)`).
+// The `&mut` spelling this comment already warned against had crept back in
+// and re-signatured the symbol to `make_write_archive(BufferSink&)`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn make_write_archive(sink: *mut BufferSink) -> BinaryWriteArchive {
+    // SAFETY: the only caller passes `&mut` on a live local sink.
+    BinaryWriteArchive { sink_: client_sink_proxy(unsafe { &mut *sink }) }
 }
 
 // @unsafe - copies the attempt's unread reply region into the coordinator
@@ -2342,7 +2345,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     // a bare `Vec::new()` in a struct-literal field takes its emitted element
     // type from an unrelated binding instead of from `bytes: Vec<u8>`.
     let mut args_sink = BufferSink { bytes: Vec::<u8>::new() };
-    let mut ar: BinaryWriteArchive = make_write_archive(&mut args_sink);
+    let mut ar: BinaryWriteArchive = make_write_archive(&raw mut args_sink);
     let ar_ref: &mut BinaryWriteArchive = &mut ar;
     write_fn(ar_ref);
     // Keep the replay payload as bytes (was a reinterpret_cast'd
@@ -2568,7 +2571,7 @@ pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i
         if (*guard).is_none() {
             client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("rrr::ClientConnection::connect_via_factory: factory unbound at the moment of connect (race against bind_factory)"));
             conn.state_machine_.transition_to(ConnectionState::FAILED);
-            conn.invoke_error_callback(CLIENT_ERR_NOT_CONNECTED, "factory unbound");
+            conn.invoke_error_callback(CLIENT_ERR_NOT_CONNECTED, &client_text("factory unbound"));
             return CLIENT_ERR_NOT_CONNECTED;
         }
         let bound: &mut Box<dyn ChannelFactoryBase> = (*guard).as_mut().unwrap();
