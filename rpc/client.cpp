@@ -2867,8 +2867,8 @@ fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> usize 
 
 // The `const int8_t*` the rrr wire type wants is spelled `addr.c_str()
 // as *const i8`, which lowers to the same reinterpret_cast the old
-// kernel wrote by hand. Kept in THIS block, not its own, so caller and
-// callee share one `#if RUSTYCPP_RUST` region.
+// kernel wrote by hand. (The historical carrier kept caller and callee in
+// one inline-Rust region; the canonical file has no regions.)
 fn clientpool_connect_client(client: &Arc<Client>, addr: &LegacyStdString) -> i32 {
     client.connect(addr.c_str() as *const i8, true)
 }
