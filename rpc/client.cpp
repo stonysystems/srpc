@@ -20,8 +20,15 @@ use rusty as cpp;
 // These are still supplied by historical inline C++ modules.  The `cpp::`
 // imports make their named-module ownership explicit without inventing a Rust
 // namespace that does not exist in the public C++ surface.
+// These otherwise-unused source-owned imports keep the exact
+// `rrr.callback_wrapper` / `rrr.reactor` / `rrr.serializable` providers
+// visible to generated C++; the types themselves are reached through the
+// checked type map and the crate paths.
+#[allow(unused_imports)]
 use cpp::rrr::callback_wrapper as _;
+#[allow(unused_imports)]
 use cpp::rrr::reactor as _;
+#[allow(unused_imports)]
 use cpp::rrr::serializable as cpp_serializable;
 use rusty::RustyCellGet as _;
 use rusty::RustyStdStringCStr as _;
@@ -58,7 +65,7 @@ use crate::load_balancer::{LoadBalancer, LoadBalancerState, LoadBalancingStrateg
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::logging::Log;
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
-use crate::misc::{Job, OneTimeJob};
+use crate::misc::OneTimeJob;
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::reconnect_policy::{ReconnectPolicy};
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
@@ -72,7 +79,7 @@ use crate::serializable::{
     BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource, SinkProxy, SourceProxy,
 };
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
-use crate::tcp_channel::{make_tcp_factory_proxy, TcpConnection, TcpFactory};
+use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
 // Rustc-only facade identities with checked C++ type maps back to the public
 // root-level `rrr::Fiber` and `rrr::PollThread` classes.
@@ -482,7 +489,7 @@ impl Future {
     }
 
     fn ready(&self) -> bool {
-        let mut guard = self.state_.lock().unwrap();
+        let guard = self.state_.lock().unwrap();
         guard.ready
     }
 
@@ -492,13 +499,13 @@ impl Future {
             self.timed_wait(sec);
             return;
         }
-        let mut guard = self.state_.lock().unwrap();
+        let guard = self.state_.lock().unwrap();
         // rusty::Condvar is @safe; wait WHILE not-ready and not-timed-out.
-        self.ready_cond_.wait_while(guard, |s| !s.ready && !s.timed_out).unwrap();
+        let _reacquired = self.ready_cond_.wait_while(guard, |s| !s.ready && !s.timed_out).unwrap();
     }
 
     fn timed_wait(&self, sec: f64) {
-        let mut guard = self.state_.lock().unwrap();
+        let guard = self.state_.lock().unwrap();
         let micros: u64 = (sec * 1000000.0) as u64;
         let result = self.ready_cond_.wait_timeout_while(
             guard,
@@ -539,7 +546,7 @@ impl Future {
         true
     }
 
-    fn get_reply(&self) -> RefMut<ReplyBuffer> {
+    fn get_reply(&self) -> RefMut<'_, ReplyBuffer> {
         self.wait();
         self.reply_.borrow_mut()
     }
@@ -590,8 +597,8 @@ impl Future {
     }
 
     fn notify_ready(&self, self_arc: Arc<Future>) {
-        let mut should_callback: bool = false;
-        let mut completion_callbacks: Vec<rusty::Function<dyn FnMut()>> = Vec::new();
+        let should_callback: bool;
+        let mut completion_callbacks: Vec<rusty::Function<dyn FnMut()>>;
         {
             let mut guard = self.state_.lock().unwrap();
             if !guard.timed_out {
@@ -613,7 +620,7 @@ impl Future {
         }
     }
 
-    fn safe_release(fu: Arc<Future>) {
+    fn safe_release(_fu: Arc<Future>) {
     }
 }
 
@@ -803,8 +810,8 @@ impl ClientConnection {
         client_verify(!self.state_machine_.is_connected());
 
         if !self.state_machine_.transition_to(ConnectionState::CONNECTING) {
-            unsafe { client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: cannot connect from state ",
-                               connection_state_to_string(self.state_machine_.state()), "")); }
+            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: cannot connect from state ",
+                               connection_state_to_string(self.state_machine_.state()), ""));
             self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, "invalid state for connect");
             return CLIENT_ERR_INVALID_ARGUMENT;
         }
@@ -821,6 +828,10 @@ impl ClientConnection {
         }
         self.connect_via_factory(addr)
     }
+    // `rusty::make_box` is a diverging rustc-only model (it returns `!`), so
+    // rustc treats the in-place construction and everything after it as dead.
+    // The emitted C++ constructs the FiberChannel in its final slot.
+    #[allow(unreachable_code, unused_variables)]
     fn bind_channel(&self, channel: ChannelConnectionProxy) {
         if !channel.is_valid() {
             return;
@@ -830,7 +841,12 @@ impl ClientConnection {
         // callbacks capture `this`). bind_callbacks must run AFTER the Box is
         // in its final slot so those [this]-captures pin to a stable address.
         {
-            let mut guard = self.fiber_channel_.lock().unwrap();
+            // The `rusty::make_box` facade is a diverging model (it returns `!`
+            // because a rustc-only build cannot construct the in-place C++
+            // object), so rustc sees the rest of this block as dead. The
+            // emitted C++ is the real in-place construction.
+            #[allow(unreachable_code, unused_variables)]
+            let guard = self.fiber_channel_.lock().unwrap();
             *guard = Some(rusty::make_box::<FiberChannel>(channel));
             let fc: &mut Box<FiberChannel> = (*guard).as_mut().unwrap();
             (*fc).bind_callbacks();
@@ -911,7 +927,7 @@ impl ClientConnection {
         let mut guard = self.factory_.lock().unwrap();
         *guard = Some(factory);
     }
-    fn abort_reconnect(&mut self) { unsafe { self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release); } }
+    fn abort_reconnect(&mut self) { self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release); }
     fn set_callback_manager(&mut self, callback_manager: &Arc<CallbackManager>) {
         if callback_manager.is_valid() {
             self.callback_manager_ = callback_manager.clone();
@@ -1070,7 +1086,7 @@ impl ClientConnection {
             CircuitState::OPEN => self.metrics_.record_circuit_open_transition(),
             CircuitState::HALF_OPEN => self.metrics_.record_circuit_half_open_transition(),
             CircuitState::CLOSED => self.metrics_.record_circuit_closed_transition(),
-            _ => {},
+
         }
     }
     fn record_circuit_result(&self, err: i32) {
@@ -1183,9 +1199,9 @@ impl ClientConnection {
         }
     }
     fn is_factory_bound(&self) -> bool { (*self.factory_.lock().unwrap()).is_some() }
-    fn channel_reconnect_attempts_count(&self) -> u64 { unsafe { self.reconnect_.channel_reconnect_attempts_.load(rusty::sync::atomic::Ordering::Acquire) } }
+    fn channel_reconnect_attempts_count(&self) -> u64 { self.reconnect_.channel_reconnect_attempts_.load(rusty::sync::atomic::Ordering::Acquire) }
     fn set_reconnect_policy(&self, policy: &ReconnectPolicy) { self.reconnect_policy_.set(*policy); }
-    fn is_reconnecting(&self) -> bool { unsafe { self.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) } }
+    fn is_reconnecting(&self) -> bool { self.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) }
     fn pending_future_count(&self) -> usize { self.pending_fu_.lock().unwrap().len() }
     fn replay_pending_requests_for_test(&self) -> usize { self.replay_pending_requests() }
     fn update_pending_queue_config_for_test(&self, config: &RequestQueueConfig) { self.pending_queue_.update_config(*config); }
@@ -1390,7 +1406,7 @@ impl Client {
         {
             let mut guard = self.pending_factory_field.lock().unwrap();
             if guard.is_some() {
-                let mut moved: ChannelFactoryProxy = guard.take().unwrap();
+                let moved: ChannelFactoryProxy = guard.take().unwrap();
                 conn.bind_factory(moved);
             }
         }
@@ -1747,7 +1763,7 @@ impl ClientPool {
 
     fn pool_config(&self) -> PoolConfig {
         let guard = self.config_.lock().unwrap();
-        (*guard)
+        *guard
     }
 
     fn is_client_healthy(&self, client: &Arc<Client>) -> bool {
@@ -1862,8 +1878,8 @@ fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCo
     }
 
     loop {
-        let mut expected: bool = false;
-        let won: bool = unsafe {
+        let expected: bool = false;
+        let won: bool = {
             self_.reconnect_.reconnecting_.compare_exchange(expected, true,
                 rusty::sync::atomic::Ordering::AcqRel,
                 rusty::sync::atomic::Ordering::Acquire).is_ok()
@@ -1942,7 +1958,7 @@ fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCo
 
     // Follow configured backoff/retry policy for subsequent attempts.
     let policy: ReconnectPolicy = self_.reconnect_policy_.get();
-    let mut calc = crate::reconnect_policy::ReconnectCalculator::new(&policy);
+    let calc = crate::reconnect_policy::ReconnectCalculator::new(&policy);
     while calc.should_retry() {
         let cancel: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
         if cancel {
@@ -2015,7 +2031,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
         return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
     }
     {
-        let mut direct_guard = conn.direct_channel_.lock().unwrap();
+        let direct_guard = conn.direct_channel_.lock().unwrap();
         if (*direct_guard).is_some() {
             let proxy: &Box<dyn ChannelConnectionBase> = (*direct_guard).as_ref().unwrap();
             if proxy.is_closed() {
@@ -2072,7 +2088,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
 }
 
 fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
-                               mut write_fn: F, mut on_reply: AsyncReplyCallback)
+                               mut write_fn: F, on_reply: AsyncReplyCallback)
                                -> Result<(), i32>
 where F: FnMut(&mut BinaryWriteArchive) {
     if !conn.allow_request_with_circuit_metrics() {
@@ -2083,7 +2099,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
         return Result::<(), i32>::Err(CLIENT_ERR_NOT_CONNECTED);
     }
     {
-        let mut direct_guard = conn.direct_channel_.lock().unwrap();
+        let direct_guard = conn.direct_channel_.lock().unwrap();
         if (*direct_guard).is_some() {
             let proxy: &Box<dyn ChannelConnectionBase> = (*direct_guard).as_ref().unwrap();
             if proxy.is_closed() {
@@ -2158,7 +2174,7 @@ fn make_write_archive(sink: &mut BufferSink) -> BinaryWriteArchive {
 // `const Arc<Future>&`, and the caller's `&attempt_fu` collapses to
 // the handle itself.
 fn request_copy_reply(final_fu: &Arc<Future>, attempt_fu: &Arc<Future>) {
-    let mut attempt_reply = (*attempt_fu).reply_.borrow_mut();
+    let attempt_reply = (*attempt_fu).reply_.borrow_mut();
     let reply_size: usize = (*attempt_reply).src.remaining();
     if reply_size > 0usize {
         let base: *const u8 = (*attempt_reply).body.as_ptr();
@@ -2362,10 +2378,10 @@ fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    unsafe { crate::serializable::Serialize_::serialize(
+    crate::serializable::Serialize_::serialize(
         &crate::basetypes::v64::new(conn.xid_counter_.next(1i64)),
         ar,
-    ) };
+    );
     crate::serializable::Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar);
     // Send-side errors are ignored here (same as the legacy fd path).
     let _ = unsafe {
@@ -2409,7 +2425,7 @@ fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -
             conn.invoke_error_callback(rc, &err_str);
             return rc;
         }
-        let mut conn_proxy = result.connection.take().unwrap();
+        let conn_proxy = result.connection.take().unwrap();
         conn.bind_channel_direct(conn_proxy);
     }
 
@@ -2449,7 +2465,7 @@ fn clientconn_recv_job_entry(weak_self: WeakClientConnection) {
 }
 
 fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
-                                           mut channel: ChannelConnectionProxy) {
+                                           channel: ChannelConnectionProxy) {
     if !channel.is_valid() {
         return;
     }
@@ -2491,7 +2507,7 @@ fn clientconn_fiber_channel_ptr(slot: &Option<Box<FiberChannel>>) -> *mut FiberC
 }
 
 fn clientconn_run_recv_loop(conn: &ClientConnection) {
-    let mut fc: *mut FiberChannel = core::ptr::null_mut();
+    let fc: *mut FiberChannel;
     {
         let guard = conn.fiber_channel_.lock().unwrap();
         if (*guard).is_none() {
