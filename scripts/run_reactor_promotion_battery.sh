@@ -32,6 +32,7 @@ INCUMBENT_MANIFEST=/var/tmp/reactor-incumbent-owned.unique.demangled
 INCUMBENT_MANIFEST_SHA=e566039257c993ce43e9d96132ffc55d24300edbbd4bfd65c8b9104bc8d5be86
 LAYOUT_PROBE=/var/tmp/srpc-reactor-audit.eLLZeD/repo/.reactor-audit/layout_probe.cpp
 
+
 # Every battery test runs under the harness watchdog, but bound the whole
 # process too: a wedged binary must never become another 15-hour silence.
 PER_TEST_TIMEOUT=${PER_TEST_TIMEOUT:-120}
@@ -234,8 +235,17 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
         )
         actual_manifest=$(mktemp /var/tmp/reactor-battery-nm.XXXXXX)
         expected_manifest=$(mktemp /var/tmp/reactor-battery-expected.XXXXXX)
+        # Symbol-class filter is [TDR], not [TDBRV].  The frozen manifest is
+        # STRONG defined symbols only: it contains zero `guard variable for ...`,
+        # zero DW.ref.* and zero `g_stackless_*` lines.  B (BSS) and V (weak
+        # object) drag exactly those in -- measured on the real object, [TDBRV]
+        # yields 372 entries against a 300-entry manifest, an 87-extra
+        # "drift" that has nothing to do with the provider and that this driver
+        # could therefore never report as clean.  Keep `nm -C`: the manifest was
+        # demangled GNU-style (it has 15 `> >` lines), so llvm-nm --demangle,
+        # which prints `>>`, is NOT a substitute here.
         nm -C --defined-only "$obj" 2>/dev/null \
-            | awk '$2 ~ /^[TDBRV]$/ {sub(/^[^ ]+ [^ ]+ /,""); print}' \
+            | awk '$2 ~ /^[TDR]$/ {sub(/^[^ ]+ [^ ]+ /,""); print}' \
             | sort -u > "$actual_manifest"
         { cat "$INCUMBENT_MANIFEST"; printf '%s\n' "${AUTHORIZED_ADDITIONS[@]}"; } \
             | sort -u > "$expected_manifest"
