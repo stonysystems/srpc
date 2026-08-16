@@ -90,3 +90,10 @@ name = "rrr.serializable"
 includes = [
     { path = "misc/serializable_support.hpp", form = "quote" },
 ]
+
+[[module]]
+name = "rrr.reactor"
+includes = [
+    { path = "reactor/srpc_fiber.h", form = "quote" },
+    { path = "set", form = "angle" },
+]

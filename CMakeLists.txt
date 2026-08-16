@@ -169,12 +169,10 @@ file(GLOB RRR_BENCH_SRC
 # an inline carrier. Keep this census complete so none is also compiled through
 # the regular source glob.
 set(RRR_INLINE_MODULE_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp
 )
 set(RRR_EXPECTED_INLINE_MODULES
-    reactor
     client
     server
 )
@@ -258,6 +256,7 @@ set(RRR_GOAL0_CANONICAL_MODULES
     debugging
     any_message
     tcp_channel
+    reactor
 )
 set(RRR_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.cpp)
 set(RRR_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.cpp)
@@ -293,6 +292,7 @@ set(RRR_GOAL0_SOURCE_threading ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.cpp)
 set(RRR_GOAL0_SOURCE_debugging ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp)
 set(RRR_GOAL0_SOURCE_any_message ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp)
 set(RRR_GOAL0_SOURCE_tcp_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp)
+set(RRR_GOAL0_SOURCE_reactor ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp)
 set(_RRR_GOAL0_UNIQUE_MODULES ${RRR_GOAL0_CANONICAL_MODULES})
 list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_MODULES)
 list(LENGTH RRR_GOAL0_CANONICAL_MODULES _RRR_GOAL0_MODULE_COUNT)
@@ -350,6 +350,7 @@ set(RRR_GOAL0_RETIRED_CARRIER_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp
 )
 set(_RRR_GOAL0_RETIRED_SORTED ${RRR_GOAL0_RETIRED_CARRIER_SRC})
 set(_RRR_GOAL0_CANONICAL_SORTED ${RRR_GOAL0_CANONICAL_RUST_SRC})

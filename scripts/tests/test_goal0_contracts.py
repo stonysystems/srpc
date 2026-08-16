@@ -86,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1254
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1553
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1254)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1553)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -184,7 +184,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1254)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1553)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -427,8 +427,8 @@ class GateContractTests(unittest.TestCase):
 class ExtractionContractTests(unittest.TestCase):
     def test_checked_in_manifest_is_unique_and_physical(self) -> None:
         modules = DRIVER.load_manifest(ROOT, ROOT / "rust-modules.toml")
-        self.assertEqual(len(modules), 34)
-        self.assertEqual(len({module.cpp_module for module in modules}), 34)
+        self.assertEqual(len(modules), 35)
+        self.assertEqual(len({module.cpp_module for module in modules}), 35)
         self.assertTrue(all(module.canonical_source_label for module in modules))
 
     def test_duplicate_ownership_and_path_escape_are_rejected(self) -> None:

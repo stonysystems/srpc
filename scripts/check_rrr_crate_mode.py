@@ -48,7 +48,40 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
     r"in scope [^:\n]+: \[[^\]\n]*\](?:; cycle path: [^\n]*)?$",
     re.MULTILINE,
 )
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1254
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1553
+
+# ---------------------------------------------------------------------------
+# rrr.reactor: the ONE deliberate addition over the frozen incumbent oracle.
+#
+# The reactor promotion is gated on an exact compare of the generated
+# provider's owned strong symbols against the incumbent provider's
+# (/var/tmp/reactor-incumbent-owned.unique.demangled, sha256
+# e566039257c993ce43e9d96132ffc55d24300edbbd4bfd65c8b9104bc8d5be86, 300
+# entries; see scripts/run_reactor_promotion_battery.sh item 11 / G3).
+#
+# The generated provider matches it with 0 MISSING and exactly 1 EXTRA.  That
+# one extra is recorded HERE, by name, instead of being absorbed silently into
+# the ABI_SPECS symbol set:
+#
+#     rrr::EventState@rrr.reactor::new_()
+#
+# Why it is acceptable.  `EventState` is a value type and the DSL has no field
+# default initialisers, so the project's mandated construction idiom is a
+# `fn new() -> EventState` factory rather than a C++ constructor (CLAUDE.md;
+# "No #[cpp_ctor]").  That factory lowers to this static `new_()`.  The frozen
+# incumbent oracle contains NO EventState constructor symbol of any kind --
+# `EventState` occurs in it only as a parameter type, e.g.
+# `rrr::event_state_seed@rrr.reactor(rrr::EventState@rrr.reactor const&)` --
+# so this is a pure addition.  It replaces nothing and removes nothing that
+# any consumer could previously have called.
+#
+# REACTOR_INCUMBENT_ORACLE_ADDITIONS is enforced, not decorative: the gate
+# requires every entry to be a real, currently-owned rrr.reactor symbol
+# (require_reactor_oracle_additions), so a stale entry is an error, and a
+# SECOND unreviewed addition cannot hide behind this one.
+REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
+    {("T", "rrr::EventState@rrr.reactor::new_()")}
+)
 
 # These maps are intentionally exhaustive. Adding a canonical manifest module
 # without its dependency and generated-output ratchets is a gate error rather
@@ -112,6 +145,19 @@ EXPECTED_IMPORTS = {
         "rrr.pollable_proxy",
         "rrr.reactor",
     ],
+    # MEASURED from build/goal0-crate-cpp/rrr.reactor.cppm, not declared:
+    # the emitter writes `import rusty;` first and then the rrr.* set
+    # alphabetically, with `import std;` last.
+    "rrr.reactor": [
+        "rusty",
+        "rrr.basetypes",
+        "rrr.debugging",
+        "rrr.epoll_wrapper",
+        "rrr.logging",
+        "rrr.misc",
+        "rrr.pollable_proxy",
+        "std",
+    ],
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
@@ -149,6 +195,10 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "rrr.debugging": "7c346ba032661233a6ef8dec2a95e5c3e77873d96bb18549faf0279488428514",
     "rrr.any_message": "30bbb8483d830747ab4a52d48380ffca8835216010660505ab6b4cf7ace27384",
     "rrr.tcp_channel": "a00b6f7b25682b1be842e0a24828df8ac532ab0b2f867eadb90e94ed9c85a5b2",
+    # Re-authored with the clippy-gate work (measured ABI-neutral: same 324 raw /
+    # 301 unique demangled strong symbols, same 29-row layout).  Digest drift is
+    # advisory; this keeps the advisory list honest rather than permanently noisy.
+    "rrr.reactor": "c183ebd7170f0c1604a4401d6e5db75c78b6cd2707e4683a59fea1d3933f2681",
 }
 
 IMPORTER_USE_MARKERS = {
@@ -186,6 +236,7 @@ IMPORTER_USE_MARKERS = {
     "rrr.any_message": "rrr::AnyMessage",
     "rrr.serializable": "rrr::BinaryWriteArchive",
     "rrr.tcp_channel": "rrr::kTcpConnectionOutboundHighWaterDefault",
+    "rrr.reactor": "rrr::EventStatus",
 }
 
 
@@ -2458,6 +2509,332 @@ ABI_SPECS = {
             }
         ),
     ),
+    "rrr.reactor": AbiSpec(
+        surface=frozenset(
+            {
+                'export module rrr.reactor;',
+                'namespace rrr {',
+                'export enum class EventStatus : int32_t {',
+                'export struct Reactor {',
+                'export class EventPollable;',
+                'export struct PollThread {',
+                'export struct PollThreadWorker {',
+                'export struct Fiber {',
+                'export struct IntEvent : public EventPollable {',
+                'export struct TimeoutEvent : public EventPollable {',
+                'export struct NeverEvent : public EventPollable {',
+                'export struct WaitAny : public EventPollable {',
+                'export struct WaitAll : public EventPollable {',
+                'export struct EventState {',
+                'void remove(Pollable& poll) const;',
+                'void update_mode(Pollable& poll, int32_t new_mode);',
+                'void pollworker_update_mode(PollThreadWorker& w, Pollable& poll, int32_t new_mode);',
+            }
+        ),
+        symbols=frozenset(
+            {
+                ('D', 'typeinfo for janus::QuorumEvent@rrr.reactor'),
+                ('D', 'typeinfo for rrr::EventPollable@rrr.reactor'),
+                ('D', 'typeinfo for rrr::IntEvent@rrr.reactor'),
+                ('D', 'typeinfo for rrr::NeverEvent@rrr.reactor'),
+                ('D', 'typeinfo for rrr::TimeoutEvent@rrr.reactor'),
+                ('D', 'typeinfo for rrr::WaitAll@rrr.reactor'),
+                ('D', 'typeinfo for rrr::WaitAny@rrr.reactor'),
+                ('D', 'vtable for janus::QuorumEvent@rrr.reactor'),
+                ('D', 'vtable for rrr::EventPollable@rrr.reactor'),
+                ('D', 'vtable for rrr::IntEvent@rrr.reactor'),
+                ('D', 'vtable for rrr::NeverEvent@rrr.reactor'),
+                ('D', 'vtable for rrr::TimeoutEvent@rrr.reactor'),
+                ('D', 'vtable for rrr::WaitAll@rrr.reactor'),
+                ('D', 'vtable for rrr::WaitAny@rrr.reactor'),
+                ('R', 'rrr::kDefaultStackBytes@rrr.reactor'),
+                ('R', 'typeinfo name for janus::QuorumEvent@rrr.reactor'),
+                ('R', 'typeinfo name for rrr::EventPollable@rrr.reactor'),
+                ('R', 'typeinfo name for rrr::IntEvent@rrr.reactor'),
+                ('R', 'typeinfo name for rrr::NeverEvent@rrr.reactor'),
+                ('R', 'typeinfo name for rrr::TimeoutEvent@rrr.reactor'),
+                ('R', 'typeinfo name for rrr::WaitAll@rrr.reactor'),
+                ('R', 'typeinfo name for rrr::WaitAny@rrr.reactor'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::QuorumEvent(janus::QuorumEvent@rrr.reactor&&)'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::QuorumEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<unsigned short, long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<rrr::IntEvent@rrr.reactor>)'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::add_xid(unsigned short, long) const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::finalize(unsigned long, rusty::Function<bool (rusty::port::vec::Vec@vec_port.vec<std::__1::pair<unsigned short, long>, rusty::alloc::Global>&)>) const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::get_fiber_id() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::get_self() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::is_composite_event() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::is_ready() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::is_slow() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::log() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::no() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::prunable() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::remove_xid(unsigned short) const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::set_prunable(bool) const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::set_self(rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::set_status(rrr::EventStatus@rrr.reactor) const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::status() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::test() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::upgrade_fiber() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::vote_no() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::vote_yes() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::wait() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::wait_timeout(unsigned long) const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::wakeup_time() const'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::yes() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::add_xid(unsigned short, long) const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::finalize(unsigned long, rusty::Function<bool (rusty::port::vec::Vec@vec_port.vec<std::__1::pair<unsigned short, long>, rusty::alloc::Global>&)>) const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::get_fiber_id() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::is_ready() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::is_slow() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::log() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::new_(int, int)'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::no() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::q() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::remove_xid(unsigned short) const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::test() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::vote_no() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::vote_yes() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::wait() const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::wait_timeout(unsigned long) const'),
+                ('T', 'janus::QuorumEventWrapper@rrr.reactor::yes() const'),
+                ('T', 'janus::create_sp_quorum_event@rrr.reactor(int, int)'),
+                ('T', 'janus::quorum_collect_dangling@rrr.reactor(janus::QuorumEvent@rrr.reactor const*)'),
+                ('T', 'janus::quorum_event_finalize@rrr.reactor(janus::QuorumEvent@rrr.reactor const&, unsigned long, rusty::Function<bool (rusty::port::vec::Vec@vec_port.vec<std::__1::pair<unsigned short, long>, rusty::alloc::Global>&)>)'),
+                ('T', 'janus::quorum_event_is_slow@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'),
+                ('T', 'janus::quorum_event_make@rrr.reactor(int, int)'),
+                ('T', 'rrr::AddJob@rrr.reactor(rusty::Arc<rrr::Job@rrr.misc>)'),
+                ('T', 'rrr::AddPollable@rrr.reactor(rusty::Box<rrr::PollableBase@rrr.pollable_proxy, rusty::alloc::Global>)'),
+                ('T', 'rrr::ClosePollable@rrr.reactor(int)'),
+                ('T', 'rrr::EventPollable@rrr.reactor::~EventPollable()'),
+                ('T', 'rrr::EventState@rrr.reactor::new_()'),
+                ('T', 'rrr::Fiber@rrr.reactor::Fiber(rusty::Function<void ()>)'),
+                ('T', 'rrr::Fiber@rrr.reactor::continue_() const'),
+                ('T', 'rrr::Fiber@rrr.reactor::create_run_impl(rusty::Function<void ()>, char const*, long)'),
+                ('T', 'rrr::Fiber@rrr.reactor::current_fiber()'),
+                ('T', 'rrr::Fiber@rrr.reactor::finished() const'),
+                ('T', 'rrr::Fiber@rrr.reactor::run() const'),
+                ('T', 'rrr::Fiber@rrr.reactor::sleep(unsigned long)'),
+                ('T', 'rrr::Fiber@rrr.reactor::yield_() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::IntEvent(rrr::IntEvent@rrr.reactor&&)'),
+                ('T', 'rrr::IntEvent@rrr.reactor::IntEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>)'),
+                ('T', 'rrr::IntEvent@rrr.reactor::get() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::get_fiber_id() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::get_self() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::is_composite_event() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::is_ready() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::log() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::prunable() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::record_place(char const*, int) const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::set(int) const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::set_prunable(bool) const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::set_self(rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::IntEvent@rrr.reactor::set_status(rrr::EventStatus@rrr.reactor) const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::status() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::test() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::upgrade_fiber() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::wait() const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::wait_timeout(unsigned long) const'),
+                ('T', 'rrr::IntEvent@rrr.reactor::wakeup_time() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::NeverEvent(rrr::NeverEvent@rrr.reactor&&)'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::NeverEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::get_self() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::is_composite_event() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::is_ready() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::log() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::prunable() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::record_place(char const*, int) const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::set_prunable(bool) const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::set_self(rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::set_status(rrr::EventStatus@rrr.reactor) const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::status() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::test() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::upgrade_fiber() const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::wait_timeout(unsigned long) const'),
+                ('T', 'rrr::NeverEvent@rrr.reactor::wakeup_time() const'),
+                ('T', 'rrr::PollThread@rrr.reactor::PollThread(rrr::PollThread@rrr.reactor&&)'),
+                ('T', 'rrr::PollThread@rrr.reactor::PollThread(rusty::sync::mpsc::Sender<std::__1::variant<rrr::PollCommand_AddPollable@rrr.reactor, rrr::PollCommand_RemovePollable@rrr.reactor, rrr::PollCommand_ClosePollable@rrr.reactor, rrr::PollCommand_UpdateMode@rrr.reactor, rrr::PollCommand_AddJob@rrr.reactor, rrr::PollCommand_RemoveJob@rrr.reactor, rrr::PollCommand_Shutdown@rrr.reactor>>, rusty::Mutex<rusty::Option<rusty::thread::JoinHandle<std::__1::tuple<>>>>, rusty::sync::atomic::detail::Atomic<unsigned long>, rusty::sync::atomic::detail::Atomic<bool>)'),
+                ('T', 'rrr::PollThread@rrr.reactor::add(rusty::Arc<rrr::Job@rrr.misc>) const'),
+                ('T', 'rrr::PollThread@rrr.reactor::add_proxy(rusty::Box<rrr::PollableBase@rrr.pollable_proxy, rusty::alloc::Global>) const'),
+                ('T', 'rrr::PollThread@rrr.reactor::create()'),
+                ('T', 'rrr::PollThread@rrr.reactor::get_remove_count() const'),
+                ('T', 'rrr::PollThread@rrr.reactor::operator=(rrr::PollThread@rrr.reactor&&)'),
+                ('T', 'rrr::PollThread@rrr.reactor::remove(rrr::Pollable@rrr.epoll_wrapper&) const'),
+                ('T', 'rrr::PollThread@rrr.reactor::remove_fd(int) const'),
+                ('T', 'rrr::PollThread@rrr.reactor::request_close(int) const'),
+                ('T', 'rrr::PollThread@rrr.reactor::rusty_mark_forgotten() const'),
+                ('T', 'rrr::PollThread@rrr.reactor::shutdown() const'),
+                ('T', 'rrr::PollThread@rrr.reactor::update_mode(int, int) const'),
+                ('T', 'rrr::PollThread@rrr.reactor::~PollThread()'),
+                ('T', 'rrr::PollThreadWorker@rrr.reactor::create(rusty::sync::mpsc::Receiver<std::__1::variant<rrr::PollCommand_AddPollable@rrr.reactor, rrr::PollCommand_RemovePollable@rrr.reactor, rrr::PollCommand_ClosePollable@rrr.reactor, rrr::PollCommand_UpdateMode@rrr.reactor, rrr::PollCommand_AddJob@rrr.reactor, rrr::PollCommand_RemoveJob@rrr.reactor, rrr::PollCommand_Shutdown@rrr.reactor>>)'),
+                ('T', 'rrr::PollThreadWorker@rrr.reactor::poll_loop()'),
+                ('T', 'rrr::PollThreadWorker@rrr.reactor::update_mode(rrr::Pollable@rrr.epoll_wrapper&, int)'),
+                ('T', 'rrr::Reactor@rrr.reactor::Reactor()'),
+                ('T', 'rrr::Reactor@rrr.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rrr::StacklessTaskEntry@rrr.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)'),
+                ('T', 'rrr::Reactor@rrr.reactor::check_timeout(rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>&) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::continue_fiber(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global> const&) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::create_run_fiber(rusty::Function<void ()>) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::display_waiting_ev() const'),
+                ('T', 'rrr::Reactor@rrr.reactor::enqueue_stackless_task(unsigned long) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::get_disk_reactor()'),
+                ('T', 'rrr::Reactor@rrr.reactor::get_reactor()'),
+                ('T', 'rrr::Reactor@rrr.reactor::process_stackless_tasks() const'),
+                ('T', 'rrr::Reactor@rrr.reactor::prune_finished_events() const'),
+                ('T', 'rrr::Reactor@rrr.reactor::recycle(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>&) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::register_fiber(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global> const&) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::register_stackless_poller(rusty::Function<bool (rusty::Context&)>) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::restore_running_fiber(rusty::Option<rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>>) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::run_loop(bool, bool) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::rusty_mark_forgotten() const'),
+                ('T', 'rrr::Reactor@rrr.reactor::save_running_fiber() const'),
+                ('T', 'rrr::Reactor@rrr.reactor::set_running_fiber(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global> const&) const'),
+                ('T', 'rrr::Reactor@rrr.reactor::~Reactor()'),
+                ('T', 'rrr::RemoveJob@rrr.reactor(rusty::Arc<rrr::Job@rrr.misc>)'),
+                ('T', 'rrr::RemovePollable@rrr.reactor(int)'),
+                ('T', 'rrr::SharedIntEvent@rrr.reactor::set(int const&)'),
+                ('T', 'rrr::SharedIntEvent@rrr.reactor::wait(rusty::Function<bool (int) const>)'),
+                ('T', 'rrr::SharedIntEvent@rrr.reactor::wait_until_gte(int, int)'),
+                ('T', 'rrr::Shutdown@rrr.reactor()'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::TimeoutEvent(rrr::TimeoutEvent@rrr.reactor&&)'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::TimeoutEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, unsigned long, unsigned long)'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::get_self() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::is_composite_event() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::is_ready() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::log() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::prunable() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::set_prunable(bool) const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::set_self(rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::set_status(rrr::EventStatus@rrr.reactor) const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::status() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::test() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::upgrade_fiber() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::wait() const'),
+                ('T', 'rrr::TimeoutEvent@rrr.reactor::wakeup_time() const'),
+                ('T', 'rrr::UpdateMode@rrr.reactor(int, int)'),
+                ('T', 'rrr::WaitAll@rrr.reactor::WaitAll(rrr::WaitAll@rrr.reactor&&)'),
+                ('T', 'rrr::WaitAll@rrr.reactor::WaitAll(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global>>)'),
+                ('T', 'rrr::WaitAll@rrr.reactor::add_event(rusty::Arc<rrr::EventPollable@rrr.reactor>) const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::get_self() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::is_composite_event() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::is_ready() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::log() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::prunable() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::set_prunable(bool) const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::set_self(rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::WaitAll@rrr.reactor::set_status(rrr::EventStatus@rrr.reactor) const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::status() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::test() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::upgrade_fiber() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::wait() const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::wait_timeout(unsigned long) const'),
+                ('T', 'rrr::WaitAll@rrr.reactor::wakeup_time() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::WaitAny(rrr::WaitAny@rrr.reactor&&)'),
+                ('T', 'rrr::WaitAny@rrr.reactor::WaitAny(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global>)'),
+                ('T', 'rrr::WaitAny@rrr.reactor::get_self() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::is_composite_event() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::is_ready() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::log() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::prunable() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::set_prunable(bool) const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::set_self(rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::WaitAny@rrr.reactor::set_status(rrr::EventStatus@rrr.reactor) const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::status() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::test() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::upgrade_fiber() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::wait() const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::wait_timeout(unsigned long) const'),
+                ('T', 'rrr::WaitAny@rrr.reactor::wakeup_time() const'),
+                ('T', 'rrr::create_sp_int_event@rrr.reactor(int)'),
+                ('T', 'rrr::create_sp_never_event@rrr.reactor()'),
+                ('T', 'rrr::create_sp_timeout_event@rrr.reactor(unsigned long)'),
+                ('T', 'rrr::create_sp_waitall@rrr.reactor()'),
+                ('T', 'rrr::create_sp_waitall_from@rrr.reactor(rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::create_sp_waitany@rrr.reactor(rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::Arc<rrr::EventPollable@rrr.reactor>)'),
+                ('T', 'rrr::event_core_get_fiber_id@rrr.reactor()'),
+                ('T', 'rrr::event_state_seed@rrr.reactor(rrr::EventState@rrr.reactor const&)'),
+                ('T', 'rrr::fiber_create_run_impl@rrr.reactor(rusty::Function<void ()>, char const*, long)'),
+                ('T', 'rrr::fiber_current_fiber@rrr.reactor()'),
+                ('T', 'rrr::fiber_do_continue@rrr.reactor(rrr::Fiber@rrr.reactor const&)'),
+                ('T', 'rrr::fiber_do_finalize@rrr.reactor(rrr::Fiber@rrr.reactor const&)'),
+                ('T', 'rrr::fiber_do_yield@rrr.reactor(rrr::Fiber@rrr.reactor const&)'),
+                ('T', 'rrr::fiber_engine_destroy@rrr.reactor(srpc_fiber*)'),
+                ('T', 'rrr::fiber_engine_resume@rrr.reactor(srpc_fiber*)'),
+                ('T', 'rrr::fiber_engine_start@rrr.reactor(srpc_fiber*, void*)'),
+                ('T', 'rrr::fiber_engine_yield@rrr.reactor(srpc_fiber*)'),
+                ('T', 'rrr::fiber_fn_clear@rrr.reactor(rusty::RefCell<rusty::Function<void ()>> const*)'),
+                ('T', 'rrr::fiber_fn_invoke@rrr.reactor(rusty::RefCell<rusty::Function<void ()>> const*)'),
+                ('T', 'rrr::fiber_fn_present@rrr.reactor(rusty::RefCell<rusty::Function<void ()>> const*)'),
+                ('T', 'rrr::fiber_install_task@rrr.reactor(rusty::RefCell<rusty::Option<rusty::Box<rrr::fiber_task_t@rrr.reactor, rusty::alloc::Global>>> const*, rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>)'),
+                ('T', 'rrr::fiber_is_finished@rrr.reactor(rrr::Fiber@rrr.reactor const&)'),
+                ('T', 'rrr::fiber_next_global_id@rrr.reactor()'),
+                ('T', 'rrr::fiber_registry_key@rrr.reactor(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::fiber_run@rrr.reactor(rrr::Fiber@rrr.reactor const&)'),
+                ('T', 'rrr::fiber_run_wrapper@rrr.reactor(rrr::Fiber@rrr.reactor const&, rrr::fiber_yield_t@rrr.reactor*)'),
+                ('T', 'rrr::fiber_sleep@rrr.reactor(unsigned long)'),
+                ('T', 'rrr::fiber_task_body_invoke@rrr.reactor(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>&, rrr::fiber_yield_t@rrr.reactor&)'),
+                ('T', 'rrr::fiber_task_invoke@rrr.reactor(rusty::RefCell<rusty::Option<rusty::Box<rrr::fiber_task_t@rrr.reactor, rusty::alloc::Global>>> const*)'),
+                ('T', 'rrr::fiber_task_t@rrr.reactor::fiber_task_t(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>)'),
+                ('T', 'rrr::fiber_task_t@rrr.reactor::rusty_mark_forgotten() const'),
+                ('T', 'rrr::fiber_task_t@rrr.reactor::~fiber_task_t()'),
+                ('T', 'rrr::fiber_yield_invoke@rrr.reactor(rrr::fiber_yield_t@rrr.reactor&)'),
+                ('T', 'rrr::fiber_yield_invoke_ptr@rrr.reactor(rrr::fiber_yield_t@rrr.reactor*)'),
+                ('T', 'rrr::fiber_yield_t@rrr.reactor::new_(rrr::fiber_task_t@rrr.reactor&)'),
+                ('T', 'rrr::int_event_is_ready@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'),
+                ('T', 'rrr::int_event_make@rrr.reactor(int)'),
+                ('T', 'rrr::int_event_raw_ptr@rrr.reactor(rusty::Arc<rrr::IntEvent@rrr.reactor> const&)'),
+                ('T', 'rrr::int_event_set@rrr.reactor(rrr::IntEvent@rrr.reactor const&, int)'),
+                ('T', 'rrr::job_ready@rrr.reactor(rusty::Arc<rrr::Job@rrr.misc> const&)'),
+                ('T', 'rrr::job_spawn_work@rrr.reactor(rusty::Arc<rrr::Job@rrr.misc> const&)'),
+                ('T', 'rrr::never_event_make@rrr.reactor()'),
+                ('T', 'rrr::pollable_proxy_fd@rrr.reactor(rusty::Box<rrr::PollableBase@rrr.pollable_proxy, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::pollable_proxy_mode@rrr.reactor(rusty::Box<rrr::PollableBase@rrr.pollable_proxy, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::pollthread_create@rrr.reactor()'),
+                ('T', 'rrr::pollthread_drop@rrr.reactor(rrr::PollThread@rrr.reactor const&)'),
+                ('T', 'rrr::pollworker_close_proxy_of@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, int)'),
+                ('T', 'rrr::pollworker_create@rrr.reactor(rusty::sync::mpsc::Receiver<std::__1::variant<rrr::PollCommand_AddPollable@rrr.reactor, rrr::PollCommand_RemovePollable@rrr.reactor, rrr::PollCommand_ClosePollable@rrr.reactor, rrr::PollCommand_UpdateMode@rrr.reactor, rrr::PollCommand_AddJob@rrr.reactor, rrr::PollCommand_RemoveJob@rrr.reactor, rrr::PollCommand_Shutdown@rrr.reactor>>)'),
+                ('T', 'rrr::pollworker_do_add_job@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, rusty::Arc<rrr::Job@rrr.misc>)'),
+                ('T', 'rrr::pollworker_do_add_pollable@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, rusty::Box<rrr::PollableBase@rrr.pollable_proxy, rusty::alloc::Global>)'),
+                ('T', 'rrr::pollworker_do_close_pollable@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, int)'),
+                ('T', 'rrr::pollworker_do_remove_job@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, rusty::Arc<rrr::Job@rrr.misc>)'),
+                ('T', 'rrr::pollworker_do_remove_pollable@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, int)'),
+                ('T', 'rrr::pollworker_do_update_mode@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, int, int)'),
+                ('T', 'rrr::pollworker_is_on_poll_thread@rrr.reactor()'),
+                ('T', 'rrr::pollworker_make@rrr.reactor(rusty::sync::mpsc::Receiver<std::__1::variant<rrr::PollCommand_AddPollable@rrr.reactor, rrr::PollCommand_RemovePollable@rrr.reactor, rrr::PollCommand_ClosePollable@rrr.reactor, rrr::PollCommand_UpdateMode@rrr.reactor, rrr::PollCommand_AddJob@rrr.reactor, rrr::PollCommand_RemoveJob@rrr.reactor, rrr::PollCommand_Shutdown@rrr.reactor>>)'),
+                ('T', 'rrr::pollworker_poll_loop@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&)'),
+                ('T', 'rrr::pollworker_process_commands@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&)'),
+                ('T', 'rrr::pollworker_process_pending_removals@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&)'),
+                ('T', 'rrr::pollworker_snapshot_fds@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&)'),
+                ('T', 'rrr::pollworker_take_removals@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&)'),
+                ('T', 'rrr::pollworker_trigger_job@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&)'),
+                ('T', 'rrr::pollworker_update_mode@rrr.reactor(rrr::PollThreadWorker@rrr.reactor&, rrr::Pollable@rrr.epoll_wrapper&, int)'),
+                ('T', 'rrr::reactor_create_run_fiber_at_impl@rrr.reactor(rrr::Reactor@rrr.reactor const&, rusty::Function<void ()>, char const*, long)'),
+                ('T', 'rrr::reactor_create_run_fiber_impl@rrr.reactor(rrr::Reactor@rrr.reactor const&, rusty::Function<void ()>)'),
+                ('T', 'rrr::reactor_dec_active_fibers@rrr.reactor()'),
+                ('T', 'rrr::reactor_get_or_create_fiber_impl@rrr.reactor(rrr::Reactor@rrr.reactor const&, rusty::Function<void ()>, char const*, long)'),
+                ('T', 'rrr::reactor_live_fiber_count@rrr.reactor()'),
+                ('T', 'rrr::reactor_log_create@rrr.reactor(bool)'),
+                ('T', 'rrr::reactor_make@rrr.reactor()'),
+                ('T', 'rrr::reactor_poll_one@rrr.reactor(rrr::Reactor@rrr.reactor const&, unsigned long, rusty::Function<bool (rusty::Context&)>*)'),
+                ('T', 'rrr::reactor_spawn_stackless_task_impl@rrr.reactor(rrr::Reactor@rrr.reactor const&, rusty::Task<void>)'),
+                ('T', 'rrr::reactor_tls_get@rrr.reactor()'),
+                ('T', 'rrr::reactor_tls_get_disk@rrr.reactor()'),
+                ('T', 'rrr::reactor_tls_restore_running@rrr.reactor(rusty::Option<rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>>)'),
+                ('T', 'rrr::reactor_tls_save_running@rrr.reactor()'),
+                ('T', 'rrr::reactor_tls_set_running@rrr.reactor(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::shared_int_event_set@rrr.reactor(rrr::SharedIntEvent@rrr.reactor&, int)'),
+                ('T', 'rrr::shared_int_event_wait@rrr.reactor(rrr::SharedIntEvent@rrr.reactor&, rusty::Function<bool (int) const>)'),
+                ('T', 'rrr::shared_int_event_wait_until_gte@rrr.reactor(rrr::SharedIntEvent@rrr.reactor&, int, int)'),
+                ('T', 'rrr::stackless_profile_note_enqueue@rrr.reactor()'),
+                ('T', 'rrr::stackless_profile_note_poll_ready@rrr.reactor()'),
+                ('T', 'rrr::stackless_profile_note_register@rrr.reactor(unsigned long, bool, unsigned long)'),
+                ('T', 'rrr::stackless_profile_report_periodic_shim@rrr.reactor()'),
+                ('T', 'rrr::timeout_event_is_ready@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'),
+                ('T', 'rrr::timeout_event_make@rrr.reactor(unsigned long)'),
+                ('T', 'rrr::u64_to_thread_id@rrr.reactor(unsigned long)'),
+                ('T', 'rrr::waitall_make@rrr.reactor()'),
+                ('T', 'rrr::waitall_make_from@rrr.reactor(rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global> const&)'),
+                ('T', 'rrr::waitany_make@rrr.reactor(rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::Arc<rrr::EventPollable@rrr.reactor>)'),
+            }
+        ),
+    ),
     "rrr.tcp_channel": AbiSpec(
         surface=frozenset(
             {
@@ -2679,6 +3056,100 @@ EXPECTED_TOTAL_PLATFORM_SYMBOLS = 5
 # Each tuple is one additional occurrence beyond the unique strong symbol in
 # ABI_SPECS. Every module also has exactly one module initializer.
 RAW_ABI_ALIASES = {
+    "rrr.reactor": (
+        (
+            'T',
+            'janus::QuorumEvent@rrr.reactor::QuorumEvent(janus::QuorumEvent@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'janus::QuorumEvent@rrr.reactor::QuorumEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<unsigned short, long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<rrr::IntEvent@rrr.reactor>)',
+        ),
+        (
+            'T',
+            'rrr::EventPollable@rrr.reactor::~EventPollable()',
+        ),
+        (
+            'T',
+            'rrr::EventPollable@rrr.reactor::~EventPollable()',
+        ),
+        (
+            'T',
+            'rrr::Fiber@rrr.reactor::Fiber(rusty::Function<void ()>)',
+        ),
+        (
+            'T',
+            'rrr::IntEvent@rrr.reactor::IntEvent(rrr::IntEvent@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'rrr::IntEvent@rrr.reactor::IntEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>)',
+        ),
+        (
+            'T',
+            'rrr::NeverEvent@rrr.reactor::NeverEvent(rrr::NeverEvent@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'rrr::NeverEvent@rrr.reactor::NeverEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>)',
+        ),
+        (
+            'T',
+            'rrr::PollThread@rrr.reactor::PollThread(rrr::PollThread@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'rrr::PollThread@rrr.reactor::PollThread(rusty::sync::mpsc::Sender<std::__1::variant<rrr::PollCommand_AddPollable@rrr.reactor, rrr::PollCommand_RemovePollable@rrr.reactor, rrr::PollCommand_ClosePollable@rrr.reactor, rrr::PollCommand_UpdateMode@rrr.reactor, rrr::PollCommand_AddJob@rrr.reactor, rrr::PollCommand_RemoveJob@rrr.reactor, rrr::PollCommand_Shutdown@rrr.reactor>>, rusty::Mutex<rusty::Option<rusty::thread::JoinHandle<std::__1::tuple<>>>>, rusty::sync::atomic::detail::Atomic<unsigned long>, rusty::sync::atomic::detail::Atomic<bool>)',
+        ),
+        (
+            'T',
+            'rrr::PollThread@rrr.reactor::~PollThread()',
+        ),
+        (
+            'T',
+            'rrr::Reactor@rrr.reactor::Reactor()',
+        ),
+        (
+            'T',
+            'rrr::Reactor@rrr.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rrr::StacklessTaskEntry@rrr.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)',
+        ),
+        (
+            'T',
+            'rrr::Reactor@rrr.reactor::~Reactor()',
+        ),
+        (
+            'T',
+            'rrr::TimeoutEvent@rrr.reactor::TimeoutEvent(rrr::TimeoutEvent@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'rrr::TimeoutEvent@rrr.reactor::TimeoutEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, unsigned long, unsigned long)',
+        ),
+        (
+            'T',
+            'rrr::WaitAll@rrr.reactor::WaitAll(rrr::WaitAll@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'rrr::WaitAll@rrr.reactor::WaitAll(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global>>)',
+        ),
+        (
+            'T',
+            'rrr::WaitAny@rrr.reactor::WaitAny(rrr::WaitAny@rrr.reactor&&)',
+        ),
+        (
+            'T',
+            'rrr::WaitAny@rrr.reactor::WaitAny(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global>)',
+        ),
+        (
+            'T',
+            'rrr::fiber_task_t@rrr.reactor::fiber_task_t(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>)',
+        ),
+        (
+            'T',
+            'rrr::fiber_task_t@rrr.reactor::~fiber_task_t()',
+        ),
+    ),
     "rrr.serializable": (
         (
             'T',
@@ -3521,7 +3992,26 @@ def load_owned_modules(root: Path) -> list[extraction.ModuleEntry]:
                     + ", ".join(sorted(actual - names))
                 )
         raise GateError("\n".join(details))
+    require_reactor_oracle_additions()
     return modules
+
+
+def require_reactor_oracle_additions() -> None:
+    """Keep the declared incumbent-oracle additions honest.
+
+    Every entry of REACTOR_INCUMBENT_ORACLE_ADDITIONS must still be a symbol
+    rrr.reactor actually owns.  If the `EventState::new_` factory is renamed or
+    stops being emitted, this fires instead of leaving a stale, unexamined
+    "authorized addition" sitting in the ratchet.
+    """
+    owned = ABI_SPECS["rrr.reactor"].symbols
+    stale = REACTOR_INCUMBENT_ORACLE_ADDITIONS - owned
+    if stale:
+        raise GateError(
+            "declared rrr.reactor incumbent-oracle addition(s) are not owned "
+            "by the module any more: "
+            + ", ".join(f"{kind} {name}" for kind, name in sorted(stale))
+        )
 
 
 def read_generated(path: Path, description: str) -> str:
@@ -4680,6 +5170,7 @@ import rrr.utils;
 import rrr.debugging;
 import rrr.any_message;
 import rrr.tcp_channel;
+import rrr.reactor;
 
 static std::int32_t rand_raw_value = 0;
 static std::uint32_t rand_raw_draws = 0;
@@ -8090,6 +8581,9 @@ int main() {
     if (rrr::kTcpConnectionOutboundHighWaterDefault !=
         static_cast<size_t>(4) * 1024 * 1024) {
         return 246;
+    }
+    if (static_cast<int>(rrr::EventStatus::READY) != 2) {
+        return 247;
     }
     return 0;
 }

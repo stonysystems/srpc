@@ -16,7 +16,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 RUSTY_CPP_PIN = "29122d04bcc39df912dce542ca1404e1eb199fd3"
 EXPECTED_INLINE_SOURCES = {
-    "reactor/reactor.cpp": "reactor",
     "rpc/client.cpp": "client",
     "rpc/server.cpp": "server",
 }
@@ -157,7 +156,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
                 )
 
             self.assertEqual(check().returncode, 0)
-            carrier = scratch / "reactor/reactor.cpp"
+            carrier = scratch / "rpc/client.cpp"
             original = carrier.read_text(encoding="utf-8")
             carrier.write_text(
                 original.replace("\n#if RUSTYCPP_RUST", "\n#if 0", 1),

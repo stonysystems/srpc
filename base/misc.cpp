@@ -49,7 +49,33 @@ pub fn get_ncpu() -> i32 {
 }
 
 /// A unit of work scheduled by the reactor.
-pub trait Job {
+///
+/// # Safety
+///
+/// The reactor owns mutable execution of a job after it is submitted. An
+/// implementation must not expose aliases that concurrently mutate the state
+/// reached by `Ready`, `Work`, or `Done`. `Send + Sync` proves that the shared
+/// handle itself can cross into the poll worker; this unsafe trait records the
+/// remaining single-worker mutation invariant.
+///
+/// Thread-confined state is rejected even when an implementation explicitly
+/// acknowledges the worker-ownership invariant:
+///
+/// ```compile_fail
+/// use rrr::misc::Job;
+/// use std::cell::Cell;
+/// use std::rc::Rc;
+///
+/// struct ThreadConfined(Rc<Cell<u32>>);
+///
+/// unsafe impl Job for ThreadConfined {
+///     fn Ready(&mut self) -> bool { true }
+///     fn Work(&mut self) { self.0.set(self.0.get() + 1); }
+///     fn Done(&mut self) -> bool { false }
+/// }
+/// ```
+#[allow(unsafe_code)]
+pub unsafe trait Job: Send + Sync {
     fn Ready(&mut self) -> bool;
     fn Work(&mut self);
     fn Done(&mut self) -> bool;
@@ -57,13 +83,16 @@ pub trait Job {
 
 /// A job that starts ready and records completion after invoking its callback.
 pub struct OneTimeJob {
-    pub done_: bool,
-    pub ready_: bool,
-    pub func_: Box<dyn FnMut()>,
+    // Kept private in Rust so a caller retaining an Arc cannot race the
+    // worker's exclusive mutable dispatch. rusty-cpp still emits the
+    // historical public C++ aggregate fields and unchanged layout.
+    done_: bool,
+    ready_: bool,
+    func_: Box<dyn FnMut() + Send + Sync>,
 }
 
 impl OneTimeJob {
-    pub fn new(func: Box<dyn FnMut()>) -> OneTimeJob {
+    pub fn new(func: Box<dyn FnMut() + Send + Sync>) -> OneTimeJob {
         OneTimeJob {
             done_: false,
             ready_: true,
@@ -76,7 +105,8 @@ impl OneTimeJob {
 // upcasts. The crate root imports a rustc-only no-op macro with this name;
 // rusty-cpp consumes the retained attribute during production generation.
 #[cpp_inherit]
-impl Job for OneTimeJob {
+#[allow(unsafe_code)]
+unsafe impl Job for OneTimeJob {
     fn Ready(&mut self) -> bool {
         self.ready_
     }

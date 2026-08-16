@@ -137,3 +137,7 @@ source = "misc/any_message.cpp"
 [[module]]
 cpp_module = "rrr.tcp_channel"
 source = "rpc/tcp_channel.cpp"
+
+[[module]]
+cpp_module = "rrr.reactor"
+source = "reactor/reactor.cpp"
