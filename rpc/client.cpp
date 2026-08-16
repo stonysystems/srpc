@@ -10,7 +10,7 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{BTreeMap, HashMap};
-use std::ffi::CStr;
+// (`std::ffi::CStr` is deliberately NOT imported: see `clientconn_addr_to_string`.)
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
@@ -59,7 +59,7 @@ use crate::errors::RpcError;
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::fiber_channel::{FiberChannel, OwnedFrame};
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
-use crate::heartbeat::{HeartbeatConfig, HeartbeatManager};
+use crate::heartbeat::{HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback};
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::load_balancer::{LoadBalancer, LoadBalancerState, LoadBalancingStrategy};
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
@@ -72,7 +72,7 @@ use crate::reconnect_policy::{ReconnectPolicy};
 use crate::request_options::{RequestOptions, TimeoutType};
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::request_queue::{
-    OverflowStrategy, QueuedRequest, RequestQueue, RequestQueueConfig,
+    OverflowStrategy, QueuedRequest, QueuedRequestCallback, RequestQueue, RequestQueueConfig,
 };
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::serializable::{
@@ -165,7 +165,13 @@ fn client_text(text: &str) -> LegacyStdString {
 }
 
 fn client_text_str(prefix: &str, value: &str, suffix: &str) -> LegacyStdString {
-    let mut message = prefix.to_string();
+    // The `LegacyStdString` annotation is load-bearing, not decoration: the
+    // checked type map spells this alias `std::string`, and only a DECLARED
+    // type carries that mapping onto a local. Left inferred, `to_string()`
+    // lowers the local to `rusty::String` while the signature still says
+    // `std::string` — the same Rust type in two C++ spellings.
+    // `base/misc.cpp` annotates its own `LegacyStdString` local likewise.
+    let mut message: LegacyStdString = prefix.to_string();
     message += value;
     message += suffix;
     message
@@ -507,13 +513,16 @@ impl Future {
     fn timed_wait(&self, sec: f64) {
         let guard = self.state_.lock().unwrap();
         let micros: u64 = (sec * 1000000.0) as u64;
-        let result = self.ready_cond_.wait_timeout_while(
+        // Destructured in the `let`, not through `result.0` / `result.1`: a
+        // tuple bound to its own name is emitted as a CONST local, so moving
+        // the guard out of it afterwards selects `MutexGuard`'s deleted copy
+        // constructor. The pattern lowers to a structured binding instead.
+        let (mut guard, timeout_result) = self.ready_cond_.wait_timeout_while(
             guard,
             Duration::from_micros(micros),
             |s| !s.ready && !s.timed_out,
         ).unwrap();
-        let mut guard = result.0;
-        let condition_became_false: bool = !result.1.timed_out();
+        let condition_became_false: bool = !timeout_result.timed_out();
         if !condition_became_false && !(*guard).ready {
             (*guard).timed_out = true;
             self.error_code_.set(CLIENT_ERR_TIMED_OUT);
@@ -703,7 +712,13 @@ impl ClientConnection {
                 reconnect_abort_: AtomicBool::new(false),
                 channel_reconnect_attempts_: AtomicU64::new(0),
             },
-            reconnect_address_: Cell::<LegacyStdString>::new(LegacyStdString::default()),
+            // `Default::default()` (not `LegacyStdString::default()`): the
+            // alias is spelled `std::string` by the checked type map, and an
+            // associated-function path on it emits `std::string::default_`,
+            // which does not exist. In expected-type position the emitter
+            // lowers `Default::default()` to `rusty::default_like<T>()`, the
+            // same shape the `on_server_restart_` field below already uses.
+            reconnect_address_: Cell::<LegacyStdString>::new(Default::default()),
             buffering_config_: Cell::<BufferingConfig>::new(BufferingConfig::defaults()),
             pending_queue_: make_pending_queue(&BufferingConfig::defaults().to_queue_config()),
             server_instance_id_: Cell::<u64>::new(0u64),
@@ -715,7 +730,7 @@ impl ClientConnection {
             last_activity_time_: Cell::<u64>::new(0u64),
             metrics_: ConnectionMetrics::new(),
             weak_self_: WeakClientConnection::new(),
-            host_: LegacyStdString::default(),
+            host_: Default::default(),
             packets_: 0u64,
             paused_: Cell::<bool>::new(false),
             is_client_mode_: false,
@@ -910,9 +925,15 @@ impl ClientConnection {
             })));
             // on_error is not surfaced in this mode: the channel-layer contract
             // follows a fatal error with on_closed, so the fan-out covers it.
-            ch.set_on_error(OnErrorCallback::from_callable(Box::new(
-                move |_err: ChannelError, _msg: LegacyStdStringView| {},
-            )));
+            //
+            // Bound to an ANNOTATED local first, exactly as `fiber_channel.cpp`
+            // does. Inline, the empty-bodied closure is emitted twice — once
+            // inside a `decltype(...)` for `rusty::Box<..>::new_`'s type
+            // argument and once as its value — and two lambda expressions are
+            // two distinct C++ types, so the call never resolves.
+            let error_callback: Box<dyn Fn(ChannelError, &str) + Send + Sync> =
+                Box::new(move |_err, _msg| {});
+            ch.set_on_error(OnErrorCallback::from_callable(error_callback));
         }
         {
             let mut guard = self.direct_channel_.lock().unwrap();
@@ -1049,8 +1070,9 @@ impl ClientConnection {
         // does not keep the connection alive (mirrors the legacy [weak_conn]
         // C++ lambda; a move closure's owned capture is escape-safe).
         let weak_conn: WeakClientConnection = self.weak_self_.clone();
+        // Provider alias, not an inline turbofish — see `qr.callback` below.
         self.heartbeat_manager_.set_on_timeout(
-            rusty::Function::<dyn FnMut()>::from_callable(move || {
+            HeartbeatTimeoutCallback::from_callable(move || {
             let conn_opt = weak_conn.upgrade();
             if conn_opt.is_none() {
                 return;
@@ -1103,7 +1125,14 @@ impl ClientConnection {
         if !self.callback_manager_.is_valid() {
             return;
         }
-        let owned_message = message.to_owned();
+        // Declared, not inferred, and `to_string()` rather than `to_owned()`:
+        // `invoke_on_error` takes the mapped `const std::string&`, and only
+        // the annotation carries that spelling onto the local (see
+        // `client_text_str`). `to_owned()` additionally hard-codes
+        // `rusty::String::from(..)` as the initializer regardless of the
+        // declared type, while `to_string()` lowers to `rusty::to_string(..)`,
+        // which already yields `std::string`.
+        let owned_message: LegacyStdString = message.to_string();
         (*self.callback_manager_).invoke_on_error(clientconn_map_system_error(err), &owned_message);
     }
     fn invoke_disconnected_callback(&self) {
@@ -1518,7 +1547,9 @@ impl Client {
         if guard.is_some() {
             return guard.as_ref().unwrap().host();
         }
-        LegacyStdString::new()
+        // See `ClientConnection::new`: the alias maps to `std::string`, so
+        // `LegacyStdString::new()` would emit `std::string::new_`.
+        Default::default()
     }
 
     fn connected(&self) -> bool {
@@ -2021,7 +2052,14 @@ where F: FnMut(&mut BinaryWriteArchive) {
                 (*fu_for_cb).error_code_.set(err);
                 (*fu_for_cb).notify_ready(fu_for_cb.clone());
             };
-            qr.callback = rusty::Function::<dyn FnMut(i32)>::from_callable(cb_fn);
+            // Through the provider's alias, not an inline
+            // `rusty::Function::<dyn FnMut(i32)>` turbofish: in EXPRESSION
+            // position the emitter lowers `dyn FnMut(i32)` to
+            // `std::function<void(int32_t)>` and then re-wraps it, yielding the
+            // undefined `rusty::Function<std::function<void(int32_t)>>`. The
+            // alias declaration lowers correctly (`rusty::Function<void(int32_t)>`)
+            // and names the identical Rust type.
+            qr.callback = QueuedRequestCallback::from_callable(cb_fn);
             if conn.pending_queue_.enqueue(qr) {
                 return FutureResult::Ok(fu);
             }
@@ -2210,7 +2248,10 @@ fn clientconn_request_with_options<F>(self_: &ClientConnection, rpc_id: i32,
                                       attr: &FutureAttr, mut write_fn: F) -> FutureResult
 where F: FnMut(&mut BinaryWriteArchive) {
     // Serialize args once so retries can replay identical payload safely.
-    let mut args_sink = BufferSink { bytes: Vec::new() };
+    // Turbofish, matching the three other `BufferSink` literals in this file:
+    // a bare `Vec::new()` in a struct-literal field takes its emitted element
+    // type from an unrelated binding instead of from `bytes: Vec<u8>`.
+    let mut args_sink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar: BinaryWriteArchive = make_write_archive(&mut args_sink);
     let ar_ref: &mut BinaryWriteArchive = &mut ar;
     write_fn(ar_ref);
@@ -2391,10 +2432,31 @@ fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
 
 fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
     if addr.is_null() {
-        return LegacyStdString::new();
+        // See `ClientConnection::new`: the alias maps to `std::string`.
+        return Default::default();
     }
-    // SAFETY: all callers uphold the historical C-string input contract.
-    unsafe { CStr::from_ptr(addr).to_string_lossy().into_owned() }
+    // Byte-for-byte copy up to the NUL — the same shape `base/logging.cpp`'s
+    // `log_basename` uses, and the same bytes the historical
+    // `std::string(addr)` produced.
+    //
+    // `CStr::from_ptr(..).to_string_lossy().into_owned()` is not spellable
+    // here: the checked map spells `CStr` `std::string`, so the associated
+    // function emits the non-existent `std::string::from_ptr`, and every
+    // `CStr` method behind it has the same problem. `rusty::LoggingString` is
+    // the byte model that maps to `std::string` and carries C++'s
+    // `push_back`; `client_text` then hands back the module's own
+    // `LegacyStdString` (`&LoggingString` derefs to `&str` in rustc and
+    // converts to `std::string_view` in C++).
+    let mut scratch: rusty::LoggingString = Default::default();
+    let mut index: usize = 0;
+    // SAFETY: all callers uphold the historical C-string input contract;
+    // `index` is advanced only until the first NUL byte.
+    while unsafe { *addr.add(index) } != 0i8 {
+        // SAFETY: as above — `index` is still before the terminator.
+        scratch.push_back(unsafe { *addr.add(index) });
+        index += 1;
+    }
+    client_text(&scratch)
 }
 
 fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -> i32 {
@@ -2503,7 +2565,13 @@ fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
 }
 
 fn clientconn_fiber_channel_ptr(slot: &Option<Box<FiberChannel>>) -> *mut FiberChannel {
-    (&**slot.as_ref().unwrap() as *const FiberChannel).cast_mut()
+    // The borrow is taken into a named reference first, and it keeps the
+    // explicit `&**` (the `Box` deref must be written out; the emitter does
+    // not insert Rust's deref coercion). Written inline as
+    // `&**slot.as_ref().unwrap() as *const FiberChannel`, the emitter drops
+    // the leading `&` and casts the DEREFERENCED value to a pointer type.
+    let borrowed: &FiberChannel = &**slot.as_ref().unwrap();
+    (borrowed as *const FiberChannel).cast_mut()
 }
 
 fn clientconn_run_recv_loop(conn: &ClientConnection) {
