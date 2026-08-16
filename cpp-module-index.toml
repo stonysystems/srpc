@@ -96,6 +96,13 @@ callable_signatures = ["void(int32_t,int32_t)"]
 [modules."rrr::debugging"]
 namespace = "rrr"
 
+[modules."rrr::rand"]
+namespace = "rrr"
+
+[modules."rrr::rand".symbols."RandomGenerator::rand"]
+kind = "function"
+callable_signatures = ["int32_t(int32_t,int32_t)"]
+
 [modules."rrr::debugging".symbols.verify]
 kind = "function_template"
 callable_signatures = ["void(bool)"]

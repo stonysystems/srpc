@@ -14,10 +14,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUSTY_CPP_PIN = "5f5af031a2de528961ee9cca81305180c9879b9c"
+RUSTY_CPP_PIN = "c08b709da103ddf6914132b9401ebabdaa9901c9"
 EXPECTED_INLINE_SOURCES = {
     "reactor/reactor.cpp": "reactor",
-    "rpc/client.cpp": "client",
     "rpc/server.cpp": "server",
 }
 EXPECTED_DSL_SOURCES = {
@@ -123,7 +122,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
             manifest = tomllib.load(stream)
         mutated = cmake.replace(
             "${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp\n)",
-            "${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp\n)",
+            "${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp\n)",
             1,
         )
         self.assertNotEqual(mutated, cmake)
