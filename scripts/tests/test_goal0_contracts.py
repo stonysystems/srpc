@@ -79,7 +79,6 @@ class GateStaticContractTests(unittest.TestCase):
                     with self.assertRaises(GATE.GateError):
                         GATE.read_generated(probe, "probe")
 
-    @unittest.skip('MEASUREMENT BYPASS: rrr.server is in the manifest but its ratchets cannot exist until a real object is compiled. REMOVE before reporting green.')
     def test_every_manifest_module_has_all_exhaustive_ratchets(self) -> None:
         manifest = {module.cpp_module for module in self.modules}
         self.assertEqual(set(GATE.ABI_SPECS), manifest)
@@ -87,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1254
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1340
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1254)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1340)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -137,7 +136,6 @@ class GateStaticContractTests(unittest.TestCase):
                 )
 
 
-@unittest.skip('MEASUREMENT BYPASS: rrr.server is in the manifest but its ratchets cannot exist until a real object is compiled. REMOVE before reporting green. setUpClass hard-errors on it.')
 class GateContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -180,14 +178,13 @@ class GateContractTests(unittest.TestCase):
         shutil.copytree(self.generated, output)
         return temporary, output
 
-    @unittest.skip('MEASUREMENT BYPASS: rrr.server is in the manifest but its ratchets cannot exist until a real object is compiled. REMOVE before reporting green.')
     def test_every_manifest_module_has_all_exhaustive_ratchets(self) -> None:
         manifest = {module.cpp_module for module in self.modules}
         self.assertEqual(set(GATE.ABI_SPECS), manifest)
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1254)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1340)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 

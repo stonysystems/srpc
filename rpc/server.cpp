@@ -315,7 +315,7 @@ impl RpcServiceContext {
 pub type ServerReplyFn = Box<dyn FnMut(&mut BinaryWriteArchive)>;
 
 /// The empty-reply writer. The retired carrier passed a default-constructed
-/// `rusty::Function` here and `sconn_reply` skipped the call; a writer that
+/// `rusty::Function` here and `sconn_reply` bypassed the call; a writer that
 /// writes nothing produces the identical reply bytes, and the emptiness guard
 /// in `sconn_reply` still protects the empty Functions that reach this module
 /// from its C++ callers.
@@ -727,7 +727,16 @@ pub fn server_parse_port(text: &LegacyStdString) -> Option<i32> {
 /// The invoker catches a panicking hook and logs it, exactly as the old
 /// two-arm try/catch did.
 pub fn server_invoke_shutdown_hook_safely(hook: &mut ShutdownHook) {
-    let r = rusty::panic::catch_unwind(hook);
+    // MEASURED compile pin, not style. `clippy::redundant_closure` wants
+    // `catch_unwind(hook)`. That regenerates as
+    //     rusty::panic::catch_unwind(hook)   // hook: rusty::Function<void()>&
+    // and rusty/panic.hpp's `AssertUnwindSafe(F f)` takes its callable BY
+    // VALUE, while rusty::Function's copy constructor is `= delete`
+    // (rusty/function.hpp:281) -- "call to deleted constructor of
+    // rusty::Function<void ()>". The closure is what keeps it a by-reference
+    // capture.
+    #[allow(clippy::redundant_closure)]
+    let r = rusty::panic::catch_unwind(|| hook());
     if r.is_ok() {
         return;
     }
@@ -806,7 +815,14 @@ impl Drop for Server {
             guard.closed = true;
             let mut i: usize = 0usize;
             while i < guard.conns.len() {
-                guard.conns[i].close();
+                // MEASURED compile pin, not style. `clippy::explicit_auto_deref`
+                // wants the outer `*` dropped. `conns[i]` is an
+                // `Arc<ServerConnection>`, and without the deref the emitter
+                // writes `...conns[i].close()` -- "no member named 'close' in
+                // 'rusty::Arc<rrr::ServerConnection>'". The `*` is what emits
+                // the `deref_if_pointer_like` the call needs.
+                #[allow(clippy::explicit_auto_deref)]
+                (*guard.conns[i]).close();
                 i += 1usize;
             }
             guard.conns.clear();
