@@ -1611,7 +1611,7 @@ impl Reactor {
             reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), reusing_fiber()));
         }
         reactor_verify(inserted);
-        reactor_verify(guard.len() > 0usize);
+        reactor_verify(!guard.is_empty());
     }
 
     pub fn recycle(&self, fiber: &mut Rc<Fiber>) {
@@ -1697,6 +1697,17 @@ impl Reactor {
         idx
     }
 
+    // MEASURED allow, not a style waiver.  Clippy is right that `idx as usize`
+    // is a no-op cast in Rust — `idx` is already `usize`.  It is not a no-op in
+    // the emitter: with the cast the free-slot push lowers to
+    // `free_guard->push(static_cast<size_t>(idx))`; without it the argument is
+    // re-inferred as a collect and lowers to
+    // `free_guard->push(std::move(rusty::Vec<size_t>::from_iter(std::move(idx))))`,
+    // which fails to compile (3 errors, incl. "no viable conversion from
+    // rusty::port::vec::Vec<unsigned long> to unsigned long" and a
+    // `rusty::iter` static_assert).  The C++ ABI contract wins over the lint;
+    // the cast is load-bearing and stays.  Scoped to this one item.
+    #[allow(clippy::unnecessary_cast)]
     pub fn process_stackless_tasks(&self) -> bool {
         reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
         let ingress_ready = stackless_wake_take_pending::<()>(self);
@@ -1762,6 +1773,11 @@ impl Reactor {
                         drop(poll_fn);
                         stackless_wake_detach::<()>(self, idx);
                         let mut free_guard = self.free_stackless_task_slots_.borrow_mut();
+                        // `idx as usize` is a no-op cast in Rust (idx is already
+                        // usize) but is load-bearing for the emitter: dropping it
+                        // makes the argument lower as
+                        // `rusty::Vec<size_t>::from_iter(std::move(idx))`, which
+                        // does not compile.  See the item-level allow above.
                         free_guard.push(idx as usize);
                     } else {
                         let mut tasks_guard = self.stackless_tasks_.borrow_mut();
@@ -2458,9 +2474,9 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
             ev.core_status().set(EventStatus::READY);
         } else if ev.core_status().get() == EventStatus::READY {
             reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("event status ready, triggered?"));
-        } else if ev.core_status().get() == EventStatus::DONE {
-            // do nothing
-        } else if ev.core_status().get() == EventStatus::TIMEOUT {
+        } else if ev.core_status().get() == EventStatus::DONE
+            || ev.core_status().get() == EventStatus::TIMEOUT
+        {
             // do nothing
         } else {
             reactor_verify(false);
@@ -2569,8 +2585,7 @@ fn waitall_make() -> Arc<WaitAll> {
 
 fn waitall_make_from(evs: &Vec<Arc<dyn EventPollable>>) -> Arc<WaitAll> {
     let mut events: Vec<Arc<dyn EventPollable>> =
-        Vec::<Arc<dyn EventPollable>>::new();
-    events.reserve(evs.len());
+        Vec::<Arc<dyn EventPollable>>::with_capacity(evs.len());
     for ev in evs {
         events.push(ev.clone());
     }
@@ -2592,10 +2607,8 @@ fn shared_int_event_set(sie: &mut SharedIntEvent, v: i32) -> i32 {
     let mut i: usize = 0usize;
     while i < sie.events_.len() {
         let ev: &Arc<IntEvent> = &sie.events_[i];
-        if (*ev).status_.get() <= EventStatus::WAIT {
-            if (*ev).target_.get() <= v {
-                (*ev).set(v);
-            }
+        if (*ev).status_.get() <= EventStatus::WAIT && (*ev).target_.get() <= v {
+            (*ev).set(v);
         }
         i += 1usize;
     }
@@ -2936,10 +2949,7 @@ fn stackless_profile_note_register(scanned: usize, reuse: bool, slots_now: usize
 
 fn fiber_current_fiber() -> Option<Rc<Fiber>> {
     let guard = unsafe { sp_running_fiber_th_.borrow() };
-    if (*guard).is_none() {
-        return None;
-    }
-    Some((*guard).as_ref().unwrap().clone())
+    Some((*guard).as_ref()?.clone())
 }
 
 fn fiber_create_run_impl(func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
@@ -3014,7 +3024,7 @@ fn reactor_tls_set_running(fiber: &Rc<Fiber>) {
 
 fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
     let mut available_guard = self_.available_fibers_.borrow_mut();
-    if reusing_fiber() && available_guard.len() > 0usize {
+    if reusing_fiber() && !available_guard.is_empty() {
         self_.n_idle_fibers_.set(self_.n_idle_fibers_.get() - 1i64);
         let fiber: Rc<Fiber> = available_guard.pop().unwrap();
         // Cell/RefCell interior mutability re-stamps the recycled fiber
