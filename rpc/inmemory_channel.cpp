@@ -557,7 +557,8 @@ pub struct InMemoryListenerShim {
 }
 
 #[cpp_inherit]
-impl ChannelListenerBase for InMemoryListenerShim {
+#[allow(unsafe_code)]
+unsafe impl ChannelListenerBase for InMemoryListenerShim {
     fn listen(&mut self, address: &str) -> ChannelError {
         let self_weak: std::sync::Weak<InMemoryListener> =
             rusty::sync::downgrade(self.listener_.clone());

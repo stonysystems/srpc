@@ -84,7 +84,7 @@ impl RecordingListener {
     }
 }
 
-impl ChannelListenerBase for RecordingListener {
+unsafe impl ChannelListenerBase for RecordingListener {
     fn listen(&mut self, address: &str) -> ChannelError {
         self.address = address.to_owned();
         self.closed = false;

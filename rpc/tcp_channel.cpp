@@ -572,7 +572,8 @@ struct TcpListenerChannelShim {
 }
 
 #[cpp_inherit]
-impl ChannelListenerBase for TcpListenerChannelShim {
+#[allow(unsafe_code)]
+unsafe impl ChannelListenerBase for TcpListenerChannelShim {
     fn listen(&mut self, a: &str) -> ChannelError {
         let result = self.listener_.listen(a);
         if result == ChannelError::None {

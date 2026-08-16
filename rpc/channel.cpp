@@ -98,7 +98,27 @@ pub type OnAcceptCallback =
     LegacyCallbackWrapper<Box<dyn Fn(self::ChannelConnectionProxy) + Send + Sync>>;
 
 /// Abstract accept loop implemented by transport listeners.
-pub trait ChannelListenerBase: Send + Sync {
+///
+/// # Safety
+///
+/// `OneTimeJob`'s callable is `Box<dyn FnMut() + Send + Sync>` (see
+/// `base/misc.cpp`), and `Server::drop` moves an owning
+/// `Box<dyn ChannelListenerBase>` into the poll-thread close job, so the
+/// handle itself must be able to cross threads.  `Send + Sync` records that.
+/// The trait is `unsafe` because every implementor here reaches C++ backend
+/// state (an fd, an in-memory registry) whose thread-safety the Rust type
+/// system cannot see: `TcpListener` and `TcpConnection` already carry
+/// hand-written `unsafe impl Send`/`unsafe impl Sync` for exactly that
+/// reason.  An implementor asserts that its backend is safe to close from,
+/// and accept on, a thread other than the one that created it.
+///
+/// This is the same shape the reactor promotion used for
+/// `pub unsafe trait Job: Send + Sync`, and it is the form the emitter's
+/// `cpp_import_namespace` leaf contract requires: a leaf trait carrying both
+/// `Send` and `Sync` must be declared `unsafe` (a bare `Send` supertrait may
+/// stay safe, which is why `PollableBase: Send` does).
+#[allow(unsafe_code)]
+pub unsafe trait ChannelListenerBase: Send + Sync {
     fn listen(&mut self, address: &str) -> self::ChannelError;
     fn close(&mut self);
     fn is_closed(&self) -> bool;
