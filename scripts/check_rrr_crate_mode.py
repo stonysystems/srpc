@@ -50,6 +50,39 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 )
 EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1553
 
+# ---------------------------------------------------------------------------
+# rrr.reactor: the ONE deliberate addition over the frozen incumbent oracle.
+#
+# The reactor promotion is gated on an exact compare of the generated
+# provider's owned strong symbols against the incumbent provider's
+# (/var/tmp/reactor-incumbent-owned.unique.demangled, sha256
+# e566039257c993ce43e9d96132ffc55d24300edbbd4bfd65c8b9104bc8d5be86, 300
+# entries; see scripts/run_reactor_promotion_battery.sh item 11 / G3).
+#
+# The generated provider matches it with 0 MISSING and exactly 1 EXTRA.  That
+# one extra is recorded HERE, by name, instead of being absorbed silently into
+# the ABI_SPECS symbol set:
+#
+#     rrr::EventState@rrr.reactor::new_()
+#
+# Why it is acceptable.  `EventState` is a value type and the DSL has no field
+# default initialisers, so the project's mandated construction idiom is a
+# `fn new() -> EventState` factory rather than a C++ constructor (CLAUDE.md;
+# "No #[cpp_ctor]").  That factory lowers to this static `new_()`.  The frozen
+# incumbent oracle contains NO EventState constructor symbol of any kind --
+# `EventState` occurs in it only as a parameter type, e.g.
+# `rrr::event_state_seed@rrr.reactor(rrr::EventState@rrr.reactor const&)` --
+# so this is a pure addition.  It replaces nothing and removes nothing that
+# any consumer could previously have called.
+#
+# REACTOR_INCUMBENT_ORACLE_ADDITIONS is enforced, not decorative: the gate
+# requires every entry to be a real, currently-owned rrr.reactor symbol
+# (require_reactor_oracle_additions), so a stale entry is an error, and a
+# SECOND unreviewed addition cannot hide behind this one.
+REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
+    {("T", "rrr::EventState@rrr.reactor::new_()")}
+)
+
 # These maps are intentionally exhaustive. Adding a canonical manifest module
 # without its dependency and generated-output ratchets is a gate error rather
 # than an implicitly accepted, unreviewed provider.
@@ -162,7 +195,10 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "rrr.debugging": "7c346ba032661233a6ef8dec2a95e5c3e77873d96bb18549faf0279488428514",
     "rrr.any_message": "30bbb8483d830747ab4a52d48380ffca8835216010660505ab6b4cf7ace27384",
     "rrr.tcp_channel": "a00b6f7b25682b1be842e0a24828df8ac532ab0b2f867eadb90e94ed9c85a5b2",
-    "rrr.reactor": "cedace27e6c1ab80e062ebbc5fa42c2d03dd816c146c6930e0e9119a99f8e820",
+    # Re-authored with the clippy-gate work (measured ABI-neutral: same 324 raw /
+    # 301 unique demangled strong symbols, same 29-row layout).  Digest drift is
+    # advisory; this keeps the advisory list honest rather than permanently noisy.
+    "rrr.reactor": "c183ebd7170f0c1604a4401d6e5db75c78b6cd2707e4683a59fea1d3933f2681",
 }
 
 IMPORTER_USE_MARKERS = {
@@ -3956,7 +3992,26 @@ def load_owned_modules(root: Path) -> list[extraction.ModuleEntry]:
                     + ", ".join(sorted(actual - names))
                 )
         raise GateError("\n".join(details))
+    require_reactor_oracle_additions()
     return modules
+
+
+def require_reactor_oracle_additions() -> None:
+    """Keep the declared incumbent-oracle additions honest.
+
+    Every entry of REACTOR_INCUMBENT_ORACLE_ADDITIONS must still be a symbol
+    rrr.reactor actually owns.  If the `EventState::new_` factory is renamed or
+    stops being emitted, this fires instead of leaving a stale, unexamined
+    "authorized addition" sitting in the ratchet.
+    """
+    owned = ABI_SPECS["rrr.reactor"].symbols
+    stale = REACTOR_INCUMBENT_ORACLE_ADDITIONS - owned
+    if stale:
+        raise GateError(
+            "declared rrr.reactor incumbent-oracle addition(s) are not owned "
+            "by the module any more: "
+            + ", ".join(f"{kind} {name}" for kind, name in sorted(stale))
+        )
 
 
 def read_generated(path: Path, description: str) -> str:

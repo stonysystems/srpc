@@ -219,18 +219,38 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
         # G3: exact owned-strong-symbol compare.  Producing the normalized
         # owned manifest from the object is the gate runner's job; this driver
         # reports the comparison so the count and the diff are both visible.
+        #
+        # The compare is against the incumbent manifest PLUS one named,
+        # reviewed addition.  It is still exact: the addition is spelled out
+        # here and echoed on every run, so it is owner-visible rather than
+        # absorbed, and ANY other new or missing symbol is still a failure.
+        # The same declaration, with the full reason, is
+        # REACTOR_INCUMBENT_ORACLE_ADDITIONS in scripts/check_rrr_crate_mode.py
+        # (short version: EventState has no field defaults, so it is built by
+        # the mandated `fn new()` factory, and the incumbent oracle has no
+        # EventState constructor symbol at all).
+        AUTHORIZED_ADDITIONS=(
+            'rrr::EventState@rrr.reactor::new_()'
+        )
         actual_manifest=$(mktemp /var/tmp/reactor-battery-nm.XXXXXX)
+        expected_manifest=$(mktemp /var/tmp/reactor-battery-expected.XXXXXX)
         nm -C --defined-only "$obj" 2>/dev/null \
             | awk '$2 ~ /^[TDBRV]$/ {sub(/^[^ ]+ [^ ]+ /,""); print}' \
             | sort -u > "$actual_manifest"
-        if diff -u "$INCUMBENT_MANIFEST" "$actual_manifest" > /var/tmp/reactor-symbol-diff.txt 2>&1; then
-            ok "G3 symbol oracle: exact 300-entry match"
+        { cat "$INCUMBENT_MANIFEST"; printf '%s\n' "${AUTHORIZED_ADDITIONS[@]}"; } \
+            | sort -u > "$expected_manifest"
+        for add in "${AUTHORIZED_ADDITIONS[@]}"; do
+            note "     authorized addition over the incumbent oracle: $add"
+        done
+        if diff -u "$expected_manifest" "$actual_manifest" > /var/tmp/reactor-symbol-diff.txt 2>&1; then
+            ok "G3 symbol oracle: exact match, $(wc -l < "$INCUMBENT_MANIFEST") incumbent + ${#AUTHORIZED_ADDITIONS[@]} authorized addition(s)"
         else
             bad "G3 symbol oracle: drift — see /var/tmp/reactor-symbol-diff.txt"
             note "     new symbols:  $(grep -c '^+[^+]' /var/tmp/reactor-symbol-diff.txt)"
             note "     missing:      $(grep -c '^-[^-]' /var/tmp/reactor-symbol-diff.txt)"
             note "     (C7 wake helpers and C10 UFCS surfaces must contribute ZERO)"
         fi
+        rm -f "$expected_manifest"
         note "     janus entries seen: $(grep -c janus "$actual_manifest") (expect 49)"
         rm -f "$actual_manifest"
 
