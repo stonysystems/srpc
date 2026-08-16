@@ -226,8 +226,12 @@ impl<T: Default> Poll<T> {
     }
 }
 
+/// The boxed poll closure a `Task<T>` drives.  Named so the signature reads
+/// once here rather than at every use.
+pub type TaskPoller<T> = Box<dyn FnMut(&mut Context) -> Poll<T>>;
+
 pub struct Task<T> {
-    poller: Box<dyn FnMut(&mut Context) -> Poll<T>>,
+    poller: TaskPoller<T>,
 }
 
 /// Rustc-only storage model for the reactor's `std::set<Arc<Job>>` slot.

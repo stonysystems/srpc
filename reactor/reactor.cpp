@@ -16,10 +16,11 @@
 //! Native generated-C++ race, teardown, layout, and symbol gates are still
 //! mandatory before promotion.
 
+// `non_upper_case_globals` is NOT repeated here: `src/lib.rs` already carries
+// it on `pub mod reactor;`, and repeating it is a `duplicated_attributes`.
 #![allow(
     non_camel_case_types,
     non_snake_case,
-    non_upper_case_globals,
     unsafe_code,
     unused_imports,
     unused_mut,
@@ -3528,8 +3529,15 @@ fn fiber_yield_invoke(y: &mut fiber_yield_t) {
     unsafe { fiber_engine_yield(&mut (*y.task_).fib_); }
 }
 
-// The one C -> C++ reentry point. C linkage and the raw void-pointer cast are
-// both authored here so the generated symbol remains the C engine's callback.
+/// The one C -> C++ reentry point.  C linkage and the raw void-pointer cast are
+/// both authored here so the generated symbol remains the C engine's callback.
+///
+/// # Safety
+///
+/// `arg` must be the `*mut fiber_task_t` that `fiber_engine_start` handed to
+/// the C fiber engine for this fiber, and the pointee must still be alive --
+/// i.e. this may only be called by the engine, on that fiber's own stack,
+/// before `fiber_task_t` is destroyed.  It is never called from Rust or C++.
 #[no_mangle]
 pub unsafe extern "C" fn fiber_task_entry_thunk(arg: *mut core::ffi::c_void) {
     let task: *mut fiber_task_t = arg as *mut fiber_task_t;

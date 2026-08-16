@@ -18,7 +18,8 @@ fn worker_transfer_types_prove_auto_traits() {
 
 #[test]
 fn historical_export_surface_is_rust_visible() {
-    let _spawn_with_result: fn(&Reactor, rusty::Task<()>, fn(())) =
+    type SpawnWithResultFn = fn(&Reactor, rusty::Task<()>, fn(()));
+    let _spawn_with_result: SpawnWithResultFn =
         reactor_spawn_stackless_task_with_result::<(), fn(())>;
 
     let _: *const _ = &raw const sp_reactor_th_;
@@ -166,7 +167,7 @@ fn teardown_paths_report_cancelled_waiters_instead_of_silence() {
         "pub fn reactor_spawn_stackless_task_with_result<",
         "fn reactor_spawn_stackless_task_impl(",
     ] {
-        let body = body_of(&source, spawn);
+        let body = body_of(source, spawn);
         assert!(
             body.contains("let idx = self_.register_stackless_poller(poller);"),
             "{spawn} no longer registers through the audited path"
