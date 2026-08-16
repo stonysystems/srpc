@@ -1956,7 +1956,7 @@ fn reactor_setup_sp_event<Ev: EventCore + 'static>(ev0: Arc<Ev>) -> Arc<Ev> {
     let reactor = Reactor::get_reactor();
     {
         let stored: Arc<dyn EventPollable> = ev.clone();
-        let mut guard = (*reactor).all_events_.borrow_mut();
+        let mut guard = reactor.all_events_.borrow_mut();
         (*guard).push_back(stored);
     }
     (*reactor).prune_finished_events();
@@ -2256,7 +2256,7 @@ impl QuorumEvent {
         self.n_voted_yes_.set(self.n_voted_yes_.get() + 1);
         event_test_impl(self);
         let fe = self.finalize_event_.clone();
-        if (*fe).status_.get() != EventStatus::TIMEOUT && (*fe).status_.get() != EventStatus::DONE {
+        if fe.status_.get() != EventStatus::TIMEOUT && fe.status_.get() != EventStatus::DONE {
             (*fe).set(self.n_voted_yes_.get() + self.n_voted_no_.get());
         }
     }
@@ -2264,7 +2264,7 @@ impl QuorumEvent {
         self.n_voted_no_.set(self.n_voted_no_.get() + 1);
         event_test_impl(self);
         let fe = self.finalize_event_.clone();
-        if (*fe).status_.get() != EventStatus::TIMEOUT && (*fe).status_.get() != EventStatus::DONE {
+        if fe.status_.get() != EventStatus::TIMEOUT && fe.status_.get() != EventStatus::DONE {
             (*fe).set(self.n_voted_yes_.get() + self.n_voted_no_.get());
         }
     }
@@ -2359,6 +2359,15 @@ impl QuorumEventWrapper {
     pub fn new(n_total: i32, quorum: i32) -> QuorumEventWrapper {
         QuorumEventWrapper { q_: create_sp_quorum_event(n_total, quorum) }
     }
+    // MEASURED allow.  Rust auto-derefs `&self.q_` (an `&Arc<QuorumEvent>`) to
+    // `&QuorumEvent` here, but the emitter does not: it lowers the accessor
+    // body verbatim to `return this->q_;` and the module stops compiling —
+    // "no viable conversion from returned value of type
+    // 'const rusty::Arc<QuorumEvent>' to function return type
+    // 'const QuorumEvent'" (R/M/obj-D1.log).  The explicit `&(*self.q_)`
+    // lowers to `return *this->q_;`, which is the historical accessor.
+    // The C++ ABI contract wins; scoped to this one item.
+    #[allow(clippy::explicit_auto_deref)]
     pub fn q(&self) -> &QuorumEvent {
         &(*self.q_)
     }
@@ -2408,11 +2417,14 @@ impl QuorumEventWrapper {
 
 fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
     reactor_verify(unsafe { sp_reactor_th_.is_some() });
-    // `.clone()` binds a *value* Rc (not a reference): `*ident` lowers to a
-    // deref only for value bindings, so `(*reactor_th).thread_id_` reaches
-    // through the Rc.
+    // `.clone()` binds a *value* Rc (not a reference).  The field access is
+    // spelled without an explicit `(*…)`: Rust auto-derefs the Rc, and the
+    // emitter lowers the bare receiver to a direct `(*reactor_th).thread_id_`,
+    // so it reaches through the Rc either way.  (Spelling the deref in Rust
+    // instead lowers to the generic `deref_if_pointer_like(reactor_th)` —
+    // equivalent, and what this file used to emit.)
     let reactor_th = unsafe { sp_reactor_th_.as_ref().unwrap().clone() };
-    reactor_verify((*reactor_th).thread_id_.get() == rusty::thread::current_id());
+    reactor_verify(reactor_th.thread_id_.get() == rusty::thread::current_id());
     if ev.core_status().get() == EventStatus::DONE {
         return; // second use of the event
     }
@@ -2428,20 +2440,22 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         let reactor_rc = Reactor::get_reactor();
         // Inline `borrow_mut().push_back(…)`: the RefMut temporary releases at
         // the end of each statement — before the yield below — so the reactor
-        // loop can re-borrow these queues while this fiber sleeps. (#35 keeps
-        // the guard deref for these concrete-receiver calls.)
-        (*reactor_rc).waiting_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
+        // loop can re-borrow these queues while this fiber sleeps.  With the
+        // receiver spelled bare these lower to
+        // `(*reactor_rc).waiting_events_.borrow_mut()->push_back(…)` — the
+        // guard is still a per-statement temporary.
+        reactor_rc.waiting_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
 
         // Composite events (WaitAll/WaitAny/Quorum) need periodic polling; add
         // them to a smaller scanned queue. Regular RPC events self-notify.
         if ev.core_is_composite() {
-            (*reactor_rc).composite_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
+            reactor_rc.composite_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
         }
 
         if timeout > 0 {
             let now = Time::now(true);
             ev.core_state().wakeup_time_.set(now + timeout);
-            (*reactor_rc).timeout_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
+            reactor_rc.timeout_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
         }
 
         // Transpiled Weak has no implicit Rc→Weak conversion; use the static
@@ -2450,7 +2464,7 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         // original `fiber` stays live for the checks below.
         *ev.core_state().wp_fiber_.borrow_mut() = ::rusty::port::rc::Rc::<Fiber>::downgrade(&fiber);
         ev.core_status().set(EventStatus::WAIT);
-        let fiber_status = (*fiber).status_.get();
+        let fiber_status = fiber.status_.get();
         reactor_verify(fiber_status != FiberStatus::FINISHED && fiber_status != FiberStatus::RECYCLED);
         (*fiber).yield_();
     }
@@ -2493,7 +2507,7 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
 fn event_core_get_fiber_id() -> u64 {
     let fiber_opt = Fiber::current_fiber();
     reactor_verify(fiber_opt.is_some());
-    (*fiber_opt.unwrap()).id.get()
+    fiber_opt.unwrap().id.get()
 }
 
 fn event_state_seed(st: &EventState) {
@@ -2613,7 +2627,7 @@ fn shared_int_event_set(sie: &mut SharedIntEvent, v: i32) -> i32 {
     let mut i: usize = 0usize;
     while i < sie.events_.len() {
         let ev: &Arc<IntEvent> = &sie.events_[i];
-        if (*ev).status_.get() <= EventStatus::WAIT && (*ev).target_.get() <= v {
+        if ev.status_.get() <= EventStatus::WAIT && ev.target_.get() <= v {
             (*ev).set(v);
         }
         i += 1usize;
@@ -2631,13 +2645,13 @@ fn shared_int_event_wait_until_gte(sie: &mut SharedIntEvent, x: i32, timeout: i3
         return false;
     }
     let ev: Arc<IntEvent> = create_sp_int_event(1);
-    (*ev).value_.set(sie.value_);
-    (*ev).target_.set(x);
+    ev.value_.set(sie.value_);
+    ev.target_.set(x);
     sie.events_.push(ev.clone());
     (*ev).wait_timeout(timeout as u64);
     // Remove the event from the waiter list once it reaches a terminal
     // state (READY or TIMEOUT).
-    let if_timeout: bool = (*ev).status_.get() == EventStatus::TIMEOUT;
+    let if_timeout: bool = ev.status_.get() == EventStatus::TIMEOUT;
     let ev_ptr: *const IntEvent = int_event_raw_ptr(&ev);
     sie.events_.retain(move |item: &Arc<IntEvent>| {
         int_event_raw_ptr(item) != ev_ptr
@@ -2650,9 +2664,9 @@ fn shared_int_event_wait(sie: &mut SharedIntEvent, f: EventTestFn) {
         return;
     }
     let ev: Arc<IntEvent> = create_sp_int_event(1);
-    (*ev).value_.set(sie.value_);
+    ev.value_.set(sie.value_);
     {
-        let mut guard = (*ev).state_.test_.borrow_mut();
+        let mut guard = ev.state_.test_.borrow_mut();
         *guard = f;
     }
     sie.events_.push(ev.clone());
@@ -2703,7 +2717,7 @@ fn fiber_install_task(t: *const RefCell<Option<Box<fiber_task_t>>>,
 fn fiber_task_invoke(t: *const RefCell<Option<Box<fiber_task_t>>>) {
     let mut g = unsafe { (*t).borrow_mut() };
     let bx: &mut Box<fiber_task_t> = (*g).as_mut().unwrap();
-    fiber_engine_resume(&mut (*bx).fib_);
+    fiber_engine_resume(&mut bx.fib_);
 }
 
 fn fiber_yield_invoke_ptr(y: *mut fiber_yield_t) {
@@ -2712,13 +2726,13 @@ fn fiber_yield_invoke_ptr(y: *mut fiber_yield_t) {
 
 fn reactor_live_fiber_count() -> usize {
     let reactor = Reactor::get_reactor();
-    let guard = (*reactor).fibers_.borrow();
+    let guard = reactor.fibers_.borrow();
     (*guard).len()
 }
 
 fn reactor_dec_active_fibers() {
     let reactor = Reactor::get_reactor();
-    (*reactor).n_active_fibers_.set((*reactor).n_active_fibers_.get() - 1i64);
+    reactor.n_active_fibers_.set(reactor.n_active_fibers_.get() - 1i64);
 }
 
 fn fiber_run_wrapper(fb: &Fiber, y: *mut fiber_yield_t) {
@@ -2966,7 +2980,7 @@ fn fiber_current_fiber() -> Option<Rc<Fiber>> {
 
 fn fiber_create_run_impl(func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
     let reactor_rc = Reactor::get_reactor();
-    reactor_create_run_fiber_at_impl(&*reactor_rc, func, file, line)
+    reactor_create_run_fiber_at_impl(&reactor_rc, func, file, line)
 }
 
 pub fn fiber_sleep(microseconds: u64) {
@@ -2997,7 +3011,7 @@ fn reactor_tls_get() -> Rc<Reactor> {
         if sp_reactor_th_.is_none() {
             reactor_log_create(false);
             let r = reactor_make();
-            (*r).thread_id_.set(rusty::thread::current_id());
+            r.thread_id_.set(rusty::thread::current_id());
             sp_reactor_th_ = Some(r);
         }
         sp_reactor_th_.as_ref().unwrap().clone()
@@ -3009,7 +3023,7 @@ fn reactor_tls_get_disk() -> Rc<Reactor> {
         if sp_disk_reactor_th_.is_none() {
             reactor_log_create(true);
             let r = reactor_make();
-            (*r).thread_id_.set(rusty::thread::current_id());
+            r.thread_id_.set(rusty::thread::current_id());
             sp_disk_reactor_th_ = Some(r);
         }
         sp_disk_reactor_th_.as_ref().unwrap().clone()
@@ -3041,12 +3055,12 @@ fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFil
         let fiber: Rc<Fiber> = available_guard.pop().unwrap();
         // Cell/RefCell interior mutability re-stamps the recycled fiber
         // through the shared handle (safe: single-threaded).
-        (*fiber).id.set(fiber_next_global_id());
-        *(*fiber).func_.borrow_mut() = func;
+        fiber.id.set(fiber_next_global_id());
+        *fiber.func_.borrow_mut() = func;
         // Keep the existing task/stack so continue_() can resume from the
         // fiber's yield point.
-        reactor_verify((*(*fiber).fiber_task_.borrow()).is_some());
-        (*fiber).status_.set(FiberStatus::RECYCLED);
+        reactor_verify((*fiber.fiber_task_.borrow()).is_some());
+        fiber.status_.set(FiberStatus::RECYCLED);
         fiber
     } else {
         let fiber: Rc<Fiber> = Rc::new(Fiber::new(func));
@@ -3084,7 +3098,7 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
     self_.register_fiber(&fiber);
 
     // Step 5: Run the fiber
-    let status = (*fiber).status_.get();
+    let status = fiber.status_.get();
     if status == FiberStatus::INIT {
         (*fiber).run();
     } else {
@@ -3533,7 +3547,7 @@ fn pollthread_create() -> Arc<PollThread> {
         unsafe { g_current_poll_worker = core::ptr::null_mut() };
     }, receiver);
     {
-        let mut slot = (*arc).join_handle_.lock().unwrap();
+        let mut slot = arc.join_handle_.lock().unwrap();
         *slot = Some(handle);
     }
     arc
@@ -3648,7 +3662,7 @@ fn quorum_event_finalize(qe: &QuorumEvent, timeout: u64,
         (*final_ev).wait_timeout(timeout);
         // A: by the time this fires, the quorum event could have been
         // freed. Avoid touching qe_ptr or its members after this line.
-        if (*final_ev).status_.get() == EventStatus::TIMEOUT {
+        if final_ev.status_.get() == EventStatus::TIMEOUT {
             // Didn't receive all RPC replies.
             let dr: &mut QuorumDanglingVec = &mut dangling_rpc;
             let _ret = finalize_func(dr);
@@ -3658,7 +3672,7 @@ fn quorum_event_finalize(qe: &QuorumEvent, timeout: u64,
             // queues forever at broadcast rate. Mark it DONE here (we
             // run on the owner thread) so the next pass evicts and
             // prune can free it.
-            (*final_ev).status_.set(EventStatus::DONE);
+            final_ev.status_.set(EventStatus::DONE);
         }
     });
 }
@@ -3669,7 +3683,7 @@ fn quorum_event_finalize(qe: &QuorumEvent, timeout: u64,
 #[cfg_attr(any(), cpp_namespace(::janus))]
 fn quorum_event_is_slow(_qe: &QuorumEvent) -> bool {
     let r = Reactor::get_reactor();
-    let result: bool = (*r).slow_.get();
-    (*r).slow_.set(false);
+    let result: bool = r.slow_.get();
+    r.slow_.set(false);
     result
 }
