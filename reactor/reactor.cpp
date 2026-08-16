@@ -1460,11 +1460,15 @@ impl Reactor {
                             let option_fiber = (*ev).upgrade_fiber();
                             if option_fiber.is_some() {
                                 let fiber = option_fiber.unwrap();
-                                let mut known = false;
-                                {
+                                // Block-expression bind: the registry lookup IS
+                                // the initial value, so there is no dead `false`
+                                // to discard, and the borrow guard still dies at
+                                // the closing brace — before continue_fiber can
+                                // re-enter and borrow `fibers_` again.
+                                let known = {
                                     let fibers_guard = self.fibers_.borrow();
-                                    known = (*fibers_guard).contains_key(&fiber_registry_key(&fiber));
-                                }
+                                    (*fibers_guard).contains_key(&fiber_registry_key(&fiber))
+                                };
                                 if known {
                                     verify(fiber.status_.get() == FiberStatus::PAUSED);
                                     if (*ev).status() == EventStatus::READY {
@@ -1838,11 +1842,10 @@ where
             rusty::sync::atomic::Ordering::Release,
         );
         // take() moves the callback out and leaves None, so it fires once.
-        let mut cb: Option<OnReady> = None;
-        {
+        let cb: Option<OnReady> = {
             let mut cbguard = state.on_ready.borrow_mut();
-            cb = (*cbguard).take();
-        }
+            (*cbguard).take()
+        };
         if cb.is_some() {
             let mut f = cb.unwrap();
             f(poll_result.value);
@@ -3030,11 +3033,10 @@ fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     let completion_ticket = early_ticket.clone();
     let poller = StacklessPollFn::from_callable(move |ctx: &mut rusty::Context| -> bool {
         // Scoped so the task borrow is released before the ready-path store.
-        let mut ready: bool = false;
-        {
+        let ready: bool = {
             let mut tguard = state.task.borrow_mut();
-            ready = (*tguard).poll(ctx).is_ready();
-        }
+            (*tguard).poll(ctx).is_ready()
+        };
         if !ready {
             return false;
         }
