@@ -1607,7 +1607,7 @@ impl Reactor {
         let mut guard = self.fibers_.borrow_mut();
         let inserted = guard.insert(fiber_registry_key(fiber), fiber.clone()).is_none();
         if !inserted {
-            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!"));
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), "[DEBUG] RegisterFiber: Failed to insert fiber into fibers_ registry!".to_string());
             reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[DEBUG] fibers_ size: {}, REUSING_FIBER: {}", guard.len(), reusing_fiber()));
         }
         reactor_verify(inserted);
@@ -1664,7 +1664,7 @@ impl Reactor {
             // silent: the caller believes it has scheduled work that will now
             // never run, and anything waiting on that work must be told.
             g_stackless_cancel.rejected_spawns.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
-            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::register_stackless_poller] cancelling a spawn refused during teardown; the task and its completion callback are destroyed now, so waiters are released with an error instead of blocking forever"));
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), "[Reactor::register_stackless_poller] cancelling a spawn refused during teardown; the task and its completion callback are destroyed now, so waiters are released with an error instead of blocking forever".to_string());
             return STACKLESS_UNREGISTERED_SLOT;
         }
         let scanned: usize = 0usize;
@@ -1871,7 +1871,7 @@ impl Drop for Reactor {
         };
         drop(retired_tasks);
         stackless_wake_unregister::<()>(self);
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Destructor body complete, about to destroy member variables"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[Reactor::~Reactor] Destructor body complete, about to destroy member variables".to_string());
     }
 }
 
@@ -2067,10 +2067,10 @@ impl PollThread {
         let main_tid: i64 = current_thread_gettid();
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from TID={}", main_tid as i32));
         if self.shutdown_called_.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
-            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Already called, returning"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Already called, returning".to_string());
             return;
         }
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Sending CmdShutdown"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Sending CmdShutdown".to_string());
         // `Sender::send` fails ONLY when the receiver is gone (mpsc.hpp:87-96
         // returns Err(Disconnected) iff !receiver_alive_), i.e. the poll
         // worker has already exited. The join below is what actually ends the
@@ -2078,31 +2078,31 @@ impl PollThread {
         // explicitly rather than silently: C++ never warned here, so the
         // incumbent's identical discard was invisible.
         let _dropped_when_worker_gone = self.sender_.send(PollCommand::Shutdown);
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] CmdShutdown sent"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] CmdShutdown sent".to_string());
         // Thread-safe read of the poll thread's id.
         let current_tid = rusty::thread::current_id();
         let poll_tid = u64_to_thread_id(
             self.poll_thread_id_bits_.load(rusty::sync::atomic::Ordering::Acquire));
         if current_tid == poll_tid {
-            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from poll thread, skipping join"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Called from poll thread, skipping join".to_string());
             return;
         }
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Acquiring join_handle lock..."));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Acquiring join_handle lock...".to_string());
         // Scoped so the guard drops BEFORE the "Released" log below, as the
         // C++ block did.
         {
             let mut guard = self.join_handle_.lock().unwrap();
-            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] join_handle lock acquired"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] join_handle lock acquired".to_string());
             if (*guard).is_some() {
-                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Calling thread.join()..."));
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Calling thread.join()...".to_string());
                 (*guard).take().unwrap().join();
-                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] thread.join() completed!"));
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] thread.join() completed!".to_string());
             } else {
-                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] join_handle is None, thread already joined"));
+                reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] join_handle is None, thread already joined".to_string());
             }
         }
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Released join_handle lock"));
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Complete"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Released join_handle lock".to_string());
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Complete".to_string());
     }
 
     pub fn add_proxy(&self, poll: PollableProxy) {
@@ -2136,7 +2136,7 @@ impl PollThread {
     pub fn update_mode(&self, fd: i32, new_mode: i32) {
         let result = self.sender_.send(PollCommand::UpdateMode { fd, new_mode });
         if result.is_err() {
-            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("PollThread::update_mode: send failed! Channel disconnected?"));
+            reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), "PollThread::update_mode: send failed! Channel disconnected?".to_string());
         }
     }
 
@@ -2473,7 +2473,7 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
             }
             ev.core_status().set(EventStatus::READY);
         } else if ev.core_status().get() == EventStatus::READY {
-            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("event status ready, triggered?"));
+            reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "event status ready, triggered?".to_string());
         } else if ev.core_status().get() == EventStatus::DONE
             || ev.core_status().get() == EventStatus::TIMEOUT
         {
@@ -2499,7 +2499,7 @@ fn event_core_get_fiber_id() -> u64 {
 fn event_state_seed(st: &EventState) {
     {
         let mut g = st.wait_place_.borrow_mut();
-        *g = format!("not recorded");
+        *g = "not recorded".to_string();
     }
     let fiber_opt = Fiber::current_fiber();
     if let Some(rc_fiber) = fiber_opt {
@@ -2732,7 +2732,7 @@ fn fiber_run_wrapper(fb: &Fiber, y: *mut fiber_yield_t) {
         fiber_fn_clear(&fb.func_);
         fb.status_.set(FiberStatus::FINISHED);
         if fb.needs_finalize_.get() {
-            reactor_log_line(Log::INFO, 0i32, core::ptr::null(), format!("Warning: We did not deal with backlog issues"));
+            reactor_log_line(Log::INFO, 0i32, core::ptr::null(), "Warning: We did not deal with backlog issues".to_string());
             fb.needs_finalize_.set(false);
         }
         reactor_dec_active_fibers();
@@ -2983,12 +2983,12 @@ fn reactor_make() -> Rc<Reactor> {
 
 fn reactor_log_create(disk: bool) {
     if disk {
-        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a disk fiber scheduler"));
+        reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "create a disk fiber scheduler".to_string());
         return;
     }
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("create a fiber scheduler"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "create a fiber scheduler".to_string());
     if !reusing_fiber() {
-        reactor_log_line(Log::WARN, 0i32, core::ptr::null(), format!("reusing fiber not enabled!"));
+        reactor_log_line(Log::WARN, 0i32, core::ptr::null(), "reusing fiber not enabled!".to_string());
     }
 }
 
@@ -3183,7 +3183,7 @@ fn pollworker_snapshot_fds(w: &mut PollThreadWorker) -> Vec<i32> {
 }
 
 fn pollworker_poll_loop(w: &mut PollThreadWorker) {
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Starting poll loop"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Starting poll loop".to_string());
     while !w.stop_ {
         pollworker_trigger_job(w);
 
@@ -3299,7 +3299,7 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         }
     }
 
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Exited while loop (stop_=true), starting cleanup"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Exited while loop (stop_=true), starting cleanup".to_string());
     // Shutdown cleanup — unregister all remaining pollables. Only the
     // keys matter here, so the proxies are never touched.
     let rest = pollworker_snapshot_fds(w);
@@ -3314,7 +3314,7 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
     w.fd_to_pollable_.clear();
     w.mode_.clear();
     w.pending_remove_.clear();
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[poll_loop] Cleanup complete, poll_loop exiting"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Cleanup complete, poll_loop exiting".to_string());
 }
 
 fn pollworker_process_commands(self_: &mut PollThreadWorker) {
@@ -3543,7 +3543,7 @@ fn pollthread_drop(pt: &PollThread) {
     let tid: i64 = current_thread_gettid();
     reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor called from TID={}", tid as i32));
     pt.shutdown();
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::~PollThread] Destructor complete"));
+    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::~PollThread] Destructor complete".to_string());
 }
 
 fn fiber_yield_invoke(y: &mut fiber_yield_t) {
