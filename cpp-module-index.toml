@@ -93,6 +93,18 @@ callable_signatures = ["void(PollableProxy)"]
 kind = "method"
 callable_signatures = ["void(int32_t,int32_t)"]
 
+[modules."rrr::reactor".symbols."PollThread::create"]
+kind = "method"
+callable_signatures = ["rusty::Arc<PollThread>()"]
+
+[modules."rrr::reactor".symbols."PollThread::add"]
+kind = "method"
+callable_signatures = ["void(rusty::Arc<Job>)"]
+
+[modules."rrr::reactor".symbols.fiber_create_run_impl]
+kind = "function"
+callable_signatures = ["rusty::Rc<Fiber>(rusty::Function<void()>,const char*,int64_t)"]
+
 [modules."rrr::debugging"]
 namespace = "rrr"
 
@@ -105,6 +117,14 @@ namespace = "rrr"
 
 [modules."rrr::serializable"]
 namespace = "rrr"
+
+[modules."rrr::serializable".symbols.make_sink_proxy]
+kind = "function"
+callable_signatures = ["SinkProxy(BufferSink*)"]
+
+[modules."rrr::serializable".symbols.make_source_proxy]
+kind = "function"
+callable_signatures = ["SourceProxy(BufferSource*)"]
 
 [modules."rrr::serializable".symbols.serializable_holder_of]
 kind = "function_template"
