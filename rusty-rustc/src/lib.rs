@@ -1093,8 +1093,8 @@ pub mod panic {
     }
 
     /// Run `body`, converting an unwind into `Err(PanicPayload)`.
-    pub fn catch_unwind<F: FnMut()>(mut body: F) -> Result<(), PanicPayload> {
-        let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(move || body()));
+    pub fn catch_unwind<F: FnMut()>(body: F) -> Result<(), PanicPayload> {
+        let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(body));
         match result {
             Ok(()) => Ok(()),
             Err(payload) => {
