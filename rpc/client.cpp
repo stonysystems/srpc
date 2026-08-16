@@ -71,11 +71,6 @@ use crate::request_queue::{
 use crate::serializable::{
     BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource, SinkProxy, SourceProxy,
 };
-// `Serialize_`/`Deserialize_` are namespace-shaped modules in the owner, not
-// types, so they are imported without a `cpp_import_namespace` leaf marker;
-// the generated C++ reaches them through the same `rrr` purview the carrier
-// used.
-use crate::serializable::{Deserialize_, Serialize_};
 #[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpConnection, TcpFactory};
 
@@ -263,7 +258,7 @@ fn deserialize_from<T>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
     let mut ar = BinaryReadArchive {
         source_: client_source_proxy(&mut (*src).src),
     };
-    Deserialize_::deserialize(value, &mut ar);
+    crate::serializable::Deserialize_::deserialize(value, &mut ar);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2055,8 +2050,8 @@ where F: FnMut(&mut BinaryWriteArchive) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    Serialize_::serialize(&crate::basetypes::v64::new((*fu).xid_), ar);
-    Serialize_::serialize(&rpc_id, ar);
+    crate::serializable::Serialize_::serialize(&crate::basetypes::v64::new((*fu).xid_), ar);
+    crate::serializable::Serialize_::serialize(&rpc_id, ar);
     write_fn(ar);
 
     let ch_err = unsafe {
@@ -2125,8 +2120,8 @@ where F: FnMut(&mut BinaryWriteArchive) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    Serialize_::serialize(&crate::basetypes::v64::new(xid), ar);
-    Serialize_::serialize(&rpc_id, ar);
+    crate::serializable::Serialize_::serialize(&crate::basetypes::v64::new(xid), ar);
+    crate::serializable::Serialize_::serialize(&rpc_id, ar);
     write_fn(ar);
 
     let ch_err = unsafe {
@@ -2367,11 +2362,11 @@ fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    unsafe { Serialize_::serialize(
+    unsafe { crate::serializable::Serialize_::serialize(
         &crate::basetypes::v64::new(conn.xid_counter_.next(1i64)),
         ar,
     ) };
-    Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar);
+    crate::serializable::Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar);
     // Send-side errors are ignored here (same as the legacy fd path).
     let _ = unsafe {
         conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
@@ -2536,9 +2531,9 @@ fn clientconn_decode_response_and_notify(conn: &ClientConnection,
     // In channel mode the extended-header flag is consumed by the
     // framing layer; the server always emits the extended form.
     let mut v_server_instance_id = crate::basetypes::v64::new(0i64);
-    Deserialize_::deserialize(&mut v_reply_xid, &mut ar);
-    Deserialize_::deserialize(&mut v_error_code, &mut ar);
-    Deserialize_::deserialize(&mut v_server_instance_id, &mut ar);
+    crate::serializable::Deserialize_::deserialize(&mut v_reply_xid, &mut ar);
+    crate::serializable::Deserialize_::deserialize(&mut v_error_code, &mut ar);
+    crate::serializable::Deserialize_::deserialize(&mut v_server_instance_id, &mut ar);
     conn.check_server_instance(v_server_instance_id.get() as u64);
 
     let parsed_header_size: usize = src.pos();
