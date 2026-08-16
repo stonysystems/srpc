@@ -349,7 +349,7 @@ fn boxevent_make<Type: Clone + Default + 'static>() -> Arc<BoxEvent<Type>> {
         is_set_: Cell::new(false),
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 // Returns the slot payload by value (copy out of the RefCell).
@@ -2404,7 +2404,6 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
     }
     if ev.is_ready() {
         ev.core_status().set(EventStatus::DONE); // no need to wait
-        return;
     } else {
         // The event may be created in a different fiber; for now only one
         // fiber can wait on an event. Capture the running fiber to wake later.
@@ -2505,7 +2504,7 @@ fn never_event_make() -> Arc<NeverEvent> {
         self_: Weak::<NeverEvent>::new(),
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 fn timeout_event_make(wait_us: u64) -> Arc<TimeoutEvent> {
@@ -2519,7 +2518,7 @@ fn timeout_event_make(wait_us: u64) -> Arc<TimeoutEvent> {
         wait_us_: wait_us,
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 fn int_event_make(target: i32) -> Arc<IntEvent> {
@@ -2533,7 +2532,7 @@ fn int_event_make(target: i32) -> Arc<IntEvent> {
         target_: Cell::new(target),
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<WaitAny> {
@@ -2550,7 +2549,7 @@ fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<Wai
         events_: events,
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 fn waitall_make() -> Arc<WaitAll> {
@@ -2563,7 +2562,7 @@ fn waitall_make() -> Arc<WaitAll> {
         events_: RefCell::new(Vec::new()),
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 fn waitall_make_from(evs: &Vec<Arc<dyn EventPollable>>) -> Arc<WaitAll> {
@@ -2582,7 +2581,7 @@ fn waitall_make_from(evs: &Vec<Arc<dyn EventPollable>>) -> Arc<WaitAll> {
         events_: RefCell::new(events),
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 fn shared_int_event_set(sie: &mut SharedIntEvent, v: i32) -> i32 {
@@ -3024,7 +3023,7 @@ fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFil
         // fiber's yield point.
         reactor_verify((*(*fiber).fiber_task_.borrow()).is_some());
         (*fiber).status_.set(FiberStatus::RECYCLED);
-        return fiber;
+        fiber
     } else {
         let fiber: Rc<Fiber> = Rc::new(Fiber::new(func));
         self_.n_created_fibers_.set(self_.n_created_fibers_.get() + 1i64);
@@ -3037,7 +3036,7 @@ fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFil
                            file,
                            line));
         }
-        return fiber;
+        fiber
     }
 }
 
@@ -3584,7 +3583,7 @@ pub fn quorum_event_make(n_total: i32, quorum: i32) -> Arc<QuorumEvent> {
         finalize_event_: create_sp_int_event(n_total),
     });
     event_state_seed(&sp.state_);
-    return sp;
+    sp
 }
 
 #[cfg_attr(any(), cpp_namespace(::janus))]
