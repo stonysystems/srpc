@@ -1317,8 +1317,7 @@ fn stackless_wake_shutdown_begin<WakeDomain>(reactor: &Reactor) {
             i += 1usize;
         }
     }
-    if ingress.is_some() {
-        let ingress = ingress.unwrap();
+    if let Some(ingress) = ingress {
         // Reject first.  stackless_wake_request re-checks `accepting` under this
         // same lock before pushing, so once this store is visible no producer
         // can enqueue again and the drain below is final rather than racy.
@@ -1512,8 +1511,7 @@ impl Reactor {
                         i += 1usize;
                         if (*ev).status() != EventStatus::DONE {
                             let option_fiber = (*ev).upgrade_fiber();
-                            if option_fiber.is_some() {
-                                let fiber = option_fiber.unwrap();
+                            if let Some(fiber) = option_fiber {
                                 // Block-expression bind: the registry lookup IS
                                 // the initial value, so there is no dead `false`
                                 // to discard, and the borrow guard still dies at
@@ -1900,8 +1898,7 @@ where
             let mut cbguard = state.on_ready.borrow_mut();
             (*cbguard).take()
         };
-        if cb.is_some() {
-            let mut f = cb.unwrap();
+        if let Some(mut f) = cb {
             f(poll_result.value);
         }
         true
@@ -2488,8 +2485,12 @@ fn event_state_seed(st: &EventState) {
         *g = format!("not recorded");
     }
     let fiber_opt = Fiber::current_fiber();
-    if fiber_opt.is_some() {
-        let rc_fiber = fiber_opt.unwrap();
+    if let Some(rc_fiber) = fiber_opt {
+        // Load-bearing re-annotation: without it the if-let payload lowers to
+        // `decltype(auto)` and the static `Rc::<Fiber>::downgrade(&rc_fiber)`
+        // call re-resolves as a UFCS member call `rc_fiber.downgrade()`, which
+        // does not compile (`this_` unbound).
+        let rc_fiber: Rc<Fiber> = rc_fiber;
         let mut g2 = st.wp_fiber_.borrow_mut();
         *g2 = rusty::port::rc::Rc::<Fiber>::downgrade(&rc_fiber);
     }
@@ -3173,15 +3174,19 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         });
         for (fd, ready_events) in ready_batch {
             let mut write_mode: Option<i32> = None;
-            // Spelled with the explicit `&mut Box<dyn PollableBase>` binding
-            // rather than `if let Some(p) = …`, matching the two blocks below.
-            // An if-let payload carries no annotation, and the emitter does not
-            // model `HashMap::get_mut`'s return type, so `p` lowers untyped and
-            // the auto-deref Rust performs here (`Box<dyn PollableBase>` ->
-            // `dyn PollableBase`) is not reproduced. Same code either way.
+            // The re-annotating `let p: &mut Box<dyn PollableBase> = p;` below
+            // is load-bearing, not style — here and at every other if-let over
+            // `fd_to_pollable_` in this file.  An if-let payload carries no
+            // annotation, and the emitter does not model `HashMap::get_mut`'s
+            // return type, so a bare `p` lowers to `decltype(auto)`; the
+            // auto-deref Rust performs (`Box<dyn PollableBase>` ->
+            // `dyn PollableBase`) is then not reproduced and the generated
+            // `p.handle_read()` fails to compile against
+            // `rusty::Box<PollableBase>`.  Restating the type hands the emitter
+            // back the `rusty::Box<PollableBase>&` binding it needs.
             let opt = w.fd_to_pollable_.get_mut(&fd);
-            if opt.is_some() {
-                let p: &mut Box<dyn PollableBase> = opt.unwrap();
+            if let Some(p) = opt {
+                let p: &mut Box<dyn PollableBase> = p;
                 if (ready_events & PollReady::READABLE) != 0i32 {
                     p.handle_read();
                 }
@@ -3197,8 +3202,8 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
             }
             if (ready_events & PollReady::ERROR) != 0i32 {
                 let err_opt = w.fd_to_pollable_.get_mut(&fd);
-                if err_opt.is_some() {
-                    let p: &mut Box<dyn PollableBase> = err_opt.unwrap();
+                if let Some(p) = err_opt {
+                    let p: &mut Box<dyn PollableBase> = p;
                     p.handle_error();
                 }
             }
@@ -3225,8 +3230,8 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         while i < fds.len() {
             let fd = fds[i];
             let opt = w.fd_to_pollable_.get_mut(&fd);
-            if opt.is_some() {
-                let p: &mut Box<dyn PollableBase> = opt.unwrap();
+            if let Some(p) = opt {
+                let p: &mut Box<dyn PollableBase> = p;
                 if p.check_pending_write_update() {
                     pollworker_do_update_mode(w, fd, PollMode::READ | PollMode::WRITE);
                 }
@@ -3243,8 +3248,8 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         while j < fds.len() {
             let fd = fds[j];
             let opt = w.fd_to_pollable_.get(&fd);
-            if opt.is_some() {
-                let p: &Box<dyn PollableBase> = opt.unwrap();
+            if let Some(p) = opt {
+                let p: &Box<dyn PollableBase> = p;
                 if p.is_closed() {
                     closed_fds.push(fd);
                 }
@@ -3255,14 +3260,14 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         while n < closed_fds.len() {
             let fd = closed_fds[n];
             let proxy_opt = w.fd_to_pollable_.get_mut(&fd);
-            if proxy_opt.is_some() {
+            if let Some(p) = proxy_opt {
+                let p: &mut Box<dyn PollableBase> = p;
                 // Remove from epoll if still registered.
                 if w.mode_.contains_key(&fd) {
                     w.poll_.Remove(fd);
                 }
                 // Invoke the close callback before erasing the map entry
                 // so cleanup hooks run.
-                let p: &mut Box<dyn PollableBase> = proxy_opt.unwrap();
                 p.close();
                 w.fd_to_pollable_.remove(&fd);
                 w.mode_.remove(&fd);
@@ -3466,8 +3471,8 @@ fn pollworker_close_proxy_of(w: &mut PollThreadWorker, fd: i32) {
     // Box binding keeps the mutable overload selected so close()'s
     // non-const dispatch compiles.
     let proxy_opt = w.fd_to_pollable_.get_mut(&fd);
-    if proxy_opt.is_some() {
-        let p: &mut Box<dyn PollableBase> = proxy_opt.unwrap();
+    if let Some(p) = proxy_opt {
+        let p: &mut Box<dyn PollableBase> = p;
         p.close();
     }
 }
