@@ -118,22 +118,22 @@ use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
 // Rustc-only facade identities with checked C++ type maps back to the public
 // root-level `rrr::Fiber` and `rrr::PollThread` classes.
-type Fiber = cpp::ReactorFiber;
-type PollThread = cpp::ReactorPollThread;
+pub type Fiber = cpp::ReactorFiber;
+pub type PollThread = cpp::ReactorPollThread;
 
-type WeakClientConnection = Weak<ClientConnection>;
-type FutureResult = Result<Arc<Future>, i32>;
-type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize)>;
-type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool)>;
-type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64)>;
-type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
-type OnErrorCallbackFn = Box<dyn Fn(RpcError, &LegacyStdString) + Send + Sync>;
-type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
-type LegacyStdString = String;
-type LegacyStdStringView<'a> = &'a str;
-type LegacyCallbackWrapper<F> = rusty::CallbackWrapper<F>;
+pub type WeakClientConnection = Weak<ClientConnection>;
+pub type FutureResult = Result<Arc<Future>, i32>;
+pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize)>;
+pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool)>;
+pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64)>;
+pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
+pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &LegacyStdString) + Send + Sync>;
+pub type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
+pub type LegacyStdString = String;
+pub type LegacyStdStringView<'a> = &'a str;
+pub type LegacyCallbackWrapper<F> = rusty::CallbackWrapper<F>;
 
-struct ClientCloneCell<T>(Mutex<T>);
+pub struct ClientCloneCell<T>(Mutex<T>);
 
 impl<T> ClientCloneCell<T> {
     fn new(value: T) -> ClientCloneCell<T> {
@@ -151,55 +151,61 @@ impl<T: Clone> ClientCloneCell<T> {
     }
 }
 
-const CLIENT_ERR_AGAIN: i32 = 11;
-const CLIENT_ERR_WOULD_BLOCK: i32 = CLIENT_ERR_AGAIN;
-const CLIENT_ERR_BUSY: i32 = 16;
-const CLIENT_ERR_CANCELED: i32 = 125;
-const CLIENT_ERR_CONNECTION_ABORTED: i32 = 103;
-const CLIENT_ERR_CONNECTION_REFUSED: i32 = 111;
-const CLIENT_ERR_CONNECTION_RESET: i32 = 104;
-const CLIENT_ERR_HOST_UNREACHABLE: i32 = 113;
-const CLIENT_ERR_INVALID_ARGUMENT: i32 = 22;
-const CLIENT_ERR_IO: i32 = 5;
-const CLIENT_ERR_NETWORK_UNREACHABLE: i32 = 101;
-const CLIENT_ERR_NOT_CONNECTED: i32 = 107;
-const CLIENT_ERR_BROKEN_PIPE: i32 = 32;
-const CLIENT_ERR_TIMED_OUT: i32 = 110;
+pub const CLIENT_ERR_AGAIN: i32 = 11;
+pub const CLIENT_ERR_WOULD_BLOCK: i32 = CLIENT_ERR_AGAIN;
+pub const CLIENT_ERR_BUSY: i32 = 16;
+pub const CLIENT_ERR_CANCELED: i32 = 125;
+pub const CLIENT_ERR_CONNECTION_ABORTED: i32 = 103;
+pub const CLIENT_ERR_CONNECTION_REFUSED: i32 = 111;
+pub const CLIENT_ERR_CONNECTION_RESET: i32 = 104;
+pub const CLIENT_ERR_HOST_UNREACHABLE: i32 = 113;
+pub const CLIENT_ERR_INVALID_ARGUMENT: i32 = 22;
+pub const CLIENT_ERR_IO: i32 = 5;
+pub const CLIENT_ERR_NETWORK_UNREACHABLE: i32 = 101;
+pub const CLIENT_ERR_NOT_CONNECTED: i32 = 107;
+pub const CLIENT_ERR_BROKEN_PIPE: i32 = 32;
+pub const CLIENT_ERR_TIMED_OUT: i32 = 110;
 #[cfg(target_os = "macos")]
-const CLIENT_REQUEST_QUEUE_REJECTED_ERROR: i32 = 35;
+pub const CLIENT_REQUEST_QUEUE_REJECTED_ERROR: i32 = 35;
 #[cfg(not(target_os = "macos"))]
-const CLIENT_REQUEST_QUEUE_REJECTED_ERROR: i32 = 11;
-const CLIENT_INT_MIN: i32 = i32::MIN;
-const CLIENT_RAND_MAX: i32 = i32::MAX;
-const CLIENT_INTERNAL_HEARTBEAT_RPC_ID: i32 = i32::MIN;
-const CLIENT_POLL_READ: i32 = 1;
-const CLIENT_POLL_NO_CHANGE: i32 = -1;
-type c_char = i8;
+pub const CLIENT_REQUEST_QUEUE_REJECTED_ERROR: i32 = 11;
+pub const CLIENT_INT_MIN: i32 = i32::MIN;
+pub const CLIENT_RAND_MAX: i32 = i32::MAX;
+pub const CLIENT_INTERNAL_HEARTBEAT_RPC_ID: i32 = i32::MIN;
+pub const CLIENT_POLL_READ: i32 = 1;
+pub const CLIENT_POLL_NO_CHANGE: i32 = -1;
+pub type c_char = i8;
 
-fn client_rand(min: i32, max: i32) -> i32 {
+pub fn client_rand(min: i32, max: i32) -> i32 {
     // SAFETY: `rrr::RandomGenerator::rand` is a pure integer draw over the
     // half-open range; the foreign named-module boundary is what `unsafe`
     // records here, not a memory precondition.
     unsafe { cpp_rand_facade::RandomGenerator::rand(min, max) }
 }
 
-fn client_verify(value: bool) {
+pub fn client_verify(value: bool) {
     if !value {
         verify_failed("rpc/client.cpp", 0);
     }
 }
 
-fn client_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
+// clippy::not_unsafe_ptr_arg_deref -- this became public with the module's
+// surface; the raw-pointer contract is the historical C++ one and is
+// documented at the deref itself. Marking the fn `unsafe` instead would
+// wrap every call site in an `unsafe` block, which the emitter renders
+// as an @unsafe comment block -- measured: changes emitted C++.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn client_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
     // SAFETY: all canonical callers currently pass a null file pointer; the
     // owned message remains live through the synchronous logging call.
     unsafe { crate::logging::log_line(level, line, file, &message) }
 }
 
-fn client_text(text: &str) -> LegacyStdString {
+pub fn client_text(text: &str) -> LegacyStdString {
     text.to_string()
 }
 
-fn client_text_str(prefix: &str, value: &str, suffix: &str) -> LegacyStdString {
+pub fn client_text_str(prefix: &str, value: &str, suffix: &str) -> LegacyStdString {
     // The `LegacyStdString` annotation is load-bearing, not decoration: the
     // checked type map spells this alias `std::string`, and only a DECLARED
     // type carries that mapping onto a local. Left inferred, `to_string()`
@@ -212,11 +218,11 @@ fn client_text_str(prefix: &str, value: &str, suffix: &str) -> LegacyStdString {
     message
 }
 
-fn client_text_i32(prefix: &str, value: i32, suffix: &str) -> LegacyStdString {
+pub fn client_text_i32(prefix: &str, value: i32, suffix: &str) -> LegacyStdString {
     client_text_str(prefix, &value.to_string(), suffix)
 }
 
-fn client_text_u32_str(
+pub fn client_text_u32_str(
     prefix: &str,
     value: u32,
     middle: &str,
@@ -229,7 +235,7 @@ fn client_text_u32_str(
     message
 }
 
-fn client_text_u64_pair(
+pub fn client_text_u64_pair(
     prefix: &str,
     first: u64,
     middle: &str,
@@ -242,7 +248,7 @@ fn client_text_u64_pair(
     message
 }
 
-fn client_text_str_i32(
+pub fn client_text_str_i32(
     prefix: &str,
     text: &str,
     middle: &str,
@@ -255,7 +261,7 @@ fn client_text_str_i32(
     message
 }
 
-fn client_text_str_pair(
+pub fn client_text_str_pair(
     prefix: &str,
     first: &str,
     middle: &str,
@@ -268,18 +274,18 @@ fn client_text_str_pair(
     message
 }
 
-struct ReplyBuffer {
+pub struct ReplyBuffer {
     body: Vec<u8>,
     src: BufferSource,
 }
 
-fn client_sink_proxy(sink: &mut BufferSink) -> SinkProxy {
+pub fn client_sink_proxy(sink: &mut BufferSink) -> SinkProxy {
     // SAFETY: the archive proxy is used only while this uniquely borrowed
     // sink remains live in its enclosing request operation.
     unsafe { crate::serializable::make_sink_proxy_buffer(sink as *mut BufferSink) }
 }
 
-fn client_source_proxy(source: &mut BufferSource) -> SourceProxy {
+pub fn client_source_proxy(source: &mut BufferSource) -> SourceProxy {
     // SAFETY: the archive proxy is used only while this uniquely borrowed
     // source and its retained reply buffer remain live.
     unsafe { crate::serializable::make_source_proxy_buffer(source as *mut BufferSource) }
@@ -289,14 +295,14 @@ fn client_source_proxy(source: &mut BufferSource) -> SourceProxy {
 // ("the DSL has no spelling for a null-pointer BufferSource literal") is
 // expired: core::ptr::null() lowers to rusty::ptr::null() and is already
 // used elsewhere in this file's DSL.
-fn reply_buffer_empty() -> ReplyBuffer {
+pub fn reply_buffer_empty() -> ReplyBuffer {
     ReplyBuffer {
         body: Vec::<u8>::new(),
         src: BufferSource::new(core::ptr::null(), 0usize),
     }
 }
 
-fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
+pub fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
     rb.body.clear();
     rb.body.extend_from_slice(bytes);
     rb.src = BufferSource::new(rb.body.as_ptr(), rb.body.len());
@@ -304,7 +310,7 @@ fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
-fn deserialize_from<T>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
+pub fn deserialize_from<T>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
     let mut ar = BinaryReadArchive {
         source_: client_source_proxy(&mut (*src).src),
     };
@@ -314,13 +320,13 @@ fn deserialize_from<T>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
 // clippy::upper_case_acronyms -- renaming the variant renames the emitted enumerator AND the exported DisconnectBehavior_QUEUE() accessor; measured. See the Task-2 measurement block above.
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum DisconnectBehavior {
+pub enum DisconnectBehavior {
     QUEUE,
     FAIL_FAST,
 }
 
 #[derive(Clone)]
-struct BufferingConfig {
+pub struct BufferingConfig {
     behavior: DisconnectBehavior,
     max_pending: usize,
     default_ttl_ms: u32,
@@ -368,7 +374,7 @@ impl BufferingConfig {
 }
 
 #[derive(Clone)]
-struct KeepaliveConfig {
+pub struct KeepaliveConfig {
     enabled: bool,
     idle_sec: i32,
     interval_sec: i32,
@@ -396,7 +402,7 @@ impl KeepaliveConfig {
 }
 
 #[derive(Clone)]
-struct PoolConfig {
+pub struct PoolConfig {
     min_connections: i32,
     max_connections: i32,
     idle_timeout_ms: u64,
@@ -462,9 +468,9 @@ impl PoolConfig {
     }
 }
 
-type FutureCallback = LegacyCallbackWrapper<rusty::Function<dyn Fn(Arc<Future>)>>;
+pub type FutureCallback = LegacyCallbackWrapper<rusty::Function<dyn Fn(Arc<Future>)>>;
 
-struct FutureAttr {
+pub struct FutureAttr {
     callback: FutureCallback,
 }
 
@@ -492,7 +498,7 @@ impl Default for FutureAttr {
     }
 }
 
-struct FutureState {
+pub struct FutureState {
     ready: bool,
     timed_out: bool,
     completion_callbacks: Vec<rusty::Function<dyn FnMut()>>,
@@ -504,7 +510,7 @@ impl FutureState {
     }
 }
 
-struct Future {
+pub struct Future {
     xid_: i64,
     error_code_: Cell<i32>,
     attr_: FutureAttr,
@@ -680,9 +686,9 @@ impl Future {
     }
 }
 
-const kAsyncSlotCount: usize = 16384;
+pub const kAsyncSlotCount: usize = 16384;
 
-struct ReconnectState {
+pub struct ReconnectState {
     reconnecting_: AtomicBool,
     reconnect_abort_: AtomicBool,
     // auto-reconnect attempt counter — incremented before the
@@ -693,7 +699,7 @@ struct ReconnectState {
 
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization)]
-fn make_prefilled_cb_slots() -> Vec<Option<AsyncReplyCallback>> {
+pub fn make_prefilled_cb_slots() -> Vec<Option<AsyncReplyCallback>> {
     let mut slots = Vec::<Option<AsyncReplyCallback>>::new();
     slots.reserve(kAsyncSlotCount);
     let mut i: usize = 0;
@@ -704,7 +710,7 @@ fn make_prefilled_cb_slots() -> Vec<Option<AsyncReplyCallback>> {
     slots
 }
 
-struct ClientConnection {
+pub struct ClientConnection {
     poll_thread_worker_: Arc<PollThread>,
     fiber_channel_: rusty::Mutex<Option<Box<FiberChannel>>>,
     direct_channel_: rusty::Mutex<Option<ChannelConnectionProxy>>,
@@ -1379,7 +1385,7 @@ impl ClientConnection {
     fn is_closed(&self) -> bool { self.state_machine_.is_terminal() }
 }
 
-struct Client {
+pub struct Client {
     connection_field: RefCell<Option<Arc<ClientConnection>>>,
     poll_thread_worker_field: Arc<PollThread>,
     is_client_mode_field: Cell<bool>,
@@ -1790,7 +1796,7 @@ impl Client {
     }
 }
 
-struct PoolState {
+pub struct PoolState {
     cache: BTreeMap<LegacyStdString, Vec<Arc<Client>>>,
     lb_state: BTreeMap<LegacyStdString, LoadBalancerState>,
 }
@@ -1816,7 +1822,7 @@ impl PoolState {
 // (`clientpool_is_client_healthy_with`) rather than reading `config_`
 // itself — it is called from inside the `state_` critical section, and
 // re-reading there would invert the order against `get_client`.
-struct ClientPool {
+pub struct ClientPool {
     poll_thread_worker_: Option<Arc<PollThread>>,
     state_: rusty::Mutex<PoolState>,
     config_: rusty::Mutex<PoolConfig>,
@@ -1912,15 +1918,15 @@ impl ClientPool {
     }
 }
 
-fn make_pending_queue(c: &RequestQueueConfig) -> RequestQueue {
+pub fn make_pending_queue(c: &RequestQueueConfig) -> RequestQueue {
     RequestQueue::with_config(*c)
 }
 
-fn clientconn_monotonic_ms_now() -> u64 { rusty::sys::time::clock_monotonic_us() / 1000 }
+pub fn clientconn_monotonic_ms_now() -> u64 { rusty::sys::time::clock_monotonic_us() / 1000 }
 
 // clippy::unnecessary_cast -- measured: drops the emitted rusty::detail::ptr_cast<const int8_t*>. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_cast)]
-fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
+pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
     // Reset the abort latch before delegating (folded in from the former
     // const `reconnect` facade): the Client::reconnect path needs a stale
     // abort=true from a prior close() cleared, and the close-fan-out spawn
@@ -2103,7 +2109,7 @@ fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCo
 // clippy::borrowed_box -- the concrete Box spelling is load-bearing: through &T the pointer-like check fails and the calls lower to `.` instead of `->` (docs 7.50); measured. See the Task-2 measurement block above.
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::borrowed_box, clippy::explicit_auto_deref)]
-fn clientconn_request_via_channel<F>(conn: &ClientConnection, rpc_id: i32,
+pub fn clientconn_request_via_channel<F>(conn: &ClientConnection, rpc_id: i32,
                                      attr: &FutureAttr, mut write_fn: F) -> FutureResult
 where F: FnMut(&mut BinaryWriteArchive) {
     if !conn.allow_request_with_circuit_metrics() {
@@ -2204,7 +2210,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
 
 // clippy::borrowed_box -- the concrete Box spelling is load-bearing: through &T the pointer-like check fails and the calls lower to `.` instead of `->` (docs 7.50); measured. See the Task-2 measurement block above.
 #[allow(clippy::borrowed_box)]
-fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
+pub fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
                                mut write_fn: F, on_reply: AsyncReplyCallback)
                                -> Result<(), i32>
 where F: FnMut(&mut BinaryWriteArchive) {
@@ -2277,7 +2283,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
 // other archive sites in this file already spell inline. The parameter
 // stays `*mut BufferSink` (not `&mut`) so the emitted signature keeps a
 // POINTER, which is what the caller's `&mut args_sink` lowers to.
-fn make_write_archive(sink: &mut BufferSink) -> BinaryWriteArchive {
+pub fn make_write_archive(sink: &mut BufferSink) -> BinaryWriteArchive {
     BinaryWriteArchive { sink_: client_sink_proxy(sink) }
 }
 
@@ -2292,7 +2298,7 @@ fn make_write_archive(sink: &mut BufferSink) -> BinaryWriteArchive {
 // the handle itself.
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
-fn request_copy_reply(final_fu: &Arc<Future>, attempt_fu: &Arc<Future>) {
+pub fn request_copy_reply(final_fu: &Arc<Future>, attempt_fu: &Arc<Future>) {
     let attempt_reply = (*attempt_fu).reply_.borrow_mut();
     let reply_size: usize = (*attempt_reply).src.remaining();
     if reply_size > 0usize {
@@ -2313,7 +2319,7 @@ fn request_copy_reply(final_fu: &Arc<Future>, attempt_fu: &Arc<Future>) {
 // already shipped in clientconn_map_system_error above. It lives in
 // THIS block rather than one of its own so the call below stays a
 // same-block call.
-fn classify_request_failure(err: i32) -> TimeoutType {
+pub fn classify_request_failure(err: i32) -> TimeoutType {
     if err == CLIENT_ERR_NOT_CONNECTED || err == CLIENT_ERR_CONNECTION_REFUSED || err == CLIENT_ERR_CONNECTION_RESET
         || err == CLIENT_ERR_CONNECTION_ABORTED || err == CLIENT_ERR_HOST_UNREACHABLE || err == CLIENT_ERR_NETWORK_UNREACHABLE {
         return TimeoutType::CONNECT_TIMEOUT;
@@ -2327,7 +2333,7 @@ fn classify_request_failure(err: i32) -> TimeoutType {
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap)]
-fn clientconn_request_with_options<F>(self_: &ClientConnection, rpc_id: i32,
+pub fn clientconn_request_with_options<F>(self_: &ClientConnection, rpc_id: i32,
                                       options: &RequestOptions,
                                       attr: &FutureAttr, mut write_fn: F) -> FutureResult
 where F: FnMut(&mut BinaryWriteArchive) {
@@ -2475,7 +2481,13 @@ where F: FnMut(&mut BinaryWriteArchive) {
     FutureResult::Ok(final_fu)
 }
 
-unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
+/// Hand one already-encoded frame body to the bound channel.
+///
+/// # Safety
+///
+/// `body_bytes` must point at `body_size` readable bytes that stay live for
+/// the duration of the call; the channel copies out of them synchronously.
+pub unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
                                                 body_bytes: *const u8,
                                                 body_size: usize) -> ChannelError {
     if !conn.channel_mode_.get() {
@@ -2496,7 +2508,7 @@ unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
     unsafe { p2.send_frame(&ChannelFrame { payload: body_bytes, size: body_size }) }
 }
 
-fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
+pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     // Build the heartbeat frame body and dispatch through the channel
     // proxy. Same archive shape as the server's sconn_reply: aggregate
     // struct literals + the &mut alias so serialize's Archive& binds.
@@ -2514,7 +2526,13 @@ fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     };
 }
 
-fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
+// clippy::not_unsafe_ptr_arg_deref -- this became public with the module's
+// surface; the raw-pointer contract is the historical C++ one and is
+// documented at the deref itself. Marking the fn `unsafe` instead would
+// wrap every call site in an `unsafe` block, which the emitter renders
+// as an @unsafe comment block -- measured: changes emitted C++.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
     if addr.is_null() {
         // See `ClientConnection::new`: the alias maps to `std::string`.
         return Default::default();
@@ -2543,7 +2561,7 @@ fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
     client_text(&scratch)
 }
 
-fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -> i32 {
+pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -> i32 {
     let addr_str: LegacyStdString = clientconn_addr_to_string(addr_i8);
     {
         let mut guard = conn.factory_.lock().unwrap();
@@ -2598,13 +2616,13 @@ fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -
     0i32
 }
 
-fn clientconn_make_fiber_channel(ch: ChannelConnectionProxy) -> Box<FiberChannel> {
+pub fn clientconn_make_fiber_channel(ch: ChannelConnectionProxy) -> Box<FiberChannel> {
     rusty::make_box::<FiberChannel>(ch)
 }
 
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_unwrap)]
-fn clientconn_recv_job_entry(weak_self: WeakClientConnection) {
+pub fn clientconn_recv_job_entry(weak_self: WeakClientConnection) {
     let conn_opt = weak_self.upgrade();
     if conn_opt.is_some() {
         let c = conn_opt.unwrap();
@@ -2614,7 +2632,7 @@ fn clientconn_recv_job_entry(weak_self: WeakClientConnection) {
 
 // clippy::arc_with_non_send_sync -- no fix short of changing the payload type; the C++ Arc erases Rust auto traits. See the Task-2 measurement block above.
 #[allow(clippy::arc_with_non_send_sync)]
-fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
+pub fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
                                            channel: ChannelConnectionProxy) {
     if !channel.is_valid() {
         return;
@@ -2654,7 +2672,7 @@ fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
-fn clientconn_fiber_channel_ptr(slot: &Option<Box<FiberChannel>>) -> *mut FiberChannel {
+pub fn clientconn_fiber_channel_ptr(slot: &Option<Box<FiberChannel>>) -> *mut FiberChannel {
     // The borrow is taken into a named reference first, and it keeps the
     // explicit `&**` (the `Box` deref must be written out; the emitter does
     // not insert Rust's deref coercion). Written inline as
@@ -2666,7 +2684,7 @@ fn clientconn_fiber_channel_ptr(slot: &Option<Box<FiberChannel>>) -> *mut FiberC
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
-fn clientconn_run_recv_loop(conn: &ClientConnection) {
+pub fn clientconn_run_recv_loop(conn: &ClientConnection) {
     let fc: *mut FiberChannel;
     {
         let guard = conn.fiber_channel_.lock().unwrap();
@@ -2695,8 +2713,13 @@ fn clientconn_run_recv_loop(conn: &ClientConnection) {
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
-#[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap)]
-fn clientconn_decode_response_and_notify(conn: &ClientConnection,
+// clippy::not_unsafe_ptr_arg_deref -- this became public with the module's
+// surface; the raw-pointer contract is the historical C++ one and is
+// documented at the deref itself. Marking the fn `unsafe` instead would
+// wrap every call site in an `unsafe` block, which the emitter renders as an
+// @unsafe comment block -- measured: changes emitted C++.
+#[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap, clippy::not_unsafe_ptr_arg_deref)]
+pub fn clientconn_decode_response_and_notify(conn: &ClientConnection,
                                          bytes: *const u8, size: usize) {
     // Account for every inbound frame body byte and bump the activity
     // clock so metrics_.bytes_received() and is_idle() reflect real
@@ -2778,7 +2801,7 @@ fn clientconn_decode_response_and_notify(conn: &ClientConnection,
     // caller and freed on return -- nothing to drain.
 }
 
-fn clientconn_map_system_error(err: i32) -> RpcError {
+pub fn clientconn_map_system_error(err: i32) -> RpcError {
     if err == 0i32 { return RpcError::OK; }
     if err == CLIENT_ERR_NOT_CONNECTED { return RpcError::NOT_CONNECTED; }
     if err == CLIENT_ERR_CONNECTION_REFUSED { return RpcError::CONNECTION_REFUSED; }
@@ -2793,7 +2816,7 @@ fn clientconn_map_system_error(err: i32) -> RpcError {
     RpcError::UNKNOWN_ERROR
 }
 
-fn clientpool_is_client_healthy_with(cfg: PoolConfig, client: &Arc<Client>) -> bool {
+pub fn clientpool_is_client_healthy_with(cfg: PoolConfig, client: &Arc<Client>) -> bool {
     if !cfg.health_check_enabled {
         return true;
     }
@@ -2810,7 +2833,7 @@ fn clientpool_is_client_healthy_with(cfg: PoolConfig, client: &Arc<Client>) -> b
 
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_unwrap)]
-fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &LegacyStdString) -> usize {
+pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &LegacyStdString) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant.
     let cfg: PoolConfig = self_.pool_config();
     let guard = self_.state_.lock().unwrap();
@@ -2832,7 +2855,7 @@ fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &LegacyStdStrin
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &LegacyStdString) -> usize {
+pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &LegacyStdString) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant.
     let cfg: PoolConfig = self_.pool_config();
     let mut guard = self_.state_.lock().unwrap();
@@ -2875,7 +2898,7 @@ fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &LegacyStdStrin
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-fn clientpool_close_idle_clients(self_: &ClientPool, addr: &LegacyStdString, current_time_ms: u64) -> usize {
+pub fn clientpool_close_idle_clients(self_: &ClientPool, addr: &LegacyStdString, current_time_ms: u64) -> usize {
     let cfg: PoolConfig = self_.pool_config();
 
     // If idle timeout is 0, no timeout
@@ -2918,7 +2941,7 @@ fn clientpool_close_idle_clients(self_: &ClientPool, addr: &LegacyStdString, cur
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-fn clientpool_remove_all_unhealthy(self_: &ClientPool) -> usize {
+pub fn clientpool_remove_all_unhealthy(self_: &ClientPool) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant on
     // ClientPool. This read used to sit after the lock, which was the one
     // site in the pool that acquired the two in the opposite order from
@@ -2987,7 +3010,7 @@ fn clientpool_remove_all_unhealthy(self_: &ClientPool) -> usize {
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> usize {
+pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> usize {
     let cfg: PoolConfig = self_.pool_config();
     if cfg.idle_timeout_ms == 0u64 {
         return 0usize;
@@ -3059,13 +3082,13 @@ fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> usize 
 // one inline-Rust region; the canonical file has no regions.)
 // clippy::unnecessary_cast -- measured: drops the emitted rusty::detail::ptr_cast<const int8_t*>. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_cast)]
-fn clientpool_connect_client(client: &Arc<Client>, addr: &LegacyStdString) -> i32 {
+pub fn clientpool_connect_client(client: &Arc<Client>, addr: &LegacyStdString) -> i32 {
     client.connect(addr.c_str() as *const i8, true)
 }
 
 // clippy::ptr_arg -- measured: changes the exported clientpool_select signature from const rusty::Vec<..>& to std::span<..>. See the Task-2 measurement block above.
 #[allow(clippy::ptr_arg)]
-fn clientpool_select(
+pub fn clientpool_select(
     strategy: LoadBalancingStrategy,
     clients: &Vec<Arc<Client>>,
     state: &LoadBalancerState,
@@ -3112,7 +3135,7 @@ fn clientpool_select(
 
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_get_then_check)]
-fn clientpool_get_client(self_: &ClientPool, addr: &LegacyStdString) -> Option<Arc<Client>> {
+pub fn clientpool_get_client(self_: &ClientPool, addr: &LegacyStdString) -> Option<Arc<Client>> {
     let mut sp_cl: Option<Arc<Client>> = None;
     let cfg: PoolConfig = self_.pool_config();
     let num_connections: i32 = cfg.min_connections;
