@@ -70,8 +70,6 @@ pub struct FiberChannel {
 impl FiberChannel {
     /// Construct an unbound wrapper.  Bind only after placing it at a stable
     /// address (normally inside `Box`/`rusty::Box`).
-    #[cfg_attr(any(), cpp_ctor)]
-    #[cfg_attr(any(), cpp_explicit)]
     pub fn new(ch: ChannelConnectionProxy) -> FiberChannel {
         FiberChannel {
             ch_: ch,

@@ -109,7 +109,7 @@ class ClientChannelSendTest : public ::testing::Test {
  protected:
     void SetUp() override {
         poll_thread_ = rusty::Some(PollThread::create());
-        conn_ = rusty::Some(rusty::Arc<ClientConnection>::make(poll_thread_.as_ref().unwrap().clone()));
+        conn_ = rusty::Some(rusty::Arc<ClientConnection>::new_(ClientConnection::new_(poll_thread_.as_ref().unwrap().clone())));
         stub_ = std::make_shared<CapturingChannelStub>();
         mut_conn().bind_channel(make_capture_proxy(stub_));
         // Drive the state machine to CONNECTED so request_via_channel's

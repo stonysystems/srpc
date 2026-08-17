@@ -118,7 +118,6 @@ impl TcpConnection {
     ///
     /// `fd` must be a live connected descriptor whose ownership is transferred
     /// exactly once. The caller must not close or otherwise use it afterward.
-    #[cfg_attr(any(), cpp_ctor)]
     pub unsafe fn new(fd: i32, peer_address: LegacyStdString) -> TcpConnection {
         TcpConnection {
             // SAFETY: callers transfer a freshly connected descriptor.
@@ -391,7 +390,6 @@ unsafe impl Send for TcpListener {}
 unsafe impl Sync for TcpListener {}
 
 impl TcpListener {
-    #[cfg_attr(any(), cpp_ctor)]
     pub fn new() -> TcpListener {
         TcpListener {
             listener_: RefCell::<LegacyTcpListener>::new(Default::default()),

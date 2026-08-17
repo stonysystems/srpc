@@ -160,10 +160,15 @@ fn owned_frame_layout_and_pin_contract_are_explicit() {
     requires_unpin::<OwnedFrame>();
 
     // Compile-time ownership marker: the wrapper contains PhantomPinned.
+    // Factory-only construction: the sole C++ construction path is the
+    // FiberChannel::new_ factory (no #[cpp_ctor], so no C++ ctor and no
+    // cpp_explicit); the cpp_no_fieldwise_ctor marker keeps the synthesized
+    // fieldwise ctor private.
     let source = include_str!("../rpc/fiber_channel.cpp");
     assert!(source.contains("_pin: PhantomPinned"));
     assert!(source.contains("cpp_no_fieldwise_ctor"));
-    assert!(source.contains("cpp_explicit"));
+    assert!(!source.contains("cpp_ctor)"));
+    assert!(!source.contains("cpp_explicit"));
     let _marker = PhantomPinned;
 }
 

@@ -345,7 +345,6 @@ pub struct ServerConnection {
 }
 
 impl ServerConnection {
-    #[cfg_attr(any(), cpp_ctor)]
     pub fn new(ctx: Arc<RpcServiceContext>, _socket: i32) -> ServerConnection {
         ServerConnection {
             ctx_: ctx,

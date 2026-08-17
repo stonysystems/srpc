@@ -94,10 +94,14 @@ static_assert(!std::is_copy_constructible_v<IdempotencyKeyGenerator>);
 static_assert(!std::is_copy_assignable_v<IdempotencyKeyGenerator>);
 static_assert(std::is_move_constructible_v<IdempotencyKeyGenerator>);
 static_assert(std::is_move_assignable_v<IdempotencyKeyGenerator>);
-static_assert(!std::is_aggregate_v<IdempotencyCache>);
+// Factory-only construction: no user ctors remain (aggregate); the
+// sanctioned construction paths are the generated static factories.
+static_assert(std::is_aggregate_v<IdempotencyCache>);
 static_assert(std::is_standard_layout_v<IdempotencyCache>);
-static_assert(std::is_default_constructible_v<IdempotencyCache>);
-static_assert(std::is_constructible_v<IdempotencyCache, IdempotencyConfig>);
+static_assert(requires { IdempotencyCache::new_(); });
+static_assert(requires(IdempotencyConfig c) {
+  IdempotencyCache::with_config(std::move(c));
+});
 static_assert(!std::is_copy_constructible_v<IdempotencyCache>);
 static_assert(!std::is_copy_assignable_v<IdempotencyCache>);
 static_assert(std::is_move_constructible_v<IdempotencyCache>);
@@ -405,7 +409,7 @@ TEST_F(CachedResponseTest, IsExpired) {
 
 class IdempotencyCacheTest : public ::testing::Test {
 protected:
-    IdempotencyCache cache_;
+    IdempotencyCache cache_ = IdempotencyCache::new_();
 
     void SetUp() override {
         cache_.set_config(IdempotencyConfig::defaults());

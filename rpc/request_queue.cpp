@@ -140,7 +140,6 @@ pub struct RequestQueue {
 }
 
 impl RequestQueue {
-    #[cfg_attr(any(), cpp_ctor)]
     #[allow(clippy::new_without_default)]
     pub fn new() -> RequestQueue {
         RequestQueue {
@@ -149,7 +148,6 @@ impl RequestQueue {
         }
     }
 
-    #[cfg_attr(any(), cpp_ctor)]
     pub fn with_config(config: self::RequestQueueConfig) -> RequestQueue {
         RequestQueue {
             config_: Cell::new(config),

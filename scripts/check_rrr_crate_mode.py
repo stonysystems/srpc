@@ -24,7 +24,7 @@ DEFAULT_TRANSPILER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-transpiler"
 )
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "8370395d1f6a01ff5564f73650c6bfd59de0b75c"
+REQUIRED_RUSTY_CPP_COMMIT = "8b65b621d7c08e81aeb8bcc5db80c02e7e0dc650"
 EXTRACTION_DRIVER = "scripts/extract_rrr_rust.py"
 EXTRACTION_MANIFEST = "rust-modules.toml"
 MODULE_PREAMBLE = "module-preambles.toml"
@@ -110,8 +110,8 @@ REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
 # second unreviewed addition or a silent removal cannot hide behind the
 # reviewed ones.
 #
-# ADDITIONS (40) fall in three groups, none of which displaces an incumbent
-# symbol -- every one of the incumbent's other 218 symbols is present verbatim:
+# ADDITIONS (42) fall in four groups, none of which displaces an incumbent
+# symbol -- every one of the incumbent's other 216 symbols is present verbatim:
 #   * 20 named constants (CLIENT_ERR_*, CLIENT_POLL_*, CLIENT_RAND_MAX,
 #     CLIENT_INT_MIN, CLIENT_INTERNAL_HEARTBEAT_RPC_ID,
 #     CLIENT_REQUEST_QUEUE_REJECTED_ERROR).  The incumbent spelled these as
@@ -124,8 +124,15 @@ REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
 #     KeepaliveConfig::clone, PoolConfig::clone, FutureAttr::clone,
 #     FutureAttr::default_).  The incumbent used C++ implicit copy
 #     construction and aggregate initialization, which emit no symbol.
+#   * 2 factory-only-construction respellings (ClientConnection::new_ and
+#     Future::new_).  These are NOT new capability: each is the same function
+#     body the incumbent exported as a constructor, respelled as the mandated
+#     static factory.  Each has its constructor counterpart in the removals
+#     below and is paired 1:1 in CLIENT_INCUMBENT_ORACLE_SIGNATURE_CHANGES, so
+#     the two sets can only move together.
 #
-# The ONE removal is a signature change with its counterpart in the additions:
+# The THREE removals are each a signature change with its counterpart in the
+# additions.  The first:
 #     rrr::ClientConnection::bind_factory(Box<ChannelFactoryBase>)
 #  -> rrr::ClientConnection::bind_factory(Box<ChannelFactoryBase>) const
 # It is recorded rather than reverted.  The Rust body mutates only through
@@ -143,6 +150,20 @@ REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
 # parameters emit no symbol) and two were re-signaturings restored in the
 # canonical Rust (make_write_archive's pointer parameter and
 # invoke_error_callback's `const std::string&`).
+#
+# The other two removals are the factory-only-construction respellings:
+#     rrr::ClientConnection::ClientConnection(Arc<PollThread>)
+#  -> rrr::ClientConnection::new_(Arc<PollThread>)
+#     rrr::Future::Future(long, FutureAttr)
+#  -> rrr::Future::new_(long, FutureAttr)
+# The crate no longer carries the `#[cpp_ctor]` marker family at all, so every
+# type is built through its default factory lowering.  This is a deliberate,
+# reviewed break of the C++ construction idiom -- constructor-idiom
+# compatibility is explicitly NOT a goal -- and it is a pure respelling: same
+# parameter list, same symbol class (T), same module attachment, one symbol out
+# and one symbol in.  Whole-library evidence: the strong-ABI unique count is
+# unchanged at 1977 across the change, with 18 constructors removed and their
+# 18 factories added and nothing else moving in either direction.
 CLIENT_INCUMBENT_ORACLE = frozenset(
     {
         ('R', 'rrr::kAsyncSlotCount@rrr.client'),
@@ -409,20 +430,35 @@ CLIENT_INCUMBENT_ORACLE_ADDITIONS = frozenset(
         ('T', 'rrr::client_verify@rrr.client(bool)'),
         ('T', 'rrr::clientpool_select@rrr.client(rrr::LoadBalancingStrategy@rrr.load_balancer, rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::Client@rrr.client>, rusty::alloc::Global> const&, rrr::LoadBalancerState@rrr.load_balancer const&, unsigned long)'),
         ('T', 'rrr::make_pending_queue@rrr.client(rrr::RequestQueueConfig@rrr.request_queue const&)'),
+        # Factory-only construction (see the header comment): the two
+        # constructors the incumbent exported, respelled as static factories.
+        ('T', 'rrr::ClientConnection@rrr.client::new_(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::Future@rrr.client::new_(long, rrr::FutureAttr@rrr.client)'),
     }
 )
 
 CLIENT_INCUMBENT_ORACLE_REMOVALS = frozenset(
     {
         ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>)'),
+        # Factory-only construction: paired 1:1 with the two `new_` additions.
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
     }
 )
 
-# (incumbent spelling, current spelling) for the one reviewed signature change.
+# (incumbent spelling, current spelling) for each reviewed signature change.
 CLIENT_INCUMBENT_ORACLE_SIGNATURE_CHANGES = (
     (
         ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>)'),
         ('T', 'rrr::ClientConnection@rrr.client::bind_factory(rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>) const'),
+    ),
+    (
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+        ('T', 'rrr::ClientConnection@rrr.client::new_(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+    ),
+    (
+        ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
+        ('T', 'rrr::Future@rrr.client::new_(long, rrr::FutureAttr@rrr.client)'),
     ),
 )
 
@@ -921,8 +957,8 @@ ABI_SPECS = {
                 "rusty::sync::atomic::AtomicU64 queries_;",
                 "rusty::sync::atomic::AtomicU64 query_hits_;",
                 "rusty::sync::atomic::AtomicU64 evictions_;",
-                "CompletionTracker();",
-                "CompletionTracker(CompletionTrackerConfig config);",
+                "static CompletionTracker new_();",
+                "static CompletionTracker with_config(CompletionTrackerConfig config);",
                 "bool enabled() const;",
                 "CompletionTrackerConfig config() const;",
                 "void set_config(CompletionTrackerConfig config);",
@@ -957,8 +993,8 @@ ABI_SPECS = {
                 "rrr::CompletionTrackerConfig@rrr.completion_tracker::disabled()",
                 "rrr::CompletedEntry@rrr.completion_tracker::new_(long, unsigned long)",
                 "rrr::CompletedEntry@rrr.completion_tracker::is_expired(unsigned long, unsigned long) const",
-                "rrr::CompletionTracker@rrr.completion_tracker::CompletionTracker()",
-                "rrr::CompletionTracker@rrr.completion_tracker::CompletionTracker(rrr::CompletionTrackerConfig@rrr.completion_tracker)",
+                "rrr::CompletionTracker@rrr.completion_tracker::new_()",
+                "rrr::CompletionTracker@rrr.completion_tracker::with_config(rrr::CompletionTrackerConfig@rrr.completion_tracker)",
                 "rrr::CompletionTracker@rrr.completion_tracker::enabled() const",
                 "rrr::CompletionTracker@rrr.completion_tracker::config() const",
                 "rrr::CompletionTracker@rrr.completion_tracker::set_config(rrr::CompletionTrackerConfig@rrr.completion_tracker)",
@@ -1495,8 +1531,8 @@ ABI_SPECS = {
                 "rusty::Cell<bool> owned_;",
                 "AddrInfo(AddrInfo&& other) noexcept",
                 "AddrInfo& operator=(AddrInfo&& other) noexcept",
-                "AddrInfo();",
-                "AddrInfo(addrinfo* info);",
+                "static AddrInfo new_();",
+                "static AddrInfo adopt(addrinfo* info);",
                 "addrinfo* get() const;",
                 "bool valid() const;",
                 "~AddrInfo() noexcept(false);",
@@ -1512,8 +1548,8 @@ ABI_SPECS = {
         symbols=frozenset(
             ("T", symbol)
             for symbol in {
-                "rrr::AddrInfo@rrr.utils::AddrInfo()",
-                "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*)",
+                "rrr::AddrInfo@rrr.utils::new_()",
+                "rrr::AddrInfo@rrr.utils::adopt(addrinfo*)",
                 "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*, rusty::Cell<bool>)",
                 "rrr::AddrInfo@rrr.utils::AddrInfo(rrr::AddrInfo@rrr.utils&&)",
                 "rrr::AddrInfo@rrr.utils::get() const",
@@ -1653,8 +1689,8 @@ ABI_SPECS = {
                 "export struct RequestQueue",
                 "rusty::Cell<RequestQueueConfig> config_;",
                 "rusty::Mutex<rusty::VecDeque<QueuedRequest>> queue_;",
-                "RequestQueue();",
-                "RequestQueue(RequestQueueConfig config);",
+                "static RequestQueue new_();",
+                "static RequestQueue with_config(RequestQueueConfig config);",
                 "bool enqueue(QueuedRequest request) const;",
                 "rusty::Option<QueuedRequest> dequeue();",
                 "size_t expire_stale() const;",
@@ -1690,8 +1726,8 @@ ABI_SPECS = {
                         "rrr::RequestQueueConfig@rrr.request_queue::small()",
                         "rrr::RequestQueueConfig@rrr.request_queue::large()",
                         "rrr::RequestQueueConfig@rrr.request_queue::disabled()",
-                        "rrr::RequestQueue@rrr.request_queue::RequestQueue()",
-                        "rrr::RequestQueue@rrr.request_queue::RequestQueue(rrr::RequestQueueConfig@rrr.request_queue)",
+                        "rrr::RequestQueue@rrr.request_queue::new_()",
+                        "rrr::RequestQueue@rrr.request_queue::with_config(rrr::RequestQueueConfig@rrr.request_queue)",
                         "rrr::RequestQueue@rrr.request_queue::enqueue(rrr::QueuedRequest@rrr.request_queue) const",
                         "rrr::RequestQueue@rrr.request_queue::dequeue()",
                         "rrr::RequestQueue@rrr.request_queue::expire_stale() const",
@@ -2333,12 +2369,12 @@ ABI_SPECS = {
                 "struct FiberFuture",
                 "struct FiberPromise",
                 "rusty::Option<rusty::Arc<BoxEvent<T>>> state_;",
-                "FiberFuture()",
+                "static FiberFuture<T> default_()",
                 "T get()",
                 "bool wait_for(uint64_t timeout_us)",
                 "bool is_ready() const",
                 "bool valid() const",
-                "FiberPromise()",
+                "static FiberPromise<T> default_()",
                 "FiberFuture<T> get_future()",
                 "void set_value(const T& value)",
                 "FiberFuture<T> fiber_promise_get_future(FiberPromise<T>& self_)",
@@ -2417,8 +2453,8 @@ ABI_SPECS = {
                 "export struct IdempotencyCache",
                 "rusty::Cell<IdempotencyConfig> config_;",
                 "rusty::Mutex<rusty::VecDeque<CachedResponse>> cache_;",
-                "IdempotencyCache();",
-                "IdempotencyCache(IdempotencyConfig config);",
+                "static IdempotencyCache new_();",
+                "static IdempotencyCache with_config(IdempotencyConfig config);",
                 "bool lookup(const IdempotencyKey& key, uint64_t current_time_ms, int32_t& out_error_code, rusty::Vec<uint8_t>& out_response) const;",
                 "void store(const IdempotencyKey& key, int32_t error_code, const rusty::Vec<uint8_t>& response, uint64_t current_time_ms) const;",
                 "size_t evict_expired(uint64_t current_time_ms) const;",
@@ -2454,8 +2490,8 @@ ABI_SPECS = {
                 "rrr::IdempotencyKeyGenerator@rrr.idempotency::client_id() const",
                 "rrr::IdempotencyKeyGenerator@rrr.idempotency::set_client_id(unsigned long) const",
                 "rrr::IdempotencyKeyGenerator@rrr.idempotency::current_sequence() const",
-                "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache()",
-                "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache(rrr::IdempotencyConfig@rrr.idempotency)",
+                "rrr::IdempotencyCache@rrr.idempotency::new_()",
+                "rrr::IdempotencyCache@rrr.idempotency::with_config(rrr::IdempotencyConfig@rrr.idempotency)",
                 "rrr::IdempotencyCache@rrr.idempotency::enabled() const",
                 "rrr::IdempotencyCache@rrr.idempotency::config() const",
                 "rrr::IdempotencyCache@rrr.idempotency::set_config(rrr::IdempotencyConfig@rrr.idempotency const&) const",
@@ -2619,7 +2655,7 @@ ABI_SPECS = {
                 ('R', 'rrr::PollReady::WRITABLE@rrr.epoll_wrapper'),
                 ('R', 'typeinfo name for rrr::Pollable@rrr.epoll_wrapper'),
                 ('T', 'rrr::Epoll@rrr.epoll_wrapper::Add(int, int)'),
-                ('T', 'rrr::Epoll@rrr.epoll_wrapper::Epoll()'),
+                ('T', 'rrr::Epoll@rrr.epoll_wrapper::new_()'),
                 ('T', 'rrr::Epoll@rrr.epoll_wrapper::Remove(int)'),
                 ('T', 'rrr::Epoll@rrr.epoll_wrapper::Update(int, int, int)'),
                 ('T', 'rrr::Epoll@rrr.epoll_wrapper::fd() const'),
@@ -2796,7 +2832,7 @@ ABI_SPECS = {
             {
                 "export struct OwnedFrame;",
                 "export struct FiberChannel;",
-                "explicit FiberChannel(::rrr::ChannelConnectionProxy ch);",
+                "static FiberChannel new_(::rrr::ChannelConnectionProxy ch);",
                 "rusty::Option<OwnedFrame> recv_frame();",
                 "::rrr::ChannelError send_frame(const ::rrr::ChannelFrame& frame);",
                 "bool is_closed() const;",
@@ -2804,7 +2840,7 @@ ABI_SPECS = {
         ),
         symbols=frozenset(
             {
-                ('T', 'rrr::FiberChannel@rrr.fiber_channel::FiberChannel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
+                ('T', 'rrr::FiberChannel@rrr.fiber_channel::new_(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
                 ('T', 'rrr::FiberChannel@rrr.fiber_channel::arm_waiter()'),
                 ('T', 'rrr::FiberChannel@rrr.fiber_channel::bind_callbacks()'),
                 ('T', 'rrr::FiberChannel@rrr.fiber_channel::channel_for_test()'),
@@ -3009,7 +3045,7 @@ ABI_SPECS = {
                 ('T', 'rrr::ClosePollable@rrr.reactor(int)'),
                 ('T', 'rrr::EventPollable@rrr.reactor::~EventPollable()'),
                 ('T', 'rrr::EventState@rrr.reactor::new_()'),
-                ('T', 'rrr::Fiber@rrr.reactor::Fiber(rusty::Function<void ()>)'),
+                ('T', 'rrr::Fiber@rrr.reactor::new_(rusty::Function<void ()>)'),
                 ('T', 'rrr::Fiber@rrr.reactor::continue_() const'),
                 ('T', 'rrr::Fiber@rrr.reactor::create_run_impl(rusty::Function<void ()>, char const*, long)'),
                 ('T', 'rrr::Fiber@rrr.reactor::current_fiber()'),
@@ -3070,7 +3106,7 @@ ABI_SPECS = {
                 ('T', 'rrr::PollThreadWorker@rrr.reactor::create(rusty::sync::mpsc::Receiver<std::__1::variant<rrr::PollCommand_AddPollable@rrr.reactor, rrr::PollCommand_RemovePollable@rrr.reactor, rrr::PollCommand_ClosePollable@rrr.reactor, rrr::PollCommand_UpdateMode@rrr.reactor, rrr::PollCommand_AddJob@rrr.reactor, rrr::PollCommand_RemoveJob@rrr.reactor, rrr::PollCommand_Shutdown@rrr.reactor>>)'),
                 ('T', 'rrr::PollThreadWorker@rrr.reactor::poll_loop()'),
                 ('T', 'rrr::PollThreadWorker@rrr.reactor::update_mode(rrr::Pollable@rrr.epoll_wrapper&, int)'),
-                ('T', 'rrr::Reactor@rrr.reactor::Reactor()'),
+                ('T', 'rrr::Reactor@rrr.reactor::new_()'),
                 ('T', 'rrr::Reactor@rrr.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rrr::StacklessTaskEntry@rrr.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)'),
                 ('T', 'rrr::Reactor@rrr.reactor::check_timeout(rusty::VecDeque<rusty::Arc<rrr::EventPollable@rrr.reactor>>&) const'),
                 ('T', 'rrr::Reactor@rrr.reactor::continue_fiber(rusty::port::rc::Rc@rc_port<rrr::Fiber@rrr.reactor, rusty::alloc::Global> const&) const'),
@@ -3174,7 +3210,7 @@ ABI_SPECS = {
                 ('T', 'rrr::fiber_sleep@rrr.reactor(unsigned long)'),
                 ('T', 'rrr::fiber_task_body_invoke@rrr.reactor(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>&, rrr::fiber_yield_t@rrr.reactor&)'),
                 ('T', 'rrr::fiber_task_invoke@rrr.reactor(rusty::RefCell<rusty::Option<rusty::Box<rrr::fiber_task_t@rrr.reactor, rusty::alloc::Global>>> const*)'),
-                ('T', 'rrr::fiber_task_t@rrr.reactor::fiber_task_t(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>)'),
+                ('T', 'rrr::fiber_task_t@rrr.reactor::new_(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>)'),
                 ('T', 'rrr::fiber_task_t@rrr.reactor::rusty_mark_forgotten() const'),
                 ('T', 'rrr::fiber_task_t@rrr.reactor::~fiber_task_t()'),
                 ('T', 'rrr::fiber_yield_invoke@rrr.reactor(rrr::fiber_yield_t@rrr.reactor&)'),
@@ -3315,7 +3351,7 @@ ABI_SPECS = {
                 ('T', 'rrr::Server@rrr.server::unreg(int)'),
                 ('T', 'rrr::Server@rrr.server::wait_for_shutdown() const'),
                 ('T', 'rrr::Server@rrr.server::~Server()'),
-                ('T', 'rrr::ServerConnection@rrr.server::ServerConnection(rusty::Arc<rrr::RpcServiceContext@rrr.server>, int)'),
+                ('T', 'rrr::ServerConnection@rrr.server::new_(rusty::Arc<rrr::RpcServiceContext@rrr.server>, int)'),
                 ('T', 'rrr::ServerConnection@rrr.server::bind_channel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)'),
                 ('T', 'rrr::ServerConnection@rrr.server::close() const'),
                 ('T', 'rrr::ServerConnection@rrr.server::connected() const'),
@@ -3415,7 +3451,7 @@ ABI_SPECS = {
                 ('T', 'rrr::TcpChannelShim@rrr.tcp_channel::set_on_closed(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel) const>>)'),
                 ('T', 'rrr::TcpChannelShim@rrr.tcp_channel::set_on_error(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelError@rrr.channel, std::__1::basic_string_view<char, std::__1::char_traits<char>>) const>>)'),
                 ('T', 'rrr::TcpChannelShim@rrr.tcp_channel::set_on_frame(rrr::detail::CallbackWrapper@rrr.callback_wrapper<rusty::Function<void (rrr::ChannelFrame@rrr.channel const&) const>>)'),
-                ('T', 'rrr::TcpConnection@rrr.tcp_channel::TcpConnection(int, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>)'),
+                ('T', 'rrr::TcpConnection@rrr.tcp_channel::new_(int, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>)'),
                 ('T', 'rrr::TcpConnection@rrr.tcp_channel::check_pending_write_update() const'),
                 ('T', 'rrr::TcpConnection@rrr.tcp_channel::close() const'),
                 ('T', 'rrr::TcpConnection@rrr.tcp_channel::content_size() const'),
@@ -3443,7 +3479,7 @@ ABI_SPECS = {
                 ('T', 'rrr::TcpFactoryShim@rrr.tcp_channel::backend_name() const'),
                 ('T', 'rrr::TcpFactoryShim@rrr.tcp_channel::connect(std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
                 ('T', 'rrr::TcpFactoryShim@rrr.tcp_channel::make_listener()'),
-                ('T', 'rrr::TcpListener@rrr.tcp_channel::TcpListener()'),
+                ('T', 'rrr::TcpListener@rrr.tcp_channel::new_()'),
                 ('T', 'rrr::TcpListener@rrr.tcp_channel::check_pending_write_update() const'),
                 ('T', 'rrr::TcpListener@rrr.tcp_channel::close() const'),
                 ('T', 'rrr::TcpListener@rrr.tcp_channel::content_size() const'),
@@ -3641,7 +3677,7 @@ ABI_SPECS = {
                 ('T', 'rrr::Client@rrr.client::validate_connection() const'),
                 ('T', 'rrr::Client@rrr.client::~Client()'),
                 ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
-                ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
+                ('T', 'rrr::ClientConnection@rrr.client::new_(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
                 ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<std_port::collections::hash::map::HashMap@std_port<long, rusty::Arc<rrr::Future@rrr.client>, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
                 ('T', 'rrr::ClientConnection@rrr.client::abort_reconnect()'),
                 ('T', 'rrr::ClientConnection@rrr.client::allow_request_with_circuit_metrics() const'),
@@ -3741,7 +3777,7 @@ ABI_SPECS = {
                 ('T', 'rrr::ClientPool@rrr.client::set_pool_config(rrr::PoolConfig@rrr.client) const'),
                 ('T', 'rrr::ClientPool@rrr.client::total_client_count() const'),
                 ('T', 'rrr::ClientPool@rrr.client::~ClientPool()'),
-                ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
+                ('T', 'rrr::Future@rrr.client::new_(long, rrr::FutureAttr@rrr.client)'),
                 ('T', 'rrr::Future@rrr.client::add_completion_callback(rusty::Function<void ()>) const'),
                 ('T', 'rrr::Future@rrr.client::create(long, rrr::FutureAttr@rrr.client)'),
                 ('T', 'rrr::Future@rrr.client::get_error_code() const'),
@@ -3875,10 +3911,6 @@ RAW_ABI_ALIASES = {
         ),
         (
             'T',
-            'rrr::Fiber@rrr.reactor::Fiber(rusty::Function<void ()>)',
-        ),
-        (
-            'T',
             'rrr::IntEvent@rrr.reactor::IntEvent(rrr::IntEvent@rrr.reactor&&)',
         ),
         (
@@ -3904,10 +3936,6 @@ RAW_ABI_ALIASES = {
         (
             'T',
             'rrr::PollThread@rrr.reactor::~PollThread()',
-        ),
-        (
-            'T',
-            'rrr::Reactor@rrr.reactor::Reactor()',
         ),
         (
             'T',
@@ -3940,10 +3968,6 @@ RAW_ABI_ALIASES = {
         (
             'T',
             'rrr::WaitAny@rrr.reactor::WaitAny(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::port::vec::Vec@vec_port.vec<rusty::Arc<rrr::EventPollable@rrr.reactor>, rusty::alloc::Global>)',
-        ),
-        (
-            'T',
-            'rrr::fiber_task_t@rrr.reactor::fiber_task_t(rusty::Function<void (rrr::fiber_yield_t@rrr.reactor&)>)',
         ),
         (
             'T',
@@ -3986,10 +4010,6 @@ RAW_ABI_ALIASES = {
         (
             'T',
             'rrr::Server@rrr.server::~Server()',
-        ),
-        (
-            'T',
-            'rrr::ServerConnection@rrr.server::ServerConnection(rusty::Arc<rrr::RpcServiceContext@rrr.server>, int)',
         ),
         (
             'T',
@@ -4517,19 +4537,11 @@ RAW_ABI_ALIASES = {
         ),
         (
             'T',
-            'rrr::TcpConnection@rrr.tcp_channel::TcpConnection(int, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>)',
-        ),
-        (
-            'T',
             'rrr::TcpFactoryShim@rrr.tcp_channel::TcpFactoryShim(rrr::TcpFactoryShim@rrr.tcp_channel&&)',
         ),
         (
             'T',
             'rrr::TcpFactoryShim@rrr.tcp_channel::TcpFactoryShim(rusty::Arc<rrr::TcpFactory@rrr.tcp_channel>)',
-        ),
-        (
-            'T',
-            'rrr::TcpListener@rrr.tcp_channel::TcpListener()',
         ),
         (
             'T',
@@ -4568,39 +4580,13 @@ RAW_ABI_ALIASES = {
             'rrr::TcpPollableShim@rrr.tcp_channel::TcpPollableShim(rusty::Arc<rrr::TcpConnection@rrr.tcp_channel>)',
         ),
     ),
-    "rrr.completion_tracker": (
-        (
-            "T",
-            "rrr::CompletionTracker@rrr.completion_tracker::CompletionTracker()",
-        ),
-        (
-            "T",
-            "rrr::CompletionTracker@rrr.completion_tracker::CompletionTracker(rrr::CompletionTrackerConfig@rrr.completion_tracker)",
-        ),
-    ),
-    "rrr.request_queue": (
-        ("T", "rrr::RequestQueue@rrr.request_queue::RequestQueue()"),
-        (
-            "T",
-            "rrr::RequestQueue@rrr.request_queue::RequestQueue(rrr::RequestQueueConfig@rrr.request_queue)",
-        ),
-    ),
     "rrr.utils": tuple(
         ("T", symbol)
         for symbol in (
-            "rrr::AddrInfo@rrr.utils::AddrInfo()",
-            "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*)",
             "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*, rusty::Cell<bool>)",
             "rrr::AddrInfo@rrr.utils::AddrInfo(rrr::AddrInfo@rrr.utils&&)",
             "rrr::AddrInfo@rrr.utils::~AddrInfo()",
         )
-    ),
-    "rrr.idempotency": (
-        ("T", "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache()"),
-        (
-            "T",
-            "rrr::IdempotencyCache@rrr.idempotency::IdempotencyCache(rrr::IdempotencyConfig@rrr.idempotency)",
-        ),
     ),
     "rrr.misc": (
         ("T", "rrr::Job@rrr.misc::~Job()"),
@@ -4628,7 +4614,6 @@ RAW_ABI_ALIASES = {
     "rrr.epoll_wrapper": tuple(
         ("T", symbol)
         for symbol in (
-            "rrr::Epoll@rrr.epoll_wrapper::Epoll()",
             "rrr::Pollable@rrr.epoll_wrapper::~Pollable()",
             "rrr::Pollable@rrr.epoll_wrapper::~Pollable()",
         )
@@ -4649,10 +4634,6 @@ RAW_ABI_ALIASES = {
         )
     ),
     "rrr.fiber_channel": (
-        (
-            "T",
-            "rrr::FiberChannel@rrr.fiber_channel::FiberChannel(rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>)",
-        ),
         ("T", "rrr::FiberChannel@rrr.fiber_channel::~FiberChannel()"),
     ),
     "rrr.client": (
@@ -4660,13 +4641,11 @@ RAW_ABI_ALIASES = {
         ('T', 'rrr::Client@rrr.client::Client(rusty::RefCell<rusty::Option<rusty::Arc<rrr::ClientConnection@rrr.client>>>, rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Cell<int>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rusty::Cell<rrr::HeartbeatConfig@rrr.heartbeat>, rusty::Cell<rrr::CircuitBreakerConfig@rrr.circuit_breaker>, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::ConnectionMetrics@rrr.connection_metrics)'),
         ('T', 'rrr::Client@rrr.client::~Client()'),
         ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
-        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
         ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<std_port::collections::hash::map::HashMap@std_port<long, rusty::Arc<rrr::Future@rrr.client>, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
         ('T', 'rrr::ClientConnection@rrr.client::~ClientConnection()'),
         ('T', 'rrr::ClientPool@rrr.client::ClientPool(rrr::ClientPool@rrr.client&&)'),
         ('T', 'rrr::ClientPool@rrr.client::ClientPool(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::PoolState@rrr.client>, rusty::Mutex<rrr::PoolConfig@rrr.client>)'),
         ('T', 'rrr::ClientPool@rrr.client::~ClientPool()'),
-        ('T', 'rrr::Future@rrr.client::Future(long, rrr::FutureAttr@rrr.client)'),
     ),
 }
 
@@ -5811,20 +5790,18 @@ def require_request_queue_raw_symbols(
     description: str,
     entries: list[tuple[str, str]],
 ) -> None:
-    """Pin request-queue's API, constructor aliases, and initializer exactly."""
+    """Pin request-queue's API and initializer exactly.
 
-    default_constructor = (
-        "T",
-        "rrr::RequestQueue@rrr.request_queue::RequestQueue()",
-    )
-    config_constructor = (
-        "T",
-        "rrr::RequestQueue@rrr.request_queue::RequestQueue("
-        "rrr::RequestQueueConfig@rrr.request_queue)",
-    )
+    Factory-only construction: `RequestQueue::new_()` and
+    `RequestQueue::with_config()` replaced the two public constructors, so this
+    module now has NO constructor alias at all. An Itanium-ABI constructor is
+    emitted twice (C1 complete-object and C2 base-object) and both demangle to
+    the same name, which is exactly what the two `+= 1` lines here used to
+    account for; a static factory is emitted once and is already covered by its
+    ABI_SPECS entry. Measured on the object: two aliases -> zero.
+    """
+
     expected = Counter(ABI_SPECS["rrr.request_queue"].symbols)
-    expected[default_constructor] += 1
-    expected[config_constructor] += 1
     expected[("T", "initializer for module rrr.request_queue")] += 1
     actual = Counter(entries)
     if actual == expected:
@@ -5832,8 +5809,8 @@ def require_request_queue_raw_symbols(
     missing = sorted((expected - actual).elements())
     unexpected = sorted((actual - expected).elements())
     raise GateError(
-        f"{description} request-queue ABI must contain exactly 30 raw strong "
-        "entries (27 unique provider-owned symbols, two constructor aliases, "
+        f"{description} request-queue ABI must contain exactly 28 raw strong "
+        "entries (27 unique provider-owned symbols, no constructor alias, "
         f"and the module initializer); missing={missing!r}, "
         f"unexpected={unexpected!r}"
     )
@@ -5855,9 +5832,14 @@ def require_utils_raw_symbols(
 ) -> None:
     """Pin Utils' API, C++ ctor/dtor aliases, and initializer exactly."""
 
+    # Factory-only construction: `AddrInfo::new_()` and `AddrInfo::adopt()`
+    # replaced the two public constructors. An Itanium-ABI constructor is
+    # emitted twice (C1 complete-object and C2 base-object) and both demangle
+    # to one name, so each contributed one ALIAS here on top of its unique
+    # symbol; a static factory is emitted once and contributes no alias. The
+    # private fieldwise ctor, the move ctor and the dtor are unaffected.
+    # Measured on the object: five aliases -> three.
     aliased = (
-        "rrr::AddrInfo@rrr.utils::AddrInfo()",
-        "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*)",
         "rrr::AddrInfo@rrr.utils::AddrInfo(addrinfo*, rusty::Cell<bool>)",
         "rrr::AddrInfo@rrr.utils::AddrInfo(rrr::AddrInfo@rrr.utils&&)",
         "rrr::AddrInfo@rrr.utils::~AddrInfo()",
@@ -5872,8 +5854,8 @@ def require_utils_raw_symbols(
     missing = sorted((expected - actual).elements())
     unexpected = sorted((actual - expected).elements())
     raise GateError(
-        f"{description} Utils ABI must contain exactly 17 raw strong "
-        "entries (11 unique provider-owned symbols, five C++ ABI aliases, "
+        f"{description} Utils ABI must contain exactly 15 raw strong "
+        "entries (11 unique provider-owned symbols, three C++ ABI aliases, "
         f"and the module initializer); missing={missing!r}, "
         f"unexpected={unexpected!r}"
     )
@@ -7263,7 +7245,7 @@ static bool completion_tracker_concurrent_operations_are_safe() {
         auto config = rrr::CompletionTrackerConfig::defaults();
         config.ttl_ms = 0;
         config.max_entries = kUpdates + 1;
-        rrr::CompletionTracker tracker(config);
+        auto tracker = rrr::CompletionTracker::with_config(config);
         std::atomic<std::uint64_t> ready{0};
         std::atomic<bool> start{false};
         std::atomic<bool> failed{false};
@@ -7746,7 +7728,7 @@ int main() {
         return 62;
     }
 
-    rrr::CompletionTracker disabled_tracker(completion_disabled);
+    auto disabled_tracker = rrr::CompletionTracker::with_config(completion_disabled);
     disabled_tracker.mark_completed(1, 0);
     if (disabled_tracker.enabled() || disabled_tracker.size() != 0 ||
         disabled_tracker.total_tracked() != 0 ||
@@ -7759,7 +7741,7 @@ int main() {
     auto lifecycle_config = rrr::CompletionTrackerConfig::defaults();
     lifecycle_config.ttl_ms = 10;
     lifecycle_config.max_entries = 2;
-    rrr::CompletionTracker lifecycle_tracker(lifecycle_config);
+    auto lifecycle_tracker = rrr::CompletionTracker::with_config(lifecycle_config);
     lifecycle_tracker.mark_completed(1, 0);
     lifecycle_tracker.mark_completed(1, 1);
     lifecycle_tracker.mark_completed(2, 0);
@@ -7788,7 +7770,7 @@ int main() {
 
     auto mutation_config = rrr::CompletionTrackerConfig::defaults();
     mutation_config.ttl_ms = 0;
-    rrr::CompletionTracker mutation_tracker(mutation_config);
+    auto mutation_tracker = rrr::CompletionTracker::with_config(mutation_config);
     mutation_tracker.mark_completed(10, 1);
     mutation_tracker.mark_completed(11, 1);
     if (!mutation_tracker.remove(10) || mutation_tracker.remove(10) ||
@@ -7808,7 +7790,7 @@ int main() {
     auto overflow_config = rrr::CompletionTrackerConfig::defaults();
     overflow_config.ttl_ms = 0;
     overflow_config.max_entries = 1;
-    rrr::CompletionTracker overflow_tracker(overflow_config);
+    auto overflow_tracker = rrr::CompletionTracker::with_config(overflow_config);
     overflow_tracker.mark_completed(1, 0);
     using rusty::sync::atomic::Ordering;
     overflow_tracker.total_tracked_.store(
@@ -8589,7 +8571,7 @@ int main() {
     }
 
     {
-        rrr::AddrInfo empty;
+        auto empty = rrr::AddrInfo::new_();
         if (empty.get() != nullptr || empty.valid() || empty.owned_.get() ||
             empty._rusty_forgotten) {
             return 184;
@@ -8599,7 +8581,7 @@ int main() {
     {
         auto* first = new addrinfo{};
         auto* second = new addrinfo{};
-        rrr::AddrInfo source(first);
+        auto source = rrr::AddrInfo::adopt(first);
         if (source.get() != first || !source.valid() || !source.owned_.get()) {
             return 185;
         }
@@ -8608,7 +8590,7 @@ int main() {
             source.get() != first || !source._rusty_forgotten) {
             return 186;
         }
-        rrr::AddrInfo target(second);
+        auto target = rrr::AddrInfo::adopt(second);
         target = std::move(moved);
         if (target.get() != first || !target.owned_.get() ||
             moved.get() != first || !moved._rusty_forgotten) {
@@ -9073,7 +9055,7 @@ int main() {
     auto fifo_config = queue_defaults;
     fifo_config.max_size = 2;
     fifo_config.default_ttl_ms = 77;
-    rrr::RequestQueue fifo(fifo_config);
+    auto fifo = rrr::RequestQueue::with_config(fifo_config);
     if (!fifo.empty() || fifo.remaining_capacity() != 2) {
         return 163;
     }
@@ -9105,7 +9087,7 @@ int main() {
         auto config = queue_defaults;
         config.max_size = 1;
         config.overflow_strategy = strategy;
-        rrr::RequestQueue queue(config);
+        auto queue = rrr::RequestQueue::with_config(config);
         if (!queue.enqueue(make_queued_request(3))) {
             return 167;
         }
@@ -9127,7 +9109,7 @@ int main() {
 
     auto oldest_config = queue_defaults;
     oldest_config.max_size = 1;
-    rrr::RequestQueue oldest_queue(oldest_config);
+    auto oldest_queue = rrr::RequestQueue::with_config(oldest_config);
     bool oldest_called = false;
     auto oldest = make_queued_request(
         5,
@@ -9148,7 +9130,7 @@ int main() {
         return 170;
     }
 
-    rrr::RequestQueue disabled_queue(rrr::RequestQueueConfig::disabled());
+    auto disabled_queue = rrr::RequestQueue::with_config(rrr::RequestQueueConfig::disabled());
     bool disabled_called = false;
     auto disabled_request = make_queued_request(
         7,
@@ -9166,7 +9148,7 @@ int main() {
     }
 
     monotonic_now_us = 2'000'000;
-    rrr::RequestQueue expiring;
+    auto expiring = rrr::RequestQueue::new_();
     std::vector<std::int64_t> expired_order;
     for (std::int64_t xid : {8, 9}) {
         auto request = make_queued_request(
@@ -9196,7 +9178,7 @@ int main() {
         return 173;
     }
 
-    rrr::RequestQueue clearing;
+    auto clearing = rrr::RequestQueue::new_();
     std::vector<std::int64_t> cleared_order;
     for (std::int64_t xid : {11, 12}) {
         auto request = make_queued_request(
@@ -9223,7 +9205,7 @@ int main() {
     auto invalid_config = queue_defaults;
     invalid_config.max_size = 0;
     invalid_config.overflow_strategy = static_cast<rrr::OverflowStrategy>(99);
-    rrr::RequestQueue invalid_queue(invalid_config);
+    auto invalid_queue = rrr::RequestQueue::with_config(invalid_config);
     if (!invalid_queue.enqueue(make_queued_request(13)) ||
         invalid_queue.size() != 1) {
         return 176;
@@ -9259,12 +9241,12 @@ int main() {
         return 217;
     }
 
-    rrr::FiberFuture<int> invalid_future;
+    auto invalid_future = rrr::FiberFuture<int>::default_();
     if (invalid_future.valid() || invalid_future.is_ready() ||
         invalid_future.wait_for(1)) {
         return 218;
     }
-    rrr::FiberPromise<int> promise;
+    auto promise = rrr::FiberPromise<int>::default_();
     auto future = promise.get_future();
     if (!future.valid() || future.is_ready()) {
         return 219;
@@ -9378,7 +9360,7 @@ int main() {
     auto idempotency_config = idempotency_defaults;
     idempotency_config.ttl_ms = 100;
     idempotency_config.max_entries = 2;
-    rrr::IdempotencyCache idempotency_cache(idempotency_config);
+    auto idempotency_cache = rrr::IdempotencyCache::with_config(idempotency_config);
     rusty::Vec<std::uint8_t> payload_one;
     payload_one.push(1);
     payload_one.push(2);

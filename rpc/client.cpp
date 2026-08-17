@@ -506,7 +506,7 @@ pub struct Future {
 }
 
 impl Future {
-    #[cfg_attr(any(), cpp_ctor)] fn new(xid: i64, attr: FutureAttr) -> Future {
+    fn new(xid: i64, attr: FutureAttr) -> Future {
         Future {
             xid_: xid,
             error_code_: Cell::new(0i32),
@@ -751,7 +751,6 @@ impl Drop for ClientConnection {
 }
 
 impl ClientConnection {
-    #[cfg_attr(any(), cpp_ctor)]
     fn new(poll_thread_worker: Arc<PollThread>) -> ClientConnection {
         ClientConnection {
             poll_thread_worker_: poll_thread_worker,
@@ -903,28 +902,20 @@ impl ClientConnection {
         }
         self.connect_via_factory(addr)
     }
-    // `rusty::make_box` is a diverging rustc-only model (it returns `!`), so
-    // rustc treats the in-place construction and everything after it as dead.
-    // The emitted C++ constructs the FiberChannel in its final slot.
-    #[allow(unreachable_code, unused_variables)]
-    // clippy::diverging_sub_expression -- false positive: rusty::make_box is a diverging rustc-only model (see the comment above); no code change is possible. See the Task-2 measurement block above.
-    #[allow(clippy::diverging_sub_expression)]
     fn bind_channel(&self, channel: ChannelConnectionProxy) {
         if !channel.is_valid() {
             return;
         }
-        // Move the proxy into a heap-allocated FiberChannel (make_box
-        // constructs in-place; FiberChannel is move-deleted because its
-        // callbacks capture `this`). bind_callbacks must run AFTER the Box is
-        // in its final slot so those [this]-captures pin to a stable address.
+        // Move the proxy into a heap-allocated FiberChannel. FiberChannel is
+        // move-deleted (its callbacks capture `this`), so the emitted C++
+        // lowers `Box::new(FiberChannel::new(..))` to the in-place
+        // `emplace_with` seam: the factory's returned prvalue constructs the
+        // channel directly in its final heap slot (guaranteed copy elision).
+        // bind_callbacks must run AFTER the Box holds that final address so
+        // its [this]-captures pin to a stable location.
         {
-            // The `rusty::make_box` facade is a diverging model (it returns `!`
-            // because a rustc-only build cannot construct the in-place C++
-            // object), so rustc sees the rest of this block as dead. The
-            // emitted C++ is the real in-place construction.
-            #[allow(unreachable_code, unused_variables)]
-            let guard = self.fiber_channel_.lock().unwrap();
-            *guard = Some(rusty::make_box::<FiberChannel>(channel));
+            let mut guard = self.fiber_channel_.lock().unwrap();
+            *guard = Some(Box::new(FiberChannel::new(channel)));
             let fc: &mut Box<FiberChannel> = (*guard).as_mut().unwrap();
             (*fc).bind_callbacks();
         }
@@ -2622,7 +2613,10 @@ pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i
 }
 
 pub fn clientconn_make_fiber_channel(ch: ChannelConnectionProxy) -> Box<FiberChannel> {
-    rusty::make_box::<FiberChannel>(ch)
+    // Lowers to the in-place `emplace_with` seam: FiberChannel's moves are
+    // deleted, so the factory's returned prvalue constructs it directly in
+    // the heap slot (guaranteed copy elision).
+    Box::new(FiberChannel::new(ch))
 }
 
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.

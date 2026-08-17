@@ -177,8 +177,8 @@ class ClientChannelRecvTest : public ::testing::Test {
         // `emplace`/`reset` aren't on rusty::Option — assign
         // `rusty::Some(...)` / `rusty::None`.
         poll_thread_ = rusty::Some(PollThread::create());
-        conn_ = rusty::Some(rusty::Arc<ClientConnection>::make(
-            poll_thread_.as_ref().unwrap().clone()));
+        conn_ = rusty::Some(rusty::Arc<ClientConnection>::new_(ClientConnection::new_(
+            poll_thread_.as_ref().unwrap().clone())));
         // Production goes through `Client::connect` which wires the
         // weak self-pointer; the test constructs the connection
         // directly so we install it here. Without this, the recv-loop

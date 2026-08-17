@@ -113,11 +113,18 @@ class GateStaticContractTests(unittest.TestCase):
     def test_each_promoted_module_has_surface_and_raw_abi_ratchets(self) -> None:
         expected = {
             "rrr.channel": (13, 20),
-            "rrr.epoll_wrapper": (22, 26),
+            # Factory-only construction: Epoll's public ctor became the static
+            # `Epoll::new_()` factory. A ctor emits two raw ABI entries (C1/C2)
+            # that demangle to one name, a factory emits one, so the raw count
+            # drops by one while the unique count is unchanged: 26 -> 25.
+            "rrr.epoll_wrapper": (22, 25),
             "rrr.pollable_proxy": (4, 7),
             "rrr.callbacks": (27, 28),
             "rrr.inmemory_channel": (77, 84),
-            "rrr.fiber_channel": (17, 20),
+            # Factory-only construction: FiberChannel's explicit ctor became
+            # the static `FiberChannel::new_()` factory; one ctor, so one fewer
+            # raw entry (20 -> 19), unique count unchanged.
+            "rrr.fiber_channel": (17, 19),
             "rrr.threading": (17, 18),
             "rrr.debugging": (9, 10),
             "rrr.any_message": (10, 11),
@@ -316,15 +323,25 @@ class GateContractTests(unittest.TestCase):
             "rrr.serializable_envelope": (0, 1),
             "rrr.future": (0, 1),
             "rrr.logging": (7, 8),
-            "rrr.idempotency": (36, 39),
+            # Factory-only construction: IdempotencyCache's two public ctors
+            # became `new_()` / `with_config()`; two ctors, so two fewer raw
+            # entries (39 -> 37), unique count unchanged.
+            "rrr.idempotency": (36, 37),
             "rrr.fiber": (8, 9),
             "rrr.misc": (18, 23),
             "rrr.channel": (13, 20),
-            "rrr.epoll_wrapper": (22, 26),
+            # Factory-only construction: Epoll's public ctor became the static
+            # `Epoll::new_()` factory. A ctor emits two raw ABI entries (C1/C2)
+            # that demangle to one name, a factory emits one, so the raw count
+            # drops by one while the unique count is unchanged: 26 -> 25.
+            "rrr.epoll_wrapper": (22, 25),
             "rrr.pollable_proxy": (4, 7),
             "rrr.callbacks": (27, 28),
             "rrr.inmemory_channel": (77, 84),
-            "rrr.fiber_channel": (17, 20),
+            # Factory-only construction: FiberChannel's explicit ctor became
+            # the static `FiberChannel::new_()` factory; one ctor, so one fewer
+            # raw entry (20 -> 19), unique count unchanged.
+            "rrr.fiber_channel": (17, 19),
             "rrr.threading": (17, 18),
             "rrr.debugging": (9, 10),
             "rrr.any_message": (10, 11),

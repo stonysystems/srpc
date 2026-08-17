@@ -133,7 +133,6 @@ pub struct Epoll {
 impl Epoll {
     /// Allocate the poll descriptor eagerly, as the historical default
     /// constructor did.
-    #[cfg_attr(any(), cpp_ctor)]
     #[allow(clippy::new_without_default, unsafe_code)]
     pub fn new() -> Epoll {
         Epoll {

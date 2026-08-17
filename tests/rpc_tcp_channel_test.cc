@@ -129,7 +129,7 @@ class TcpConnectionTest : public ::testing::Test {
         ASSERT_EQ(0, set_nonblocking(sv[1]));
         conn_fd_ = sv[0];
         peer_fd_ = sv[1];
-        conn_ = rusty::Some(rusty::Arc<TcpConnection>::make(conn_fd_, "test-peer"));
+        conn_ = rusty::Some(rusty::Arc<TcpConnection>::new_(TcpConnection::new_(conn_fd_, "test-peer")));
     }
 
     void TearDown() override {
@@ -537,7 +537,7 @@ TEST_F(TcpConnectionTest, ChannelProxyForwardsAllOps) {
 }
 
 TEST(TcpListenerConcurrencyTest, CloseWaitsForWholeAcceptDriverWithTwoReaders) {
-    TcpListener listener;
+    auto listener = TcpListener::new_();
     ASSERT_EQ(listener.listen("127.0.0.1:0"), ChannelError::None);
 
     std::atomic<unsigned> callbacks_entered{0};

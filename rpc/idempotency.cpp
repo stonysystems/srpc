@@ -226,7 +226,6 @@ pub struct IdempotencyCache {
 }
 
 impl IdempotencyCache {
-    #[cfg_attr(any(), cpp_ctor)]
     #[allow(clippy::new_without_default)]
     pub fn new() -> IdempotencyCache {
         IdempotencyCache {
@@ -238,7 +237,6 @@ impl IdempotencyCache {
         }
     }
 
-    #[cfg_attr(any(), cpp_ctor)]
     pub fn with_config(config: self::IdempotencyConfig) -> IdempotencyCache {
         IdempotencyCache {
             config_: Cell::new(config),

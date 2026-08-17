@@ -31,7 +31,6 @@ pub struct FiberPromise<T> {
 }
 
 impl<T> Default for FiberPromise<T> {
-    #[cfg_attr(any(), cpp_ctor)]
     #[allow(unsafe_code)]
     fn default() -> FiberPromise<T> {
         FiberPromise {
@@ -76,7 +75,6 @@ pub struct FiberFuture<T> {
 }
 
 impl<T> Default for FiberFuture<T> {
-    #[cfg_attr(any(), cpp_ctor)]
     fn default() -> FiberFuture<T> {
         FiberFuture {
             state_: None,

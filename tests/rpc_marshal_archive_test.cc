@@ -1128,13 +1128,12 @@ concept HasGeneratedDefaultFactory = requires { T::default_(); };
 static_assert(std::is_default_constructible_v<EnvelopeLayoutSubject>);
 static_assert(std::is_copy_constructible_v<EnvelopeLayoutSubject>);
 static_assert(std::is_copy_assignable_v<EnvelopeLayoutSubject>);
-static_assert(!std::is_aggregate_v<EnvelopeLayoutSubject>);
-static_assert(!HasGeneratedDefaultFactory<EnvelopeLayoutSubject>);
-static_assert(!std::is_constructible_v<
-              EnvelopeLayoutSubject,
-              int32_t,
-              rusty::Option<SerializableProxy>,
-              std::array<rusty::PhantomData<EnvelopeTestSet>, 0>>);
+// Factory-only construction: the #[cpp_ctor] marker is gone, so the
+// generated default ctor is gone with it. The type is a plain aggregate
+// again and the sanctioned construction path is the generated
+// `default_()` factory (the Default impl's real body).
+static_assert(std::is_aggregate_v<EnvelopeLayoutSubject>);
+static_assert(HasGeneratedDefaultFactory<EnvelopeLayoutSubject>);
 static_assert(std::is_standard_layout_v<EnvelopeLayoutSubject>);
 static_assert(sizeof(SerializableEnvelope<EnvelopeTestSet>) ==
               sizeof(LegacyEnvelopeLayout));
@@ -1234,7 +1233,7 @@ TEST(PayloadMemberFactory, ExplicitMembershipAndKinds) {
 // ---------------------------------------------------------------------------
 
 TEST(SerializableEnvelope, DefaultConstructedIsEmpty) {
-  SerializableEnvelope<EnvelopeTestSet> env;
+  auto env = SerializableEnvelope<EnvelopeTestSet>::default_();
   // (the redundant `explicit operator bool` was removed with the DSL
   // conversion — no trait maps to it and it had zero production callers)
   EXPECT_FALSE(env.has_value());
@@ -1318,7 +1317,7 @@ TEST(SerializableEnvelope, RoundTripValueSemanticViaArchive) {
   // Decode.
   BufferSource source(sink.bytes.data(), sink.bytes.len());
   BinaryReadArchive reader(make_source_proxy(&source));
-  SerializableEnvelope<EnvelopeTestSet> incoming;
+  auto incoming = SerializableEnvelope<EnvelopeTestSet>::default_();
   incoming.load(reader);
 
   EXPECT_TRUE(incoming.has_value());
@@ -1342,7 +1341,7 @@ TEST(SerializableEnvelope, RoundTripAliasedViaArchive) {
   // Decode.
   BufferSource source(sink.bytes.data(), sink.bytes.len());
   BinaryReadArchive reader(make_source_proxy(&source));
-  SerializableEnvelope<EnvelopeTestSet> incoming;
+  auto incoming = SerializableEnvelope<EnvelopeTestSet>::default_();
   incoming.load(reader);
 
   EXPECT_EQ(incoming.kind(), TypeListFactoryGamma::kKind);

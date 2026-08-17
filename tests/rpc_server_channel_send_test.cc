@@ -114,8 +114,8 @@ class ServerChannelSendTest : public ::testing::Test {
         ctx_ = rusty::Some(make_test_ctx());
         // socket fd = -1: legacy path is unreachable (we never call
         // handle_read / handle_write); we only exercise reply().
-        sconn_ = rusty::Some(rusty::Arc<ServerConnection>::make(
-            ctx_.as_ref().unwrap().clone(), /*socket=*/-1));
+        sconn_ = rusty::Some(rusty::Arc<ServerConnection>::new_(ServerConnection::new_(
+            ctx_.as_ref().unwrap().clone(), /*socket=*/-1)));
     }
 
     void TearDown() override {

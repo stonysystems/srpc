@@ -798,8 +798,6 @@ pub struct fiber_task_t {
 }
 
 impl fiber_task_t {
-    #[cfg_attr(any(), cpp_ctor)]
-    #[cfg_attr(any(), cpp_explicit)]
     pub fn new(fn_: FiberTaskFn) -> fiber_task_t {
         fiber_task_t {
             fn_,
@@ -870,7 +868,6 @@ pub struct Fiber {
 }
 
 impl Fiber {
-    #[cfg_attr(any(), cpp_ctor)]
     pub fn new(func: FiberFn) -> Fiber {
         Fiber {
             dep_id_: 0u64,
@@ -1421,7 +1418,6 @@ pub struct Reactor {
 }
 
 impl Reactor {
-    #[cfg_attr(any(), cpp_ctor)]
     pub fn new() -> Reactor {
         Reactor {
             server_id_: Default::default(),

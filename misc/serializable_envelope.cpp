@@ -156,7 +156,6 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
 }
 
 impl<PayloadSet> Default for SerializableEnvelope<PayloadSet> {
-    #[cfg_attr(any(), cpp_ctor)]
     fn default() -> SerializableEnvelope<PayloadSet> {
         SerializableEnvelope {
             kind_: 0i32,
