@@ -144,6 +144,14 @@ class GateContractTests(unittest.TestCase):
         transpiler = ROOT / GATE.DEFAULT_TRANSPILER
         if not transpiler.is_file():
             raise unittest.SkipTest(f"transpiler fixture unavailable: {transpiler}")
+        flat_import_namespace = DRIVER.load_flat_import_namespace(
+            ROOT, ROOT / "rust-modules.toml"
+        )
+        flat_import_arguments = (
+            ["--flat-import-namespace", flat_import_namespace]
+            if flat_import_namespace is not None
+            else []
+        )
         subprocess.run(
             [
                 str(transpiler),
@@ -153,6 +161,7 @@ class GateContractTests(unittest.TestCase):
                 str(cls.generated),
                 "--cxx-namespace",
                 "rrr",
+                *flat_import_arguments,
                 "--module-preamble",
                 str(ROOT / "module-preambles.toml"),
                 "--type-map",

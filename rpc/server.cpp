@@ -26,17 +26,13 @@ use std::sync::{Arc, Weak as ArcWeak};
 // exact spelling.
 use rusty::{HashMap, HashSet};
 
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ChannelListenerBase,
     ChannelListenerProxy, OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
 };
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::misc::OneTimeJob;
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::serializable::{BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource};
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
 use cpp::rrr::basetypes as cpp_basetypes;

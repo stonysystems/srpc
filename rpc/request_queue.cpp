@@ -5,7 +5,6 @@ use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::circuit_breaker::current_time_us;
 
 #[allow(non_camel_case_types)]

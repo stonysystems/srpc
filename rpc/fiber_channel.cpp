@@ -30,7 +30,6 @@ use std::collections::VecDeque;
 use std::marker::PhantomPinned;
 use std::sync::{Arc, Mutex};
 
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::channel::{
     ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFrame,
     OnClosedCallback, OnErrorCallback, OnFrameCallback,

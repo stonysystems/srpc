@@ -24,7 +24,7 @@ DEFAULT_TRANSPILER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-transpiler"
 )
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "f6ca2ed0e8efb26c089b888e081b7f759d3b3c99"
+REQUIRED_RUSTY_CPP_COMMIT = "8370395d1f6a01ff5564f73650c6bfd59de0b75c"
 EXTRACTION_DRIVER = "scripts/extract_rrr_rust.py"
 EXTRACTION_MANIFEST = "rust-modules.toml"
 MODULE_PREAMBLE = "module-preambles.toml"
@@ -10176,6 +10176,14 @@ def check(args: argparse.Namespace) -> None:
             configured_module_dependencies=configured_module_dependencies,
         )
     else:
+        flat_import_namespace = extraction.load_flat_import_namespace(
+            root, root / EXTRACTION_MANIFEST
+        )
+        flat_import_arguments = (
+            ["--flat-import-namespace", flat_import_namespace]
+            if flat_import_namespace is not None
+            else []
+        )
         with tempfile.TemporaryDirectory(prefix="rrr-crate-mode-") as temporary:
             output = Path(temporary)
             run(
@@ -10187,6 +10195,7 @@ def check(args: argparse.Namespace) -> None:
                     str(output),
                     "--cxx-namespace",
                     "rrr",
+                    *flat_import_arguments,
                     "--module-preamble",
                     str(root / MODULE_PREAMBLE),
                     "--type-map",

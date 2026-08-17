@@ -16,15 +16,12 @@ use std::os::fd::IntoRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
 
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::channel::{
     ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFactoryBase,
     ChannelFactoryProxy, ChannelFrame, ChannelListenerBase, ChannelListenerProxy, ConnectResult,
     OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
 };
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::frame_codec::{FrameDecodeStatus, FrameHeader, FrameStreamReader, FrameView};
-#[cfg_attr(any(), cpp_import_namespace(rrr))]
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 
 use cpp::rrr::reactor as cpp_reactor;
