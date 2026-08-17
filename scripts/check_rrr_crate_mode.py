@@ -24,7 +24,7 @@ DEFAULT_TRANSPILER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-transpiler"
 )
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "692ff7f11edf0cd5760664444b706949e2a8563a"
+REQUIRED_RUSTY_CPP_COMMIT = "f6ca2ed0e8efb26c089b888e081b7f759d3b3c99"
 EXTRACTION_DRIVER = "scripts/extract_rrr_rust.py"
 EXTRACTION_MANIFEST = "rust-modules.toml"
 MODULE_PREAMBLE = "module-preambles.toml"
@@ -48,6 +48,20 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
     r"in scope [^:\n]+: \[[^\]\n]*\](?:; cycle path: [^\n]*)?$",
     re.MULTILINE,
 )
+# REVIEWED ABI RESPELLING (goal0-on-main convergence, 5 symbols, 1:1):
+# - 4 symbols (QuorumEvent ctor, ClientConnection ctor, Server ctor,
+#   RpcServiceContext::new_) re-spell their hash containers under upstream
+#   #177's std_port re-backing: rusty::port::collections::hashbrown::
+#   HashMap/HashSet@hashbrown_port.* with DefaultHasher@hashbrown_port.hasher
+#   became std_port::collections::hash::{map,set}::*@std_port with
+#   std_port::hash::compat::DefaultHasher@std_port (the 8-byte compat builder
+#   that preserves the ratified LAYOUT; see the submodule's std_port compat
+#   commits). Same functions, same arity, container spelling only.
+# - 1 symbol (DeferredReply ctor) folds its two Option<Box<dyn Fn*>> params
+#   into the callbacks' own nullable state under the converged transparent-
+#   callback model (Option<rusty::Function<...>> -> rusty::Function<...>).
+# Verified against build librrr.a: these five are the ONLY pinned-symbol
+# deltas; the total stays exactly 1897.
 EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1897
 
 # ---------------------------------------------------------------------------
@@ -192,7 +206,7 @@ CLIENT_INCUMBENT_ORACLE = frozenset(
         ('T', 'rrr::Client@rrr.client::~Client()'),
         ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
         ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
-        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<long, rusty::Arc<rrr::Future@rrr.client>, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<std_port::collections::hash::map::HashMap@std_port<long, rusty::Arc<rrr::Future@rrr.client>, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
         ('T', 'rrr::ClientConnection@rrr.client::abort_reconnect()'),
         ('T', 'rrr::ClientConnection@rrr.client::allow_request_with_circuit_metrics() const'),
         ('T', 'rrr::ClientConnection@rrr.client::apply_keepalive_options()'),
@@ -423,6 +437,13 @@ CLIENT_INCUMBENT_ORACLE_SIGNATURE_CHANGES = (
 # ABI_SPECS, EXPECTED_IMPORTS and IMPORTER_USE_MARKERS remain HARD gates:
 # those measure the real semantics -- symbol surface, module graph, and
 # importer coverage -- which is what "equivalent public surface" means.
+# REVIEWED RESPELLING (goal0-on-main convergence): the converged emitter
+# imports each rusty runtime type's OWNING port module (vec_port.vec,
+# std_port, rc_port, btree_port.*) instead of the `rusty` umbrella, and
+# injects `namespace rusty { using ::...; }` aliases locally, so every
+# rusty::* spelling in the generated bodies is unchanged. 13 module
+# graphs re-measured from the f2996ce5-generated output; the gate stays
+# EXACT (ordered list equality) at the new values.
 EXPECTED_IMPORTS = {
     "rrr.basetypes": [],
     "rrr.callback_wrapper": [],
@@ -430,14 +451,14 @@ EXPECTED_IMPORTS = {
     "rrr.stat": [],
     "rrr.errors": [],
     "rrr.connection_metrics": [],
-    "rrr.completion_tracker": ["rusty"],
-    "rrr.rand": ["rusty"],
+    "rrr.completion_tracker": ["std_port"],
+    "rrr.rand": ["vec_port.vec"],
     "rrr.request_options": ["rrr.rand"],
     "rrr.reconnect_policy": ["rrr.rand"],
     "rrr.circuit_breaker": [],
     "rrr.connection_state": [],
     "rrr.heartbeat": ["rrr.circuit_breaker"],
-    "rrr.request_queue": ["rusty", "rrr.circuit_breaker"],
+    "rrr.request_queue": ["vec_port.vec", "rrr.circuit_breaker"],
     "rrr.load_balancer": [],
     "rrr.utils": ["rrr.logging"],
     "rrr.frame_codec": ["rrr.internal_protocol"],
@@ -454,20 +475,20 @@ EXPECTED_IMPORTS = {
     ],
     "rrr.future": ["rrr.reactor", "std"],
     "rrr.logging": ["rrr.debugging", "std"],
-    "rrr.idempotency": ["rusty", "rrr.serializable"],
-    "rrr.fiber": ["rusty", "rrr.basetypes", "rrr.reactor"],
+    "rrr.idempotency": ["vec_port.vec", "rrr.serializable"],
+    "rrr.fiber": ["rc_port", "rrr.basetypes", "rrr.reactor"],
     "rrr.misc": [],
     "rrr.channel": ["rrr.callback_wrapper"],
     "rrr.epoll_wrapper": ["rusty"],
     "rrr.pollable_proxy": [],
-    "rrr.callbacks": ["rusty", "rrr.errors"],
-    "rrr.inmemory_channel": ["rusty", "rrr.channel"],
+    "rrr.callbacks": ["vec_port.vec", "rrr.errors"],
+    "rrr.inmemory_channel": ["vec_port.vec", "std_port", "rrr.channel"],
     # Same dependency set as before; the emitter now orders the rrr.* imports
     # alphabetically, matching every other entry in this map.
-    "rrr.fiber_channel": ["rusty", "rrr.channel", "rrr.reactor"],
+    "rrr.fiber_channel": ["vec_port.vec", "rrr.channel", "rrr.reactor"],
     "rrr.threading": ["rrr.debugging"],
-    "rrr.debugging": ["rusty"],
-    "rrr.any_message": ["rusty", "rrr.debugging", "rrr.serializable"],
+    "rrr.debugging": ["vec_port.vec"],
+    "rrr.any_message": ["std_port", "rrr.debugging", "rrr.serializable"],
     "rrr.tcp_channel": [
         "rrr.channel",
         "rrr.frame_codec",
@@ -478,7 +499,11 @@ EXPECTED_IMPORTS = {
     # the emitter writes `import rusty;` first and then the rrr.* set
     # alphabetically, with `import std;` last.
     "rrr.reactor": [
-        "rusty",
+        "vec_port.vec",
+        "rc_port",
+        "btree_port.btree.map",
+        "btree_port.btree.set",
+        "std_port",
         "rrr.basetypes",
         "rrr.debugging",
         "rrr.epoll_wrapper",
@@ -491,7 +516,8 @@ EXPECTED_IMPORTS = {
     # emitter writes `import rusty;` first and then the rrr.* set
     # alphabetically. rrr.server needs no `import std;`.
     "rrr.server": [
-        "rusty",
+        "vec_port.vec",
+        "std_port",
         "rrr.basetypes",
         "rrr.channel",
         "rrr.debugging",
@@ -503,7 +529,9 @@ EXPECTED_IMPORTS = {
         "rrr.tcp_channel",
     ],
     "rrr.client": [
-        'rusty',
+        'vec_port.vec',
+        'btree_port.btree.map',
+        'std_port',
         'rrr.basetypes',
         'rrr.callback_wrapper',
         'rrr.callbacks',
@@ -631,7 +659,10 @@ ABI_SPECS = {
                 "struct CallbackWrapper",
                 "rusty::Option<rusty::Arc<F>> inner;",
                 "static CallbackWrapper<F> from_callable(F callable) {",
-                "rusty::Arc<F>::new_(std::move(callable))",
+                # Reviewed respelling: the converged emitter selects the variadic
+                # Arc factory `make` (arc.hpp defines both; identical
+                # semantics for one moved argument).
+                "rusty::Arc<F>::make(std::move(callable))",
                 "bool has_value() const {",
                 "const F& callable() const {",
                 "CallbackWrapper<F> clone() const {",
@@ -872,7 +903,7 @@ ABI_SPECS = {
             {
                 "#include <rusty/sync/atomic.hpp>",
                 "export module rrr.completion_tracker;",
-                "import rusty;",
+                "import std_port;",
                 "export enum class CompletionStatus",
                 "export struct CompletionTrackerConfig",
                 "export struct CompletedEntry",
@@ -957,7 +988,7 @@ ABI_SPECS = {
             {
                 '#include "misc/srpc_rand.h"',
                 "export module rrr.rand;",
-                "import rusty;",
+                "import vec_port.vec;",
                 "namespace rusty_cpp_abi_detail {",
                 "bytes_from_std_string(const std::string& input)",
                 "std_string_from_bytes(rusty::Vec<uint8_t> input)",
@@ -1585,7 +1616,7 @@ ABI_SPECS = {
         surface=frozenset(
             {
                 "export module rrr.request_queue;",
-                "import rusty;",
+                "import vec_port.vec;",
                 "import rrr.circuit_breaker;",
                 "export enum class OverflowStrategy",
                 "export constexpr OverflowStrategy OverflowStrategy_DROP_OLDEST();",
@@ -2391,8 +2422,8 @@ ABI_SPECS = {
                 "bool lookup(const IdempotencyKey& key, uint64_t current_time_ms, int32_t& out_error_code, rusty::Vec<uint8_t>& out_response) const;",
                 "void store(const IdempotencyKey& key, int32_t error_code, const rusty::Vec<uint8_t>& response, uint64_t current_time_ms) const;",
                 "size_t evict_expired(uint64_t current_time_ms) const;",
-                "export void serialize(const IdempotencyKey& key, rrr::BinaryWriteArchive& archive)",
-                "export void deserialize(IdempotencyKey& key, rrr::BinaryReadArchive& archive)",
+                "export void serialize(const IdempotencyKey& key, ::rrr::BinaryWriteArchive& archive)",
+                "export void deserialize(IdempotencyKey& key, ::rrr::BinaryReadArchive& archive)",
                 "rusty::wrapping_add(this->timestamp_ms",
                 "rusty::wrapping_add(sequence",
                 "rusty::wrapping_add(this->misses_.get()",
@@ -2856,14 +2887,14 @@ ABI_SPECS = {
         surface=frozenset(
             {
                 "export struct AnyMessage;",
-                "void save(rrr::BinaryWriteArchive& archive) const;",
-                "void load(rrr::BinaryReadArchive& archive);",
+                "void save(::rrr::BinaryWriteArchive& archive) const;",
+                "void load(::rrr::BinaryReadArchive& archive);",
                 "bool is_a() const;",
                 "rusty::Option<rusty::Arc<T>> unpack() const;",
                 "static AnyMessage pack_as(std::string name, rusty::Arc<T> value);",
                 "static AnyMessage pack(rusty::Arc<T> value);",
-                "export void serialize(const AnyMessage& message, rrr::BinaryWriteArchive& archive)",
-                "export void deserialize(AnyMessage& message, rrr::BinaryReadArchive& archive)",
+                "export void serialize(const AnyMessage& message, ::rrr::BinaryWriteArchive& archive)",
+                "export void deserialize(AnyMessage& message, ::rrr::BinaryReadArchive& archive)",
             }
         ),
         symbols=frozenset(
@@ -2928,7 +2959,7 @@ ABI_SPECS = {
                 ('R', 'typeinfo name for rrr::WaitAll@rrr.reactor'),
                 ('R', 'typeinfo name for rrr::WaitAny@rrr.reactor'),
                 ('T', 'janus::QuorumEvent@rrr.reactor::QuorumEvent(janus::QuorumEvent@rrr.reactor&&)'),
-                ('T', 'janus::QuorumEvent@rrr.reactor::QuorumEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<unsigned short, long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<rrr::IntEvent@rrr.reactor>)'),
+                ('T', 'janus::QuorumEvent@rrr.reactor::QuorumEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<std_port::collections::hash::map::HashMap@std_port<unsigned short, long, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<rrr::IntEvent@rrr.reactor>)'),
                 ('T', 'janus::QuorumEvent@rrr.reactor::add_xid(unsigned short, long) const'),
                 ('T', 'janus::QuorumEvent@rrr.reactor::finalize(unsigned long, rusty::Function<bool (rusty::port::vec::Vec@vec_port.vec<std::__1::pair<unsigned short, long>, rusty::alloc::Global>&)>) const'),
                 ('T', 'janus::QuorumEvent@rrr.reactor::get_fiber_id() const'),
@@ -3239,7 +3270,7 @@ ABI_SPECS = {
                 ('R', 'rrr::kDefaultDrainTimeoutMs@rrr.server'),
                 ('R', 'typeinfo name for rrr::Service@rrr.server'),
                 ('T', 'rrr::DeferredReply@rrr.server::DeferredReply(rrr::DeferredReply@rrr.server&&)'),
-                ('T', 'rrr::DeferredReply@rrr.server::DeferredReply(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Option<rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>>, rusty::Option<rusty::Function<void ()>>)'),
+                ('T', 'rrr::DeferredReply@rrr.server::DeferredReply(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>, rusty::Function<void ()>)'),
                 ('T', 'rrr::DeferredReply@rrr.server::new_(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>, rusty::Function<void ()>)'),
                 ('T', 'rrr::DeferredReply@rrr.server::operator=(rrr::DeferredReply@rrr.server&&)'),
                 ('T', 'rrr::DeferredReply@rrr.server::reply()'),
@@ -3253,9 +3284,9 @@ ABI_SPECS = {
                 ('T', 'rrr::PendingRequestGuard@rrr.server::rusty_mark_forgotten() const'),
                 ('T', 'rrr::PendingRequestGuard@rrr.server::~PendingRequestGuard()'),
                 ('T', 'rrr::Request@rrr.server::attach_pending_guard(rusty::Arc<rusty::sync::atomic::detail::Atomic<int>> const&)'),
-                ('T', 'rrr::RpcServiceContext@rrr.server::new_(rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<int, unsigned long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashSet@hashbrown_port.set<int, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher>, rusty::port::vec::Vec@vec_port.vec<rusty::RefCell<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>>, rusty::alloc::Global>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long)'),
+                ('T', 'rrr::RpcServiceContext@rrr.server::new_(std_port::collections::hash::map::HashMap@std_port<int, unsigned long, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>, std_port::collections::hash::set::HashSet@std_port<int, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>, rusty::port::vec::Vec@vec_port.vec<rusty::RefCell<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>>, rusty::alloc::Global>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long)'),
                 ('T', 'rrr::Server@rrr.server::Server(rrr::Server@rrr.server&&)'),
-                ('T', 'rrr::Server@rrr.server::Server(rusty::port::vec::Vec@vec_port.vec<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<int, unsigned long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashSet@hashbrown_port.set<int, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher>, rusty::Option<rusty::Arc<rrr::RpcServiceContext@rrr.server>>, rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::ShutdownState@rrr.server>, rusty::Box<rusty::Condvar, rusty::alloc::Global>, rusty::Cell<rrr::ShutdownPhase@rrr.server>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long, rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>, rusty::Option<rusty::Box<rrr::ChannelListenerBase@rrr.channel, rusty::alloc::Global>>, rusty::Arc<rusty::Mutex<rrr::ChannelSconns@rrr.server>>)'),
+                ('T', 'rrr::Server@rrr.server::Server(rusty::port::vec::Vec@vec_port.vec<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>, rusty::alloc::Global>, std_port::collections::hash::map::HashMap@std_port<int, unsigned long, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>, std_port::collections::hash::set::HashSet@std_port<int, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>, rusty::Option<rusty::Arc<rrr::RpcServiceContext@rrr.server>>, rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::ShutdownState@rrr.server>, rusty::Box<rusty::Condvar, rusty::alloc::Global>, rusty::Cell<rrr::ShutdownPhase@rrr.server>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long, rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>, rusty::Option<rusty::Box<rrr::ChannelListenerBase@rrr.channel, rusty::alloc::Global>>, rusty::Arc<rusty::Mutex<rrr::ChannelSconns@rrr.server>>)'),
                 ('T', 'rrr::Server@rrr.server::add_shutdown_hook(rusty::Function<void ()>) const'),
                 ('T', 'rrr::Server@rrr.server::addr() const'),
                 ('T', 'rrr::Server@rrr.server::decrement_pending() const'),
@@ -3611,7 +3642,7 @@ ABI_SPECS = {
                 ('T', 'rrr::Client@rrr.client::~Client()'),
                 ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
                 ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
-                ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<long, rusty::Arc<rrr::Future@rrr.client>, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
+                ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<std_port::collections::hash::map::HashMap@std_port<long, rusty::Arc<rrr::Future@rrr.client>, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
                 ('T', 'rrr::ClientConnection@rrr.client::abort_reconnect()'),
                 ('T', 'rrr::ClientConnection@rrr.client::allow_request_with_circuit_metrics() const'),
                 ('T', 'rrr::ClientConnection@rrr.client::apply_keepalive_options()'),
@@ -3832,7 +3863,7 @@ RAW_ABI_ALIASES = {
         ),
         (
             'T',
-            'janus::QuorumEvent@rrr.reactor::QuorumEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<unsigned short, long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<rrr::IntEvent@rrr.reactor>)',
+            'janus::QuorumEvent@rrr.reactor::QuorumEvent(rusty::Cell<rrr::EventStatus@rrr.reactor>, rusty::thread::ThreadId, rrr::EventState@rrr.reactor, rusty::Cell<bool>, rusty::sync::Weak<rrr::EventPollable@rrr.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<std_port::collections::hash::map::HashMap@std_port<unsigned short, long, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@rrr.reactor>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<rrr::IntEvent@rrr.reactor>)',
         ),
         (
             'T',
@@ -3926,7 +3957,7 @@ RAW_ABI_ALIASES = {
         ),
         (
             'T',
-            'rrr::DeferredReply@rrr.server::DeferredReply(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Option<rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>>, rusty::Option<rusty::Function<void ()>>)',
+            'rrr::DeferredReply@rrr.server::DeferredReply(rusty::Box<rrr::Request@rrr.server, rusty::alloc::Global>, rusty::sync::Weak<rrr::ServerConnection@rrr.server>, rusty::Function<void (rrr::BinaryWriteArchive@rrr.serializable&)>, rusty::Function<void ()>)',
         ),
         (
             'T',
@@ -3950,7 +3981,7 @@ RAW_ABI_ALIASES = {
         ),
         (
             'T',
-            'rrr::Server@rrr.server::Server(rusty::port::vec::Vec@vec_port.vec<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<int, unsigned long, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>, rusty::port::collections::hashbrown::HashSet@hashbrown_port.set<int, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher>, rusty::Option<rusty::Arc<rrr::RpcServiceContext@rrr.server>>, rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::ShutdownState@rrr.server>, rusty::Box<rusty::Condvar, rusty::alloc::Global>, rusty::Cell<rrr::ShutdownPhase@rrr.server>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long, rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>, rusty::Option<rusty::Box<rrr::ChannelListenerBase@rrr.channel, rusty::alloc::Global>>, rusty::Arc<rusty::Mutex<rrr::ChannelSconns@rrr.server>>)',
+            'rrr::Server@rrr.server::Server(rusty::port::vec::Vec@vec_port.vec<rusty::Box<rrr::Service@rrr.server, rusty::alloc::Global>, rusty::alloc::Global>, std_port::collections::hash::map::HashMap@std_port<int, unsigned long, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>, std_port::collections::hash::set::HashSet@std_port<int, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>, rusty::Option<rusty::Arc<rrr::RpcServiceContext@rrr.server>>, rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::ShutdownState@rrr.server>, rusty::Box<rusty::Condvar, rusty::alloc::Global>, rusty::Cell<rrr::ShutdownPhase@rrr.server>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Function<void ()>, rusty::alloc::Global>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<int>>, rusty::Arc<rusty::sync::atomic::detail::Atomic<bool>>, unsigned long, rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>, rusty::Option<rusty::Box<rrr::ChannelListenerBase@rrr.channel, rusty::alloc::Global>>, rusty::Arc<rusty::Mutex<rrr::ChannelSconns@rrr.server>>)',
         ),
         (
             'T',
@@ -4630,7 +4661,7 @@ RAW_ABI_ALIASES = {
         ('T', 'rrr::Client@rrr.client::~Client()'),
         ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rrr::ClientConnection@rrr.client&&)'),
         ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>)'),
-        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<rusty::port::collections::hashbrown::HashMap@hashbrown_port.map<long, rusty::Arc<rrr::Future@rrr.client>, rusty::port::collections::hashbrown::DefaultHasher@hashbrown_port.hasher, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
+        ('T', 'rrr::ClientConnection@rrr.client::ClientConnection(rusty::Arc<rrr::PollThread@rrr.reactor>, rusty::Mutex<rusty::Option<rusty::Box<rrr::FiberChannel@rrr.fiber_channel, rusty::alloc::Global>>>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelConnectionBase@rrr.channel, rusty::alloc::Global>>>, rusty::Cell<bool>, rusty::Mutex<rusty::Option<rusty::Box<rrr::ChannelFactoryBase@rrr.channel, rusty::alloc::Global>>>, rrr::Counter@rrr.basetypes, rusty::Mutex<std_port::collections::hash::map::HashMap@std_port<long, rusty::Arc<rrr::Future@rrr.client>, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, rusty::Mutex<rusty::port::vec::Vec@vec_port.vec<rusty::Option<rusty::Function<void (int, unsigned char const*, unsigned long)>>, rusty::alloc::Global>>, rrr::ConnectionStateMachine@rrr.connection_state, rusty::Cell<rrr::ReconnectPolicy@rrr.reconnect_policy>, rrr::ReconnectState@rrr.client, rusty::Cell<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>, rusty::Cell<rrr::BufferingConfig@rrr.client>, rrr::RequestQueue@rrr.request_queue, rusty::Cell<unsigned long>, rusty::RefCell<rusty::Function<void (unsigned long, unsigned long)>>, rusty::Cell<rrr::KeepaliveConfig@rrr.client>, rrr::HeartbeatManager@rrr.heartbeat, rrr::CircuitBreaker@rrr.circuit_breaker, rusty::Arc<rrr::CallbackManager@rrr.callbacks>, rusty::Cell<unsigned long>, rrr::ConnectionMetrics@rrr.connection_metrics, rusty::sync::Weak<rrr::ClientConnection@rrr.client>, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, unsigned long, rusty::Cell<bool>, bool)'),
         ('T', 'rrr::ClientConnection@rrr.client::~ClientConnection()'),
         ('T', 'rrr::ClientPool@rrr.client::ClientPool(rrr::ClientPool@rrr.client&&)'),
         ('T', 'rrr::ClientPool@rrr.client::ClientPool(rusty::Option<rusty::Arc<rrr::PollThread@rrr.reactor>>, rusty::Mutex<rrr::PoolState@rrr.client>, rusty::Mutex<rrr::PoolConfig@rrr.client>)'),
@@ -5051,7 +5082,12 @@ def require_cpp_surfaces(
 
         rand_preamble = '#include "misc/srpc_rand.h"'
         if module.cpp_module == "rrr.rand":
-            require_exact_module_imports(text, "rrr.rand", ["rusty"])
+            # Re-assert the ratcheted imports rather than a duplicated
+            # literal (the stale ["rusty"] copy here survived the reviewed
+            # EXPECTED_IMPORTS respelling and re-failed the gate).
+            require_exact_module_imports(
+                text, "rrr.rand", EXPECTED_IMPORTS["rrr.rand"]
+            )
             if text.count(rand_preamble) != 1:
                 raise GateError(
                     "generated rrr.rand must contain exactly one structured "
@@ -5154,8 +5190,10 @@ def require_cpp_surfaces(
                 text, "rrr.heartbeat", ["rrr.circuit_breaker"]
             )
         elif module.cpp_module == "rrr.request_queue":
+            # Re-assert the ratcheted imports rather than a duplicated
+            # literal (same stale-copy hazard as rrr.rand above).
             require_exact_module_imports(
-                text, "rrr.request_queue", ["rusty", "rrr.circuit_breaker"]
+                text, "rrr.request_queue", EXPECTED_IMPORTS["rrr.request_queue"]
             )
         elif module.cpp_module == "rrr.load_balancer":
             require_exact_module_imports(text, "rrr.load_balancer", [])

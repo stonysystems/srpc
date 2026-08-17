@@ -254,9 +254,15 @@ class GateContractTests(unittest.TestCase):
         temporary, output = self.copied_output()
         try:
             child = output / "rrr.completion_tracker.cppm"
+            # The needle must be the module's CURRENT import line (the
+            # port-narrowed graph imports std_port, not the rusty umbrella)
+            # or the corruption is a no-op and this negative control goes
+            # vacuous.
             child.write_text(
                 child.read_text(encoding="utf-8").replace(
-                    "import rusty;", "import rusty;\nexport import rrr.logging;", 1
+                    "import std_port;",
+                    "import std_port;\nexport import rrr.logging;",
+                    1,
                 ),
                 encoding="utf-8",
             )
