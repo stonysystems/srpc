@@ -167,7 +167,7 @@ pub fn client_rand(min: i32, max: i32) -> i32 {
 
 pub fn client_verify(value: bool) {
     if !value {
-        verify_failed("rpc/client.cpp", 0);
+        verify_failed("rpc/client.rs", 0);
     }
 }
 
