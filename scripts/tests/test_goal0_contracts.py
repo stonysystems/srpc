@@ -523,6 +523,20 @@ class ExtractionContractTests(unittest.TestCase):
         finally:
             orphan.unlink(missing_ok=True)
 
+        # Every module reaches its canonical bytes through the `#[path]` in the
+        # generated lib.rs, so a symlink under src/ is a second, unowned route
+        # to a source. The census fails on it rather than skipping it, or the
+        # retired discovery-shim layer could grow back one file at a time.
+        shim = ROOT / "src/goal0_contract_shim.rs"
+        try:
+            shim.symlink_to(ROOT / "base/basetypes.rs")
+            with self.assertRaisesRegex(
+                DRIVER.ExtractionError, "census rejects symlinks"
+            ):
+                DRIVER.validate_census(ROOT, generated, allow_missing=False)
+        finally:
+            shim.unlink(missing_ok=True)
+
     def test_canonical_source_is_byte_stable_and_strict(self) -> None:
         canonical = b"pub fn ready() {}\n"
         self.assertIs(

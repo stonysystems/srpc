@@ -33,7 +33,7 @@ PACKAGE_NAME = "rrr"
 GENERATED_ROOT = PurePosixPath("src")
 GENERATED_LIB = GENERATED_ROOT / "lib.rs"
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "8b65b621d7c08e81aeb8bcc5db80c02e7e0dc650"
+REQUIRED_RUSTY_CPP_COMMIT = "fa7dd9d9612c0bcec695c3e391ace96b56498e74"
 APPROVED_PRODUCTION_ROOTS = (
     PurePosixPath("base"),
     PurePosixPath("misc"),
@@ -435,13 +435,11 @@ def load_manifest(root: Path, manifest_path: Path) -> list[ModuleEntry]:
                     f"module {module_index} canonical source basename does not "
                     f"match {cpp_module!r}: {output_label}"
                 )
-            shim_label = (GENERATED_ROOT / f"{rust_module}.rs").as_posix()
-            shim = root.resolve() / shim_label
-            if not shim.is_symlink() or shim.resolve() != output.resolve():
-                raise ExtractionError(
-                    f"module {module_index} Rust discovery shim must be a "
-                    f"symlink from {shim_label} to {output_label}"
-                )
+            # No discovery shim to validate. The generated lib.rs names this
+            # canonical file directly in a `#[path]` attribute, and --check
+            # byte-compares that file, so the declaration is already pinned to
+            # the manifest. `src/` holds nothing but lib.rs; the census below
+            # rejects anything else that appears there, symlink included.
             loaded.append(
                 ModuleEntry(
                     cpp_module=cpp_module,
@@ -725,6 +723,28 @@ def render_module(module: ModuleEntry, payloads: list[bytes]) -> bytes:
     return ("\n".join(header) + "\n").encode("utf-8") + payload
 
 
+def module_path_attribute_value(output_label: str) -> str:
+    """The `#[path]` value naming output_label from the generated lib.rs.
+
+    rustc resolves a module `#[path]` against the directory holding the
+    declaring file, so every value is relative to GENERATED_ROOT. Derive it
+    from the manifest label rather than hardcoding a table: the manifest is
+    the single owner of where a module's bytes live.
+    """
+
+    ascent = ("..",) * len(GENERATED_ROOT.parts)
+    value = PurePosixPath(*ascent, output_label).as_posix()
+    # The value is emitted verbatim into a Rust string literal. Reject any
+    # character that would need escaping instead of escaping it, so a manifest
+    # can never smuggle syntax into the generated crate index.
+    if any(character in value for character in '"\\\n\r'):
+        raise ExtractionError(
+            f"canonical source path is not expressible as a Rust `#[path]` "
+            f"string literal: {output_label!r}"
+        )
+    return value
+
+
 def render_lib(
     manifest_label: str,
     manifest_path: Path,
@@ -742,13 +762,17 @@ def render_lib(
         style_allow = (
             "non_snake_case, " if module.rust_module == "epoll_wrapper" else ""
         )
-        lines.extend(
-            [
-                f"#[allow(dead_code, {style_allow}non_upper_case_globals, "
-                "clippy::new_without_default)]",
-                f"pub mod {module.rust_module};",
-            ]
+        lines.append(
+            f"#[allow(dead_code, {style_allow}non_upper_case_globals, "
+            "clippy::new_without_default)]"
         )
+        # A schema-2 module's canonical bytes live outside src/, so the
+        # declaration has to name that file. A schema-1 output is generated
+        # into src/ and stays conventional.
+        if module.canonical_source_label is not None:
+            value = module_path_attribute_value(module.canonical_source_label)
+            lines.append(f'#[path = "{value}"]')
+        lines.append(f"pub mod {module.rust_module};")
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
@@ -852,7 +876,12 @@ def rust_source_census(root: Path) -> set[str]:
         source_root, followlinks=False
     ):
         current = Path(directory)
-        for name in child_directories:
+        # Every entry, file or directory, must be a real thing in src/. A
+        # module now reaches its canonical bytes through the `#[path]` in the
+        # generated lib.rs, so a symlink here is never a legitimate discovery
+        # shim -- it is a second, unowned route to a source. Skipping one
+        # silently would let the whole retired shim layer grow back unnoticed.
+        for name in (*child_directories, *files):
             child = current / name
             if child.is_symlink():
                 raise ExtractionError(
@@ -861,7 +890,7 @@ def rust_source_census(root: Path) -> set[str]:
                 )
         for name in files:
             path = current / name
-            if path.suffix == ".rs" and path.is_file() and not path.is_symlink():
+            if path.suffix == ".rs" and path.is_file():
                 sources.add(path.relative_to(root.resolve()).as_posix())
     return sources
 

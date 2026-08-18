@@ -14,7 +14,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUSTY_CPP_PIN = "8b65b621d7c08e81aeb8bcc5db80c02e7e0dc650"
+RUSTY_CPP_PIN = "fa7dd9d9612c0bcec695c3e391ace96b56498e74"
 # Every production module is now a canonical Rust provider: the inline
 # carrier inventory is EMPTY, and the negative controls below are what
 # keep an empty inventory from becoming a vacuous check.
@@ -73,7 +73,7 @@ def validate_provider_inventory(cmake: str, manifest: dict[str, object]) -> None
 
 
 class StandaloneGoal0Tests(unittest.TestCase):
-    def test_manifest_sources_are_rust_with_rust_discovery_shims(self) -> None:
+    def test_manifest_sources_are_rust_attached_by_path_declarations(self) -> None:
         with (ROOT / "rust-modules.toml").open("rb") as stream:
             manifest = tomllib.load(stream)
         self.assertEqual(manifest["schema_version"], 2)
@@ -82,17 +82,30 @@ class StandaloneGoal0Tests(unittest.TestCase):
         self.assertEqual(
             len({entry["cpp_module"] for entry in modules}), len(modules)
         )
+        lib = (ROOT / "src/lib.rs").read_text(encoding="utf-8")
         for entry in modules:
             rust_name = entry["cpp_module"].removeprefix("rrr.")
             source = ROOT / entry["source"]
-            shim = ROOT / "src" / f"{rust_name}.rs"
             # Canonical sources are Rust and are named .rs. They kept .cpp/.cc
             # only until the C++ -> Rust rename lineage was recorded in Git.
             self.assertIn(source.suffix, {".rs"})
             self.assertEqual(source.stem, rust_name)
             self.assertTrue(source.is_file(), source)
-            self.assertTrue(shim.is_symlink(), shim)
-            self.assertEqual(shim.resolve(), source.resolve())
+            # The module reaches its canonical file through the generated
+            # crate index, with nothing in src/ standing in between. Assert
+            # both halves: the declaration names the manifest path, and no
+            # entry -- file or symlink -- shadows it at the conventional path.
+            self.assertIn(
+                f'#[path = "../{entry["source"]}"]\npub mod {rust_name};\n', lib
+            )
+            shadow = ROOT / "src" / f"{rust_name}.rs"
+            self.assertFalse(shadow.is_symlink(), shadow)
+            self.assertFalse(shadow.exists(), shadow)
+
+        # src/ carries the generated crate index and nothing else.
+        self.assertEqual(
+            sorted(path.name for path in (ROOT / "src").iterdir()), ["lib.rs"]
+        )
 
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         validate_provider_inventory(cmake, manifest)

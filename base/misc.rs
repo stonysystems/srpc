@@ -1,7 +1,8 @@
 //! Scheduler jobs and formatting/process helpers from legacy `rrr.misc`.
 //!
 //! This remains at its historical `.cpp` path so Git preserves the C++ to
-//! Rust lineage. Cargo reaches the same file through `src/misc.rs`.
+//! Rust lineage. Cargo reads this exact file: the generated `src/lib.rs`
+//! declares `#[path = "../base/misc.rs"] pub mod misc;`.
 
 #![allow(non_snake_case)]
 

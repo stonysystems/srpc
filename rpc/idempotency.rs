@@ -1,8 +1,9 @@
 //! Canonical Rust owner for the `rrr.idempotency` C++ module.
 //!
-//! The historical `.cpp` suffix is intentional: `src/idempotency.rs` is a
-//! symlink shim through which Cargo reads these exact bytes, while rusty-cpp
-//! translates this file into the production C++ module provider.
+//! The historical `.cpp` suffix is intentional: the generated `src/lib.rs`
+//! names this file in a `#[path]` attribute, so Cargo reads these exact
+//! bytes, while rusty-cpp translates this file into the production C++
+//! module provider.
 
 use cpp::rrr::serializable;
 use rusty as cpp;

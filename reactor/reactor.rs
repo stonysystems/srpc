@@ -1,7 +1,8 @@
 //! Canonical Rust source for the historical `rrr.reactor` provider.
 //!
 //! This file intentionally retains the historical `.cpp` path.  The crate
-//! view is `src/reactor.rs`, a symlink back to this source of truth.
+//! view is `#[path = "../reactor/reactor.rs"] pub mod reactor;` in the
+//! generated `src/lib.rs`, which points straight back at this source of truth.
 //!
 //! Direct Rust execution of this module is intentionally unsupported for now.
 //! The inert `cfg_attr(any(), thread_local)` markers below preserve the

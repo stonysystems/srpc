@@ -1,7 +1,8 @@
 //! Canonical Rust owner for the `rrr.epoll_wrapper` C++ module.
 //!
-//! The historical `.cc` suffix is intentional: `src/epoll_wrapper.rs` is a
-//! symlink through which Cargo reads these exact bytes.  The Linux syscall
+//! The historical `.cc` suffix is intentional: the generated `src/lib.rs`
+//! names this file in a `#[path]` attribute, so Cargo reads these exact
+//! bytes with nothing standing in between.  The Linux syscall
 //! definitions remain in `reactor/epoll_platform_linux.cc`, an implementation
 //! unit of the generated interface.
 

@@ -27,7 +27,8 @@ The Cargo package is the canonical source for twenty-three production modules:
 - `rrr.misc`
 
 Their canonical Rust sources are the `.rs` paths recorded in
-`rust-modules.toml`; `src/*.rs` symlinks let rustc consume those exact bytes,
+`rust-modules.toml`; the `#[path]` attribute on each module declaration in the
+generated `src/lib.rs` lets rustc consume those exact bytes in place,
 and rusty-cpp translates them into complete C++ module interfaces. The
 generated `.cppm` children are the only C++ production providers for these
 modules. The inert `cpp_abi` markers remain part of the canonical Rust where a
@@ -46,13 +47,16 @@ not the entire standalone SRPC module inventory.
 
 `rust-modules.toml` is a schema-2 ownership manifest. Each row maps one direct
 `rrr.<name>` C++ module to its exact canonical historical source path. Module
-names and source paths are unique and normalized. The matching `src/<name>.rs`
-entry is a symlink shim only; it is never an independent source owner.
+names and source paths are unique and normalized. Nothing stands between a
+module and its canonical file: the generated `src/lib.rs` declares each module
+with `#[path = "../<source>"]`, derived from the manifest row, so the manifest
+remains the only owner of where a module's bytes live.
 
 `scripts/extract_rrr_rust.py` now validates canonical sources and generates
 only the crate index, `src/lib.rs`, from that manifest. It does not regenerate
 the twenty-three module bodies from C++. Check mode requires the Rust source census to
-be exactly the manifest sources plus `lib.rs`, and requires every canonical
+be exactly the manifest sources plus `lib.rs`, rejects any symlink under
+`src/` so the retired discovery-shim layer cannot grow back, and requires every canonical
 source to retain exact UTF-8/LF bytes; the driver rejects CRLF rather than
 normalizing it. Schema 1 remains only for focused legacy-driver tests; future
 promotions use the emitter separately before adding a schema-2 canonical row.
@@ -70,17 +74,17 @@ cargo clippy --locked --workspace --manifest-path Cargo.toml \
 ```
 
 The approved transpiler/runtime stack is the clean rusty-cpp commit
-`29418811b7dc530bd3fe3936fe20ebc16aeb9a16`. Both the ownership driver
+`fa7dd9d9612c0bcec695c3e391ace96b56498e74`. Both the ownership driver
 and the crate-mode gate require the repository gitlink, submodule HEAD, and
 the transpiler's one-line build information to identify that exact clean
 source:
 
 ```json
-{"git_hash":"29418811b7dc530bd3fe3936fe20ebc16aeb9a16","git_dirty":false}
+{"git_hash":"fa7dd9d9612c0bcec695c3e391ace96b56498e74","git_dirty":false}
 ```
 
 The conventional direct-module layout is intentional. For example,
-`base/callback_wrapper.rs` (exposed to Cargo as `src/callback_wrapper.rs`)
+`base/callback_wrapper.rs` (attached to the crate as `crate::callback_wrapper`)
 owns `pub mod detail`, so ordinary crate lowering produces
 `rrr::detail::CallbackWrapper`; it does not invent an `srpc.extracted.*`
 namespace. Never recreate the discarded top-level `crates/srpc` hand port.
@@ -233,7 +237,8 @@ The Goal-0 source gate performs five distinct checks:
    census, generated `lib.rs`, and toolchain identity.
 3. The standalone structural suite rejects Mako checkout dependencies and
    verifies the exact rusty-cpp gitlink, canonical/inline/retired/borrow
-   provider inventories, and historical-source symlinks.
+   provider inventories, and the generated `#[path]` module declarations that
+   attach each canonical historical source to the crate.
 4. The fail-closed contract suite negative-tests all 23 canonical ownership,
    import, output-surface, importer-use, preamble, and raw-ABI ratchets.
 5. Cargo test and clippy with `-D warnings` compile, test, and lint the whole
