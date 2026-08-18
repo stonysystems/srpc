@@ -103,7 +103,6 @@ unsafe extern "C" {
 
 // The calling thread's kernel thread id.  Replaces `syscall(SYS_gettid)` with
 // the literal 186, which is correct only on x86-64 Linux.
-#[cfg_attr(any(), cpp_internal)]
 fn current_thread_gettid() -> i64 {
     // The shim takes no arguments, touches no Rust state, and cannot fail.
     unsafe { srpc_reactor_gettid() }
@@ -114,7 +113,6 @@ fn current_thread_gettid() -> i64 {
 // Deliberately NOT a `pub const`: the incumbent public surface had no such
 // entity, and a module-exported constant would freeze one build's answer
 // under the name of a macro that consumers can still define differently.
-#[cfg_attr(any(), cpp_internal)]
 fn reusing_fiber() -> bool {
     // Same contract as above: an argument-free query over a compile-time
     // constant in the shim translation unit.
@@ -133,7 +131,6 @@ fn reusing_fiber() -> bool {
 // file silently did nothing, while an unoptimized build stack-overflowed.
 // The incumbent had no wrapper at all; it called the imported template
 // directly, which is what this rename restores.
-#[cfg_attr(any(), cpp_internal)]
 fn reactor_verify(value: bool) {
     // The checked foreign facade models the same abort-on-false contract as
     // the imported `rrr.debugging` provider.
@@ -147,7 +144,6 @@ fn reactor_verify(value: bool) {
 // value that crosses into the C++ logger) rather than `String`, so the
 // forward is a plain `const std::string&` bind instead of an impossible
 // `rusty::String` -> `std::string` conversion.
-#[cfg_attr(any(), cpp_internal)]
 fn reactor_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
     // The production logger consumes the message synchronously and retains no
     // borrow; the owned Rust value therefore has exactly the required extent.
@@ -217,7 +213,6 @@ impl EventState {
     }
 }
 
-#[cfg_attr(any(), cpp_internal)]
 pub trait EventPollable {
     fn test(&self) -> bool;
     fn is_ready(&self) -> bool;
@@ -930,7 +925,6 @@ pub struct StacklessTaskEntry {
     pub poll_once: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>,
 }
 
-#[cfg_attr(any(), cpp_internal)]
 const STACKLESS_UNREGISTERED_SLOT: usize = usize::MAX;
 
 struct StacklessWakeTicket {
@@ -2872,7 +2866,6 @@ fn fiber_do_finalize(fb: &Fiber) {
 // ("expected expression", R/M/obj-B2b.log).  The byte-string form lowers to a
 // real `std::array<uint8_t, 19>{{ 0x4d, ... , 0x00 }}`.  Scoped to this item.
 #[allow(clippy::manual_c_str_literals)]
-#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_env() -> bool {
     let env: *const LegacyCChar = unsafe {
         getenv(b"MAKO_ASYNC_PROFILE\0".as_ptr() as *const LegacyCChar)
@@ -2883,7 +2876,6 @@ fn stackless_profile_env() -> bool {
     unsafe { *env != 0 as LegacyCChar && *env != 48 as LegacyCChar }
 }
 
-#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_enabled() -> bool {
     static ENABLED_STATE: rusty::sync::atomic::AtomicUsize =
         rusty::sync::atomic::AtomicUsize::new(0);
@@ -2942,12 +2934,10 @@ static g_stackless_profile: StacklessProfileCounters = StacklessProfileCounters 
     max_slots: rusty::sync::atomic::AtomicUsize::new(0usize),
 };
 
-#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_update_max_slots(slots: usize) {
     g_stackless_profile.max_slots.fetch_max(slots, rusty::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg_attr(any(), cpp_internal)]
 fn stackless_profile_report_periodic() {
     if !stackless_profile_enabled() {
         return;
@@ -3592,7 +3582,6 @@ fn pollworker_update_mode(w: &mut PollThreadWorker, poll: &mut dyn Pollable, new
     pollworker_do_update_mode(w, poll.fd(), new_mode);
 }
 
-#[cfg_attr(any(), cpp_internal)]
 fn thread_id_to_u64(tid: rusty::thread::ThreadId) -> u64 {
     unsafe { core::mem::transmute::<rusty::thread::ThreadId, u64>(tid) }
 }

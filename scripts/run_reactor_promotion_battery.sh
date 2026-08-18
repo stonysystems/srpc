@@ -221,17 +221,89 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
         # owned manifest from the object is the gate runner's job; this driver
         # reports the comparison so the count and the diff are both visible.
         #
-        # The compare is against the incumbent manifest PLUS one named,
-        # reviewed addition.  It is still exact: the addition is spelled out
-        # here and echoed on every run, so it is owner-visible rather than
-        # absorbed, and ANY other new or missing symbol is still a failure.
-        # The same declaration, with the full reason, is
-        # REACTOR_INCUMBENT_ORACLE_ADDITIONS in scripts/check_rrr_crate_mode.py
-        # (short version: EventState has no field defaults, so it is built by
-        # the mandated `fn new()` factory, and the incumbent oracle has no
-        # EventState constructor symbol at all).
+        # The compare is against the incumbent manifest PLUS 65 named,
+        # reviewed additions.  It is still exact and bidirectional: every
+        # addition is spelled out here and echoed on every run, so it is
+        # owner-visible rather than absorbed, and ANY undeclared new symbol or
+        # ANY missing symbol is still a failure.  The same declaration, with
+        # the full reason, is REACTOR_INCUMBENT_ORACLE_ADDITIONS in
+        # scripts/check_rrr_crate_mode.py.  Short version:
+        #   * 1  EventState::new_ -- EventState has no field defaults, so it is
+        #     built by the mandated `fn new()` factory, and the incumbent
+        #     oracle has no EventState constructor symbol at all.
+        #   * 64 the REVIEWED ADDITIVE ABI DELTA from removing the eleven
+        #     `#[cfg_attr(any(), cpp_internal)]` markers in reactor/reactor.cpp:
+        #     54 EventPollable UFCS overloads (9 methods x 6 implementors) that
+        #     lost their `inline`/vague linkage, 9 free helpers that lost
+        #     internal linkage, and 1 module-attached const.  These
+        #     port-internal helpers now export normally by owner decision; the
+        #     incumbent object owned none of them.
         AUTHORIZED_ADDITIONS=(
             'rrr::EventState@rrr.reactor::new_()'
+            'rrr::current_thread_gettid@rrr.reactor()'
+            'rrr::EventPollable_::is_ready@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::EventPollable_::log@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::log@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::log@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::log@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::log@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::log@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::EventPollable_::prunable@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::prunable@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::prunable@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::prunable@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::prunable@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::prunable@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::EventPollable_::set_prunable@rrr.reactor(janus::QuorumEvent@rrr.reactor const&, bool)'
+            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::IntEvent@rrr.reactor const&, bool)'
+            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::NeverEvent@rrr.reactor const&, bool)'
+            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&, bool)'
+            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::WaitAll@rrr.reactor const&, bool)'
+            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::WaitAny@rrr.reactor const&, bool)'
+            'rrr::EventPollable_::set_status@rrr.reactor(janus::QuorumEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
+            'rrr::EventPollable_::set_status@rrr.reactor(rrr::IntEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
+            'rrr::EventPollable_::set_status@rrr.reactor(rrr::NeverEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
+            'rrr::EventPollable_::set_status@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
+            'rrr::EventPollable_::set_status@rrr.reactor(rrr::WaitAll@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
+            'rrr::EventPollable_::set_status@rrr.reactor(rrr::WaitAny@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
+            'rrr::EventPollable_::status@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::status@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::status@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::status@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::status@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::status@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::EventPollable_::test@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::test@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::test@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::test@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::test@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::test@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::EventPollable_::wakeup_time@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
+            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
+            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
+            'rrr::reactor_log_line@rrr.reactor(int, int, signed char const*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >)'
+            'rrr::reactor_verify@rrr.reactor(bool)'
+            'rrr::reusing_fiber@rrr.reactor()'
+            'rrr::stackless_profile_enabled@rrr.reactor()'
+            'rrr::stackless_profile_env@rrr.reactor()'
+            'rrr::stackless_profile_report_periodic@rrr.reactor()'
+            'rrr::stackless_profile_update_max_slots@rrr.reactor(unsigned long)'
+            'rrr::STACKLESS_UNREGISTERED_SLOT@rrr.reactor'
+            'rrr::thread_id_to_u64@rrr.reactor(rusty::thread::ThreadId)'
         )
         actual_manifest=$(mktemp /var/tmp/reactor-battery-nm.XXXXXX)
         expected_manifest=$(mktemp /var/tmp/reactor-battery-expected.XXXXXX)
@@ -258,10 +330,11 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
             bad "G3 symbol oracle: drift — see /var/tmp/reactor-symbol-diff.txt"
             note "     new symbols:  $(grep -c '^+[^+]' /var/tmp/reactor-symbol-diff.txt)"
             note "     missing:      $(grep -c '^-[^-]' /var/tmp/reactor-symbol-diff.txt)"
-            note "     (C7 wake helpers and C10 UFCS surfaces must contribute ZERO)"
+            note "     (beyond the 65 declared additions, C7 wake helpers and"
+            note "      C10 UFCS surfaces must contribute ZERO)"
         fi
         rm -f "$expected_manifest"
-        note "     janus entries seen: $(grep -c janus "$actual_manifest") (expect 49)"
+        note "     janus entries seen: $(grep -c janus "$actual_manifest") (expect 58)"
         rm -f "$actual_manifest"
 
         skip "G4 layout oracle: rebuild $LAYOUT_PROBE against the generated provider"
