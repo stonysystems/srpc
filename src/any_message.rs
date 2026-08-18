@@ -1,1 +1,1 @@
-../misc/any_message.cpp
+../misc/any_message.rs

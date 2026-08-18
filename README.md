@@ -1,10 +1,13 @@
 # SRPC
 
 SRPC is the standalone Repeatable Research Runtime extracted from Mako with
-its path history intact. Canonical Rust implementations intentionally keep
-their historical `.cpp` paths. The matching `src/*.rs` entries are symlinks
-used for Cargo and rusty-cpp crate discovery; CMake treats the historical
-paths as transpiler inputs rather than native C++ sources.
+its path history intact. Canonical Rust implementations live in `base/`,
+`misc/`, `reactor/` and `rpc/`, and are named `.rs`. They held their historical
+`.cpp`/`.cc` paths until the C++→Rust rename lineage was recorded in Git; the
+rename was pure, so `git log --follow` on any of them still reaches back into
+the C++ era. The matching `src/*.rs` entries are symlinks used for Cargo and
+rusty-cpp crate discovery; CMake treats the canonical sources as transpiler
+inputs rather than native C++ sources.
 
 ## Dependencies
 

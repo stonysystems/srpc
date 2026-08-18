@@ -73,7 +73,7 @@ def validate_provider_inventory(cmake: str, manifest: dict[str, object]) -> None
 
 
 class StandaloneGoal0Tests(unittest.TestCase):
-    def test_manifest_sources_keep_cpp_history_and_rust_discovery_shims(self) -> None:
+    def test_manifest_sources_are_rust_with_rust_discovery_shims(self) -> None:
         with (ROOT / "rust-modules.toml").open("rb") as stream:
             manifest = tomllib.load(stream)
         self.assertEqual(manifest["schema_version"], 2)
@@ -86,7 +86,9 @@ class StandaloneGoal0Tests(unittest.TestCase):
             rust_name = entry["cpp_module"].removeprefix("rrr.")
             source = ROOT / entry["source"]
             shim = ROOT / "src" / f"{rust_name}.rs"
-            self.assertIn(source.suffix, {".cpp", ".cc"})
+            # Canonical sources are Rust and are named .rs. They kept .cpp/.cc
+            # only until the C++ -> Rust rename lineage was recorded in Git.
+            self.assertIn(source.suffix, {".rs"})
             self.assertEqual(source.stem, rust_name)
             self.assertTrue(source.is_file(), source)
             self.assertTrue(shim.is_symlink(), shim)
@@ -126,7 +128,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
         mutated = cmake.replace(
             "set(RRR_INLINE_MODULE_SRC\n)",
             "set(RRR_INLINE_MODULE_SRC\n"
-            "    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp\n)",
+            "    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs\n)",
             1,
         )
         self.assertNotEqual(mutated, cmake)

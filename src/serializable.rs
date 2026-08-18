@@ -1,1 +1,1 @@
-../misc/serializable.cpp
+../misc/serializable.rs

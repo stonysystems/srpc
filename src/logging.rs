@@ -1,1 +1,1 @@
-../base/logging.cpp
+../base/logging.rs

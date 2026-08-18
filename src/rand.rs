@@ -1,1 +1,1 @@
-../misc/rand.cpp
+../misc/rand.rs

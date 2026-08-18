@@ -471,7 +471,7 @@ class ExtractionContractTests(unittest.TestCase):
                 """
                 [[module]]
                 cpp_module = "rrr.basetypes"
-                source = "base/basetypes.cpp"
+                source = "base/basetypes.rs"
                 """
             )
             manifest.write_text("schema_version = 2\n" + entry + entry, encoding="utf-8")

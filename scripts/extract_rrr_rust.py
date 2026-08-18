@@ -185,11 +185,22 @@ def reject_symlink_components(
             )
 
 
+# Suffix sets are per-call because the two kinds of manifest input are now
+# genuinely different languages. A schema-2 `source` is CANONICAL RUST and ends
+# in .rs; a schema-1 `input` is a hand-written C++ inline-DSL carrier and still
+# ends in .cpp/.cc/.cxx. Defaulting to the C++ set keeps the schema-1 callers
+# unchanged, so only the canonical-source caller opts into .rs.
+CPP_CARRIER_SUFFIXES = frozenset({".cpp", ".cc", ".cxx"})
+CANONICAL_RUST_SUFFIXES = frozenset({".rs"})
+
+
 def validate_production_source_path(
     root: Path,
     source_label: str,
     source: Path,
     description: str,
+    allowed_suffixes: frozenset = CPP_CARRIER_SUFFIXES,
+    language: str = "C++",
 ) -> None:
     relative = PurePosixPath(source_label)
     approved = next(
@@ -208,9 +219,9 @@ def validate_production_source_path(
             f"root ({roots}): {source_label}"
         )
     reject_symlink_components(root, source, description)
-    if source.suffix not in {".cpp", ".cc", ".cxx"} or not source.is_file():
+    if source.suffix not in allowed_suffixes or not source.is_file():
         raise ExtractionError(
-            f"{description} is not an existing C++ file: {source_label}"
+            f"{description} is not an existing {language} file: {source_label}"
         )
     try:
         physical_source = source.resolve(strict=True)
@@ -416,6 +427,8 @@ def load_manifest(root: Path, manifest_path: Path) -> list[ModuleEntry]:
                 output_label,
                 output,
                 f"module {module_index} canonical source {output_label}",
+                allowed_suffixes=CANONICAL_RUST_SUFFIXES,
+                language="Rust",
             )
             if output.stem != rust_module:
                 raise ExtractionError(

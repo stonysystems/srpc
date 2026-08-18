@@ -65,7 +65,7 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 #
 # REVIEWED ADDITIVE ABI DELTA (cpp_internal removal, +64 symbols, 1897 -> 1961).
 # Dropping the eleven `#[cfg_attr(any(), cpp_internal)]` markers from
-# reactor/reactor.cpp lets those port-internal helpers export normally.  This is
+# reactor/reactor.rs lets those port-internal helpers export normally.  This is
 # a deliberate, owner-authorized growth of srpc's public symbol surface:
 # preserving the incumbent's exact symbol set is NOT a requirement for them.
 # The delta is PURELY ADDITIVE -- measured 64 added, 0 removed, 0 respelled --

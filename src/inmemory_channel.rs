@@ -1,1 +1,1 @@
-../rpc/inmemory_channel.cpp
+../rpc/inmemory_channel.rs

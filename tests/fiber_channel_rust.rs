@@ -164,7 +164,7 @@ fn owned_frame_layout_and_pin_contract_are_explicit() {
     // FiberChannel::new_ factory (no #[cpp_ctor], so no C++ ctor and no
     // cpp_explicit); the cpp_no_fieldwise_ctor marker keeps the synthesized
     // fieldwise ctor private.
-    let source = include_str!("../rpc/fiber_channel.cpp");
+    let source = include_str!("../rpc/fiber_channel.rs");
     assert!(source.contains("_pin: PhantomPinned"));
     assert!(source.contains("cpp_no_fieldwise_ctor"));
     assert!(!source.contains("cpp_ctor)"));
@@ -272,7 +272,7 @@ fn drop_detaches_all_callbacks_before_proxy_teardown() {
 
 #[test]
 fn source_retains_the_load_bearing_lock_and_foreign_event_boundaries() {
-    let source = include_str!("../rpc/fiber_channel.cpp");
+    let source = include_str!("../rpc/fiber_channel.rs");
     assert!(source.contains("let held: Option<Arc<rusty::ReactorIntEvent>> = {"));
     assert!(source.contains("cpp_reactor::IntEvent::set(&*event, 1_i32)"));
     assert!(source.contains("cpp_reactor::IntEvent::wait(&*event)"));

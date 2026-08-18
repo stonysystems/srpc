@@ -10,8 +10,9 @@ been made.
 
 ## Canonical carrier
 
-- Historical path and sole source of truth: `reactor/reactor.cpp`
-- Cargo view: `src/reactor.rs -> ../reactor/reactor.cpp`
+- Sole source of truth: `reactor/reactor.rs` (historically `reactor/reactor.cpp`;
+  the rename was pure, so `git log --follow` still reaches the C++ era)
+- Cargo view: `src/reactor.rs -> ../reactor/reactor.rs`
 - Current carrier: 3,372 lines, SHA256
   `44c34b4a677f19b2fae2aaadd445a4a714ef7642ca98e7fc80a1493a5cd312d5`
 - Scope lineage: all 111 incumbent inline-Rust blocks are retained in the

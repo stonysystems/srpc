@@ -1,1 +1,1 @@
-../misc/stat.cpp
+../misc/stat.rs

@@ -149,12 +149,13 @@ set(BENCH_CXXFLAGS
     -fno-omit-frame-pointer
 )
 
-# rrr: STATIC library compiled from .cpp/.cc implementation units.
-# Files migrated to C++23 named modules keep their .cpp/.cc extension
-# but are wired in via FILE_SET CXX_MODULES below (RRR_MODULE_SRC).
-# They are explicitly removed from the regular source glob to avoid
-# double-compile. Migration is incremental and measurement-gated — see
-# the Goal-0 migration notes in this repository.
+# rrr: STATIC library compiled from the remaining NATIVE units (C++, C, ASM).
+# The canonical Rust providers are not native sources and are now named .rs,
+# so these patterns no longer match them at all; the explicit REMOVE_ITEM
+# below is kept as a belt-and-braces guard in case a canonical path ever
+# re-enters the glob. The .cpp/.cc patterns stay so that genuine C++ added to
+# these directories later is still compiled. Migration is measurement-gated —
+# see the Goal-0 migration notes in this repository.
 file(GLOB RRR_BENCH_SRC
     "${CMAKE_CURRENT_SOURCE_DIR}/base/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/misc/*.cpp"
@@ -262,43 +263,43 @@ set(RRR_GOAL0_CANONICAL_MODULES
     server
     client
 )
-set(RRR_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.cpp)
-set(RRR_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.cpp)
-set(RRR_GOAL0_SOURCE_internal_protocol ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.cpp)
-set(RRR_GOAL0_SOURCE_stat ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.cpp)
-set(RRR_GOAL0_SOURCE_errors ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.cpp)
-set(RRR_GOAL0_SOURCE_connection_metrics ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.cpp)
-set(RRR_GOAL0_SOURCE_completion_tracker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.cpp)
-set(RRR_GOAL0_SOURCE_rand ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.cpp)
-set(RRR_GOAL0_SOURCE_request_options ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.cpp)
-set(RRR_GOAL0_SOURCE_reconnect_policy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.cpp)
-set(RRR_GOAL0_SOURCE_circuit_breaker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.cpp)
-set(RRR_GOAL0_SOURCE_connection_state ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.cpp)
-set(RRR_GOAL0_SOURCE_heartbeat ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.cpp)
-set(RRR_GOAL0_SOURCE_request_queue ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.cpp)
-set(RRR_GOAL0_SOURCE_load_balancer ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.cpp)
-set(RRR_GOAL0_SOURCE_utils ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.cpp)
-set(RRR_GOAL0_SOURCE_frame_codec ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.cpp)
-set(RRR_GOAL0_SOURCE_serializable ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp)
-set(RRR_GOAL0_SOURCE_serializable_envelope ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.cpp)
-set(RRR_GOAL0_SOURCE_future ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.cpp)
-set(RRR_GOAL0_SOURCE_logging ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.cpp)
-set(RRR_GOAL0_SOURCE_idempotency ${CMAKE_CURRENT_SOURCE_DIR}/rpc/idempotency.cpp)
-set(RRR_GOAL0_SOURCE_fiber ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.cpp)
-set(RRR_GOAL0_SOURCE_misc ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.cpp)
-set(RRR_GOAL0_SOURCE_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.cpp)
-set(RRR_GOAL0_SOURCE_epoll_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.cc)
-set(RRR_GOAL0_SOURCE_pollable_proxy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.cpp)
-set(RRR_GOAL0_SOURCE_callbacks ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.cpp)
-set(RRR_GOAL0_SOURCE_inmemory_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.cpp)
-set(RRR_GOAL0_SOURCE_fiber_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.cpp)
-set(RRR_GOAL0_SOURCE_threading ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.cpp)
-set(RRR_GOAL0_SOURCE_debugging ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp)
-set(RRR_GOAL0_SOURCE_any_message ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp)
-set(RRR_GOAL0_SOURCE_tcp_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp)
-set(RRR_GOAL0_SOURCE_reactor ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp)
-set(RRR_GOAL0_SOURCE_server ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp)
-set(RRR_GOAL0_SOURCE_client ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp)
+set(RRR_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.rs)
+set(RRR_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.rs)
+set(RRR_GOAL0_SOURCE_internal_protocol ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.rs)
+set(RRR_GOAL0_SOURCE_stat ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.rs)
+set(RRR_GOAL0_SOURCE_errors ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.rs)
+set(RRR_GOAL0_SOURCE_connection_metrics ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.rs)
+set(RRR_GOAL0_SOURCE_completion_tracker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.rs)
+set(RRR_GOAL0_SOURCE_rand ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.rs)
+set(RRR_GOAL0_SOURCE_request_options ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.rs)
+set(RRR_GOAL0_SOURCE_reconnect_policy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.rs)
+set(RRR_GOAL0_SOURCE_circuit_breaker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.rs)
+set(RRR_GOAL0_SOURCE_connection_state ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.rs)
+set(RRR_GOAL0_SOURCE_heartbeat ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.rs)
+set(RRR_GOAL0_SOURCE_request_queue ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.rs)
+set(RRR_GOAL0_SOURCE_load_balancer ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.rs)
+set(RRR_GOAL0_SOURCE_utils ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.rs)
+set(RRR_GOAL0_SOURCE_frame_codec ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.rs)
+set(RRR_GOAL0_SOURCE_serializable ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.rs)
+set(RRR_GOAL0_SOURCE_serializable_envelope ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.rs)
+set(RRR_GOAL0_SOURCE_future ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.rs)
+set(RRR_GOAL0_SOURCE_logging ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.rs)
+set(RRR_GOAL0_SOURCE_idempotency ${CMAKE_CURRENT_SOURCE_DIR}/rpc/idempotency.rs)
+set(RRR_GOAL0_SOURCE_fiber ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.rs)
+set(RRR_GOAL0_SOURCE_misc ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.rs)
+set(RRR_GOAL0_SOURCE_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.rs)
+set(RRR_GOAL0_SOURCE_epoll_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.rs)
+set(RRR_GOAL0_SOURCE_pollable_proxy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.rs)
+set(RRR_GOAL0_SOURCE_callbacks ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.rs)
+set(RRR_GOAL0_SOURCE_inmemory_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.rs)
+set(RRR_GOAL0_SOURCE_fiber_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.rs)
+set(RRR_GOAL0_SOURCE_threading ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.rs)
+set(RRR_GOAL0_SOURCE_debugging ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.rs)
+set(RRR_GOAL0_SOURCE_any_message ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.rs)
+set(RRR_GOAL0_SOURCE_tcp_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.rs)
+set(RRR_GOAL0_SOURCE_reactor ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.rs)
+set(RRR_GOAL0_SOURCE_server ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.rs)
+set(RRR_GOAL0_SOURCE_client ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs)
 set(_RRR_GOAL0_UNIQUE_MODULES ${RRR_GOAL0_CANONICAL_MODULES})
 list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_MODULES)
 list(LENGTH RRR_GOAL0_CANONICAL_MODULES _RRR_GOAL0_MODULE_COUNT)
@@ -322,43 +323,43 @@ foreach(_RRR_GOAL0_MODULE IN LISTS RRR_GOAL0_CANONICAL_MODULES)
 endforeach()
 
 set(RRR_GOAL0_RETIRED_CARRIER_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/idempotency.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/idempotency.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs
 )
 set(_RRR_GOAL0_RETIRED_SORTED ${RRR_GOAL0_RETIRED_CARRIER_SRC})
 set(_RRR_GOAL0_CANONICAL_SORTED ${RRR_GOAL0_CANONICAL_RUST_SRC})
@@ -381,8 +382,9 @@ foreach(_RRR_GOAL0_CANONICAL_SOURCE IN LISTS RRR_GOAL0_CANONICAL_RUST_SRC)
             "${_RRR_GOAL0_CANONICAL_SOURCE}")
     endif()
 endforeach()
-# Canonical Rust sources intentionally retain their historical .cpp paths so
-# Git can preserve C++→Rust lineage. They are transpiler inputs, not native C++.
+# Canonical Rust sources are transpiler inputs, not native C++. They held their
+# historical .cpp/.cc paths only long enough for Git to record the C++→Rust
+# rename lineage; they are named .rs now, so this removal is a no-op guard.
 list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_GOAL0_RETIRED_CARRIER_SRC})
 set(RRR_GOAL0_CRATE_ROOT_SRC
     ${RRR_GOAL0_CRATE_CPP_DIR}/rrr.cppm
@@ -560,7 +562,7 @@ if(NOT TARGET rrr)
             "Borrow-check carriers must equal the remaining inline module "
             "inventory exactly")
     endif()
-    # Parse-recovery: rpc/server.cpp and rpc/fiber_channel.cpp trip a
+    # Parse-recovery: rpc/server.rs and rpc/fiber_channel.rs trip a
     # libclang-22 crash on the first parse attempt (clang++ CLI compiles them
     # normally). rusty-cpp retries without module arguments. The architecture
     # context-switch assembly remains deliberately outside this exact set.
@@ -853,7 +855,7 @@ add_dependencies(rrr_goal0_dual_compile
 # build ever compiled or ran them, so that gate had nothing to run.
 #
 # These targets link the CURRENT production librrr.a — whose `rrr.reactor`
-# provider is still the hand-written inline carrier `reactor/reactor.cpp` —
+# provider is the canonical Rust source `reactor/reactor.rs` —
 # which is precisely the incumbent baseline a promoted canonical-Rust Reactor
 # has to be compared against.  They do not require the canonical Rust Reactor
 # to compile.

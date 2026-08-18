@@ -26,7 +26,7 @@ The Cargo package is the canonical source for twenty-three production modules:
 - `rrr.fiber`
 - `rrr.misc`
 
-Their canonical Rust sources retain the historical `.cpp` paths recorded in
+Their canonical Rust sources are the `.rs` paths recorded in
 `rust-modules.toml`; `src/*.rs` symlinks let rustc consume those exact bytes,
 and rusty-cpp translates them into complete C++ module interfaces. The
 generated `.cppm` children are the only C++ production providers for these
@@ -80,7 +80,7 @@ source:
 ```
 
 The conventional direct-module layout is intentional. For example,
-`base/callback_wrapper.cpp` (exposed to Cargo as `src/callback_wrapper.rs`)
+`base/callback_wrapper.rs` (exposed to Cargo as `src/callback_wrapper.rs`)
 owns `pub mod detail`, so ordinary crate lowering produces
 `rrr::detail::CallbackWrapper`; it does not invent an `srpc.extracted.*`
 namespace. Never recreate the discarded top-level `crates/srpc` hand port.

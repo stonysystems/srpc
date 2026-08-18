@@ -38,7 +38,7 @@ fn historical_export_surface_is_rust_visible() {
 
 #[test]
 fn stackless_wakers_use_owner_ingress_and_stable_bindings() {
-    let source = include_str!("../reactor/reactor.cpp");
+    let source = include_str!("../reactor/reactor.rs");
 
     for required in [
         "struct StacklessWakeIngress",
@@ -79,7 +79,7 @@ fn stackless_wakers_use_owner_ingress_and_stable_bindings() {
 /// contract 1 requires to reject atomically.
 #[test]
 fn janus_placement_markers_cover_the_quorum_surface() {
-    let source = include_str!("../reactor/reactor.cpp");
+    let source = include_str!("../reactor/reactor.rs");
     const MARKER: &str = "#[cfg_attr(any(), cpp_namespace(::janus))]";
 
     // The three types plus the five free functions behind all 46 janus strong
@@ -133,7 +133,7 @@ fn janus_placement_markers_cover_the_quorum_surface() {
 /// spawn paths still refuse to treat a rejected registration as success.
 #[test]
 fn teardown_paths_report_cancelled_waiters_instead_of_silence() {
-    let source = include_str!("../reactor/reactor.cpp");
+    let source = include_str!("../reactor/reactor.rs");
 
     for required in [
         // the four accounted teardown paths
@@ -210,7 +210,7 @@ fn teardown_paths_report_cancelled_waiters_instead_of_silence() {
 fn stackless_cancel_report_stays_a_template() {
     let _report: fn() -> StacklessCancelReport = stackless_cancel_report::<()>;
 
-    let source = include_str!("../reactor/reactor.cpp");
+    let source = include_str!("../reactor/reactor.rs");
     assert!(source.contains("pub fn stackless_cancel_report<WakeDomain>()"));
     assert!(source.contains("static g_stackless_cancel: StacklessCancelCounters"));
     // Same shape as g_stackless_profile, which the incumbent object proves

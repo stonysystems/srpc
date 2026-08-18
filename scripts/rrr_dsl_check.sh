@@ -34,8 +34,12 @@ EXPECTED_FILES=(
 EXPECTED_FILE_COUNT=1
 EXPECTED_BLOCK_COUNT=5
 
+# --include='*.rs' is load-bearing even though the census below expects exactly
+# one C++ carrier. The 37 canonical sources are now .rs; without that pattern
+# this scan would silently cover 1 file instead of 38, and a DSL block growing
+# in a canonical source would stop being drift-checked with no signal at all.
 mapfile -t FILES < <(grep -rl '#if RUSTYCPP_RUST' base misc reactor rpc \
-                       --include='*.cpp' --include='*.cc' \
+                       --include='*.rs' --include='*.cpp' --include='*.cc' \
                        --include='*.h' --include='*.hpp' | sort)
 
 if [[ ${#FILES[@]} -ne $EXPECTED_FILE_COUNT ]] ||

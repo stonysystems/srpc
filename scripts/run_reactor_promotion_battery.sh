@@ -232,7 +232,7 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
         #     built by the mandated `fn new()` factory, and the incumbent
         #     oracle has no EventState constructor symbol at all.
         #   * 64 the REVIEWED ADDITIVE ABI DELTA from removing the eleven
-        #     `#[cfg_attr(any(), cpp_internal)]` markers in reactor/reactor.cpp:
+        #     `#[cfg_attr(any(), cpp_internal)]` markers in reactor/reactor.rs:
         #     54 EventPollable UFCS overloads (9 methods x 6 implementors) that
         #     lost their `inline`/vague linkage, 9 free helpers that lost
         #     internal linkage, and 1 module-attached const.  These

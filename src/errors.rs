@@ -1,1 +1,1 @@
-../rpc/errors.cpp
+../rpc/errors.rs

@@ -1,1 +1,1 @@
-../rpc/internal_protocol.cpp
+../rpc/internal_protocol.rs
