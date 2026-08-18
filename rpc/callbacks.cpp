@@ -26,7 +26,6 @@ pub type ConnectionCallback = Arc<Box<dyn Fn() + Send + Sync>>;
 pub type ErrorCallback = Arc<Box<dyn Fn(LegacyRpcError, &LegacyStdString) + Send + Sync>>;
 pub type ReconnectCallback = Arc<Box<dyn Fn(bool) + Send + Sync>>;
 
-#[cfg_attr(any(), cpp_name(invoke_callback_safely))]
 fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         // The explicit double dereference is also significant to the C++
@@ -36,7 +35,6 @@ fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
     }));
 }
 
-#[cfg_attr(any(), cpp_name(invoke_callback_safely))]
 fn invoke_error_callback_safely(
     callback: &ErrorCallback,
     error: LegacyRpcError,
@@ -47,7 +45,6 @@ fn invoke_error_callback_safely(
     }));
 }
 
-#[cfg_attr(any(), cpp_name(invoke_callback_safely))]
 fn invoke_reconnect_callback_safely(callback: &ReconnectCallback, success: bool) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         (**callback)(success);

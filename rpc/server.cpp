@@ -1227,7 +1227,7 @@ pub fn sconn_reply(
     let mut ar_store = BinaryWriteArchive {
         // SAFETY: `body_sink` is a live, exclusively borrowed local that
         // outlives the archive built over it.
-        sink_: unsafe { cpp_serializable::make_sink_proxy(&raw mut body_sink) },
+        sink_: unsafe { cpp_serializable::make_sink_proxy_buffer(&raw mut body_sink) },
     };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     crate::serializable::Serialize_::serialize(&v64::new(req.xid), ar);
@@ -1377,7 +1377,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     }
     let mut header_ar = BinaryReadArchive {
         // SAFETY: `req_box.src` is owned by the live boxed request.
-        source_: unsafe { cpp_serializable::make_source_proxy(&raw mut req_box.src) },
+        source_: unsafe { cpp_serializable::make_source_proxy_buffer(&raw mut req_box.src) },
     };
     let mut v_xid = v64::new(0i64);
     crate::serializable::Deserialize_::deserialize(&mut v_xid, &mut header_ar);

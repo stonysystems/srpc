@@ -178,7 +178,7 @@ static_assert(std::is_same_v<decltype(&IdempotencyCache::evict_expired), CacheEv
 template <typename T>
 static rusty::Vec<std::uint8_t> to_bytes(const T& v) {
     rrr::BufferSink sink;
-    rrr::BinaryWriteArchive ar(rrr::make_sink_proxy(&sink));
+    rrr::BinaryWriteArchive ar(rrr::make_sink_proxy_buffer(&sink));
     rrr::Serialize_::serialize(v, ar);
     return std::move(sink.bytes);
 }
@@ -263,7 +263,7 @@ TEST_F(IdempotencyKeyTest, MarshalRoundTrip) {
     // Serialize
     rrr::BufferSink sink;
     {
-        rrr::BinaryWriteArchive ar(rrr::make_sink_proxy(&sink));
+        rrr::BinaryWriteArchive ar(rrr::make_sink_proxy_buffer(&sink));
         rrr::Serialize_::serialize(original, ar);
     }
 
@@ -274,7 +274,7 @@ TEST_F(IdempotencyKeyTest, MarshalRoundTrip) {
 
     // Decode the independent bytes, rather than the encoder's output.
     rrr::BufferSource src(expected.data(), expected.size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy(&src));
+    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
     auto restored = IdempotencyKey::empty();
     rrr::Deserialize_::deserialize(restored, rar);
 

@@ -1853,10 +1853,10 @@ ABI_SPECS = {
                 'export struct BinaryWriteArchive;',
                 'export struct BinaryReadArchive;',
                 'export struct SerializableRegistry;',
-                'export SinkProxy make_sink_proxy(BufferSink* sink);',
-                'export SourceProxy make_source_proxy(BufferSource* source);',
-                'export SinkProxy make_sink_proxy(FdSink* sink);',
-                'export SourceProxy make_source_proxy(FdSource* source);',
+                'export SinkProxy make_sink_proxy_buffer(BufferSink* sink);',
+                'export SourceProxy make_source_proxy_buffer(BufferSource* source);',
+                'export SinkProxy make_sink_proxy_fd(FdSink* sink);',
+                'export SourceProxy make_source_proxy_fd(FdSource* source);',
                 'export void serializable_registry_register_factory(int32_t kind, rusty::Function<SerializableProxy()> factory);',
                 'export bool serializable_registry_is_registered_impl(int32_t kind);',
                 'export void serializable_registry_clear_impl();',
@@ -2391,10 +2391,10 @@ ABI_SPECS = {
                 ('T', 'rrr::SourceBaseAdapterRefMut@rrr.serializable<rrr::BufferSource@rrr.serializable>::read_bytes(unsigned char*, unsigned long)'),
                 ('T', 'rrr::SourceBaseAdapterRefMut@rrr.serializable<rrr::FdSource@rrr.serializable>::SourceBaseAdapterRefMut(rrr::FdSource@rrr.serializable&)'),
                 ('T', 'rrr::SourceBaseAdapterRefMut@rrr.serializable<rrr::FdSource@rrr.serializable>::read_bytes(unsigned char*, unsigned long)'),
-                ('T', 'rrr::make_sink_proxy@rrr.serializable(rrr::BufferSink@rrr.serializable*)'),
-                ('T', 'rrr::make_sink_proxy@rrr.serializable(rrr::FdSink@rrr.serializable*)'),
-                ('T', 'rrr::make_source_proxy@rrr.serializable(rrr::BufferSource@rrr.serializable*)'),
-                ('T', 'rrr::make_source_proxy@rrr.serializable(rrr::FdSource@rrr.serializable*)'),
+                ('T', 'rrr::make_sink_proxy_buffer@rrr.serializable(rrr::BufferSink@rrr.serializable*)'),
+                ('T', 'rrr::make_sink_proxy_fd@rrr.serializable(rrr::FdSink@rrr.serializable*)'),
+                ('T', 'rrr::make_source_proxy_buffer@rrr.serializable(rrr::BufferSource@rrr.serializable*)'),
+                ('T', 'rrr::make_source_proxy_fd@rrr.serializable(rrr::FdSource@rrr.serializable*)'),
                 ('T', 'rrr::rusty_ext::deserialize@rrr.serializable(double&, rrr::BinaryReadArchive@rrr.serializable&)'),
                 ('T', 'rrr::rusty_ext::deserialize@rrr.serializable(int&, rrr::BinaryReadArchive@rrr.serializable&)'),
                 ('T', 'rrr::rusty_ext::deserialize@rrr.serializable(long&, rrr::BinaryReadArchive@rrr.serializable&)'),
@@ -2821,9 +2821,9 @@ ABI_SPECS = {
                 ('T', 'rrr::ConnectionCallbacks@rrr.callbacks::clear()'),
                 ('T', 'rrr::ConnectionCallbacks@rrr.callbacks::new_()'),
                 ('T', 'rrr::ConnectionCallbacks@rrr.callbacks::total_count() const'),
-                ('T', 'rrr::invoke_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void () const>> const&)'),
-                ('T', 'rrr::invoke_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void (bool) const>> const&, bool)'),
-                ('T', 'rrr::invoke_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void (rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const>> const&, rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'rrr::invoke_connection_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void () const>> const&)'),
+                ('T', 'rrr::invoke_reconnect_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void (bool) const>> const&, bool)'),
+                ('T', 'rrr::invoke_error_callback_safely@rrr.callbacks(rusty::Arc<rusty::Function<void (rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const>> const&, rrr::RpcError@rrr.errors, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
             }
         ),
     ),
@@ -9480,7 +9480,7 @@ int main() {
     }
     rrr::BufferSink idempotency_sink;
     rrr::BinaryWriteArchive idempotency_writer(
-        rrr::make_sink_proxy(&idempotency_sink));
+        rrr::make_sink_proxy_buffer(&idempotency_sink));
     rrr::serialize(idempotency_key, idempotency_writer);
     if (idempotency_sink.bytes.len() != 16) {
         return 226;
@@ -9488,7 +9488,7 @@ int main() {
     rrr::BufferSource idempotency_source(
         idempotency_sink.bytes.data(), idempotency_sink.bytes.len());
     rrr::BinaryReadArchive idempotency_reader(
-        rrr::make_source_proxy(&idempotency_source));
+        rrr::make_source_proxy_buffer(&idempotency_source));
     auto restored_key = rrr::IdempotencyKey::empty();
     rrr::deserialize(restored_key, idempotency_reader);
     if (!(restored_key == idempotency_key)) {

@@ -132,11 +132,11 @@ namespace = "rrr"
 cpp_module = "rrr.serializable"
 namespace = "rrr"
 
-[modules."rrr::serializable".symbols.make_sink_proxy]
+[modules."rrr::serializable".symbols.make_sink_proxy_buffer]
 kind = "function"
 callable_signatures = ["SinkProxy(BufferSink*)"]
 
-[modules."rrr::serializable".symbols.make_source_proxy]
+[modules."rrr::serializable".symbols.make_source_proxy_buffer]
 kind = "function"
 callable_signatures = ["SourceProxy(BufferSource*)"]
 

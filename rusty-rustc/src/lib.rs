@@ -1714,20 +1714,20 @@ pub mod rrr {
         ///
         /// `sink` must be non-null, uniquely borrowed, and remain alive and
         /// unmoved for every use of the returned proxy. Production C++
-        /// resolves this to the `make_sink_proxy` overload set.
+        /// resolves this to `make_sink_proxy_buffer`.
         #[allow(unsafe_code)]
-        pub unsafe fn make_sink_proxy<S, P>(_sink: *mut S) -> P {
+        pub unsafe fn make_sink_proxy_buffer<S, P>(_sink: *mut S) -> P {
             // The rustc facade never runs: the production emitter resolves
-            // this to the real `rrr::make_sink_proxy` overload set.
+            // this to the real `rrr::make_sink_proxy_buffer`.
             unreachable!("rustc-only serializable proxy facade")
         }
 
         /// # Safety
         ///
-        /// Same borrow and lifetime contract as [`make_sink_proxy`], for the
-        /// read side.
+        /// Same borrow and lifetime contract as [`make_sink_proxy_buffer`],
+        /// for the read side.
         #[allow(unsafe_code)]
-        pub unsafe fn make_source_proxy<S, P>(_source: *mut S) -> P {
+        pub unsafe fn make_source_proxy_buffer<S, P>(_source: *mut S) -> P {
             unreachable!("rustc-only serializable proxy facade")
         }
         use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};

@@ -137,7 +137,6 @@ impl SourceBase for BufferSource {
 ///
 /// `sink` must be non-null, uniquely borrowed, and remain alive and unmoved
 /// for every use of the returned proxy.
-#[cfg_attr(any(), cpp_name(make_sink_proxy))]
 #[allow(unsafe_code)]
 pub unsafe fn make_sink_proxy_buffer(sink: *mut BufferSink) -> SinkProxy {
     rusty::make_box::<rusty::RustcSinkBaseAdapterRefMut<BufferSink>>(unsafe { &mut *sink })
@@ -149,7 +148,6 @@ pub unsafe fn make_sink_proxy_buffer(sink: *mut BufferSink) -> SinkProxy {
 /// for every use of the returned proxy. Its public raw backing fields must
 /// satisfy [`SourceBase::read_bytes`]'s retained-source contract throughout
 /// that lifetime.
-#[cfg_attr(any(), cpp_name(make_source_proxy))]
 #[allow(unsafe_code)]
 pub unsafe fn make_source_proxy_buffer(source: *mut BufferSource) -> SourceProxy {
     rusty::make_box::<rusty::RustcSourceBaseAdapterRefMut<BufferSource>>(unsafe { &mut *source })
@@ -203,7 +201,6 @@ impl SourceBase for FdSource {
 /// [`make_sink_proxy_buffer`]. Its file descriptor must remain open for
 /// writing and externally serialized for the returned proxy's lifetime; this
 /// function does not take descriptor ownership.
-#[cfg_attr(any(), cpp_name(make_sink_proxy))]
 #[allow(unsafe_code)]
 pub unsafe fn make_sink_proxy_fd(sink: *mut FdSink) -> SinkProxy {
     rusty::make_box::<rusty::RustcSinkBaseAdapterRefMut<FdSink>>(unsafe { &mut *sink })
@@ -215,7 +212,6 @@ pub unsafe fn make_sink_proxy_fd(sink: *mut FdSink) -> SinkProxy {
 /// for every use of the returned proxy. Its file descriptor must remain open
 /// for reading and externally serialized for that lifetime; this function
 /// does not take descriptor ownership.
-#[cfg_attr(any(), cpp_name(make_source_proxy))]
 #[allow(unsafe_code)]
 pub unsafe fn make_source_proxy_fd(source: *mut FdSource) -> SourceProxy {
     rusty::make_box::<rusty::RustcSourceBaseAdapterRefMut<FdSource>>(unsafe { &mut *source })
@@ -1079,7 +1075,6 @@ impl<const KIND: i32> Serializable<KIND> {
     }
 }
 
-#[cfg_attr(any(), cpp_name(make_serializable_proxy))]
 #[allow(unsafe_code)]
 pub fn make_serializable_proxy_default<T: 'static>() -> rusty::SerializableProxy {
     // SAFETY: the C++ helper allocates T and immediately moves its owning Arc
@@ -1088,7 +1083,6 @@ pub fn make_serializable_proxy_default<T: 'static>() -> rusty::SerializableProxy
     unsafe { cpp_rusty::srpc_holder_proxy::<rusty::SerializableSharedPtrHolder<T>, T>(sp) }
 }
 
-#[cfg_attr(any(), cpp_name(make_serializable_proxy))]
 #[allow(unsafe_code)]
 pub fn make_serializable_proxy_copy<T: 'static>(value: &T) -> rusty::SerializableProxy {
     // SAFETY: the helper copy-constructs T from a live shared reference and
