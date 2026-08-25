@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.load_balancer module.
+// Canonical Rust source for the srpc.load_balancer module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use rusty::{LoadBalancerClient as _, LoadBalancerMetrics as _};
 use std::cell::Cell;

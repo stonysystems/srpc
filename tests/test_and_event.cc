@@ -2,12 +2,12 @@
 #include <rusty/option.hpp>
 #include <rusty/box.hpp>
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 TEST(AndEventTest, BasicAndEvent) {

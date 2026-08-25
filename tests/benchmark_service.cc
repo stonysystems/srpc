@@ -3,11 +3,11 @@
 #include <unistd.h>
 
 #include "benchmark_service.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 using namespace benchmark;
-using namespace rrr;
+using namespace srpc;
 
 static Counter g_nop_counter = Counter::new_(0);
 extern int rpc_bench_vector_size;
@@ -143,7 +143,7 @@ BenchmarkService::sleep(const RpcSleepRequest& req) {
 void BenchmarkService::deferred_echo(
     const RpcDeferredEchoRequest& req,
     RpcDeferredEchoResponse& resp,
-    rrr::DeferredReply defer) {
+    srpc::DeferredReply defer) {
     resp.result = req.val * 2;
     defer.reply();
 }

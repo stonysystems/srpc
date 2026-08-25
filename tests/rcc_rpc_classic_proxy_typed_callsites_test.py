@@ -45,7 +45,7 @@ def compile_proxy_probe(repo_root: Path, generated_dir: Path, cxx: str) -> None:
         """#include "rcc_rpc.h"
 int main() {
   janus::ClassicProxy* proxy = nullptr;
-  rrr::FutureAttr attr;
+  srpc::FutureAttr attr;
 
   janus::ClassicProxy::RpcRccDispatchRequest dispatch_req;
   dispatch_req.cmd = {};
@@ -96,7 +96,7 @@ int main() {
         "-I",
         str(repo_root / "src"),
         "-I",
-        str(repo_root / "src/rrr"),
+        str(repo_root / "src/srpc"),
         "-I",
         str(repo_root / "src/deptran"),
         "-I",
@@ -165,22 +165,22 @@ def main() -> int:
         require_contains(header_text, "struct RpcRccDispatchRequest")
         require_contains(
             header_text,
-            "rusty::Result<RccDispatchTypedFuture, rrr::i32> async_RccDispatch(",
+            "rusty::Result<RccDispatchTypedFuture, srpc::i32> async_RccDispatch(",
         )
         require_contains(header_text, "struct RpcRccPreAcceptRequest")
         require_contains(
             header_text,
-            "rusty::Result<RccPreAcceptTypedFuture, rrr::i32> async_RccPreAccept(",
+            "rusty::Result<RccPreAcceptTypedFuture, srpc::i32> async_RccPreAccept(",
         )
         require_contains(header_text, "struct RpcRccAcceptRequest")
         require_contains(
             header_text,
-            "rusty::Result<RccAcceptTypedFuture, rrr::i32> async_RccAccept(",
+            "rusty::Result<RccAcceptTypedFuture, srpc::i32> async_RccAccept(",
         )
         require_contains(header_text, "struct RpcRccCommitRequest")
         require_contains(
             header_text,
-            "rusty::Result<RccCommitTypedFuture, rrr::i32> async_RccCommit(",
+            "rusty::Result<RccCommitTypedFuture, srpc::i32> async_RccCommit(",
         )
 
         compile_proxy_probe(repo_root, tmpdir_path, args.cxx)

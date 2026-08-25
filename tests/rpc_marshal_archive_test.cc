@@ -25,15 +25,15 @@
 #include <rusty/option.hpp>
 
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "../misc/serializable.hpp"
 #include "../misc/serializable_envelope.hpp"
 
 import std;
 import rusty;
-import rrr.basetypes;
+import srpc.basetypes;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 
@@ -52,12 +52,12 @@ void check_round_trip(const T& value) {
   // Encode via the archive path.
   BufferSink sink;
   BinaryWriteArchive archive(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(value, archive);
+  srpc::Serialize_::serialize(value, archive);
 
   BufferSource source(sink.bytes.data(), sink.bytes.len());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   T decoded{};
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
 
   EXPECT_EQ(decoded, value)
       << "round-trip mismatch for type " << typeid(T).name();
@@ -155,13 +155,13 @@ TEST(MarshalArchiveByteCompat, V32Boundary) {
 
     BufferSink sink;
     BinaryWriteArchive archive(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(v, archive);
+    srpc::Serialize_::serialize(v, archive);
 
     // Round-trip read.
     BufferSource source(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&source));
     v32 decoded;
-    rrr::Deserialize_::deserialize(decoded, reader);
+    srpc::Deserialize_::deserialize(decoded, reader);
     EXPECT_EQ(decoded.get(), raw) << "v32 round-trip raw=" << raw;
     EXPECT_TRUE(source.eof());
   }
@@ -178,12 +178,12 @@ TEST(MarshalArchiveByteCompat, V64Boundary) {
 
     BufferSink sink;
     BinaryWriteArchive archive(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(v, archive);
+    srpc::Serialize_::serialize(v, archive);
 
     BufferSource source(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&source));
     v64 decoded;
-    rrr::Deserialize_::deserialize(decoded, reader);
+    srpc::Deserialize_::deserialize(decoded, reader);
     EXPECT_EQ(decoded.get(), raw) << "v64 round-trip raw=" << raw;
     EXPECT_TRUE(source.eof());
   }
@@ -235,20 +235,20 @@ TEST(MarshalArchiveByteCompat, CompositePrimitiveSequence) {
 
   BufferSink sink;
   BinaryWriteArchive archive(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(a, archive);
-  rrr::Serialize_::serialize(b, archive);
-  rrr::Serialize_::serialize(c, archive);
-  rrr::Serialize_::serialize(d, archive);
-  rrr::Serialize_::serialize(e, archive);
+  srpc::Serialize_::serialize(a, archive);
+  srpc::Serialize_::serialize(b, archive);
+  srpc::Serialize_::serialize(c, archive);
+  srpc::Serialize_::serialize(d, archive);
+  srpc::Serialize_::serialize(e, archive);
 
   BufferSource source(sink.bytes.data(), sink.bytes.len());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   int32_t a2; int64_t b2; v64 c2{0}; std::string d2; double e2;
-  rrr::Deserialize_::deserialize(a2, reader);
-  rrr::Deserialize_::deserialize(b2, reader);
-  rrr::Deserialize_::deserialize(c2, reader);
-  rrr::Deserialize_::deserialize(d2, reader);
-  rrr::Deserialize_::deserialize(e2, reader);
+  srpc::Deserialize_::deserialize(a2, reader);
+  srpc::Deserialize_::deserialize(b2, reader);
+  srpc::Deserialize_::deserialize(c2, reader);
+  srpc::Deserialize_::deserialize(d2, reader);
+  srpc::Deserialize_::deserialize(e2, reader);
   EXPECT_EQ(a2, a);
   EXPECT_EQ(b2, b);
   EXPECT_EQ(c2.get(), c.get());
@@ -311,11 +311,11 @@ template <typename Container>
 void check_container_round_trip(const Container& c) {
   BufferSink sink;
   BinaryWriteArchive archive(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(c, archive);
+  srpc::Serialize_::serialize(c, archive);
   BufferSource source(sink.bytes.data(), sink.bytes.len());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   Container decoded;
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   EXPECT_EQ(decoded, c) << "container round-trip mismatch for "
                        << typeid(Container).name();
   EXPECT_TRUE(source.eof());
@@ -333,7 +333,7 @@ template <typename Container>
 void check_archive_round_trip_only(const Container& c) {
   BufferSink sink;
   BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(c, writer);
+  srpc::Serialize_::serialize(c, writer);
 
   std::vector<uint8_t> bytes(sink.bytes.len());
   for (size_t i = 0; i < sink.bytes.len(); ++i) bytes[i] = sink.bytes[i];
@@ -341,7 +341,7 @@ void check_archive_round_trip_only(const Container& c) {
   BufferSource source(bytes.data(), bytes.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   Container decoded;
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   EXPECT_TRUE(source.eof()) << "decoder did not consume all bytes for "
                             << typeid(Container).name();
   // Element-wise comparison via len() + index for rusty types.
@@ -360,7 +360,7 @@ TEST(MarshalArchiveRoundTrip, RustyVecPrimitives) {
 
   BufferSink sink;
   BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(v, writer);
+  srpc::Serialize_::serialize(v, writer);
 
   std::vector<uint8_t> bytes(sink.bytes.len());
   for (size_t i = 0; i < sink.bytes.len(); ++i) bytes[i] = sink.bytes[i];
@@ -368,7 +368,7 @@ TEST(MarshalArchiveRoundTrip, RustyVecPrimitives) {
   BufferSource source(bytes.data(), bytes.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   rusty::Vec<int32_t> decoded;
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   ASSERT_EQ(decoded.size(), v.size());
   for (size_t i = 0; i < v.size(); ++i) {
     EXPECT_EQ(decoded[i], v[i]);
@@ -433,7 +433,7 @@ TEST(MarshalArchiveRoundTrip, RustyBTreeSetPrimitives) {
 
   BufferSink sink;
   BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(s, writer);
+  srpc::Serialize_::serialize(s, writer);
 
   std::vector<uint8_t> bytes(sink.bytes.len());
   for (size_t i = 0; i < sink.bytes.len(); ++i) bytes[i] = sink.bytes[i];
@@ -441,7 +441,7 @@ TEST(MarshalArchiveRoundTrip, RustyBTreeSetPrimitives) {
   BufferSource source(bytes.data(), bytes.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   auto decoded = rusty::BTreeSet<int32_t>::new_();
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   ASSERT_EQ(decoded.len(), s.len());
   EXPECT_TRUE(source.eof());
 }
@@ -459,7 +459,7 @@ TEST(MarshalArchiveRoundTrip, RustyHashSetPrimitives) {
 
   BufferSink sink;
   BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(s, writer);
+  srpc::Serialize_::serialize(s, writer);
 
   std::vector<uint8_t> bytes(sink.bytes.len());
   for (size_t i = 0; i < sink.bytes.len(); ++i) bytes[i] = sink.bytes[i];
@@ -467,7 +467,7 @@ TEST(MarshalArchiveRoundTrip, RustyHashSetPrimitives) {
   BufferSource source(bytes.data(), bytes.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   rusty::HashSet<int32_t> decoded;
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   ASSERT_EQ(decoded.len(), s.size());
   EXPECT_TRUE(source.eof());
 }
@@ -497,7 +497,7 @@ TEST(MarshalArchiveRoundTrip, RustyBTreeMapPrimitives) {
 
   BufferSink sink;
   BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(m, writer);
+  srpc::Serialize_::serialize(m, writer);
 
   std::vector<uint8_t> bytes(sink.bytes.len());
   for (size_t i = 0; i < sink.bytes.len(); ++i) bytes[i] = sink.bytes[i];
@@ -505,7 +505,7 @@ TEST(MarshalArchiveRoundTrip, RustyBTreeMapPrimitives) {
   BufferSource source(bytes.data(), bytes.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   auto decoded = rusty::BTreeMap<int32_t, int64_t>::new_();
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   ASSERT_EQ(decoded.len(), m.len());
   EXPECT_TRUE(source.eof());
 }
@@ -520,7 +520,7 @@ TEST(MarshalArchiveRoundTrip, RustyHashMapPrimitives) {
 
   BufferSink sink;
   BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(m, writer);
+  srpc::Serialize_::serialize(m, writer);
 
   std::vector<uint8_t> bytes(sink.bytes.len());
   for (size_t i = 0; i < sink.bytes.len(); ++i) bytes[i] = sink.bytes[i];
@@ -528,7 +528,7 @@ TEST(MarshalArchiveRoundTrip, RustyHashMapPrimitives) {
   BufferSource source(bytes.data(), bytes.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   rusty::HashMap<int32_t, std::string> decoded;
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   ASSERT_EQ(decoded.len(), m.size());
   EXPECT_TRUE(source.eof());
 }
@@ -649,11 +649,11 @@ TEST(FdSinkArchive, PipeRoundTripPrimitives) {
   {
     FdSink sink(p.fds[1]);
     BinaryWriteArchive writer(make_sink_proxy_fd(&sink));
-    rrr::Serialize_::serialize(static_cast<int32_t>(0x12345678), writer);
-    rrr::Serialize_::serialize(static_cast<int64_t>(-1), writer);
-    rrr::Serialize_::serialize(std::string("hello"), writer);
-    rrr::Serialize_::serialize(v32(5), writer);
-    rrr::Serialize_::serialize(v64(1024), writer);
+    srpc::Serialize_::serialize(static_cast<int32_t>(0x12345678), writer);
+    srpc::Serialize_::serialize(static_cast<int64_t>(-1), writer);
+    srpc::Serialize_::serialize(std::string("hello"), writer);
+    srpc::Serialize_::serialize(v32(5), writer);
+    srpc::Serialize_::serialize(v64(1024), writer);
   }
   p.close_write();
   reader_thread.join();
@@ -664,11 +664,11 @@ TEST(FdSinkArchive, PipeRoundTripPrimitives) {
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
 
   int32_t a; int64_t b; std::string c; v32 d{0}; v64 e{0};
-  rrr::Deserialize_::deserialize(a, reader);
-  rrr::Deserialize_::deserialize(b, reader);
-  rrr::Deserialize_::deserialize(c, reader);
-  rrr::Deserialize_::deserialize(d, reader);
-  rrr::Deserialize_::deserialize(e, reader);
+  srpc::Deserialize_::deserialize(a, reader);
+  srpc::Deserialize_::deserialize(b, reader);
+  srpc::Deserialize_::deserialize(c, reader);
+  srpc::Deserialize_::deserialize(d, reader);
+  srpc::Deserialize_::deserialize(e, reader);
   EXPECT_EQ(a, 0x12345678);
   EXPECT_EQ(b, -1);
   EXPECT_EQ(c, "hello");
@@ -695,22 +695,22 @@ TEST(FdSinkArchive, ByteForByteCompatVsBufferSink) {
   {
     FdSink sink(p.fds[1]);
     BinaryWriteArchive writer(make_sink_proxy_fd(&sink));
-    rrr::Serialize_::serialize(static_cast<uint32_t>(42), writer);
-    rrr::Serialize_::serialize(std::string("the quick brown fox"), writer);
-    rrr::Serialize_::serialize(v64(0x123456789ABCDEFLL), writer);
+    srpc::Serialize_::serialize(static_cast<uint32_t>(42), writer);
+    srpc::Serialize_::serialize(std::string("the quick brown fox"), writer);
+    srpc::Serialize_::serialize(v64(0x123456789ABCDEFLL), writer);
     std::vector<int32_t> vec{1, 2, 3, 4, 5};
-    rrr::Serialize_::serialize(vec, writer);
+    srpc::Serialize_::serialize(vec, writer);
   }
   p.close_write();
   reader_thread.join();
 
   BufferSink ref_sink;
   BinaryWriteArchive ref_writer(make_sink_proxy_buffer(&ref_sink));
-  rrr::Serialize_::serialize(static_cast<uint32_t>(42), ref_writer);
-  rrr::Serialize_::serialize(std::string("the quick brown fox"), ref_writer);
-  rrr::Serialize_::serialize(v64(0x123456789ABCDEFLL), ref_writer);
+  srpc::Serialize_::serialize(static_cast<uint32_t>(42), ref_writer);
+  srpc::Serialize_::serialize(std::string("the quick brown fox"), ref_writer);
+  srpc::Serialize_::serialize(v64(0x123456789ABCDEFLL), ref_writer);
   std::vector<int32_t> vec{1, 2, 3, 4, 5};
-  rrr::Serialize_::serialize(vec, ref_writer);
+  srpc::Serialize_::serialize(vec, ref_writer);
 
   std::vector<uint8_t> ref_bytes(ref_sink.bytes.len());
   for (size_t i = 0; i < ref_sink.bytes.len(); ++i) ref_bytes[i] = ref_sink.bytes[i];
@@ -725,13 +725,13 @@ TEST(FdSourceArchive, TempFileRoundTripCompositeSequence) {
   {
     FdSink sink(tf.fd);
     BinaryWriteArchive writer(make_sink_proxy_fd(&sink));
-    rrr::Serialize_::serialize(static_cast<int32_t>(7), writer);
-    rrr::Serialize_::serialize(static_cast<int64_t>(-99), writer);
-    rrr::Serialize_::serialize(std::string("temp file payload"), writer);
+    srpc::Serialize_::serialize(static_cast<int32_t>(7), writer);
+    srpc::Serialize_::serialize(static_cast<int64_t>(-99), writer);
+    srpc::Serialize_::serialize(std::string("temp file payload"), writer);
     std::vector<std::string> strs{"a", "bb", "ccc"};
-    rrr::Serialize_::serialize(strs, writer);
+    srpc::Serialize_::serialize(strs, writer);
     std::map<int32_t, int64_t> m{{1, 100}, {2, 200}, {3, 300}};
-    rrr::Serialize_::serialize(m, writer);
+    srpc::Serialize_::serialize(m, writer);
   }
   // Flush by closing — done by ScopedTempFile dtor at scope end. Force
   // it now since we want to reopen for reading.
@@ -745,11 +745,11 @@ TEST(FdSourceArchive, TempFileRoundTripCompositeSequence) {
     int32_t a; int64_t b; std::string c;
     std::vector<std::string> strs;
     std::map<int32_t, int64_t> m;
-    rrr::Deserialize_::deserialize(a, reader);
-    rrr::Deserialize_::deserialize(b, reader);
-    rrr::Deserialize_::deserialize(c, reader);
-    rrr::Deserialize_::deserialize(strs, reader);
-    rrr::Deserialize_::deserialize(m, reader);
+    srpc::Deserialize_::deserialize(a, reader);
+    srpc::Deserialize_::deserialize(b, reader);
+    srpc::Deserialize_::deserialize(c, reader);
+    srpc::Deserialize_::deserialize(strs, reader);
+    srpc::Deserialize_::deserialize(m, reader);
     EXPECT_EQ(a, 7);
     EXPECT_EQ(b, -99);
     EXPECT_EQ(c, "temp file payload");
@@ -789,7 +789,7 @@ TEST(FdSinkArchive, LargePayloadChunkedWrite) {
   {
     FdSink sink(p.fds[1]);
     BinaryWriteArchive writer(make_sink_proxy_fd(&sink));
-    rrr::Serialize_::serialize(big, writer);
+    srpc::Serialize_::serialize(big, writer);
   }
   p.close_write();
   reader_thread.join();
@@ -798,7 +798,7 @@ TEST(FdSinkArchive, LargePayloadChunkedWrite) {
   BufferSource source(drained.data(), drained.size());
   BinaryReadArchive reader(make_source_proxy_buffer(&source));
   std::vector<int32_t> decoded;
-  rrr::Deserialize_::deserialize(decoded, reader);
+  srpc::Deserialize_::deserialize(decoded, reader);
   EXPECT_EQ(decoded.size(), big.size());
   EXPECT_EQ(decoded, big);
   EXPECT_TRUE(source.eof());
@@ -814,10 +814,10 @@ TEST(FdSourceArchive, ChunkedReadAcrossPipeBoundaries) {
   // splatters bytes onto the pipe in 1-byte writes.
   BufferSink prep_sink;
   BinaryWriteArchive prep(make_sink_proxy_buffer(&prep_sink));
-  rrr::Serialize_::serialize(static_cast<int32_t>(0xDEADBEEF), prep);
-  rrr::Serialize_::serialize(static_cast<int64_t>(0x1122334455667788LL), prep);
-  rrr::Serialize_::serialize(std::string("chunked across syscalls"), prep);
-  rrr::Serialize_::serialize(v64(987654321LL), prep);
+  srpc::Serialize_::serialize(static_cast<int32_t>(0xDEADBEEF), prep);
+  srpc::Serialize_::serialize(static_cast<int64_t>(0x1122334455667788LL), prep);
+  srpc::Serialize_::serialize(std::string("chunked across syscalls"), prep);
+  srpc::Serialize_::serialize(v64(987654321LL), prep);
 
   std::vector<uint8_t> payload(prep_sink.bytes.len());
   for (size_t i = 0; i < prep_sink.bytes.len(); ++i) payload[i] = prep_sink.bytes[i];
@@ -835,10 +835,10 @@ TEST(FdSourceArchive, ChunkedReadAcrossPipeBoundaries) {
   FdSource src(p.fds[0]);
   BinaryReadArchive reader(make_source_proxy_fd(&src));
   int32_t a; int64_t b; std::string c; v64 d{0};
-  rrr::Deserialize_::deserialize(a, reader);
-  rrr::Deserialize_::deserialize(b, reader);
-  rrr::Deserialize_::deserialize(c, reader);
-  rrr::Deserialize_::deserialize(d, reader);
+  srpc::Deserialize_::deserialize(a, reader);
+  srpc::Deserialize_::deserialize(b, reader);
+  srpc::Deserialize_::deserialize(c, reader);
+  srpc::Deserialize_::deserialize(d, reader);
   EXPECT_EQ(static_cast<uint32_t>(a), 0xDEADBEEFu);
   EXPECT_EQ(b, 0x1122334455667788LL);
   EXPECT_EQ(c, "chunked across syscalls");
@@ -865,15 +865,15 @@ struct CanaryCommand {
   int32_t kind() const { return kKind; }
 
   void save(BinaryWriteArchive& ar) const {
-    rrr::Serialize_::serialize(id, ar);
-    rrr::Serialize_::serialize(name, ar);
-    rrr::Serialize_::serialize(values, ar);
+    srpc::Serialize_::serialize(id, ar);
+    srpc::Serialize_::serialize(name, ar);
+    srpc::Serialize_::serialize(values, ar);
   }
 
   void load(BinaryReadArchive& ar) {
-    rrr::Deserialize_::deserialize(id, ar);
-    rrr::Deserialize_::deserialize(name, ar);
-    rrr::Deserialize_::deserialize(values, ar);
+    srpc::Deserialize_::deserialize(id, ar);
+    srpc::Deserialize_::deserialize(name, ar);
+    srpc::Deserialize_::deserialize(values, ar);
   }
 };
 
@@ -1069,24 +1069,24 @@ struct EnvelopeTestSet {};
 struct TypeListFactoryAlpha {
   static constexpr int32_t kKind = 60;
   int32_t a{0};
-  void save(BinaryWriteArchive& ar) const { rrr::Serialize_::serialize(a, ar); }
-  void load(BinaryReadArchive& ar) { rrr::Deserialize_::deserialize(a, ar); }
+  void save(BinaryWriteArchive& ar) const { srpc::Serialize_::serialize(a, ar); }
+  void load(BinaryReadArchive& ar) { srpc::Deserialize_::deserialize(a, ar); }
   int32_t kind() const { return kKind; }
 };
 
 struct TypeListFactoryBeta {
   static constexpr int32_t kKind = 61;
   std::string b;
-  void save(BinaryWriteArchive& ar) const { rrr::Serialize_::serialize(b, ar); }
-  void load(BinaryReadArchive& ar) { rrr::Deserialize_::deserialize(b, ar); }
+  void save(BinaryWriteArchive& ar) const { srpc::Serialize_::serialize(b, ar); }
+  void load(BinaryReadArchive& ar) { srpc::Deserialize_::deserialize(b, ar); }
   int32_t kind() const { return kKind; }
 };
 
 struct TypeListFactoryGamma {
   static constexpr int32_t kKind = 62;
   int64_t c{0};
-  void save(BinaryWriteArchive& ar) const { rrr::Serialize_::serialize(c, ar); }
-  void load(BinaryReadArchive& ar) { rrr::Deserialize_::deserialize(c, ar); }
+  void save(BinaryWriteArchive& ar) const { srpc::Serialize_::serialize(c, ar); }
+  void load(BinaryReadArchive& ar) { srpc::Deserialize_::deserialize(c, ar); }
   int32_t kind() const { return kKind; }
 };
 
@@ -1400,4 +1400,4 @@ TEST(SerializableEnvelope, IsCopyableAndCopiesShareProxy) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

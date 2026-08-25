@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
-use rrr::completion_tracker::{
+use srpc::completion_tracker::{
     completion_status_to_string, CompletedEntry, CompletionQueryResult,
     CompletionStatus, CompletionTracker, CompletionTrackerConfig,
 };

@@ -42,15 +42,15 @@
 #include <rusty/arc.hpp>
 #include <rusty/rusty.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
-// PollMode (READ/WRITE) lives in rrr.epoll_wrapper, which the trimmed
+// PollMode (READ/WRITE) lives in srpc.epoll_wrapper, which the trimmed
 // consumer umbrella no longer re-exports (08b68144) — import directly.
-import rrr.epoll_wrapper;
+import srpc.epoll_wrapper;
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // TcpConnection and TcpListener are consumed through Arc/proxy APIs, but the
@@ -617,4 +617,4 @@ TEST(TcpListenerConcurrencyTest, CloseWaitsForWholeAcceptDriverWithTwoReaders) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

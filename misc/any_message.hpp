@@ -1,5 +1,5 @@
 #pragma once
 
-// Transitional shim. Contents now live in the rrr.any_message C++23
-// module (src/rrr/misc/any_message.cpp).
-import rrr.any_message;
+// Transitional shim. Contents now live in the srpc.any_message C++23
+// module (src/srpc/misc/any_message.cpp).
+import srpc.any_message;

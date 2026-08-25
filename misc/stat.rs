@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.stat module.
+// Canonical Rust source for the srpc.stat module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 pub struct AvgStat {
     pub n_stat_: i64,

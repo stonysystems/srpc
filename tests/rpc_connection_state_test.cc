@@ -4,11 +4,11 @@
  */
 
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 
 // ============================================================================
 // Basic State Tests

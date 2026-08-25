@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.request_queue module.
+// Canonical Rust source for the srpc.request_queue module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use std::cell::Cell;
 use std::collections::VecDeque;

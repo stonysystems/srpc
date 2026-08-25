@@ -1,5 +1,5 @@
-use rrr::callbacks::{CallbackManager, ConnectionCallbacks};
-use rrr::errors::RpcError;
+use srpc::callbacks::{CallbackManager, ConnectionCallbacks};
+use srpc::errors::RpcError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;

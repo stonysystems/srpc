@@ -29,7 +29,7 @@ FILE* srpc_stderr(void) {
     return stderr;
 }
 
-/* Keep rrr::get_ncpu's historical sysconf behavior behind a plain-C seam so
+/* Keep srpc::get_ncpu's historical sysconf behavior behind a plain-C seam so
  * the canonical Rust owner need not duplicate libc's platform-specific
  * _SC_NPROCESSORS_ONLN constant. */
 int32_t srpc_get_ncpu(void) {
@@ -37,7 +37,7 @@ int32_t srpc_get_ncpu(void) {
 }
 
 /* Render the locale-independent fixed two-decimal spelling consumed by
- * rrr::format_thousands. std::format's default form ignores the ambient
+ * srpc::format_thousands. std::format's default form ignores the ambient
  * locale, so pin snprintf to a thread-local C numeric locale as well. The
  * 384-byte Rust caller buffer covers every finite double and inf/nan. */
 int32_t srpc_format_fixed_2(double value, int8_t* output, size_t capacity) {

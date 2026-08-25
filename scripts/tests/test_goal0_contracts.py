@@ -31,8 +31,8 @@ def load_script(name: str, relative: str):
     return module
 
 
-DRIVER = load_script("extract_rrr_rust", "scripts/extract_rrr_rust.py")
-GATE = load_script("check_rrr_crate_mode", "scripts/check_rrr_crate_mode.py")
+DRIVER = load_script("extract_srpc_rust", "scripts/extract_srpc_rust.py")
+GATE = load_script("check_srpc_crate_mode", "scripts/check_srpc_crate_mode.py")
 
 
 class GateStaticContractTests(unittest.TestCase):
@@ -45,12 +45,12 @@ class GateStaticContractTests(unittest.TestCase):
         """The UNSUPPORTED allowlist must stay one exact compiler comment.
 
         rusty-cpp emits an informational by-value-cycle diagnostic that does
-        not drop code (rrr.tcp_channel carries it for TcpListener and still
+        not drop code (srpc.tcp_channel carries it for TcpListener and still
         compiles to its full ratcheted ABI), so that one anchored form is
         allowed. Everything else -- including hand-attention slots and any
         other wording of the same diagnostic -- must still fail.
         """
-        head = "module;\n#include <cstdint>\nexport module rrr.probe;\n\n"
+        head = "module;\n#include <cstdint>\nexport module srpc.probe;\n\n"
         allowed = (
             "// UNSUPPORTED: unsupported by-value circular type dependency "
             "in scope <crate>: [TcpListener]; cycle path: "
@@ -95,13 +95,13 @@ class GateStaticContractTests(unittest.TestCase):
         """Only declared modules may gain symbols outside the crate.
 
         A module implementation unit that CMake compiles but the crate does
-        not (rrr.epoll_wrapper's platform unit) is the sole reason production
+        not (srpc.epoll_wrapper's platform unit) is the sole reason production
         may hold symbols the generated object lacks. Keep that allowlist
         pinned so a new out-of-crate definition cannot slip in unreviewed.
         """
         manifest = {module.cpp_module for module in self.modules}
         self.assertLessEqual(set(GATE.PLATFORM_IMPL_SYMBOLS), manifest)
-        self.assertEqual(set(GATE.PLATFORM_IMPL_SYMBOLS), {"rrr.epoll_wrapper"})
+        self.assertEqual(set(GATE.PLATFORM_IMPL_SYMBOLS), {"srpc.epoll_wrapper"})
         self.assertEqual(
             sum(len(s) for s in GATE.PLATFORM_IMPL_SYMBOLS.values()),
             GATE.EXPECTED_TOTAL_PLATFORM_SYMBOLS,
@@ -112,22 +112,22 @@ class GateStaticContractTests(unittest.TestCase):
 
     def test_each_promoted_module_has_surface_and_raw_abi_ratchets(self) -> None:
         expected = {
-            "rrr.channel": (13, 20),
+            "srpc.channel": (13, 20),
             # Factory-only construction: Epoll's public ctor became the static
             # `Epoll::new_()` factory. A ctor emits two raw ABI entries (C1/C2)
             # that demangle to one name, a factory emits one, so the raw count
             # drops by one while the unique count is unchanged: 26 -> 25.
-            "rrr.epoll_wrapper": (22, 25),
-            "rrr.pollable_proxy": (4, 7),
-            "rrr.callbacks": (27, 28),
-            "rrr.inmemory_channel": (77, 84),
+            "srpc.epoll_wrapper": (22, 25),
+            "srpc.pollable_proxy": (4, 7),
+            "srpc.callbacks": (27, 28),
+            "srpc.inmemory_channel": (77, 84),
             # Factory-only construction: FiberChannel's explicit ctor became
             # the static `FiberChannel::new_()` factory; one ctor, so one fewer
             # raw entry (20 -> 19), unique count unchanged.
-            "rrr.fiber_channel": (17, 19),
-            "rrr.threading": (17, 18),
-            "rrr.debugging": (9, 10),
-            "rrr.any_message": (10, 11),
+            "srpc.fiber_channel": (17, 19),
+            "srpc.threading": (17, 18),
+            "srpc.debugging": (9, 10),
+            "srpc.any_message": (10, 11),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):
@@ -167,7 +167,7 @@ class GateContractTests(unittest.TestCase):
                 "--output-dir",
                 str(cls.generated),
                 "--cxx-namespace",
-                "rrr",
+                "srpc",
                 *flat_import_arguments,
                 "--module-preamble",
                 str(ROOT / "module-preambles.toml"),
@@ -206,18 +206,18 @@ class GateContractTests(unittest.TestCase):
 
     def test_manifest_module_without_abi_spec_is_rejected(self) -> None:
         reduced = dict(GATE.ABI_SPECS)
-        reduced.pop("rrr.misc")
+        reduced.pop("srpc.misc")
         with mock.patch.object(GATE, "ABI_SPECS", reduced):
             with self.assertRaisesRegex(GATE.GateError, "missing ABI specification"):
                 GATE.load_owned_modules(ROOT)
 
     def test_combined_importer_must_import_and_use_every_owner(self) -> None:
         source = GATE.importer_source()
-        without_import = source.replace("import rrr.misc;\n", "", 1)
+        without_import = source.replace("import srpc.misc;\n", "", 1)
         with mock.patch.object(GATE, "importer_source", return_value=without_import):
             with self.assertRaisesRegex(GATE.GateError, "directly import"):
                 GATE.require_importer_coverage(self.modules)
-        without_use = source.replace("rrr::OneTimeJob", "rrr::RemovedJob")
+        without_use = source.replace("srpc::OneTimeJob", "srpc::RemovedJob")
         with mock.patch.object(GATE, "importer_source", return_value=without_use):
             with self.assertRaisesRegex(GATE.GateError, "lacks concrete"):
                 GATE.require_importer_coverage(self.modules)
@@ -233,10 +233,10 @@ class GateContractTests(unittest.TestCase):
         """
         temporary, output = self.copied_output()
         try:
-            child = output / "rrr.future.cppm"
+            child = output / "srpc.future.cppm"
             child.write_text(
                 child.read_text(encoding="utf-8").replace(
-                    "namespace rrr {", "namespace rrr {\nexport struct Surprise;", 1
+                    "namespace srpc {", "namespace srpc {\nexport struct Surprise;", 1
                 ),
                 encoding="utf-8",
             )
@@ -245,18 +245,18 @@ class GateContractTests(unittest.TestCase):
                 GATE.require_cpp_surfaces(ROOT, output, self.modules)
             report = stdout.getvalue()
             self.assertIn("ADVISORY", report)
-            self.assertIn("rrr.future", report)
+            self.assertIn("srpc.future", report)
         finally:
             temporary.cleanup()
 
     def test_root_reexports_are_all_and_only_ordered_manifest_children(self) -> None:
         temporary, output = self.copied_output()
         try:
-            root = output / "rrr.cppm"
+            root = output / "srpc.cppm"
             root.write_text(
                 root.read_text(encoding="utf-8").replace(
-                    "export module rrr;",
-                    "export module rrr;\nexport import rusty;",
+                    "export module srpc;",
+                    "export module srpc;\nexport import rusty;",
                     1,
                 ),
                 encoding="utf-8",
@@ -269,7 +269,7 @@ class GateContractTests(unittest.TestCase):
     def test_direct_imports_are_exact_for_previously_unchecked_child(self) -> None:
         temporary, output = self.copied_output()
         try:
-            child = output / "rrr.completion_tracker.cppm"
+            child = output / "srpc.completion_tracker.cppm"
             # The needle must be the module's CURRENT import line (the
             # port-narrowed graph imports std_port, not the rusty umbrella)
             # or the corruption is a no-op and this negative control goes
@@ -277,7 +277,7 @@ class GateContractTests(unittest.TestCase):
             child.write_text(
                 child.read_text(encoding="utf-8").replace(
                     "import std_port;",
-                    "import std_port;\nexport import rrr.logging;",
+                    "import std_port;\nexport import srpc.logging;",
                     1,
                 ),
                 encoding="utf-8",
@@ -285,7 +285,7 @@ class GateContractTests(unittest.TestCase):
             digest = hashlib.sha256(child.read_bytes()).hexdigest()
             with mock.patch.dict(
                 GATE.EXPECTED_GENERATED_MODULE_SHA256,
-                {"rrr.completion_tracker": digest},
+                {"srpc.completion_tracker": digest},
             ):
                 with self.assertRaisesRegex(GATE.GateError, "private imports"):
                     GATE.require_cpp_surfaces(ROOT, output, self.modules)
@@ -294,9 +294,9 @@ class GateContractTests(unittest.TestCase):
 
     def test_preamble_leakage_checks_do_not_bypass_enumerated_siblings(self) -> None:
         cases = (
-            ("rrr.connection_state", "#include <netdb.h>"),
-            ("rrr.heartbeat", "#include <rusty/io.hpp>"),
-            ("rrr.future", '#include "base/rustc_markers.hpp"'),
+            ("srpc.connection_state", "#include <netdb.h>"),
+            ("srpc.heartbeat", "#include <rusty/io.hpp>"),
+            ("srpc.future", '#include "base/rustc_markers.hpp"'),
         )
         for module, include in cases:
             with self.subTest(module=module, include=include):
@@ -320,31 +320,31 @@ class GateContractTests(unittest.TestCase):
 
     def test_all_promoted_modules_pin_unique_and_raw_counts(self) -> None:
         expected = {
-            "rrr.serializable_envelope": (0, 1),
-            "rrr.future": (0, 1),
-            "rrr.logging": (7, 8),
+            "srpc.serializable_envelope": (0, 1),
+            "srpc.future": (0, 1),
+            "srpc.logging": (7, 8),
             # Factory-only construction: IdempotencyCache's two public ctors
             # became `new_()` / `with_config()`; two ctors, so two fewer raw
             # entries (39 -> 37), unique count unchanged.
-            "rrr.idempotency": (36, 37),
-            "rrr.fiber": (8, 9),
-            "rrr.misc": (18, 23),
-            "rrr.channel": (13, 20),
+            "srpc.idempotency": (36, 37),
+            "srpc.fiber": (8, 9),
+            "srpc.misc": (18, 23),
+            "srpc.channel": (13, 20),
             # Factory-only construction: Epoll's public ctor became the static
             # `Epoll::new_()` factory. A ctor emits two raw ABI entries (C1/C2)
             # that demangle to one name, a factory emits one, so the raw count
             # drops by one while the unique count is unchanged: 26 -> 25.
-            "rrr.epoll_wrapper": (22, 25),
-            "rrr.pollable_proxy": (4, 7),
-            "rrr.callbacks": (27, 28),
-            "rrr.inmemory_channel": (77, 84),
+            "srpc.epoll_wrapper": (22, 25),
+            "srpc.pollable_proxy": (4, 7),
+            "srpc.callbacks": (27, 28),
+            "srpc.inmemory_channel": (77, 84),
             # Factory-only construction: FiberChannel's explicit ctor became
             # the static `FiberChannel::new_()` factory; one ctor, so one fewer
             # raw entry (20 -> 19), unique count unchanged.
-            "rrr.fiber_channel": (17, 19),
-            "rrr.threading": (17, 18),
-            "rrr.debugging": (9, 10),
-            "rrr.any_message": (10, 11),
+            "srpc.fiber_channel": (17, 19),
+            "srpc.threading": (17, 18),
+            "srpc.debugging": (9, 10),
+            "srpc.any_message": (10, 11),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):
@@ -362,15 +362,15 @@ class GateContractTests(unittest.TestCase):
 
     def test_placeholder_is_rejected_only_in_named_module_purview(self) -> None:
         with tempfile.TemporaryDirectory(prefix="generated-placeholder-") as raw:
-            path = Path(raw) / "rrr.fixture.cppm"
+            path = Path(raw) / "srpc.fixture.cppm"
             path.write_text(
                 "module;\n// TODO: compiler support preamble\n"
-                "export module rrr.fixture;\nexport struct Ready {};\n",
+                "export module srpc.fixture;\nexport struct Ready {};\n",
                 encoding="utf-8",
             )
             self.assertIn("Ready", GATE.read_generated(path, "fixture"))
             path.write_text(
-                "module;\nexport module rrr.fixture;\n"
+                "module;\nexport module srpc.fixture;\n"
                 "// TODO: missing generated declaration\n",
                 encoding="utf-8",
             )
@@ -378,21 +378,21 @@ class GateContractTests(unittest.TestCase):
                 GATE.read_generated(path, "fixture")
 
     def test_symbol_ownership_uses_entity_not_parameter_attachment(self) -> None:
-        owner = "rrr::run@rrr.future(rrr::Arg@rrr.logging)"
-        parameter_only = "rrr::run(rrr::Arg@rrr.logging)"
-        self.assertEqual(GATE.symbol_owner_module(owner), "rrr.future")
+        owner = "srpc::run@srpc.future(srpc::Arg@srpc.logging)"
+        parameter_only = "srpc::run(srpc::Arg@srpc.logging)"
+        self.assertEqual(GATE.symbol_owner_module(owner), "srpc.future")
         self.assertIsNone(GATE.symbol_owner_module(parameter_only))
 
         nm_output = "\n".join(
             (
                 f"0000000000000000 T {owner}",
                 f"0000000000000010 T {parameter_only}",
-                "0000000000000020 W rrr::weak@rrr.future()",
+                "0000000000000020 W srpc::weak@srpc.future()",
             )
         )
         with mock.patch.object(GATE, "run", return_value=nm_output):
             self.assertEqual(
-                GATE.module_symbols(Path("nm"), ROOT, Path("object.o"), "rrr.future"),
+                GATE.module_symbols(Path("nm"), ROOT, Path("object.o"), "srpc.future"),
                 {("T", owner)},
             )
 
@@ -428,30 +428,30 @@ class GateContractTests(unittest.TestCase):
     def test_generated_lane_uses_exact_configured_dependency_closure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="generated-bmi-map-") as raw:
             work = Path(raw)
-            fresh = work / "rrr.future.pcm"
+            fresh = work / "srpc.future.pcm"
             fresh.touch()
             configured = {
-                "rrr.future": Path("/production/rrr.future.pcm"),
-                "rrr.logging": Path("/production/rrr.logging.pcm"),
-                "rrr.reactor": Path("/production/rrr.reactor.pcm"),
+                "srpc.future": Path("/production/srpc.future.pcm"),
+                "srpc.logging": Path("/production/srpc.logging.pcm"),
+                "srpc.reactor": Path("/production/srpc.reactor.pcm"),
                 "rusty": Path("/runtime/rusty.pcm"),
             }
             actual = GATE.generated_lane_module_map(
                 configured,
                 work,
-                dependency_names={"rrr.future", "rrr.reactor", "rusty"},
+                dependency_names={"srpc.future", "srpc.reactor", "rusty"},
             )
-            self.assertEqual(actual["rrr.future"], configured["rrr.future"])
-            self.assertNotIn("rrr.logging", actual)
-            self.assertEqual(actual["rrr.reactor"], configured["rrr.reactor"])
+            self.assertEqual(actual["srpc.future"], configured["srpc.future"])
+            self.assertNotIn("srpc.logging", actual)
+            self.assertEqual(actual["srpc.reactor"], configured["srpc.reactor"])
             self.assertEqual(actual["rusty"], configured["rusty"])
             self.assertNotIn(
-                "rrr.future",
+                "srpc.future",
                 GATE.generated_lane_module_map(
                     configured,
                     work,
-                    dependency_names={"rrr.future"},
-                    exclude="rrr.future",
+                    dependency_names={"srpc.future"},
+                    exclude="srpc.future",
                 ),
             )
 
@@ -470,7 +470,7 @@ class ExtractionContractTests(unittest.TestCase):
             entry = textwrap.dedent(
                 """
                 [[module]]
-                cpp_module = "rrr.basetypes"
+                cpp_module = "srpc.basetypes"
                 source = "base/basetypes.rs"
                 """
             )
@@ -482,7 +482,7 @@ class ExtractionContractTests(unittest.TestCase):
                     """
                     schema_version = 2
                     [[module]]
-                    cpp_module = "rrr.escape"
+                    cpp_module = "srpc.escape"
                     source = "../escape.cpp"
                     """
                 ),

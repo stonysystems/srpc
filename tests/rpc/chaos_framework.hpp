@@ -17,7 +17,7 @@
 #include <rusty/cell.hpp>
 #include <rusty/function.hpp>
 
-namespace rrr {
+namespace srpc {
 namespace chaos {
 
 // ============================================================================
@@ -561,4 +561,4 @@ struct ChaosScenario {
 };
 
 } // namespace chaos
-} // namespace rrr
+} // namespace srpc

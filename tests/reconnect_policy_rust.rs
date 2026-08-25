@@ -4,7 +4,7 @@ use std::sync::{
     Mutex,
 };
 
-use rrr::reconnect_policy::{ReconnectCalculator, ReconnectPolicy};
+use srpc::reconnect_policy::{ReconnectCalculator, ReconnectPolicy};
 
 static RAW_VALUE: AtomicI32 = AtomicI32::new(0);
 static RAW_DRAWS: AtomicUsize = AtomicUsize::new(0);

@@ -2,10 +2,10 @@
 #include <stdlib.h>
 
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "deptran/all.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 
@@ -81,7 +81,7 @@ import std;
 //        int32_t p_type;
 //        std::vector<Value> *input;
 //        int32_t server_id;
-//        rrr::i32 deptran_res = 0;
+//        srpc::i32 deptran_res = 0;
 //        int res;
 //        int output_size;
 //        while ((res = ch->next_piece(input, output_size, server_id, pi, p_type)) == 0) {
@@ -182,7 +182,7 @@ import std;
 //        int32_t p_type;
 //        std::vector<Value> *input;
 //        int32_t server_id;
-//        rrr::i32 deptran_res = 0;
+//        srpc::i32 deptran_res = 0;
 //        int res;
 //        int output_size;
 //        while ((res = ch->next_piece(input, output_size, server_id, pi, p_type)) == 0) {

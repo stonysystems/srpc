@@ -50,8 +50,8 @@ def load_cmake_module_compile_context(
 
         def pick_entry() -> dict | None:
             preferred_suffixes = (
-                "src/rrr/tests/test_rpc.cc",
-                "src/rrr/tests/rpc_docs_symbols_test.cc",
+                "src/srpc/tests/test_rpc.cc",
+                "src/srpc/tests/rpc_docs_symbols_test.cc",
             )
             for suffix in preferred_suffixes:
                 for entry in entries:
@@ -62,7 +62,7 @@ def load_cmake_module_compile_context(
             for entry in entries:
                 cmd = entry.get("command", "")
                 src = entry.get("file", "")
-                if ".o.modmap" in cmd and "src/rrr/" in src:
+                if ".o.modmap" in cmd and "src/srpc/" in src:
                     return entry
             return None
 
@@ -156,18 +156,18 @@ def build_compile_unit(profile: str, idx: int, snippet: str) -> str:
     if profile == "reliability":
         return f"""{COMMON_SNIPPET_PREAMBLE}
 #include <time.h>
-#include "rrr/rrr.hpp"
+#include "srpc/srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — snippets exercising
 // reliability/metrics APIs import the modules directly.
-import rrr.circuit_breaker;
-import rrr.connection_metrics;
-import rrr.heartbeat;
-import rrr.load_balancer;
-import rrr.reconnect_policy;
-import rrr.request_options;
+import srpc.circuit_breaker;
+import srpc.connection_metrics;
+import srpc.heartbeat;
+import srpc.load_balancer;
+import srpc.reconnect_policy;
+import srpc.request_options;
 
-using namespace rrr;
+using namespace srpc;
 
 void snippet_{idx}() {{
 {snippet}
@@ -181,18 +181,18 @@ int main() {{
     if profile == "client":
         return f"""{COMMON_SNIPPET_PREAMBLE}
 #include <time.h>
-#include "rrr/rrr.hpp"
+#include "srpc/srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — snippets exercising
 // reliability/metrics APIs import the modules directly.
-import rrr.circuit_breaker;
-import rrr.connection_metrics;
-import rrr.heartbeat;
-import rrr.load_balancer;
-import rrr.reconnect_policy;
-import rrr.request_options;
+import srpc.circuit_breaker;
+import srpc.connection_metrics;
+import srpc.heartbeat;
+import srpc.load_balancer;
+import srpc.reconnect_policy;
+import srpc.request_options;
 
-using namespace rrr;
+using namespace srpc;
 
 struct ClientHarness {{
     rusty::Arc<Client> arc;
@@ -234,18 +234,18 @@ int main() {{
     if profile == "server":
         return f"""{COMMON_SNIPPET_PREAMBLE}
 #include <time.h>
-#include "rrr/rrr.hpp"
+#include "srpc/srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — snippets exercising
 // reliability/metrics APIs import the modules directly.
-import rrr.circuit_breaker;
-import rrr.connection_metrics;
-import rrr.heartbeat;
-import rrr.load_balancer;
-import rrr.reconnect_policy;
-import rrr.request_options;
+import srpc.circuit_breaker;
+import srpc.connection_metrics;
+import srpc.heartbeat;
+import srpc.load_balancer;
+import srpc.reconnect_policy;
+import srpc.request_options;
 
-using namespace rrr;
+using namespace srpc;
 
 inline int compute(int v) {{ return v; }}
 
@@ -276,18 +276,18 @@ int main() {{
     if profile == "codegen":
         return f"""{COMMON_SNIPPET_PREAMBLE}
 #include <time.h>
-#include "rrr/rrr.hpp"
+#include "srpc/srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — snippets exercising
 // reliability/metrics APIs import the modules directly.
-import rrr.circuit_breaker;
-import rrr.connection_metrics;
-import rrr.heartbeat;
-import rrr.load_balancer;
-import rrr.reconnect_policy;
-import rrr.request_options;
+import srpc.circuit_breaker;
+import srpc.connection_metrics;
+import srpc.heartbeat;
+import srpc.load_balancer;
+import srpc.reconnect_policy;
+import srpc.request_options;
 
-using namespace rrr;
+using namespace srpc;
 
 struct UserInfo {{
     int id = 0;
@@ -357,7 +357,7 @@ def compile_snippet(
             "-I",
             str(repo_root),
             "-I",
-            str(repo_root / "src/rrr"),
+            str(repo_root / "src/srpc"),
             "-I",
             str(repo_root / "third-party/rusty-cpp/include"),
         ]

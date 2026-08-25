@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use rrr::frame_codec::{
+use srpc::frame_codec::{
     frame_codec_encode_into, frame_codec_peek_header, frame_codec_write_header,
     frame_decode_status_to_string, kFrameHeaderSize, kMaxFramePayloadSize, FrameDecodeStatus,
     FrameHeader, FrameStreamReader, FrameView,

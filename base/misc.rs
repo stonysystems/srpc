@@ -1,4 +1,4 @@
-//! Scheduler jobs and formatting/process helpers from legacy `rrr.misc`.
+//! Scheduler jobs and formatting/process helpers from legacy `srpc.misc`.
 //!
 //! This remains at its historical `.cpp` path so Git preserves the C++ to
 //! Rust lineage. Cargo reads this exact file: the generated `src/lib.rs`
@@ -63,7 +63,7 @@ pub fn get_ncpu() -> i32 {
 /// acknowledges the worker-ownership invariant:
 ///
 /// ```compile_fail
-/// use rrr::misc::Job;
+/// use srpc::misc::Job;
 /// use std::cell::Cell;
 /// use std::rc::Rc;
 ///

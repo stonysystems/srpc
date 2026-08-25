@@ -1,9 +1,9 @@
 use std::mem::{align_of, offset_of, size_of};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rrr::basetypes::{
+use srpc::basetypes::{
     abort_if_false, i16, i32, i64, i8, time_now_us, v32, v64, Counter, SparseInt, Time, Timer,
-    RRR_USEC_PER_SEC,
+    SRPC_USEC_PER_SEC,
 };
 
 static MONOTONIC_US: AtomicU64 = AtomicU64::new(1_000_000);
@@ -254,7 +254,7 @@ fn values_counter_and_time_facades_preserve_behavior() {
     }
     assert_eq!(shared.peek_next(), 80_000);
 
-    assert_eq!(RRR_USEC_PER_SEC, 1_000_000);
+    assert_eq!(SRPC_USEC_PER_SEC, 1_000_000);
     abort_if_false(true);
     assert_eq!(time_now_us(true), 1_000_000);
     assert_eq!(Time::now(false), 2_000_000);

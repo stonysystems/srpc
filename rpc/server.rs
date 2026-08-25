@@ -1,4 +1,4 @@
-//! rrr.server — RPC server (formerly server.hpp + server.cpp).
+//! srpc.server — RPC server (formerly server.hpp + server.cpp).
 //!
 //! Hosts service implementations and dispatches inbound RPC frames to
 //! the right handler. Sits above the channel layer (`tcp_channel`,
@@ -35,16 +35,16 @@ use crate::misc::OneTimeJob;
 use crate::serializable::{BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource};
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
-use cpp::rrr::basetypes as cpp_basetypes;
-use cpp::rrr::debugging as cpp_debugging;
+use cpp::srpc::basetypes as cpp_basetypes;
+use cpp::srpc::debugging as cpp_debugging;
 // This otherwise-unused source-owned import keeps the exact
-// `rrr.internal_protocol` provider visible to generated C++; the heartbeat
+// `srpc.internal_protocol` provider visible to generated C++; the heartbeat
 // rpc-id constant below is read through the crate path.
 #[allow(unused_imports)]
-use cpp::rrr::internal_protocol as cpp_internal_protocol;
-use cpp::rrr::logging as cpp_logging;
-use cpp::rrr::reactor as cpp_reactor;
-use cpp::rrr::serializable as cpp_serializable;
+use cpp::srpc::internal_protocol as cpp_internal_protocol;
+use cpp::srpc::logging as cpp_logging;
+use cpp::srpc::reactor as cpp_reactor;
+use cpp::srpc::serializable as cpp_serializable;
 use rusty as cpp;
 
 // The consumer profile maps this private carrier to `std::string`, retaining
@@ -52,13 +52,13 @@ use rusty as cpp;
 // `rusty::String` owner.
 type LegacyStdString = String;
 
-// `PollThread` and `Fiber` live in `rrr.reactor`, the last carrier that is
+// `PollThread` and `Fiber` live in `srpc.reactor`, the last carrier that is
 // still an inline module. They are reached through the checked
 // cpp-module-index facade rather than a `crate::` path.
 type PollThread = cpp::ReactorPollThread;
 
 // The checked type map restores this alias to the exact legacy C++ spelling
-// `rrr::ChannelConnectionBase`, so a raw pointer through it stays the thin
+// `srpc::ChannelConnectionBase`, so a raw pointer through it stays the thin
 // polymorphic pointer the retired carrier returned rather than a Rust fat
 // trait-object pointer.
 type LegacyChannelConnectionBase = dyn ChannelConnectionBase;
@@ -66,8 +66,8 @@ type LegacyChannelConnectionBase = dyn ChannelConnectionBase;
 // The length-prefixed integer carriers are module-owned aliases for exactly
 // the reason serializable.cpp documents: pulling them through
 // `use crate::serializable::{..}` makes the emitter invent a nested
-// `rrr::serializable` namespace, while the real provider exports them
-// straight out of `rrr`.
+// `srpc::serializable` namespace, while the real provider exports them
+// straight out of `srpc`.
 type v32 = rusty::SerializableV32;
 type v64 = rusty::SerializableV64;
 
@@ -437,7 +437,7 @@ impl ServerConnection {
     pub fn run_async(&self, mut f: Box<dyn FnMut()>) -> i32 {
         if f.is_empty() {
             let message: LegacyStdString =
-                "rrr::ServerConnection::run_async called with empty callback".to_string();
+                "srpc::ServerConnection::run_async called with empty callback".to_string();
             // SAFETY: the file pointer is null.
             unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
             return SERVER_ERR_INVALID_ARGUMENT;
@@ -553,7 +553,7 @@ pub struct ShutdownState {
 ///
 /// # Safety
 ///
-/// `unsafe` records the foreign named-module boundary: `rrr.reactor` is the
+/// `unsafe` records the foreign named-module boundary: `srpc.reactor` is the
 /// last inline carrier, so `PollThread::create` is reached through the
 /// checked cpp-module-index facade.
 pub unsafe fn server_resolve_poll_thread(
@@ -591,11 +591,11 @@ pub fn server_random_u64() -> u64 {
     unsafe { server_ffi::srpc_random_u64() }
 }
 
-/// rrr's own clock (Time::now microseconds, scaled to the nano range the
+/// srpc's own clock (Time::now microseconds, scaled to the nano range the
 /// id-mix historically used; entropy comes from the random_u64 mix, not
 /// clock granularity).
 pub fn server_now_nanos() -> u64 {
-    // SAFETY: `unsafe` records the `rrr.basetypes` named-module boundary.
+    // SAFETY: `unsafe` records the `srpc.basetypes` named-module boundary.
     (unsafe { cpp_basetypes::Time::now(true) }) * 1000u64
 }
 
@@ -801,7 +801,7 @@ impl Drop for Server {
                 listener_box.close();
             })));
             let pt: &Arc<PollThread> = self.poll_thread_field.as_ref().unwrap();
-            // SAFETY: `rrr.reactor` is a foreign named module; the job is a
+            // SAFETY: `srpc.reactor` is a foreign named module; the job is a
             // well-formed owning handle the worker command queue takes over.
             unsafe { pt.add(close_job) };
         }
@@ -814,7 +814,7 @@ impl Drop for Server {
                 // wants the outer `*` dropped. `conns[i]` is an
                 // `Arc<ServerConnection>`, and without the deref the emitter
                 // writes `...conns[i].close()` -- "no member named 'close' in
-                // 'rusty::Arc<rrr::ServerConnection>'". The `*` is what emits
+                // 'rusty::Arc<srpc::ServerConnection>'". The `*` is what emits
                 // the `deref_if_pointer_like` the call needs.
                 #[allow(clippy::explicit_auto_deref)]
                 (*guard.conns[i]).close();
@@ -829,7 +829,7 @@ impl Drop for Server {
 impl Server {
     /// # Safety
     ///
-    /// `unsafe` records the `rrr.reactor` named-module boundary crossed when
+    /// `unsafe` records the `srpc.reactor` named-module boundary crossed when
     /// no poll thread is supplied and one must be created.
     pub unsafe fn new(poll_thread_worker: Option<Arc<PollThread>>) -> Server {
         Server {
@@ -1005,7 +1005,7 @@ impl Server {
     /// readable for the duration of the call.
     pub unsafe fn start(&mut self, bind_addr: *const i8) -> i32 {
         if bind_addr.is_null() {
-            let message: LegacyStdString = "rrr::Server::start: bind_addr is NULL!".to_string();
+            let message: LegacyStdString = "srpc::Server::start: bind_addr is NULL!".to_string();
             // SAFETY: the file pointer is null.
             unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
             return -1i32;
@@ -1056,7 +1056,7 @@ impl Server {
             };
             if listener_opt.is_none() {
                 let message: LegacyStdString = format!(
-                    "rrr::Server::start: factory->make_listener() returned a null proxy (factory backend={})",
+                    "srpc::Server::start: factory->make_listener() returned a null proxy (factory backend={})",
                     "unknown"
                 );
                 // SAFETY: the file pointer is null.
@@ -1106,7 +1106,7 @@ impl Server {
                     move |err: ChannelError, msg: &str| {
                         let reason: &str = channel_error_to_string(err);
                         let message: LegacyStdString =
-                            format!("rrr::Server: channel listener error {}: {}", reason, msg);
+                            format!("srpc::Server: channel listener error {}: {}", reason, msg);
                         // SAFETY: the file pointer is null.
                         unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
                     },
@@ -1120,7 +1120,7 @@ impl Server {
             if listen_err != ChannelError::None {
                 let reason: &str = channel_error_to_string(listen_err);
                 let message: LegacyStdString = format!(
-                    "rrr::Server::start: channel listener failed to bind {}: {}",
+                    "srpc::Server::start: channel listener failed to bind {}: {}",
                     addr_str, reason
                 );
                 // SAFETY: the file pointer is null.
@@ -1133,7 +1133,7 @@ impl Server {
             return 0i32;
         }
 
-        // SAFETY: `unsafe` records the `rrr.debugging` named-module boundary.
+        // SAFETY: `unsafe` records the `srpc.debugging` named-module boundary.
         unsafe { cpp_debugging::verify(false) };
         -1i32
     }
@@ -1294,7 +1294,7 @@ pub fn sconn_on_channel_error(weak: &ArcWeak<ServerConnection>, err: ChannelErro
     let sconn = sconn_opt.unwrap();
     let reason: &str = channel_error_to_string(err);
     let message: LegacyStdString =
-        format!("rrr::ServerConnection: channel error {}: {}", reason, msg);
+        format!("srpc::ServerConnection: channel error {}: {}", reason, msg);
     // SAFETY: the file pointer is null.
     unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
     (*sconn).close();
@@ -1313,7 +1313,7 @@ pub fn request_fill_body(req: &mut Request, bytes: &[u8]) {
 /// ServerConnection (a DSL struct carries no static data member) and now
 /// module-scope: it emits an `extern` declaration plus an `inline`
 /// definition. Linkage widens from `static` (internal) to inline/module,
-/// which is benign — this is the non-exported `namespace rrr` and
+/// which is benign — this is the non-exported `namespace srpc` and
 /// server.cpp is the module's only TU.
 static g_rpc_id_missing: rusty::Mutex<HashSet<i32>> =
     rusty::Mutex::<HashSet<i32>>::new(HashSet::<i32>::new());
@@ -1370,7 +1370,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     // there is no xid at all.
     if req_box.src.remaining() == 0usize {
         let message: LegacyStdString =
-            "rrr::ServerConnection: empty channel-mode request frame, dropping".to_string();
+            "srpc::ServerConnection: empty channel-mode request frame, dropping".to_string();
         // SAFETY: the file pointer is null.
         unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
         return;
@@ -1416,7 +1416,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         }
         if !surpress_warning {
             let message: LegacyStdString = format!(
-                "rrr::ServerConnection: no handler for rpc_id = {} (channel-mode dispatch)",
+                "srpc::ServerConnection: no handler for rpc_id = {} (channel-mode dispatch)",
                 rpc_id
             );
             // SAFETY: the file pointer is null.
@@ -1471,7 +1471,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         // itself calls; naming it directly keeps this an ordinary imported
         // method rather than an imported member template.
         //
-        // SAFETY: `rrr.reactor` is a foreign named module; the closure is a
+        // SAFETY: `srpc.reactor` is a foreign named module; the closure is a
         // well-formed owning job the fiber runtime takes over.
         unsafe { cpp_reactor::fiber_create_run_impl(job_fn, core::ptr::null(), 0i64) };
     }
@@ -1507,7 +1507,7 @@ pub unsafe fn sconn_dispatch_response_frame_via_channel(
         let guard = sconn.channel_proxy_.lock().unwrap();
         if (*guard).is_none() {
             let message: LegacyStdString =
-                "rrr::ServerConnection::dispatch_response_frame_via_channel: channel mode flipped on but proxy is unbound (race?). Dropping reply."
+                "srpc::ServerConnection::dispatch_response_frame_via_channel: channel mode flipped on but proxy is unbound (race?). Dropping reply."
                     .to_string();
             // SAFETY: the file pointer is null.
             unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };

@@ -1,4 +1,4 @@
-// Terminal C kernels for the canonical Rust `rrr.server` module.
+// Terminal C kernels for the canonical Rust `srpc.server` module.
 #ifndef SRPC_SERVER_H
 #define SRPC_SERVER_H
 

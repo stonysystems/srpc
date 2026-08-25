@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "../misc/serializable.hpp"  // wrap_serializable, serializable_cast
 #include "deptran/RW_command.h"
 #include "deptran/classic/tpc_command.h"
@@ -14,7 +14,7 @@
 import std;
 import rusty;
 
-using namespace rrr;
+using namespace srpc;
 
 // removed the `TypedOnlyPayload` test
 // fixture (struct + namespace + adapter typedef +
@@ -38,9 +38,9 @@ concept MakoPackable = requires(const T& value) {
 static_assert(static_cast<int32_t>(janus::MakoCommandKind::Unknown) == 0);
 
 #define ASSERT_MAKO_PAYLOAD_KIND(TypeName, KindValue)                         \
-  static_assert(rrr::PayloadMember<janus::MakoCommands,                      \
+  static_assert(srpc::PayloadMember<janus::MakoCommands,                      \
                                    janus::TypeName>::value);                 \
-  static_assert(rrr::PayloadMember<janus::MakoCommands,                      \
+  static_assert(srpc::PayloadMember<janus::MakoCommands,                      \
                                    janus::TypeName>::KIND == KindValue);     \
   static_assert(static_cast<int32_t>(janus::MakoCommandKind::TypeName) ==    \
                 KindValue);                                                  \
@@ -69,7 +69,7 @@ ASSERT_MAKO_PAYLOAD_KIND(ReplicatedDBCommand, 19);
 
 #undef ASSERT_MAKO_PAYLOAD_KIND
 
-static_assert(!rrr::PayloadMember<janus::MakoCommands,
+static_assert(!srpc::PayloadMember<janus::MakoCommands,
                                   UnregisteredMakoPayload>::value);
 static_assert(!MakoPackable<UnregisteredMakoPayload>);
 
@@ -77,10 +77,10 @@ template <typename T>
 void ExpectMakoKindWireByte(int32_t expected) {
   ASSERT_EQ(T::static_kind(), expected);
 
-  rrr::BufferSink sink;
-  rrr::BinaryWriteArchive writer(rrr::make_sink_proxy_buffer(&sink));
-  const rrr::v32 tag(expected);
-  rrr::Serialize_::serialize(tag, writer);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive writer(srpc::make_sink_proxy_buffer(&sink));
+  const srpc::v32 tag(expected);
+  srpc::Serialize_::serialize(tag, writer);
 
   ASSERT_EQ(sink.bytes.len(), 1u);
   EXPECT_EQ(sink.bytes[0], static_cast<uint8_t>(expected));
@@ -99,14 +99,14 @@ rusty::Option<rusty::Arc<T>> RoundTripTypedPayload(const rusty::Arc<T>& src) {
   // bytes as the legacy MarshallDeputy path).  T is auto-wrapped by
   // Command's templated non-Marshallable ctor.
   janus::Command outgoing{src};
-  rrr::BufferSink sink;
-  rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(outgoing, war);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+  srpc::Serialize_::serialize(outgoing, war);
 
   janus::Command incoming;
-  rrr::BufferSource source(sink.bytes.data(), sink.bytes.len());
-  rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&source));
-  rrr::Deserialize_::deserialize(incoming, rar);
+  srpc::BufferSource source(sink.bytes.data(), sink.bytes.len());
+  srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&source));
+  srpc::Deserialize_::deserialize(incoming, rar);
 
   return marshallable_cast<T>(incoming);
 }
@@ -171,9 +171,9 @@ TEST(MakoCommandKindTest, ExplicitMappingControlsExactEnvelopeWireBytes) {
   EXPECT_EQ(payload.kind(), 13);
   EXPECT_EQ(envelope.kind(), 13);
 
-  rrr::BufferSink sink;
-  rrr::BinaryWriteArchive writer(rrr::make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(envelope, writer);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive writer(srpc::make_sink_proxy_buffer(&sink));
+  srpc::Serialize_::serialize(envelope, writer);
 
   ASSERT_EQ(sink.bytes.len(), 1u);
   EXPECT_EQ(sink.bytes[0], 13u);
@@ -252,14 +252,14 @@ TEST(MarshallableProxyFacadeTest, DeptranVecPieceDataNonEmptyRoundTrip) {
   // 2 step 2; same wire bytes as the legacy MarshallDeputy
   // path).
   janus::Command outgoing{rusty::Arc<janus::VecPieceData>::make(std::move(payload))};
-  rrr::BufferSink sink;
-  rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(outgoing, war);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+  srpc::Serialize_::serialize(outgoing, war);
 
   janus::Command incoming;
-  rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-  rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
-  rrr::Deserialize_::deserialize(incoming, rar);
+  srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+  srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
+  srpc::Deserialize_::deserialize(incoming, rar);
   const auto decoded = marshallable_cast<janus::VecPieceData>(incoming);
   ASSERT_TRUE(decoded.is_some());
 
@@ -371,14 +371,14 @@ TEST(MarshallableProxyFacadeTest, DeptranTpcCommitRoundTripUsesTypedAdapter) {
   janus::Command outgoing{src};
   EXPECT_EQ(outgoing.kind_, janus::TpcCommitCommand::static_kind());
 
-  rrr::BufferSink sink;
-  rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(outgoing, war);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+  srpc::Serialize_::serialize(outgoing, war);
 
   janus::Command incoming;
-  rrr::BufferSource byte_src(sink.bytes.data(), sink.bytes.len());
-  rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&byte_src));
-  rrr::Deserialize_::deserialize(incoming, rar);
+  srpc::BufferSource byte_src(sink.bytes.data(), sink.bytes.len());
+  srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&byte_src));
+  srpc::Deserialize_::deserialize(incoming, rar);
   EXPECT_EQ(incoming.kind_, janus::TpcCommitCommand::static_kind());
 
   const auto decoded = marshallable_cast<janus::TpcCommitCommand>(incoming);
@@ -410,14 +410,14 @@ TEST(MarshallableProxyFacadeTest, DeptranTpcBatchAndNoopEmptyUseTypedAdapter) {
   janus::Command batch_outgoing{
       rusty::Arc<janus::TpcBatchCommand>::make(std::move(batch))};
   EXPECT_EQ(batch_outgoing.kind_, janus::TpcBatchCommand::static_kind());
-  rrr::BufferSink batch_sink;
-  rrr::BinaryWriteArchive batch_war(rrr::make_sink_proxy_buffer(&batch_sink));
-  rrr::Serialize_::serialize(batch_outgoing, batch_war);
+  srpc::BufferSink batch_sink;
+  srpc::BinaryWriteArchive batch_war(srpc::make_sink_proxy_buffer(&batch_sink));
+  srpc::Serialize_::serialize(batch_outgoing, batch_war);
 
   janus::Command batch_incoming;
-  rrr::BufferSource batch_src(batch_sink.bytes.data(), batch_sink.bytes.len());
-  rrr::BinaryReadArchive batch_rar(rrr::make_source_proxy_buffer(&batch_src));
-  rrr::Deserialize_::deserialize(batch_incoming, batch_rar);
+  srpc::BufferSource batch_src(batch_sink.bytes.data(), batch_sink.bytes.len());
+  srpc::BinaryReadArchive batch_rar(srpc::make_source_proxy_buffer(&batch_src));
+  srpc::Deserialize_::deserialize(batch_incoming, batch_rar);
   const auto decoded_batch =
       marshallable_cast<janus::TpcBatchCommand>(batch_incoming);
   ASSERT_TRUE(decoded_batch.is_some());
@@ -454,14 +454,14 @@ TEST(MarshallableProxyFacadeTest,
   janus::Command outgoing{put_cmd};
   EXPECT_EQ(outgoing.kind_, janus::ReplicatedDBCommand::static_kind());
 
-  rrr::BufferSink sink;
-  rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-  rrr::Serialize_::serialize(outgoing, war);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+  srpc::Serialize_::serialize(outgoing, war);
 
   janus::Command incoming;
-  rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-  rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
-  rrr::Deserialize_::deserialize(incoming, rar);
+  srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+  srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
+  srpc::Deserialize_::deserialize(incoming, rar);
   EXPECT_EQ(incoming.kind_, janus::ReplicatedDBCommand::static_kind());
 
   const auto decoded = marshallable_cast<janus::ReplicatedDBCommand>(incoming);
@@ -479,19 +479,19 @@ TEST(MarshallableProxyFacadeTest, EmptyGraphRoundTripUsesAnyMessageEnvelope) {
   // to the open-set `AnyMessage` envelope.  L10f-2 step 5 (2026-05-05):
   // AnyMessage no longer inherits Marshallable; the envelope rides
   // directly in RPC fields without a surrounding MarshallDeputy.
-  rrr::AnyMessage outgoing = rrr::AnyMessage::pack(payload);
+  srpc::AnyMessage outgoing = srpc::AnyMessage::pack(payload);
 
   BufferSink sink;
   {
     BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, writer);
+    srpc::Serialize_::serialize(outgoing, writer);
   }
 
-  rrr::AnyMessage incoming;
+  srpc::AnyMessage incoming;
   {
     BufferSource src(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(incoming, reader);
+    srpc::Deserialize_::deserialize(incoming, reader);
   }
   EXPECT_TRUE(incoming.is_a<janus::EmptyGraph>());
   ASSERT_TRUE(incoming.unpack<janus::EmptyGraph>().is_some());
@@ -501,19 +501,19 @@ TEST(MarshallableProxyFacadeTest, RccGraphRoundTripUsesAnyMessageEnvelope) {
   auto payload = rusty::Arc<janus::RccGraph>::make();
   ASSERT_NE(payload.get(), nullptr);
 
-  rrr::AnyMessage outgoing = rrr::AnyMessage::pack(payload);
+  srpc::AnyMessage outgoing = srpc::AnyMessage::pack(payload);
 
   BufferSink sink;
   {
     BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, writer);
+    srpc::Serialize_::serialize(outgoing, writer);
   }
 
-  rrr::AnyMessage incoming;
+  srpc::AnyMessage incoming;
   {
     BufferSource src(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(incoming, reader);
+    srpc::Deserialize_::deserialize(incoming, reader);
   }
 
   EXPECT_TRUE(incoming.is_a<janus::RccGraph>());

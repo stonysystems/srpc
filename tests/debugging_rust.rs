@@ -1,4 +1,4 @@
-use rrr::debugging;
+use srpc::debugging;
 
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]

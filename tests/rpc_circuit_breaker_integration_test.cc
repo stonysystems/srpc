@@ -5,15 +5,15 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.circuit_breaker;
+import srpc.circuit_breaker;
 #include "benchmark_service.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -148,7 +148,7 @@ TEST_F(CircuitBreakerIntegrationTest, CircuitBreakerWithRpcFailures) {
     std::string input = "test";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -304,7 +304,7 @@ TEST_F(CircuitBreakerIntegrationTest, CircuitBreakerProtectsRpcCalls) {
         std::string input = "test_" + std::to_string(i);
         auto fu_result = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();

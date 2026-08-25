@@ -1,38 +1,38 @@
 version = 1
 
 [[module]]
-name = "rrr.basetypes"
+name = "srpc.basetypes"
 includes = [
     { path = "misc/srpc_timing.h", form = "quote" },
     { path = "rusty/sync/atomic.hpp", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.connection_metrics"
+name = "srpc.connection_metrics"
 includes = [
     { path = "rusty/sync/atomic.hpp", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.completion_tracker"
+name = "srpc.completion_tracker"
 includes = [
     { path = "rusty/sync/atomic.hpp", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.rand"
+name = "srpc.rand"
 includes = [
     { path = "misc/srpc_rand.h", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.circuit_breaker"
+name = "srpc.circuit_breaker"
 includes = [
     { path = "misc/srpc_timing.h", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.threading"
+name = "srpc.threading"
 includes = [
     { path = "pthread.h", form = "angle" },
     { path = "misc/srpc_timing.h", form = "quote" },
@@ -40,66 +40,66 @@ includes = [
 ]
 
 [[module]]
-name = "rrr.utils"
+name = "srpc.utils"
 includes = [
     { path = "netdb.h", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.frame_codec"
+name = "srpc.frame_codec"
 includes = [
     { path = "vector", form = "angle" },
     { path = "rusty/io.hpp", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.misc"
+name = "srpc.misc"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.inmemory_channel"
+name = "srpc.inmemory_channel"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.server"
+name = "srpc.server"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
     { path = "rpc/srpc_server.h", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.tcp_channel"
+name = "srpc.tcp_channel"
 includes = [
     { path = "base/rustc_markers.hpp", form = "quote" },
     { path = "rpc/srpc_connect.h", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.epoll_wrapper"
+name = "srpc.epoll_wrapper"
 includes = [
     { path = "rusty/os/fd.hpp", form = "angle" },
     { path = "rusty/sync/atomic.hpp", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.debugging"
+name = "srpc.debugging"
 includes = [
     { path = "stdio.h", form = "angle" },
     { path = "source_location", form = "angle" },
 ]
 
 [[module]]
-name = "rrr.serializable"
+name = "srpc.serializable"
 includes = [
     { path = "misc/serializable_support.hpp", form = "quote" },
 ]
 
 [[module]]
-name = "rrr.reactor"
+name = "srpc.reactor"
 includes = [
     { path = "reactor/srpc_fiber.h", form = "quote" },
     { path = "set", form = "angle" },

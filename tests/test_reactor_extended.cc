@@ -4,11 +4,11 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 class ExtendedReactorTest : public ::testing::Test {

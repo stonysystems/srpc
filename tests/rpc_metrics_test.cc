@@ -8,18 +8,18 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.circuit_breaker;
-import rrr.connection_metrics;
-import rrr.request_options;
+import srpc.circuit_breaker;
+import srpc.connection_metrics;
+import srpc.request_options;
 #include "benchmark_service.h"
 #include "rpc_test_ports.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -390,8 +390,8 @@ public:
         }
 
         v32 payload;
-        rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));
-        rrr::Deserialize_::deserialize(payload, __req_ar__);
+        srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
+        srpc::Deserialize_::deserialize(payload, __req_ar__);
 
         int call = call_count.fetch_add(1) + 1;
         if (call <= drops_before_reply_) {
@@ -405,7 +405,7 @@ public:
 
         auto sconn = sconn_opt.unwrap();
         const_cast<ServerConnection&>(*sconn).reply(*req, 0, [payload](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(payload, m);
+            srpc::Serialize_::serialize(payload, m);
         });
     }
 
@@ -469,7 +469,7 @@ TEST_F(ConnectionMetricsIntegrationTest, MetricsUpdatedOnRealRequests) {
         std::string input = "test_" + std::to_string(i);
         auto fu_result = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();
@@ -505,7 +505,7 @@ TEST_F(ConnectionMetricsIntegrationTest, MetricsAfterReconnect) {
         std::string input = "before_" + std::to_string(i);
         auto fu_result = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         if (fu_result.is_ok()) {
             fu_result.unwrap()->wait();
@@ -537,7 +537,7 @@ TEST_F(ConnectionMetricsIntegrationTest, MetricsAfterReconnect) {
             std::string input = "after_" + std::to_string(i);
             auto fu_result = client->request(
                 benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-                [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+                [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
             );
             if (fu_result.is_ok()) {
                 fu_result.unwrap()->wait();
@@ -568,7 +568,7 @@ TEST_F(ConnectionMetricsIntegrationTest, ByteCounterAccuracy) {
     std::string input = "test_data";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     fu_result.unwrap()->wait();
@@ -614,7 +614,7 @@ TEST_F(ConnectionMetricsIntegrationTest, RequestWithOptionsTracksRetryAttempts) 
 
     auto fu_result = client->request_with_options(
         RetryMetricsRpcService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(11), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(11), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 
@@ -653,7 +653,7 @@ TEST_F(ConnectionMetricsIntegrationTest, RequestWithOptionsTerminalTimeoutUpdate
 
     auto fu_result = client->request_with_options(
         RetryMetricsRpcService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(29), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(29), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 
@@ -694,14 +694,14 @@ TEST_F(ConnectionMetricsIntegrationTest, QueueDropCounterTracksRejectedAndExpire
 
     auto queued_ok = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(std::string("queued_ok"), m); }
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(std::string("queued_ok"), m); }
     );
     ASSERT_TRUE(queued_ok.is_ok());
     auto queued_future = queued_ok.unwrap();
 
     auto queued_rejected = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(std::string("queued_reject"), m); }
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(std::string("queued_reject"), m); }
     );
     ASSERT_TRUE(queued_rejected.is_err());
     EXPECT_EQ(queued_rejected.unwrap_err(), kRequestQueueRejectedError);
@@ -740,7 +740,7 @@ TEST_F(ConnectionMetricsIntegrationTest, CircuitCountersTrackTransitionsAndRejec
 
     auto first = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(std::string("first"), m); }
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(std::string("first"), m); }
     );
     ASSERT_TRUE(first.is_err());
     EXPECT_EQ(first.unwrap_err(), ENOTCONN);
@@ -748,7 +748,7 @@ TEST_F(ConnectionMetricsIntegrationTest, CircuitCountersTrackTransitionsAndRejec
 
     auto second = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(std::string("second"), m); }
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(std::string("second"), m); }
     );
     ASSERT_TRUE(second.is_err());
     EXPECT_EQ(second.unwrap_err(), EBUSY);
@@ -758,7 +758,7 @@ TEST_F(ConnectionMetricsIntegrationTest, CircuitCountersTrackTransitionsAndRejec
 
     auto third = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(std::string("third"), m); }
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(std::string("third"), m); }
     );
     ASSERT_TRUE(third.is_err());
     EXPECT_EQ(third.unwrap_err(), ENOTCONN);

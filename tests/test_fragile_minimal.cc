@@ -1,16 +1,16 @@
-// Minimal test for Fragile compiler - tests basic rrr library functions
+// Minimal test for Fragile compiler - tests basic srpc library functions
 // This file is intentionally simple with no template edge cases
 
 #include <stdint.h>
 #include <time.h>
 
-#include "../rrr.hpp"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+#include "../srpc.hpp"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 
 // Test std::function copy (from test_lambda.cc)
 uint64_t copy_func(const std::function<uint64_t(void)> &foo) {

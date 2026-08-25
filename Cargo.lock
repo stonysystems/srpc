@@ -3,13 +3,6 @@
 version = 4
 
 [[package]]
-name = "rrr"
-version = "0.0.0"
-dependencies = [
- "rusty",
-]
-
-[[package]]
 name = "rusty"
 version = "0.0.0"
 dependencies = [
@@ -19,3 +12,10 @@ dependencies = [
 [[package]]
 name = "rusty-cpp-markers"
 version = "0.0.0"
+
+[[package]]
+name = "srpc"
+version = "0.0.0"
+dependencies = [
+ "rusty",
+]

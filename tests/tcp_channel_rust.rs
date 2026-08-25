@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 
-use rrr::channel::{ChannelError, OnAcceptCallback, OnClosedCallback};
-use rrr::tcp_channel::{kTcpConnectionOutboundHighWaterDefault, TcpConnection, TcpListener};
+use srpc::channel::{ChannelError, OnAcceptCallback, OnClosedCallback};
+use srpc::tcp_channel::{kTcpConnectionOutboundHighWaterDefault, TcpConnection, TcpListener};
 use rusty::CallbackWrapper;
 use std::net::TcpStream;
 use std::os::fd::IntoRawFd;

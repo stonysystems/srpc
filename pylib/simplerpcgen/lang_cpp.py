@@ -22,7 +22,7 @@ def emit_struct(struct, f, archive=False):
     f.writeln("};")
     f.writeln()
     # dropped the legacy
-    # `rrr::Marshal& operator>>(rrr::Marshal&, T&)` emission too.
+    # `srpc::Marshal& operator>>(srpc::Marshal&, T&)` emission too.
     # 1 flipped all rpcgen dispatcher reads to
     # `BinaryReadArchive`; the routed
     # `operator>>(rusty::RefMut<Marshal>&, U&)` in `client.hpp` also
@@ -40,21 +40,21 @@ def emit_struct(struct, f, archive=False):
         # serde namespace (specific overload when one exists, generic
         # catch-all otherwise). Byte layout identical to the old inline
         # field-by-field operators.
-        f.writeln("inline void serialize(const %s& o, rrr::BinaryWriteArchive& ar) {" % struct.name)
+        f.writeln("inline void serialize(const %s& o, srpc::BinaryWriteArchive& ar) {" % struct.name)
         with f.indent():
             for field in struct.fields:
-                f.writeln("rrr::Serialize_::serialize(o.%s, ar);" % field.name)
+                f.writeln("srpc::Serialize_::serialize(o.%s, ar);" % field.name)
         f.writeln("}")
         f.writeln()
-        f.writeln("inline rrr::BinaryWriteArchive& operator <<(rrr::BinaryWriteArchive& ar, const %s& o) { serialize(o, ar); return ar; }" % struct.name)
+        f.writeln("inline srpc::BinaryWriteArchive& operator <<(srpc::BinaryWriteArchive& ar, const %s& o) { serialize(o, ar); return ar; }" % struct.name)
         f.writeln()
-        f.writeln("inline void deserialize(%s& o, rrr::BinaryReadArchive& ar) {" % struct.name)
+        f.writeln("inline void deserialize(%s& o, srpc::BinaryReadArchive& ar) {" % struct.name)
         with f.indent():
             for field in struct.fields:
-                f.writeln("rrr::Deserialize_::deserialize(o.%s, ar);" % field.name)
+                f.writeln("srpc::Deserialize_::deserialize(o.%s, ar);" % field.name)
         f.writeln("}")
         f.writeln()
-        f.writeln("inline rrr::BinaryReadArchive& operator >>(rrr::BinaryReadArchive& ar, %s& o) { deserialize(o, ar); return ar; }" % struct.name)
+        f.writeln("inline srpc::BinaryReadArchive& operator >>(srpc::BinaryReadArchive& ar, %s& o) { deserialize(o, ar); return ar; }" % struct.name)
         f.writeln()
 
 def typed_struct_name(func_name, suffix):
@@ -74,13 +74,13 @@ def typed_response_struct_name(func):
     return typed_struct_name(func.name, "Response")
 
 def typed_result_type(func):
-    return "rusty::Result<%s, rrr::i32>" % typed_response_struct_name(func)
+    return "rusty::Result<%s, srpc::i32>" % typed_response_struct_name(func)
 
 def typed_proxy_future_wrapper_name(func):
     return "%sTypedFuture" % func.name
 
 def typed_proxy_future_result_type(func):
-    return "rusty::Result<%s, rrr::i32>" % typed_proxy_future_wrapper_name(func)
+    return "rusty::Result<%s, srpc::i32>" % typed_proxy_future_wrapper_name(func)
 
 def typed_struct_fields(args, fallback_prefix):
     fields = []
@@ -110,18 +110,18 @@ def emit_marshaled_typed_struct(struct_name, fields, f, archive=False):
         # Phase 8: friend serde functions own the wire format (fields routed
         # through the qualified serde namespace); the friend operators are
         # one-line forwarders kept until the operator layer is deleted.
-        f.writeln("friend inline void serialize(const %s& o, rrr::BinaryWriteArchive& ar) {" % struct_name)
+        f.writeln("friend inline void serialize(const %s& o, srpc::BinaryWriteArchive& ar) {" % struct_name)
         with f.indent():
             for _, field_name in fields:
-                f.writeln("rrr::Serialize_::serialize(o.%s, ar);" % field_name)
+                f.writeln("srpc::Serialize_::serialize(o.%s, ar);" % field_name)
         f.writeln("}")
-        f.writeln("friend inline rrr::BinaryWriteArchive& operator <<(rrr::BinaryWriteArchive& ar, const %s& o) { serialize(o, ar); return ar; }" % struct_name)
-        f.writeln("friend inline void deserialize(%s& o, rrr::BinaryReadArchive& ar) {" % struct_name)
+        f.writeln("friend inline srpc::BinaryWriteArchive& operator <<(srpc::BinaryWriteArchive& ar, const %s& o) { serialize(o, ar); return ar; }" % struct_name)
+        f.writeln("friend inline void deserialize(%s& o, srpc::BinaryReadArchive& ar) {" % struct_name)
         with f.indent():
             for _, field_name in fields:
-                f.writeln("rrr::Deserialize_::deserialize(o.%s, ar);" % field_name)
+                f.writeln("srpc::Deserialize_::deserialize(o.%s, ar);" % field_name)
         f.writeln("}")
-        f.writeln("friend inline rrr::BinaryReadArchive& operator >>(rrr::BinaryReadArchive& ar, %s& o) { deserialize(o, ar); return ar; }" % struct_name)
+        f.writeln("friend inline srpc::BinaryReadArchive& operator >>(srpc::BinaryReadArchive& ar, %s& o) { deserialize(o, ar); return ar; }" % struct_name)
     f.writeln()
 
 def emit_typed_service_signature(service, func, f):
@@ -133,13 +133,13 @@ def emit_typed_service_signature(service, func, f):
     if func.attr == "defer":
         f.writeln("// @safe")
         if service.abstract or func.abstract:
-            f.writeln("virtual void %s(const %s& req, %s& resp, rrr::DeferredReply defer) = 0;" % (
+            f.writeln("virtual void %s(const %s& req, %s& resp, srpc::DeferredReply defer) = 0;" % (
                 func.name,
                 request_struct_name,
                 response_struct_name,
             ))
         else:
-            f.writeln("virtual void %s(const %s& req, %s& resp, rrr::DeferredReply defer);" % (
+            f.writeln("virtual void %s(const %s& req, %s& resp, srpc::DeferredReply defer);" % (
                 func.name,
                 request_struct_name,
                 response_struct_name,
@@ -185,10 +185,10 @@ def emit_proxy_request_call(service, func, marshal_args, f):
     # `__m__ << field` keeps compiling regardless of which signature
     # the lambda uses.
     if len(marshal_args) > 0:
-        f.writeln("return __cl__->request(%sService::%s, __fu_attr__, [&](rrr::BinaryWriteArchive& __m__) {" % (service.name, func.name.upper()))
+        f.writeln("return __cl__->request(%sService::%s, __fu_attr__, [&](srpc::BinaryWriteArchive& __m__) {" % (service.name, func.name.upper()))
         with f.indent():
             for arg in marshal_args:
-                f.writeln("rrr::Serialize_::serialize(%s, __m__);" % arg)
+                f.writeln("srpc::Serialize_::serialize(%s, __m__);" % arg)
         f.writeln("});")
     else:
         # Always emit the 3-arg `request(rpc_id, attr, write_fn)` form,
@@ -198,7 +198,7 @@ def emit_proxy_request_call(service, func, marshal_args, f):
         # needs (Rust has no method overloading). The empty-lambda case
         # was previously emitted as `request(rpc_id, attr)` (the no-fn
         # overload), the only deptran consumer of that overload.
-        f.writeln("return __cl__->request(%sService::%s, __fu_attr__, [](rrr::BinaryWriteArchive&) {});" % (service.name, func.name.upper()))
+        f.writeln("return __cl__->request(%sService::%s, __fu_attr__, [](srpc::BinaryWriteArchive&) {});" % (service.name, func.name.upper()))
 
 def emit_typed_proxy_future_wrapper(func, f):
     wrapper_name = typed_proxy_future_wrapper_name(func)
@@ -209,10 +209,10 @@ def emit_typed_proxy_future_wrapper(func, f):
     f.writeln("class %s {" % wrapper_name)
     f.writeln("private:")
     with f.indent():
-        f.writeln("rusty::Arc<rrr::Future> __fu__;")
+        f.writeln("rusty::Arc<srpc::Future> __fu__;")
     f.writeln("public:")
     with f.indent():
-        f.writeln("explicit %s(rusty::Arc<rrr::Future> fu): __fu__(std::move(fu)) { }" % wrapper_name)
+        f.writeln("explicit %s(rusty::Arc<srpc::Future> fu): __fu__(std::move(fu)) { }" % wrapper_name)
         f.writeln("bool ready() const {")
         with f.indent():
             f.writeln("return __fu__->ready();")
@@ -221,17 +221,17 @@ def emit_typed_proxy_future_wrapper(func, f):
         with f.indent():
             f.writeln("__fu__->wait();")
         f.writeln("}")
-        f.writeln("rrr::i32 get_error_code() const {")
+        f.writeln("srpc::i32 get_error_code() const {")
         with f.indent():
             f.writeln("return __fu__->get_error_code();")
         f.writeln("}")
-        f.writeln("rusty::Arc<rrr::Future> raw_future() const {")
+        f.writeln("rusty::Arc<srpc::Future> raw_future() const {")
         with f.indent():
             f.writeln("return __fu__;")
         f.writeln("}")
         f.writeln("%s resolve() const {" % result_type)
         with f.indent():
-            f.writeln("rrr::i32 __ret__ = __fu__->get_error_code();")
+            f.writeln("srpc::i32 __ret__ = __fu__->get_error_code();")
             f.writeln("if (__ret__ != 0) {")
             with f.indent():
                 f.writeln("return %s::Err(__ret__);" % result_type)
@@ -244,9 +244,9 @@ def emit_typed_proxy_future_wrapper(func, f):
             # — `__reply_src__` and `__reply_ar__` reference into it.
             if len(output_fields) > 0:
                 f.writeln("auto __reply_guard__ = __fu__->get_reply();")
-                f.writeln("rrr::BinaryReadArchive __reply_ar__(rrr::make_source_proxy_buffer(&__reply_guard__->src));")
+                f.writeln("srpc::BinaryReadArchive __reply_ar__(srpc::make_source_proxy_buffer(&__reply_guard__->src));")
                 for _, field_name in output_fields:
-                    f.writeln("rrr::Deserialize_::deserialize(__typed_resp__.%s, __reply_ar__);" % field_name)
+                    f.writeln("srpc::Deserialize_::deserialize(__typed_resp__.%s, __reply_ar__);" % field_name)
             f.writeln("return %s::Ok(__typed_resp__);" % result_type)
         f.writeln("}")
     f.writeln("};")
@@ -256,21 +256,21 @@ def emit_typed_proxy_async_signature(service, func, typed_async_call_params, f):
     wrapper_name = typed_proxy_future_wrapper_name(func)
     result_type = typed_proxy_future_result_type(func)
 
-    f.writeln("%s async_%s(const %s& req, const rrr::FutureAttr& __fu_attr__ = rrr::FutureAttr()) {" % (result_type, func.name, request_struct_name))
+    f.writeln("%s async_%s(const %s& req, const srpc::FutureAttr& __fu_attr__ = srpc::FutureAttr()) {" % (result_type, func.name, request_struct_name))
     with f.indent():
         if len(typed_async_call_params) > 0:
             # see `emit_proxy_request_call`.
-            f.writeln("auto __fu_result__ = __cl__->request(%sService::%s, __fu_attr__, [&](rrr::BinaryWriteArchive& __m__) {" % (service.name, func.name.upper()))
+            f.writeln("auto __fu_result__ = __cl__->request(%sService::%s, __fu_attr__, [&](srpc::BinaryWriteArchive& __m__) {" % (service.name, func.name.upper()))
             with f.indent():
                 for param in typed_async_call_params:
-                    f.writeln("rrr::Serialize_::serialize(%s, __m__);" % param)
+                    f.writeln("srpc::Serialize_::serialize(%s, __m__);" % param)
             f.writeln("});")
         else:
             # Empty-input case — always emit the 3-arg form with an
             # empty lambda, matching `emit_proxy_request_call`. Keeps
             # the no-fn `Client::request(rpc_id, attr)` overload
             # un-consumed, which is what the inline-Rust DSL needs.
-            f.writeln("auto __fu_result__ = __cl__->request(%sService::%s, __fu_attr__, [](rrr::BinaryWriteArchive&) {});" % (service.name, func.name.upper()))
+            f.writeln("auto __fu_result__ = __cl__->request(%sService::%s, __fu_attr__, [](srpc::BinaryWriteArchive&) {});" % (service.name, func.name.upper()))
         f.writeln("if (__fu_result__.is_err()) {")
         with f.indent():
             f.writeln("return %s::Err(__fu_result__.unwrap_err());" % result_type)
@@ -297,8 +297,8 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                 f.writeln("%s = %s," % (func.name.upper(), hex(rpc_code)))
         f.writeln("};")
         f.writeln("// Registers RPC IDs with server using service index")
-        f.writeln("// @unsafe - calls rrr::Server::reg_rpc / unreg (not borrow-checked)")
-        f.writeln("int __reg_to__(rrr::Server& svr, size_t svc_index) {")
+        f.writeln("// @unsafe - calls srpc::Server::reg_rpc / unreg (not borrow-checked)")
+        f.writeln("int __reg_to__(srpc::Server& svr, size_t svc_index) {")
         with f.indent():
             f.writeln("int ret = 0;")
             for func in service.functions:
@@ -315,7 +315,7 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
             f.writeln("return ret;")
         f.writeln("}")
         f.writeln("// @safe - Dispatch for RPC requests")
-        f.writeln("void __dispatch__(rrr::i32 rpc_id, rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {")
+        f.writeln("void __dispatch__(srpc::i32 rpc_id, rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {")
         with f.indent():
             f.writeln("switch (rpc_id) {")
             for func in service.functions:
@@ -340,14 +340,14 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                 postfix = ""
             if func.attr == "raw":
                 f.writeln("// @safe")
-                f.writeln("virtual void %s(rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn)%s;" % (func.name, postfix))
+                f.writeln("virtual void %s(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn)%s;" % (func.name, postfix))
     f.writeln("private:")
     with f.indent():
         for func in service.functions:
             if func.attr == "raw":
                 continue
             f.writeln("// @safe")
-            f.writeln("void __%s__wrapper__(rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {" % func.name)
+            f.writeln("void __%s__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {" % func.name)
             with f.indent():
                 f.writeln("// @unsafe")
                 f.writeln("{")
@@ -364,18 +364,18 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                         # RefMut BufferSource proxy over the request body cursor
                         # to the archive's read API.
                         if len(input_fields) > 0:
-                            f.writeln("rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));")
+                            f.writeln("srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));")
                             for _, field_name in input_fields:
-                                f.writeln("rrr::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
+                                f.writeln("srpc::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
                         f.writeln("auto __typed_resp__ = std::make_shared<%s>();" % response_struct_name)
-                        f.writeln("auto __defer__ = rrr::DeferredReply::new_(")
+                        f.writeln("auto __defer__ = srpc::DeferredReply::new_(")
                         with f.indent():
                             f.writeln("std::move(req),")
                             f.writeln("weak_sconn,")
-                            f.writeln("[__typed_resp__](rrr::BinaryWriteArchive& m) {")
+                            f.writeln("[__typed_resp__](srpc::BinaryWriteArchive& m) {")
                             with f.indent():
                                 for _, field_name in output_fields:
-                                    f.writeln("rrr::Serialize_::serialize(__typed_resp__->%s, m);" % field_name)
+                                    f.writeln("srpc::Serialize_::serialize(__typed_resp__->%s, m);" % field_name)
                             f.writeln("},")
                             f.writeln("[]() {});")
                         f.writeln("this->%s(__typed_req__, *__typed_resp__, std::move(__defer__));" % func.name)
@@ -387,9 +387,9 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                         # see comment under
                         # `func.attr == "defer"`.
                         if len(input_fields) > 0:
-                            f.writeln("rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));")
+                            f.writeln("srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));")
                             for _, field_name in input_fields:
-                                f.writeln("rrr::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
+                                f.writeln("srpc::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
                         f.writeln("auto __fiber_req__ = std::move(req);")
                         f.writeln("auto __fiber_weak_sconn__ = weak_sconn;")
                         f.writeln("auto __fiber__ = Fiber::create_run([this, __typed_req__ = std::move(__typed_req__), __fiber_req__ = std::move(__fiber_req__), __fiber_weak_sconn__]() mutable {")
@@ -401,19 +401,19 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                                 f.writeln("auto sconn = sconn_opt.unwrap();")
                                 f.writeln("if (__typed_result__.is_err()) {")
                                 with f.indent():
-                                    f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*__fiber_req__, __typed_result__.unwrap_err(), rrr::ServerReplyFn{});")
+                                    f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*__fiber_req__, __typed_result__.unwrap_err(), srpc::ServerReplyFn{});")
                                 f.writeln("} else {")
                                 with f.indent():
                                     if len(output_fields) == 0:
                                         f.writeln("auto __typed_resp__ = __typed_result__.unwrap();")
                                         f.writeln("(void)__typed_resp__;")
-                                        f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*__fiber_req__, 0, rrr::ServerReplyFn{});")
+                                        f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*__fiber_req__, 0, srpc::ServerReplyFn{});")
                                     else:
                                         f.writeln("auto __typed_resp__ = __typed_result__.unwrap();")
-                                        f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*__fiber_req__, 0, [&](rrr::BinaryWriteArchive& m) {")
+                                        f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*__fiber_req__, 0, [&](srpc::BinaryWriteArchive& m) {")
                                         with f.indent():
                                             for _, field_name in output_fields:
-                                                f.writeln("rrr::Serialize_::serialize(__typed_resp__.%s, m);" % field_name)
+                                                f.writeln("srpc::Serialize_::serialize(__typed_resp__.%s, m);" % field_name)
                                         f.writeln("});")
                                 f.writeln("}")
                             f.writeln("}")
@@ -427,13 +427,13 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                         # see comment under
                         # `func.attr == "defer"`.
                         if len(input_fields) > 0:
-                            f.writeln("rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));")
+                            f.writeln("srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));")
                             for _, field_name in input_fields:
-                                f.writeln("rrr::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
+                                f.writeln("srpc::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
                         f.writeln("auto __async_req__ = std::move(req);")
                         f.writeln("auto __async_weak_sconn__ = weak_sconn;")
                         f.writeln("auto __async_task__ = this->%s(__typed_req__);" % func.name)
-                        f.writeln("rrr::reactor_spawn_stackless_task_with_result(*rrr::Reactor::get_reactor(), std::move(__async_task__), [__async_req__ = std::move(__async_req__), __async_weak_sconn__](auto __typed_result__) mutable {")
+                        f.writeln("srpc::reactor_spawn_stackless_task_with_result(*srpc::Reactor::get_reactor(), std::move(__async_task__), [__async_req__ = std::move(__async_req__), __async_weak_sconn__](auto __typed_result__) mutable {")
                         with f.indent():
                             f.writeln("auto sconn_opt = __async_weak_sconn__.upgrade();")
                             f.writeln("if (sconn_opt.is_some()) {")
@@ -441,19 +441,19 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                                 f.writeln("auto sconn = sconn_opt.unwrap();")
                                 f.writeln("if (__typed_result__.is_err()) {")
                                 with f.indent():
-                                    f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*__async_req__, __typed_result__.unwrap_err(), rrr::ServerReplyFn{});")
+                                    f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*__async_req__, __typed_result__.unwrap_err(), srpc::ServerReplyFn{});")
                                 f.writeln("} else {")
                                 with f.indent():
                                     if len(output_fields) == 0:
                                         f.writeln("auto __typed_resp__ = __typed_result__.unwrap();")
                                         f.writeln("(void)__typed_resp__;")
-                                        f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*__async_req__, 0, rrr::ServerReplyFn{});")
+                                        f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*__async_req__, 0, srpc::ServerReplyFn{});")
                                     else:
                                         f.writeln("auto __typed_resp__ = __typed_result__.unwrap();")
-                                        f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*__async_req__, 0, [&](rrr::BinaryWriteArchive& m) {")
+                                        f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*__async_req__, 0, [&](srpc::BinaryWriteArchive& m) {")
                                         with f.indent():
                                             for _, field_name in output_fields:
-                                                f.writeln("rrr::Serialize_::serialize(__typed_resp__.%s, m);" % field_name)
+                                                f.writeln("srpc::Serialize_::serialize(__typed_resp__.%s, m);" % field_name)
                                         f.writeln("});")
                                 f.writeln("}")
                             f.writeln("}")
@@ -466,9 +466,9 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                         # see comment under
                         # `func.attr == "defer"`.
                         if len(input_fields) > 0:
-                            f.writeln("rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));")
+                            f.writeln("srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));")
                             for _, field_name in input_fields:
-                                f.writeln("rrr::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
+                                f.writeln("srpc::Deserialize_::deserialize(__typed_req__.%s, __req_ar__);" % field_name)
                         f.writeln("auto __typed_result__ = this->%s(__typed_req__);" % func.name)
                         f.writeln("auto sconn_opt = weak_sconn.upgrade();")
                         f.writeln("if (sconn_opt.is_some()) {")
@@ -476,19 +476,19 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                             f.writeln("auto sconn = sconn_opt.unwrap();")
                             f.writeln("if (__typed_result__.is_err()) {")
                             with f.indent():
-                                f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*req, __typed_result__.unwrap_err(), rrr::ServerReplyFn{});")
+                                f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*req, __typed_result__.unwrap_err(), srpc::ServerReplyFn{});")
                             f.writeln("} else {")
                             with f.indent():
                                 if len(output_fields) == 0:
                                     f.writeln("auto __typed_resp__ = __typed_result__.unwrap();")
                                     f.writeln("(void)__typed_resp__;")
-                                    f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*req, 0, rrr::ServerReplyFn{});")
+                                    f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*req, 0, srpc::ServerReplyFn{});")
                                 else:
                                     f.writeln("auto __typed_resp__ = __typed_result__.unwrap();")
-                                    f.writeln("const_cast<rrr::ServerConnection&>(*sconn).reply(*req, 0, [&](rrr::BinaryWriteArchive& m) {")
+                                    f.writeln("const_cast<srpc::ServerConnection&>(*sconn).reply(*req, 0, [&](srpc::BinaryWriteArchive& m) {")
                                     with f.indent():
                                         for _, field_name in output_fields:
-                                            f.writeln("rrr::Serialize_::serialize(__typed_resp__.%s, m);" % field_name)
+                                            f.writeln("srpc::Serialize_::serialize(__typed_resp__.%s, m);" % field_name)
                                     f.writeln("});")
                             f.writeln("}")
                         f.writeln("}")
@@ -500,10 +500,10 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
     f.writeln("class %sProxy {" % service.name)
     f.writeln("protected:")
     with f.indent():
-        f.writeln("rrr::Client* __cl__;")
+        f.writeln("srpc::Client* __cl__;")
     f.writeln("public:")
     with f.indent():
-        f.writeln("%sProxy(rrr::Client* cl): __cl__(cl) { }" % service.name)
+        f.writeln("%sProxy(srpc::Client* cl): __cl__(cl) { }" % service.name)
         f.writeln("// Alias typed request/response structs from the sibling Service class.")
         for func in service.functions:
             f.writeln("using %s = %sService::%s;" % (
@@ -549,11 +549,11 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                         sync_func_params += "%s* out_%d" % (out_arg.type, out_counter),
                         sync_out_params += "out_%d" % out_counter,
                     out_counter += 1
-                f.writeln("rrr::FutureResult async_%s(%sconst rrr::FutureAttr& __fu_attr__ = rrr::FutureAttr()) {" % (func.name, ", ".join(async_func_params + [""])))
+                f.writeln("srpc::FutureResult async_%s(%sconst srpc::FutureAttr& __fu_attr__ = srpc::FutureAttr()) {" % (func.name, ", ".join(async_func_params + [""])))
                 with f.indent():
                     emit_proxy_request_call(service, func, async_call_params, f)
                 f.writeln("}")
-                f.writeln("rrr::i32 %s(%s) {" % (func.name, ", ".join(sync_func_params)))
+                f.writeln("srpc::i32 %s(%s) {" % (func.name, ", ".join(sync_func_params)))
                 with f.indent():
                     f.writeln("auto __fu_result__ = this->async_%s(%s);" % (func.name, ", ".join(async_call_params)))
                     f.writeln("if (__fu_result__.is_err()) {")
@@ -561,7 +561,7 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                         f.writeln("return __fu_result__.unwrap_err();  // Return error code")
                     f.writeln("}")
                     f.writeln("auto __fu__ = __fu_result__.unwrap();")
-                    f.writeln("rrr::i32 __ret__ = __fu__->get_error_code();")
+                    f.writeln("srpc::i32 __ret__ = __fu__->get_error_code();")
                     if len(sync_out_params) > 0:
                         f.writeln("if (__ret__ == 0) {")
                         with f.indent():
@@ -569,9 +569,9 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                             # through BinaryReadArchive — see the matching
                             # comment in `emit_typed_proxy_future_wrapper`.
                             f.writeln("auto __reply_guard__ = __fu__->get_reply();")
-                            f.writeln("rrr::BinaryReadArchive __reply_ar__(rrr::make_source_proxy_buffer(&__reply_guard__->src));")
+                            f.writeln("srpc::BinaryReadArchive __reply_ar__(srpc::make_source_proxy_buffer(&__reply_guard__->src));")
                             for param in sync_out_params:
-                                f.writeln("rrr::Deserialize_::deserialize(*%s, __reply_ar__);" % param)
+                                f.writeln("srpc::Deserialize_::deserialize(*%s, __reply_ar__);" % param)
                         f.writeln("}")
                     f.writeln("// Arc auto-released")
                     f.writeln("return __ret__;")
@@ -586,7 +586,7 @@ def emit_rpc_source_cpp(rpc_source, rpc_table, fpath, cpp_header, cpp_footer, ar
         f.writeln("#pragma once")
         f.writeln()
 #        f.writeln('#include "rpc/server.h"')
-        f.writeln('#include "rrr/rrr.hpp"')
+        f.writeln('#include "srpc/srpc.hpp"')
         f.writeln('#include <rusty/async.hpp>')
         f.writeln('#include <rusty/arc.hpp>')
         f.writeln('#include <rusty/box.hpp>')

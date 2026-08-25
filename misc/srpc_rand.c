@@ -3,7 +3,7 @@
  * crosses this boundary, and all range/scale logic stays in the DSL
  * statics on the C++ side.
  *
- * Everything here was rrr::randgen_* in misc/rand.cpp: pthread_key
+ * Everything here was srpc::randgen_* in misc/rand.cpp: pthread_key
  * plumbing with a raw `free` destructor, pthread_getspecific returning
  * void*, malloc, a raw `unsigned int*` seed, and rand_r over it. None
  * of it can be inline-Rust DSL, and none of it needs C++.

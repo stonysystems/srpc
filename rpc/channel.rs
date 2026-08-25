@@ -1,4 +1,4 @@
-//! Transport facade shared by the native Rust runtime and `rrr.channel`.
+//! Transport facade shared by the native Rust runtime and `srpc.channel`.
 //!
 //! The generated C++ contract is intentionally the established channel-mode
 //! surface: `rusty::Box` proxies, nullable proxy results, `std::string`

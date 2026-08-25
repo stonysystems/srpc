@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use rrr::request_queue::{
+use srpc::request_queue::{
     kRequestQueueExpiredError, kRequestQueueRejectedError, overflow_strategy_to_string,
     queued_request_time_us, OverflowStrategy, QueuedRequest, QueuedRequestCallback, RequestQueue,
     RequestQueueConfig,

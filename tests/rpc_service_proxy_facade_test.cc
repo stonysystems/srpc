@@ -6,11 +6,11 @@
 #include <gtest/gtest.h>
 
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 class CountingService : public Service {
@@ -210,4 +210,4 @@ TEST(RpcServiceProxyFacadeTest, ServerRegistrationAcceptsTypedServiceWithoutInhe
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

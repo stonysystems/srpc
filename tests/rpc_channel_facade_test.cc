@@ -15,11 +15,11 @@
 #include <rusty/option.hpp>
 #include <rusty/traits.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ static_assert(kExpectedCallbackWrapperTraits<FutureCallback>);
 
 // EXPECT_EQ, not EXPECT_STREQ: channel_error_to_string is now DSL, and
 // `&'static str` lowers to std::string_view rather than const char*.
-// Per docs/dev/rrr_migration_policy.md that is a rule-2 call-site
+// Per docs/dev/srpc_migration_policy.md that is a rule-2 call-site
 // rewrite, not a reason to bend the DSL into returning a raw pointer.
 TEST(RpcChannelFacadeTest, ErrorEnumStringification) {
     EXPECT_EQ("None",              channel_error_to_string(ChannelError::None));
@@ -452,4 +452,4 @@ TEST(RpcChannelFacadeTest, FactoryProducesConnectionsAndListeners) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

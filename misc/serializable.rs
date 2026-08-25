@@ -1,9 +1,9 @@
-//! Canonical Rust prototype for `rrr.serializable`.
+//! Canonical Rust prototype for `srpc.serializable`.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use cpp::rrr::basetypes as cpp_basetypes;
-use cpp::rrr::debugging as cpp_debugging;
+use cpp::srpc::basetypes as cpp_basetypes;
+use cpp::srpc::debugging as cpp_debugging;
 use cpp::rusty as cpp_rusty;
 #[allow(unused_imports)]
 use cpp::std as _;
@@ -12,8 +12,8 @@ use rusty::Arc;
 
 // Keep these module-owned aliases explicit.  Pulling the types through an
 // ordinary Rust `use crate::basetypes::{...}` made the C++ emitter invent a
-// nonexistent nested `rrr::basetypes` namespace; the actual provider exports
-// both directly from `rrr`.
+// nonexistent nested `srpc::basetypes` namespace; the actual provider exports
+// both directly from `srpc`.
 pub type v32 = rusty::SerializableV32;
 pub type v64 = rusty::SerializableV64;
 

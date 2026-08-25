@@ -20,11 +20,11 @@
 #include <rusty/arc.hpp>
 #include <rusty/box.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -318,4 +318,4 @@ TEST_F(ServerChannelFactoryTest, StartWithoutFactoryAutoInstallsDefault) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

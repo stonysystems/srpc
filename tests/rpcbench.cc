@@ -10,13 +10,13 @@
 #include <signal.h>
 
 #include "benchmark_service.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 
 using namespace benchmark;
-using namespace rrr;
+using namespace srpc;
 using namespace std;
 
 const char *svr_addr = "127.0.0.1:8848";
@@ -179,19 +179,19 @@ static void* client_proc(void* arg_ptr) {
     std::function<void()> do_work_holder;
     auto do_work = [cl, rpc_id, thread_idx, &do_work_holder] {
         if (should_stop) return;
-        auto write_fn = [rpc_id](rrr::BinaryWriteArchive& m) {
+        auto write_fn = [rpc_id](srpc::BinaryWriteArchive& m) {
             if (rpc_id == BenchmarkService::FAST_NOP ||
                 rpc_id == BenchmarkService::NOP ||
                 rpc_id == BenchmarkService::ASYNC_NOP) {
-                rrr::Serialize_::serialize(request_str, m);
+                srpc::Serialize_::serialize(request_str, m);
             } else if (rpc_id == BenchmarkService::FAST_VEC) {
-                rrr::Serialize_::serialize(rpc_bench_vector_size, m);
+                srpc::Serialize_::serialize(rpc_bench_vector_size, m);
             } else if (rpc_id == BenchmarkService::DEFERRED_ECHO) {
-                rrr::Serialize_::serialize(static_cast<rrr::i32>(1), m);
+                srpc::Serialize_::serialize(static_cast<srpc::i32>(1), m);
             }
         };
-        rrr::AsyncReplyCallback on_reply{
-            [thread_idx, &do_work_holder](rrr::i32 err,
+        srpc::AsyncReplyCallback on_reply{
+            [thread_idx, &do_work_holder](srpc::i32 err,
                                           const std::uint8_t*,
                                           std::size_t) {
                 if (err != 0) return;

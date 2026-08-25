@@ -77,7 +77,7 @@ void srpc_sleep_us(uint64_t microseconds) {
 /* Wall-clock timestamp "YYYY-MM-DD HH:MM:SS.mmm" into a caller buffer of
  * at least 24 bytes (23 chars + NUL). Plain C: time/localtime_r/
  * gettimeofday syscalls + raw byte writing (Goal-0 C demotion; was
- * rrr::time_now_str + its make_int digit writer in base/misc.cpp). */
+ * srpc::time_now_str + its make_int digit writer in base/misc.cpp). */
 static void srpc_write_int(char* str, int val, int digits) {
     char* p = str + digits;
     for (int i = 0; i < digits; i++) {
@@ -113,7 +113,7 @@ void srpc_time_now_str(char* now) {
 }
 
 /* Spin-wait hint: x86 pause / arm yield / no-op. (Goal-0 C demotion;
- * was the inline-asm rrr::cpu_pause in base/threading.cpp.) */
+ * was the inline-asm srpc::cpu_pause in base/threading.cpp.) */
 void srpc_cpu_pause(void) {
 #if defined(__i386__) || defined(__x86_64__)
     __asm__ __volatile__("pause");

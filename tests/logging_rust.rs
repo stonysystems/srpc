@@ -1,4 +1,4 @@
-use rrr::logging::{log_level_tag, Log, LOG_LEVEL_S};
+use srpc::logging::{log_level_tag, Log, LOG_LEVEL_S};
 use std::sync::atomic::Ordering;
 
 #[test]

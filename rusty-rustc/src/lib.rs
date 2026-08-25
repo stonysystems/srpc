@@ -2,7 +2,7 @@
 
 //! Rust-only facades for APIs supplied by the rusty-cpp C++ runtime.
 //!
-//! The `rrr` crate uses this package for direct rustc checking and tests. The
+//! The `srpc` crate uses this package for direct rustc checking and tests. The
 //! rusty-cpp crate emitter recognizes this exact local package identity and
 //! omits it from generated C++ because the production definitions already
 //! live in the rusty runtime headers.
@@ -325,17 +325,17 @@ thread_local! {
     static REACTOR_SLEEP_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Rust-only model of the `rrr.reactor` module's `Fiber` class.
+/// Rust-only model of the `srpc.reactor` module's `Fiber` class.
 ///
-/// The checked type map restores the existing `rrr::Fiber` spelling for C++;
-/// this state exists only for direct rustc tests of `rrr.fiber`.
+/// The checked type map restores the existing `srpc::Fiber` spelling for C++;
+/// this state exists only for direct rustc tests of `srpc.fiber`.
 pub struct ReactorFiber {
     pub id: Cell<u64>,
     yields: Cell<u64>,
 }
 
-pub type ReactorIntEvent = rrr::reactor::IntEvent;
-pub type ReactorPollThread = rrr::reactor::PollThread;
+pub type ReactorIntEvent = srpc::reactor::IntEvent;
+pub type ReactorPollThread = srpc::reactor::PollThread;
 pub type RustcSocketAddrV4 = ::std::net::SocketAddrV4;
 pub type RustcIoErrorKind = ::std::io::ErrorKind;
 
@@ -510,7 +510,7 @@ impl ReactorFiber {
         self.yields.set(self.yields.get().wrapping_add(1));
     }
 
-    /// Model of the `rrr::Fiber::create_run_impl` static. Production C++
+    /// Model of the `srpc::Fiber::create_run_impl` static. Production C++
     /// resolves it to the reactor carrier's own definition, which heap-
     /// allocates the task and schedules it; the model runs nothing so a
     /// direct-rustc check never starts a fiber.
@@ -528,10 +528,10 @@ impl ReactorFiber {
     }
 }
 
-/// Rust-only model of the `rrr.reactor` module's `BoxEvent<T>` template.
+/// Rust-only model of the `srpc.reactor` module's `BoxEvent<T>` template.
 ///
 /// Crate-mode C++ generation maps this type back to the existing
-/// `rrr::BoxEvent<T>` definition. The synchronization state exists only so
+/// `srpc::BoxEvent<T>` definition. The synchronization state exists only so
 /// direct rustc tests can exercise one-shot set/wait/get behavior; it is never
 /// emitted into production C++.
 pub struct ReactorBoxEvent<T> {
@@ -687,8 +687,8 @@ impl<T: ?Sized> StdArcGetMutExt<T> for ::std::sync::Arc<T> {
 }
 
 /// Rustc-only spelling for the sparse 32-bit wrapper exported directly by the
-/// `rrr.basetypes` C++ module.  The production type map restores the public
-/// `rrr::v32` spelling; this local model only supplies the checked Rust API.
+/// `srpc.basetypes` C++ module.  The production type map restores the public
+/// `srpc::v32` spelling; this local model only supplies the checked Rust API.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub struct SerializableV32(i32);
 
@@ -1464,10 +1464,10 @@ impl RustyStdStringCStr for ::std::string::String {
 }
 
 
-/// Rust-only declarations for C++ modules imported by canonical rrr sources.
+/// Rust-only declarations for C++ modules imported by canonical srpc sources.
 /// The exact local `rusty` facade dependency is omitted from generated C++.
 #[allow(clippy::missing_safety_doc)]
-pub mod rrr {
+pub mod srpc {
     pub mod basetypes {
         pub struct Time;
 
@@ -1538,15 +1538,15 @@ pub mod rrr {
     }
 
     /// Compile-time-only namespace model used to retain the private
-    /// `rrr.errors` named-module import in canonical callback generation.
+    /// `srpc.errors` named-module import in canonical callback generation.
     pub mod errors {}
 
     /// Compile-time-only namespace model used to retain the exact
-    /// `rrr.internal_protocol` named-module import in canonical server
+    /// `srpc.internal_protocol` named-module import in canonical server
     /// generation. The wire constant itself is read through the crate path;
     /// only the provider edge is carried here.
     pub mod internal_protocol {}
-    /// `rrr.callback_wrapper` named-module import in canonical client
+    /// `srpc.callback_wrapper` named-module import in canonical client
     /// generation; the wrapper template itself is reached through the
     /// `rusty::CallbackWrapper` facade type.
     pub mod callback_wrapper {}
@@ -1718,7 +1718,7 @@ pub mod rrr {
         #[allow(unsafe_code)]
         pub unsafe fn make_sink_proxy_buffer<S, P>(_sink: *mut S) -> P {
             // The rustc facade never runs: the production emitter resolves
-            // this to the real `rrr::make_sink_proxy_buffer`.
+            // this to the real `srpc::make_sink_proxy_buffer`.
             unreachable!("rustc-only serializable proxy facade")
         }
 
@@ -2233,7 +2233,7 @@ impl<T: ?Sized> Arc<T> {
 }
 
 /// Rust-only test model for the binary archive supplied by
-/// `rrr.serializable` in production C++.
+/// `srpc.serializable` in production C++.
 #[derive(Default)]
 pub struct BinaryWriteArchive {
     bytes: Vec<u8>,
@@ -2272,7 +2272,7 @@ impl BinaryWriteArchive {
 }
 
 /// Rust-only test model for the binary archive supplied by
-/// `rrr.serializable` in production C++.
+/// `srpc.serializable` in production C++.
 pub struct BinaryReadArchive {
     bytes: Vec<u8>,
     offset: usize,

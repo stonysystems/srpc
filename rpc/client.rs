@@ -1,4 +1,4 @@
-//! rrr.client — RPC client (formerly client.hpp + client.cpp).
+//! srpc.client — RPC client (formerly client.hpp + client.cpp).
 //!
 //! Owns ClientConnection (framing + reply dispatch), Client (the
 //! user-facing facade), Future (async reply delivery), ClientPool and
@@ -9,7 +9,7 @@
 //! # Clippy: what was taken and what was pinned (measured, not assumed)
 //!
 //! This file is the canonical Rust the C++ provider is generated FROM, so a
-//! lint is only free when taking it leaves the emitted `rrr.client.cppm`
+//! lint is only free when taking it leaves the emitted `srpc.client.cppm`
 //! unchanged. Every finding below was measured the same way: apply the lint's
 //! own suggestion, regenerate all 36 providers, and byte-compare the emitted
 //! module.
@@ -49,22 +49,22 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
-use cpp::rrr::rand as cpp_rand_facade;
+use cpp::srpc::rand as cpp_rand_facade;
 use rusty as cpp;
 
 // These are still supplied by historical inline C++ modules.  The `cpp::`
 // imports make their named-module ownership explicit without inventing a Rust
 // namespace that does not exist in the public C++ surface.
 // These otherwise-unused source-owned imports keep the exact
-// `rrr.callback_wrapper` / `rrr.reactor` / `rrr.serializable` providers
+// `srpc.callback_wrapper` / `srpc.reactor` / `srpc.serializable` providers
 // visible to generated C++; the types themselves are reached through the
 // checked type map and the crate paths.
 #[allow(unused_imports)]
-use cpp::rrr::callback_wrapper as _;
+use cpp::srpc::callback_wrapper as _;
 #[allow(unused_imports)]
-use cpp::rrr::reactor as _;
+use cpp::srpc::reactor as _;
 #[allow(unused_imports)]
-use cpp::rrr::serializable as cpp_serializable;
+use cpp::srpc::serializable as cpp_serializable;
 use rusty::RustyCellGet as _;
 use rusty::RustyStdStringCStr as _;
 use rusty::RustyHandleIsValid as _;
@@ -99,7 +99,7 @@ use crate::serializable::{
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
 // Rustc-only facade identities with checked C++ type maps back to the public
-// root-level `rrr::Fiber` and `rrr::PollThread` classes.
+// root-level `srpc::Fiber` and `srpc::PollThread` classes.
 pub type Fiber = cpp::ReactorFiber;
 pub type PollThread = cpp::ReactorPollThread;
 
@@ -159,7 +159,7 @@ pub const CLIENT_POLL_NO_CHANGE: i32 = -1;
 pub type c_char = i8;
 
 pub fn client_rand(min: i32, max: i32) -> i32 {
-    // SAFETY: `rrr::RandomGenerator::rand` is a pure integer draw over the
+    // SAFETY: `srpc::RandomGenerator::rand` is a pure integer draw over the
     // half-open range; the foreign named-module boundary is what `unsafe`
     // records here, not a memory precondition.
     unsafe { cpp_rand_facade::RandomGenerator::rand(min, max) }
@@ -849,7 +849,7 @@ impl ClientConnection {
                 if (state as i32) == (ConnectionState::FAILED as i32)
                     || (state as i32) == (ConnectionState::DISCONNECTED as i32) {
                     if (*conn).is_factory_bound() {
-                        client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("rrr::ClientConnection: channel-mode auto-reconnect (factory) triggered after on_closed"));
+                        client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: channel-mode auto-reconnect (factory) triggered after on_closed"));
                         // Reset the channel-mode latch + drop the stale FiberChannel
                         // before re-connecting (connect verifies !is_connected and
                         // bind_channel needs the slot empty). connect reads
@@ -859,7 +859,7 @@ impl ClientConnection {
                         let _ = (*conn).connect(reconnect_addr.c_str() as *const i8);
                         return;
                     }
-                    client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("rrr::ClientConnection: channel-mode auto-reconnect (legacy) triggered after on_closed"));
+                    client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: channel-mode auto-reconnect (legacy) triggered after on_closed"));
                     (*conn).reconnect(Default::default());
                 }
             }).detach();
@@ -884,7 +884,7 @@ impl ClientConnection {
         client_verify(!self.state_machine_.is_connected());
 
         if !self.state_machine_.transition_to(ConnectionState::CONNECTING) {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: cannot connect from state ",
+            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: cannot connect from state ",
                                connection_state_to_string(self.state_machine_.state()), ""));
             self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, &client_text("invalid state for connect"));
             return CLIENT_ERR_INVALID_ARGUMENT;
@@ -895,7 +895,7 @@ impl ClientConnection {
         // factory->connect(addr), hands the proxy to bind_channel_direct, and
         // records reconnect_address_ for the close-side reconnect spawn.
         if !self.is_factory_bound() {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("rrr::ClientConnection::connect: factory not bound. Channel mode requires a ChannelFactoryProxy installed via Client::set_channel_factory(...) or auto-installed by Client::connect (the latter happens unconditionally now)."));
+            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("srpc::ClientConnection::connect: factory not bound. Channel mode requires a ChannelFactoryProxy installed via Client::set_channel_factory(...) or auto-installed by Client::connect (the latter happens unconditionally now)."));
             self.state_machine_.transition_to(ConnectionState::FAILED);
             self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, &client_text("no channel factory bound"));
             return CLIENT_ERR_INVALID_ARGUMENT;
@@ -1141,7 +1141,7 @@ impl ClientConnection {
             if !(*conn).connected() {
                 return;
             }
-            client_log_line(Log::WARN, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: heartbeat timeout for ", &(*conn).host(), ""));
+            client_log_line(Log::WARN, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: heartbeat timeout for ", &(*conn).host(), ""));
             (*conn).handle_error();
             }),
         );
@@ -1262,7 +1262,7 @@ impl ClientConnection {
                 let state = (*conn).connection_state();
                 if (state as i32) == (ConnectionState::FAILED as i32)
                     || (state as i32) == (ConnectionState::DISCONNECTED as i32) {
-                    client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("rrr::ClientConnection: auto-reconnect triggered after connection failure"));
+                    client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: auto-reconnect triggered after connection failure"));
                     (*conn).reconnect(Default::default());
                 }
             }).detach();
@@ -1968,13 +1968,13 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
 
     // Check if we have an address to reconnect to
     if self_.reconnect_address_.get().is_empty() {
-        client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("rrr::ClientConnection: no address to reconnect to"));
+        client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: no address to reconnect to"));
         return complete_callback(CLIENT_ERR_INVALID_ARGUMENT);
     }
 
     // Can only reconnect from FAILED or DISCONNECTED state
     if !self_.state_machine_.can_connect() {
-        client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: cannot reconnect from state ",
+        client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: cannot reconnect from state ",
                   connection_state_to_string(self_.state_machine_.state()), ""));
         return complete_callback(CLIENT_ERR_INVALID_ARGUMENT);
     }
@@ -2001,7 +2001,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
         self_.invoke_reconnected_callback(success);
 
         if success {
-            client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: reconnected to ", &self_.reconnect_address_.get(), ""));
+            client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: reconnected to ", &self_.reconnect_address_.get(), ""));
 
             // Record reconnection in metrics
             self_.metrics_.record_reconnect();
@@ -2015,10 +2015,10 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
             return complete_callback(0i32);
         }
         if result == CLIENT_ERR_CANCELED {
-            client_log_line(Log::DEBUG, 0i32, core::ptr::null(), client_text_str("rrr::ClientConnection: reconnect cancelled for ",
+            client_log_line(Log::DEBUG, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: reconnect cancelled for ",
                       &self_.reconnect_address_.get(), ""));
         } else {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str_i32("rrr::ClientConnection: reconnection failed to ",
+            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str_i32("srpc::ClientConnection: reconnection failed to ",
                       &self_.reconnect_address_.get(), ": ", result, ""));
         }
         complete_callback(result)
@@ -2086,7 +2086,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
             return complete_reconnect(false, CLIENT_ERR_INVALID_ARGUMENT);
         }
 
-        client_log_line(Log::DEBUG, 0i32, core::ptr::null(), client_text_u32_str("rrr::ClientConnection: reconnect retry #",
+        client_log_line(Log::DEBUG, 0i32, core::ptr::null(), client_text_u32_str("srpc::ClientConnection: reconnect retry #",
                   calc.retry_count(), " to ", &self_.reconnect_address_.get(), ""));
         result = reconnect_once();
         if result == 0i32 {
@@ -2562,7 +2562,7 @@ pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i
     {
         let mut guard = conn.factory_.lock().unwrap();
         if (*guard).is_none() {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("rrr::ClientConnection::connect_via_factory: factory unbound at the moment of connect (race against bind_factory)"));
+            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("srpc::ClientConnection::connect_via_factory: factory unbound at the moment of connect (race against bind_factory)"));
             conn.state_machine_.transition_to(ConnectionState::FAILED);
             conn.invoke_error_callback(CLIENT_ERR_NOT_CONNECTED, &client_text("factory unbound"));
             return CLIENT_ERR_NOT_CONNECTED;
@@ -2572,7 +2572,7 @@ pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i
         if result.error != ChannelError::None || result.connection.is_none() {
             let err_name = channel_error_to_string(result.error);
             let err_str: LegacyStdString = client_text_str("factory connect failed: ", err_name, "");
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str_pair("rrr::ClientConnection: ", &err_str, " (addr=", &addr_str, ")"));
+            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str_pair("srpc::ClientConnection: ", &err_str, " (addr=", &addr_str, ")"));
             conn.state_machine_.transition_to(ConnectionState::FAILED);
             // Map the channel error onto an errno-shaped value the
             // legacy call sites expect.
@@ -3075,7 +3075,7 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
     total_closed
 }
 
-// The `const int8_t*` the rrr wire type wants is spelled `addr.c_str()
+// The `const int8_t*` the srpc wire type wants is spelled `addr.c_str()
 // as *const i8`, which lowers to the same reinterpret_cast the old
 // kernel wrote by hand. (The historical carrier kept caller and callee in
 // one inline-Rust region; the canonical file has no regions.)

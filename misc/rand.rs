@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.rand module.
+// Canonical Rust source for the srpc.rand module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 pub fn randgen_rand_max() -> f64 {
     i32::MAX as f64

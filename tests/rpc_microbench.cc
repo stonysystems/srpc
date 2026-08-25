@@ -10,15 +10,15 @@
 #include <signal.h>
 #include <math.h>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "benchmark_service.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 
 using namespace benchmark;
-using namespace rrr;
+using namespace srpc;
 using namespace std;
 
 //const char *svr_addr = "127.0.0.1:8848";

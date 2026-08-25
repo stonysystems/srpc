@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.future module.
+// Canonical Rust source for the srpc.future module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 #![allow(clippy::explicit_auto_deref)]
 
@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 // `rusty` is the rustc-only facade package. The emitter drops this alias and
 // treats the following `cpp::` paths as checked C++ named-module imports.
-use cpp::rrr::reactor as cpp_reactor;
+use cpp::srpc::reactor as cpp_reactor;
 use cpp::std as cpp_std;
 use rusty as cpp;
 

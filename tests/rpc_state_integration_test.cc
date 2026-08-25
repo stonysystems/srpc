@@ -15,21 +15,21 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.circuit_breaker;
-import rrr.heartbeat;
-import rrr.reconnect_policy;
+import srpc.circuit_breaker;
+import srpc.heartbeat;
+import srpc.reconnect_policy;
 
-// PollMode et al. live in rrr.epoll_wrapper (trimmed from the consumer
+// PollMode et al. live in srpc.epoll_wrapper (trimmed from the consumer
 // umbrella in 08b68144) — import directly.
-import rrr.epoll_wrapper;
+import srpc.epoll_wrapper;
 #include "benchmark_service.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -348,7 +348,7 @@ TEST_F(StateIntegrationTest, StateDuringActiveRequest) {
     std::string input = "test";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
 
@@ -381,7 +381,7 @@ TEST_F(StateIntegrationTest, PendingRequestCountTracksInFlightSleepRequest) {
     constexpr double kSleepSeconds = 0.3;
     auto fu_result = client->request(
         benchmark::BenchmarkService::SLEEP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(kSleepSeconds, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(kSleepSeconds, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -414,7 +414,7 @@ TEST_F(StateIntegrationTest, DrainTimeoutReflectsRealInFlightRequest) {
     constexpr double kSleepSeconds = 0.4;
     auto fu_result = client->request(
         benchmark::BenchmarkService::SLEEP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(kSleepSeconds, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(kSleepSeconds, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -455,7 +455,7 @@ TEST_F(StateIntegrationTest, GracefulShutdownWaitsForInFlightRequest) {
     constexpr double kSleepSeconds = 0.5;
     auto fu_result = client->request(
         benchmark::BenchmarkService::SLEEP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(kSleepSeconds, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(kSleepSeconds, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -518,7 +518,7 @@ TEST_F(StateIntegrationTest, CircuitOpenFailFastThenHalfOpenRecovery) {
     std::string input = "cb-warmup";
     auto warmup = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(warmup.is_ok());
     auto warmup_fu = warmup.unwrap();
@@ -536,7 +536,7 @@ TEST_F(StateIntegrationTest, CircuitOpenFailFastThenHalfOpenRecovery) {
     // First disconnected request records a transport failure in the circuit.
     auto first_failure = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(first_failure.is_err());
     ASSERT_EQ(first_failure.unwrap_err(), ENOTCONN);
@@ -544,7 +544,7 @@ TEST_F(StateIntegrationTest, CircuitOpenFailFastThenHalfOpenRecovery) {
     // Circuit should now fail fast.
     auto fail_fast = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fail_fast.is_err());
     ASSERT_EQ(fail_fast.unwrap_err(), EBUSY);
@@ -568,7 +568,7 @@ TEST_F(StateIntegrationTest, CircuitOpenFailFastThenHalfOpenRecovery) {
     // Still open before timeout expires.
     auto still_open = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(still_open.is_err());
     EXPECT_EQ(still_open.unwrap_err(), EBUSY);
@@ -578,7 +578,7 @@ TEST_F(StateIntegrationTest, CircuitOpenFailFastThenHalfOpenRecovery) {
 
     auto probe = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(probe.is_ok());
     auto probe_fu = probe.unwrap();
@@ -588,7 +588,7 @@ TEST_F(StateIntegrationTest, CircuitOpenFailFastThenHalfOpenRecovery) {
     // success_threshold=1 should close the circuit for subsequent traffic.
     auto after = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(after.is_ok());
     auto after_fu = after.unwrap();
@@ -759,7 +759,7 @@ TEST_F(StateIntegrationTest, ServerRestartAutoDetectedFromRealResponses) {
     std::string input = "restart-detect";
     auto first = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(first.is_ok());
     auto first_fu = first.unwrap();
@@ -806,7 +806,7 @@ TEST_F(StateIntegrationTest, ServerRestartAutoDetectedFromRealResponses) {
 
     auto second = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(second.is_ok());
     auto second_fu = second.unwrap();
@@ -851,7 +851,7 @@ TEST_F(StateIntegrationTest, StateAfterServerShutdown) {
     std::string input = "test";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
 
     // Either request fails immediately or times out

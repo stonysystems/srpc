@@ -1,12 +1,12 @@
-// Canonical Rust source for the rrr.fiber module.
+// Canonical Rust source for the srpc.fiber module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 
 #![allow(unsafe_code)]
 
 /// Operations on the reactor fiber currently installed on this thread.
 pub mod this_fiber {
-    use cpp::rrr::basetypes as cpp_basetypes;
-    use cpp::rrr::reactor as cpp_reactor;
+    use cpp::srpc::basetypes as cpp_basetypes;
+    use cpp::srpc::reactor as cpp_reactor;
     use rusty as cpp;
     use std::rc::Rc;
 

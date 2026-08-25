@@ -1,4 +1,4 @@
-use rrr::callback_wrapper::detail::CallbackWrapper;
+use srpc::callback_wrapper::detail::CallbackWrapper;
 use std::mem::{align_of, offset_of, size_of};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

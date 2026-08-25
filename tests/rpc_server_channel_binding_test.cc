@@ -17,11 +17,11 @@
 #include <rusty/arc.hpp>
 #include <rusty/box.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Tiny fake conforming to ChannelFactoryBase. We only need a
@@ -115,4 +115,4 @@ TEST_F(ServerChannelBindingTest, SetChannelFactoryRebindKeepsLatch) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

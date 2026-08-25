@@ -18,14 +18,14 @@
 #include <rusty/option.hpp>
 
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "../misc/any_message.hpp"
 #include "../misc/serializable.hpp"
 
 import std;
 import rusty;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Test payload: a Serializable type with a few fields. We mark it
@@ -38,12 +38,12 @@ struct GraphPayload {
 
   // Serializable contract.
   void save(BinaryWriteArchive& ar) const {
-    rrr::Serialize_::serialize(node_count, ar);
-    rrr::Serialize_::serialize(label, ar);
+    srpc::Serialize_::serialize(node_count, ar);
+    srpc::Serialize_::serialize(label, ar);
   }
   void load(BinaryReadArchive& ar) {
-    rrr::Deserialize_::deserialize(node_count, ar);
-    rrr::Deserialize_::deserialize(label, ar);
+    srpc::Deserialize_::deserialize(node_count, ar);
+    srpc::Deserialize_::deserialize(label, ar);
   }
   int32_t kind() const { return 0; /* unused for AnyMessage path */ }
 };
@@ -51,16 +51,16 @@ struct GraphPayload {
 struct OtherPayload {
   uint64_t value{0};
 
-  void save(BinaryWriteArchive& ar) const { rrr::Serialize_::serialize(value, ar); }
-  void load(BinaryReadArchive& ar) { rrr::Deserialize_::deserialize(value, ar); }
+  void save(BinaryWriteArchive& ar) const { srpc::Serialize_::serialize(value, ar); }
+  void load(BinaryReadArchive& ar) { srpc::Deserialize_::deserialize(value, ar); }
   int32_t kind() const { return 0; }
 };
 
 // Register the payloads under stable string names. Static-init: runs
 // before any test body. The test fixture below clears and re-installs
 // these between tests for deterministic state.
-const std::string kGraphName = "rrr.test.GraphPayload";
-const std::string kOtherName = "rrr.test.OtherPayload";
+const std::string kGraphName = "srpc.test.GraphPayload";
+const std::string kOtherName = "srpc.test.OtherPayload";
 
 // Helper: ensure both types are registered. Idempotent — calls
 // `register_type` once per process via the function-local static.
@@ -147,7 +147,7 @@ TEST(AnyMessageTest, DirectArchiveRoundTripPreservesValue) {
   BufferSink sink;
   {
     BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, writer);
+    srpc::Serialize_::serialize(outgoing, writer);
   }
 
   // Receiver side: deserialize, recover typed payload.
@@ -155,7 +155,7 @@ TEST(AnyMessageTest, DirectArchiveRoundTripPreservesValue) {
   {
     BufferSource src(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(incoming, reader);
+    srpc::Deserialize_::deserialize(incoming, reader);
   }
 
   EXPECT_EQ(incoming.type_name_, kGraphName);
@@ -191,13 +191,13 @@ TEST(AnyMessageTest, PackAsAdHocName) {
   BufferSink sink;
   {
     BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, writer);
+    srpc::Serialize_::serialize(outgoing, writer);
   }
   AnyMessage incoming;
   {
     BufferSource src(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(incoming, reader);
+    srpc::Deserialize_::deserialize(incoming, reader);
   }
   EXPECT_EQ(incoming.type_name_, "graph.alias.v1");
 
@@ -221,14 +221,14 @@ TEST(AnyMessageTest, PayloadUpdatesVisibleAfterEncodeDecode) {
   BufferSink sink;
   {
     BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, writer);
+    srpc::Serialize_::serialize(outgoing, writer);
   }
 
   AnyMessage incoming;
   {
     BufferSource src(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive reader(make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(incoming, reader);
+    srpc::Deserialize_::deserialize(incoming, reader);
   }
   const auto recovered = incoming.unpack<OtherPayload>();
   ASSERT_TRUE(recovered.is_some());
@@ -256,7 +256,7 @@ TEST(AnyMessageTest, SerializableSaveLoadRoundTrip) {
   BufferSink sink;
   {
     BinaryWriteArchive ar(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, ar);
+    srpc::Serialize_::serialize(outgoing, ar);
   }
 
   // Decode through the BinaryReadArchive + BufferSource path.
@@ -264,7 +264,7 @@ TEST(AnyMessageTest, SerializableSaveLoadRoundTrip) {
   {
     BufferSource source(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive ar(make_source_proxy_buffer(&source));
-    rrr::Deserialize_::deserialize(incoming, ar);
+    srpc::Deserialize_::deserialize(incoming, ar);
   }
 
   EXPECT_EQ(incoming.type_name_, kGraphName);
@@ -292,14 +292,14 @@ TEST(AnyMessageTest, SerializableUnpackWrongTypeReturnsNullptr) {
   BufferSink sink;
   {
     BinaryWriteArchive ar(make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(outgoing, ar);
+    srpc::Serialize_::serialize(outgoing, ar);
   }
 
   AnyMessage incoming;
   {
     BufferSource source(sink.bytes.data(), sink.bytes.len());
     BinaryReadArchive ar(make_source_proxy_buffer(&source));
-    rrr::Deserialize_::deserialize(incoming, ar);
+    srpc::Deserialize_::deserialize(incoming, ar);
   }
 
   EXPECT_TRUE(incoming.is_a<GraphPayload>());
@@ -308,4 +308,4 @@ TEST(AnyMessageTest, SerializableUnpackWrongTypeReturnsNullptr) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

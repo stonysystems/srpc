@@ -9,11 +9,11 @@
 #include <rusty/option.hpp>
 
 #include "gtest/gtest.h"
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 
 class RestartDetectionTest : public ::testing::Test {
 protected:
@@ -196,4 +196,4 @@ TEST_F(RestartDetectionTest, ClientWrapperServerInstanceId) {
     EXPECT_FALSE(restart_detected);  // No connection, so no restart detection
 }
 
-} // namespace rrr
+} // namespace srpc

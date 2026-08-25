@@ -1,15 +1,15 @@
 #![allow(unsafe_code)]
 
-use rrr::any_message::any_message_registry;
-use rrr::any_message::{deserialize, reg_any_message_as, serialize, AnyMessage};
-use rusty::rrr::serializable::{BinaryReadArchive, BinaryWriteArchive};
+use srpc::any_message::any_message_registry;
+use srpc::any_message::{deserialize, reg_any_message_as, serialize, AnyMessage};
+use rusty::srpc::serializable::{BinaryReadArchive, BinaryWriteArchive};
 use rusty::Arc;
 use std::any::TypeId;
 use std::sync::Mutex;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-const GRAPH_NAME: &str = "rrr.test.GraphPayload";
-const ALIAS: &str = "rrr.test.GraphPayload.v2";
+const GRAPH_NAME: &str = "srpc.test.GraphPayload";
+const ALIAS: &str = "srpc.test.GraphPayload.v2";
 
 #[derive(Default, Debug, Eq, PartialEq)]
 struct GraphPayload {

@@ -1,6 +1,6 @@
 //! Deterministic in-process implementation of the legacy channel facade.
 //!
-//! This is the valid-Rust owner of `rrr.inmemory_channel`.  The two channel
+//! This is the valid-Rust owner of `srpc.inmemory_channel`.  The two channel
 //! halves share one mutex-protected state object.  Frame, close, and accept
 //! callbacks are snapshotted while locked and invoked after releasing the
 //! guard, preserving the legacy synchronous ordering while allowing callbacks

@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.request_options module.
+// Canonical Rust source for the srpc.request_options module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 #[allow(non_camel_case_types)]
 #[cfg_attr(not(any()), derive(Clone, Copy, Debug, Eq, PartialEq))]

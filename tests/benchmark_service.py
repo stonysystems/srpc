@@ -19,33 +19,33 @@ class BenchmarkService(object):
     DEFERRED_ECHO = 0x412ef56f
 
     __input_type_info__ = {
-        'fast_prime': ['rrr::i32'],
+        'fast_prime': ['i32'],
         'fast_dot_prod': ['point3','point3'],
-        'fast_add': ['rrr::v32','rrr::v32'],
+        'fast_add': ['v32','v32'],
         'fast_nop': ['std::string'],
-        'fast_vec': ['rrr::i32'],
-        'prime': ['rrr::i32'],
+        'fast_vec': ['i32'],
+        'prime': ['i32'],
         'dot_prod': ['point3','point3'],
-        'add': ['rrr::v32','rrr::v32'],
+        'add': ['v32','v32'],
         'nop': ['std::string'],
         'async_nop': ['std::string'],
         'sleep': ['double'],
-        'deferred_echo': ['rrr::i32'],
+        'deferred_echo': ['i32'],
     }
 
     __output_type_info__ = {
-        'fast_prime': ['rrr::i8'],
+        'fast_prime': ['i8'],
         'fast_dot_prod': ['double'],
-        'fast_add': ['rrr::v32'],
+        'fast_add': ['v32'],
         'fast_nop': [],
-        'fast_vec': ['std::vector<rrr::i64>'],
-        'prime': ['rrr::i8'],
+        'fast_vec': ['std::vector<i64>'],
+        'prime': ['i8'],
         'dot_prod': ['double'],
-        'add': ['rrr::v32'],
+        'add': ['v32'],
         'nop': [],
         'async_nop': [],
         'sleep': [],
-        'deferred_echo': ['rrr::i32'],
+        'deferred_echo': ['i32'],
     }
 
     def __bind_helper__(self, func):
@@ -54,18 +54,18 @@ class BenchmarkService(object):
         return f
 
     def __reg_to__(self, server):
-        server.__reg_func__(BenchmarkService.FAST_PRIME, self.__bind_helper__(self.fast_prime), ['rrr::i32'], ['rrr::i8'])
+        server.__reg_func__(BenchmarkService.FAST_PRIME, self.__bind_helper__(self.fast_prime), ['i32'], ['i8'])
         server.__reg_func__(BenchmarkService.FAST_DOT_PROD, self.__bind_helper__(self.fast_dot_prod), ['point3','point3'], ['double'])
-        server.__reg_func__(BenchmarkService.FAST_ADD, self.__bind_helper__(self.fast_add), ['rrr::v32','rrr::v32'], ['rrr::v32'])
+        server.__reg_func__(BenchmarkService.FAST_ADD, self.__bind_helper__(self.fast_add), ['v32','v32'], ['v32'])
         server.__reg_func__(BenchmarkService.FAST_NOP, self.__bind_helper__(self.fast_nop), ['std::string'], [])
-        server.__reg_func__(BenchmarkService.FAST_VEC, self.__bind_helper__(self.fast_vec), ['rrr::i32'], ['std::vector<rrr::i64>'])
-        server.__reg_func__(BenchmarkService.PRIME, self.__bind_helper__(self.prime), ['rrr::i32'], ['rrr::i8'])
+        server.__reg_func__(BenchmarkService.FAST_VEC, self.__bind_helper__(self.fast_vec), ['i32'], ['std::vector<i64>'])
+        server.__reg_func__(BenchmarkService.PRIME, self.__bind_helper__(self.prime), ['i32'], ['i8'])
         server.__reg_func__(BenchmarkService.DOT_PROD, self.__bind_helper__(self.dot_prod), ['point3','point3'], ['double'])
-        server.__reg_func__(BenchmarkService.ADD, self.__bind_helper__(self.add), ['rrr::v32','rrr::v32'], ['rrr::v32'])
+        server.__reg_func__(BenchmarkService.ADD, self.__bind_helper__(self.add), ['v32','v32'], ['v32'])
         server.__reg_func__(BenchmarkService.NOP, self.__bind_helper__(self.nop), ['std::string'], [])
         server.__reg_func__(BenchmarkService.ASYNC_NOP, self.__bind_helper__(self.async_nop), ['std::string'], [])
         server.__reg_func__(BenchmarkService.SLEEP, self.__bind_helper__(self.sleep), ['double'], [])
-        server.__reg_func__(BenchmarkService.DEFERRED_ECHO, self.__bind_helper__(self.deferred_echo), ['rrr::i32'], ['rrr::i32'])
+        server.__reg_func__(BenchmarkService.DEFERRED_ECHO, self.__bind_helper__(self.deferred_echo), ['i32'], ['i32'])
 
     def fast_prime(__self__, n):
         raise NotImplementedError('subclass BenchmarkService and implement your own fast_prime function')

@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.circuit_breaker module.
+// Canonical Rust source for the srpc.circuit_breaker module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use std::cell::Cell;
 

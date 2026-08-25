@@ -32,12 +32,12 @@
 #include <rusty/sync/weak.hpp>  // rusty::sync::downgrade
 #include <rusty/box.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -129,11 +129,11 @@ std::vector<std::uint8_t> make_response_body(
     i32 error_code,
     i64 server_instance_id,
     const std::vector<std::uint8_t>& reply_payload) {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(v64(xid), war);
-    rrr::Serialize_::serialize(v32(error_code), war);
-    rrr::Serialize_::serialize(v64(server_instance_id), war);
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+    srpc::Serialize_::serialize(v64(xid), war);
+    srpc::Serialize_::serialize(v32(error_code), war);
+    srpc::Serialize_::serialize(v64(server_instance_id), war);
     if (!reply_payload.empty()) {
         sink.write_bytes(reply_payload.data(), reply_payload.size());
     }
@@ -145,10 +145,10 @@ std::vector<std::uint8_t> make_response_body(
 // `[v64 xid][i32 rpc_id][user-marshaled args]`. Returns the xid;
 // asserts on failure.
 i64 decode_outbound_xid(const std::vector<std::uint8_t>& body) {
-    rrr::BufferSource src(body.data(), body.size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(body.data(), body.size());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     v64 v_xid;
-    rrr::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
     return v_xid.get();
 }
 
@@ -226,7 +226,7 @@ TEST_F(ClientChannelRecvTest, ResponseFrameResolvesPendingFuture) {
     // response.
     constexpr i32 kRpcId = 0x55;
     auto fr = mut_conn().request(kRpcId, FutureAttr{}, [](BinaryWriteArchive& m) {
-        rrr::Serialize_::serialize(static_cast<i32>(0xCAFEBABE), m);
+        srpc::Serialize_::serialize(static_cast<i32>(0xCAFEBABE), m);
     });
     ASSERT_TRUE(fr.is_ok());
     auto fu = fr.unwrap();
@@ -237,9 +237,9 @@ TEST_F(ClientChannelRecvTest, ResponseFrameResolvesPendingFuture) {
 
     // Synthesize and deliver the response. Reply payload is a single
     // i32 = 0x12345678.
-    rrr::BufferSink payload_sink;
-    rrr::BinaryWriteArchive payload_war(rrr::make_sink_proxy_buffer(&payload_sink));
-    rrr::Serialize_::serialize(static_cast<i32>(0x12345678), payload_war);
+    srpc::BufferSink payload_sink;
+    srpc::BinaryWriteArchive payload_war(srpc::make_sink_proxy_buffer(&payload_sink));
+    srpc::Serialize_::serialize(static_cast<i32>(0x12345678), payload_war);
     std::vector<std::uint8_t> reply_payload(
         payload_sink.bytes.data(),
         payload_sink.bytes.data() + payload_sink.bytes.len());
@@ -258,7 +258,7 @@ TEST_F(ClientChannelRecvTest, ResponseFrameResolvesPendingFuture) {
     // Check the reply payload survived.
     auto reply_guard = fu->get_reply();
     i32 got = 0;
-    rrr::deserialize_from(std::move(reply_guard), got);
+    srpc::deserialize_from(std::move(reply_guard), got);
     EXPECT_EQ(static_cast<std::uint32_t>(got), 0x12345678u);
 }
 
@@ -288,7 +288,7 @@ TEST_F(ClientChannelRecvTest, MultipleResponsesResolveFuturesInOrder) {
     futures.reserve(kCount);
     for (int i = 0; i < kCount; ++i) {
         auto fr = mut_conn().request(0x80 + i, FutureAttr{}, [i](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(i, m);
+            srpc::Serialize_::serialize(i, m);
         });
         ASSERT_TRUE(fr.is_ok());
         futures.push_back(fr.unwrap());
@@ -302,9 +302,9 @@ TEST_F(ClientChannelRecvTest, MultipleResponsesResolveFuturesInOrder) {
     // recv-loop fiber drains as we pump.
     for (int i = 0; i < kCount; ++i) {
         const i64 xid = decode_outbound_xid(frames[i]);
-        rrr::BufferSink payload_sink;
-        rrr::BinaryWriteArchive payload_war(rrr::make_sink_proxy_buffer(&payload_sink));
-        rrr::Serialize_::serialize(static_cast<i32>(0xA000 + i), payload_war);
+        srpc::BufferSink payload_sink;
+        srpc::BinaryWriteArchive payload_war(srpc::make_sink_proxy_buffer(&payload_sink));
+        srpc::Serialize_::serialize(static_cast<i32>(0xA000 + i), payload_war);
         std::vector<std::uint8_t> reply_payload(
             payload_sink.bytes.data(),
             payload_sink.bytes.data() + payload_sink.bytes.len());
@@ -325,7 +325,7 @@ TEST_F(ClientChannelRecvTest, MultipleResponsesResolveFuturesInOrder) {
         EXPECT_EQ(futures[i]->get_error_code(), 0);
         auto reply = futures[i]->get_reply();
         i32 got = 0;
-        rrr::deserialize_from(std::move(reply), got);
+        srpc::deserialize_from(std::move(reply), got);
         EXPECT_EQ(static_cast<std::uint32_t>(got),
                   static_cast<std::uint32_t>(0xA000 + i)) << "future " << i;
     }
@@ -374,4 +374,4 @@ TEST_F(ClientChannelRecvTest, RecvLoopExitsCleanlyOnChannelClose) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

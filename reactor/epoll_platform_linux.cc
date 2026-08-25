@@ -1,4 +1,4 @@
-// rrr.epoll_wrapper — Linux implementation unit (Rust std's sys-module
+// srpc.epoll_wrapper — Linux implementation unit (Rust std's sys-module
 // pattern). This is now the ONLY implementation unit: the kqueue twin
 // and every other macOS branch were removed. No preprocessor splits —
 // every body here is inline-Rust DSL over route-2 unsafe{} libc calls,
@@ -12,11 +12,11 @@ module;
 #include <sys/epoll.h>
 #include <unistd.h>
 
-module rrr.epoll_wrapper;
+module srpc.epoll_wrapper;
 
-import rrr.debugging;
+import srpc.debugging;
 
-namespace rrr {
+namespace srpc {
 
 // @safe - the zeroed-epoll_event factory, in DSL. It used to be a plain-C
 // kernel in srpc_epoll.c on the reasoning that "memset-then-fill has no DSL
@@ -204,4 +204,4 @@ int32_t epoll_open() {
 }
 /*RUSTYCPP:GEN-END id=epoll_platform_linux.4*/
 
-}  // namespace rrr
+}  // namespace srpc

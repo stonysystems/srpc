@@ -2,7 +2,7 @@ use std::mem::{align_of, offset_of, size_of};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use rrr::circuit_breaker::{
+use srpc::circuit_breaker::{
     circuit_state_to_string, current_time_us, CircuitBreaker, CircuitBreakerConfig, CircuitState,
 };
 

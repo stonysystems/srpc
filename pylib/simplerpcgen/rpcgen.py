@@ -139,22 +139,22 @@ class Rpc(runtime.Parser):
         _token = self._peek('"i8"', '"i16"', '"i32"', '"i64"', '"v32"', '"v64"', '"bool"', '"int"', '"unsigned"', '"long"', '"::"', 'SYMBOL', context=_context)
         if _token == '"i8"':
             self._scan('"i8"', context=_context)
-            return "rrr::i8"
+            return "srpc::i8"
         elif _token == '"i16"':
             self._scan('"i16"', context=_context)
-            return "rrr::i16"
+            return "srpc::i16"
         elif _token == '"i32"':
             self._scan('"i32"', context=_context)
-            return "rrr::i32"
+            return "srpc::i32"
         elif _token == '"i64"':
             self._scan('"i64"', context=_context)
-            return "rrr::i64"
+            return "srpc::i64"
         elif _token == '"v32"':
             self._scan('"v32"', context=_context)
-            return "rrr::v32"
+            return "srpc::v32"
         elif _token == '"v64"':
             self._scan('"v64"', context=_context)
-            return "rrr::v64"
+            return "srpc::v64"
         elif _token in ['"::"', 'SYMBOL']:
             full_symbol = self.full_symbol(_context)
             t = std_rename(full_symbol)
@@ -299,7 +299,7 @@ def load_existing_rpc_codes(header_fpath):
     with open(header_fpath) as f:
         for raw_line in f:
             line = raw_line.rstrip("\n")
-            m_service = re.match(r'^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)Service\s*(?::\s*public\s+rrr::Service\s*)?\{', line)
+            m_service = re.match(r'^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)Service\s*(?::\s*public\s+srpc::Service\s*)?\{', line)
             if m_service:
                 current_service = m_service.group(1)
                 in_enum = False

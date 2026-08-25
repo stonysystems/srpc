@@ -1,10 +1,10 @@
 #![allow(unsafe_code)]
-use rrr::channel::{
+use srpc::channel::{
     ChannelConnectionProxy, ChannelError, ChannelFactoryProxy, ChannelFrame, ChannelListenerProxy,
     OnAcceptCallback, OnClosedCallback, OnFrameCallback,
 };
-use rrr::inmemory_channel;
-use rrr::inmemory_channel::{
+use srpc::inmemory_channel;
+use srpc::inmemory_channel::{
     inmemory_channel_clear_fault_injection, inmemory_channel_inject_drop_next_sends,
     inmemory_channel_inject_send_error, make_channel_pair_for_testing, make_inmemory_factory_proxy,
     InMemoryFactory, InMemoryListener, InMemorySwitchboard,

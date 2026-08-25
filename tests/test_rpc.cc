@@ -4,11 +4,11 @@
 #include <unistd.h>
 #include <rusty/arc.hpp>
 #include <rusty/mutex.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "benchmark_service.h"
 #include "rpc_test_ports.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 
@@ -20,7 +20,7 @@ import std;
 //   std::map::erase: [unsafe]
 // }
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -156,7 +156,7 @@ TEST_F(RPCTest, BasicNop) {
     std::string input = "Hello, RPC!";
     auto fu_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -175,7 +175,7 @@ TEST_F(RPCTest, MultipleRequests) {
         std::string input = "Request_" + std::to_string(i);
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         futures.push_back(fu_result.unwrap());
@@ -215,7 +215,7 @@ TEST_F(RPCTest, ConcurrentRequests) {
                 std::string input = "Thread_" + std::to_string(t) + "_Request_" + std::to_string(i);
                 auto fu_result = thread_client->request(
                     benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-                    [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+                    [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
                 );
                 if (fu_result.is_err()) continue;
                 auto fu = fu_result.unwrap();
@@ -244,7 +244,7 @@ TEST_F(RPCTest, LargePayload) {
 
     auto fu_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(large_input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(large_input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -260,7 +260,7 @@ TEST_F(RPCTest, DifferentMethods) {
         std::string dummy = "";
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(dummy, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(dummy, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         auto fu_nop = fu_result.unwrap();
@@ -274,7 +274,7 @@ TEST_F(RPCTest, DifferentMethods) {
         i32 prime_input = 17;
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::PRIME, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(prime_input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(prime_input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         auto fu_prime = fu_result.unwrap();
@@ -282,7 +282,7 @@ TEST_F(RPCTest, DifferentMethods) {
 
         EXPECT_EQ(fu_prime->get_error_code(), 0);
         i8 prime_result;
-        rrr::deserialize_from(fu_prime->get_reply(), prime_result);
+        srpc::deserialize_from(fu_prime->get_reply(), prime_result);
         EXPECT_EQ(prime_result, (i8)1);
         // Arc auto-released
     }
@@ -292,14 +292,14 @@ TEST_F(RPCTest, DifferentMethods) {
         i32 composite_input = 24;
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::PRIME, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(composite_input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(composite_input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         auto fu_composite = fu_result.unwrap();
         fu_composite->wait();
 
         i8 composite_result;
-        rrr::deserialize_from(fu_composite->get_reply(), composite_result);
+        srpc::deserialize_from(fu_composite->get_reply(), composite_result);
         EXPECT_EQ(composite_result, (i8)0);
         // Arc auto-released
     }
@@ -310,7 +310,7 @@ TEST_F(RPCTest, TimeoutHandling) {
     std::string input = "timeout_test";
     auto fu_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -338,7 +338,7 @@ TEST_F(RPCTest, CallbackMechanism) {
     auto fu_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP,
         attr,
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -365,7 +365,7 @@ TEST_F(RPCTest, EmptyPayload) {
     std::string dummy = "";
     auto fu_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(dummy, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(dummy, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -379,7 +379,7 @@ TEST_F(RPCTest, ConnectionResilience) {
     std::string input1 = "before_reconnect";
     auto fu1_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input1, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input1, m); }
     );
     ASSERT_TRUE(fu1_result.is_ok());
     auto fu1 = fu1_result.unwrap();
@@ -402,7 +402,7 @@ TEST_F(RPCTest, ConnectionResilience) {
     std::string input2 = "after_reconnect";
     auto fu2_result = client.as_ref().unwrap()->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input2, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input2, m); }
     );
     ASSERT_TRUE(fu2_result.is_ok());
     auto fu2 = fu2_result.unwrap();
@@ -420,7 +420,7 @@ TEST_F(RPCTest, PipelinedRequests) {
         std::string dummy = "";
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(dummy, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(dummy, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         futures.push_back(fu_result.unwrap());
@@ -444,7 +444,7 @@ TEST_F(RPCTest, SlowClientFastServer) {
         std::string input = "Request_" + std::to_string(i);
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         futures.push_back(fu_result.unwrap());
@@ -472,7 +472,7 @@ TEST_F(RPCTest, FastClientSlowServer) {
         std::string input = "Request_" + std::to_string(i);
         auto fu_result = client.as_ref().unwrap()->request(
             benchmark::BenchmarkService::NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         futures.push_back(fu_result.unwrap());
@@ -599,7 +599,7 @@ TEST_F(RPCTest, MultiThreadedStressTest) {
                     for (int attempt = 0; attempt < kMaxAttempts && !ok; ++attempt) {
                         auto fu_result = thread_client->request(
                             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-                            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+                            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
                         );
                         if (fu_result.is_err()) {
                             continue;

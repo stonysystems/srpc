@@ -1,4 +1,4 @@
-use rrr::load_balancer::{
+use srpc::load_balancer::{
     load_balancing_strategy_to_string, LoadBalancer, LoadBalancerState, LoadBalancingStrategy,
 };
 use std::sync::Arc;

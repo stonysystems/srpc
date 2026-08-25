@@ -1,11 +1,11 @@
 #![allow(unsafe_code)]
 #![allow(clippy::arc_with_non_send_sync)]
 
-use rrr::channel::{
+use srpc::channel::{
     ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFrame, OnClosedCallback,
     OnErrorCallback, OnFrameCallback,
 };
-use rrr::fiber_channel::{FiberChannel, OwnedFrame};
+use srpc::fiber_channel::{FiberChannel, OwnedFrame};
 use rusty::CallbackWrapper;
 use std::marker::PhantomPinned;
 use std::mem::{align_of, offset_of, size_of};

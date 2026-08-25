@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.internal_protocol module.
+// Canonical Rust source for the srpc.internal_protocol module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 pub const kInternalHeartbeatRpcId: i32 = i32::MIN;
 pub const kResponseHeaderExtFlag: u32 = 0x80000000;

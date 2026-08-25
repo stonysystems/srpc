@@ -6,14 +6,14 @@
 #include <stdint.h>
 
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.heartbeat;
+import srpc.heartbeat;
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 // ============================================================================

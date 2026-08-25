@@ -1,6 +1,6 @@
-// Canonical Rust source for the rrr.utils module.
+// Canonical Rust source for the srpc.utils module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
-use cpp::rrr::logging as cpp_logging;
+use cpp::srpc::logging as cpp_logging;
 use rusty as cpp;
 use std::cell::Cell;
 

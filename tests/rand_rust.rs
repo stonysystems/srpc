@@ -4,7 +4,7 @@ use std::sync::{
     Mutex,
 };
 
-use rrr::rand::{
+use srpc::rand::{
     randgen_destroy, randgen_nu_constant_now, randgen_rand_max, randgen_rand_raw, randgen_zero_pad,
     RandWeightVec, RandomGenerator,
 };

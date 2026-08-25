@@ -19,12 +19,12 @@
 #include <rusty/box.hpp>
 #include <rusty/refcell.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Captures every send_frame payload into a vector for assertion.
@@ -150,27 +150,27 @@ TEST_F(ServerChannelSendTest, ReplyCapturesFrameWithExpectedBody) {
 
     const std::string user_payload = "hello";
     sconn().reply(req, /*error_code=*/0, [&](BinaryWriteArchive& out) {
-        rrr::Serialize_::serialize(user_payload, out);
+        srpc::Serialize_::serialize(user_payload, out);
     });
 
     ASSERT_EQ(stub->count(), 1u);
     const auto& bytes = stub->captured().front();
 
-    rrr::BufferSource src(bytes.data(), bytes.size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(bytes.data(), bytes.size());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
 
     v64 v_xid;
     v32 v_err;
     v64 v_instance;
-    rrr::Deserialize_::deserialize(v_xid, rar);
-    rrr::Deserialize_::deserialize(v_err, rar);
-    rrr::Deserialize_::deserialize(v_instance, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_err, rar);
+    srpc::Deserialize_::deserialize(v_instance, rar);
     EXPECT_EQ(static_cast<i64>(v_xid.get()), 42);
     EXPECT_EQ(v_err.get(), 0);
     EXPECT_EQ(static_cast<uint64_t>(v_instance.get()), kFakeServerInstanceId);
 
     std::string decoded;
-    rrr::Deserialize_::deserialize(decoded, rar);
+    srpc::Deserialize_::deserialize(decoded, rar);
     EXPECT_EQ(decoded, user_payload);
 }
 
@@ -187,15 +187,15 @@ TEST_F(ServerChannelSendTest, ReplyPropagatesErrorCode) {
     sconn().reply(req, /*error_code=*/ENOENT, [](BinaryWriteArchive&) {});
 
     ASSERT_EQ(stub->count(), 1u);
-    rrr::BufferSource src(stub->captured().front().data(),
+    srpc::BufferSource src(stub->captured().front().data(),
                stub->captured().front().size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     v64 v_xid;
     v32 v_err;
     v64 v_instance;
-    rrr::Deserialize_::deserialize(v_xid, rar);
-    rrr::Deserialize_::deserialize(v_err, rar);
-    rrr::Deserialize_::deserialize(v_instance, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_err, rar);
+    srpc::Deserialize_::deserialize(v_instance, rar);
     EXPECT_EQ(static_cast<i64>(v_xid.get()), 7);
     EXPECT_EQ(v_err.get(), ENOENT);
     EXPECT_EQ(static_cast<uint64_t>(v_instance.get()), kFakeServerInstanceId);
@@ -213,24 +213,24 @@ TEST_F(ServerChannelSendTest, MultipleSequentialRepliesCaptureInOrder) {
         Request req;
         req.xid = xid;
         sconn().reply(req, 0, [&](BinaryWriteArchive& out) {
-            rrr::Serialize_::serialize(static_cast<i64>(xid * 10), out);
+            srpc::Serialize_::serialize(static_cast<i64>(xid * 10), out);
         });
     }
     ASSERT_EQ(stub->count(), 5u);
     for (std::size_t i = 0; i < 5u; ++i) {
-        rrr::BufferSource src(stub->captured()[i].data(),
+        srpc::BufferSource src(stub->captured()[i].data(),
                    stub->captured()[i].size());
-        rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+        srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
         v64 v_xid;
         v32 v_err;
         v64 v_instance;
-        rrr::Deserialize_::deserialize(v_xid, rar);
-        rrr::Deserialize_::deserialize(v_err, rar);
-        rrr::Deserialize_::deserialize(v_instance, rar);
+        srpc::Deserialize_::deserialize(v_xid, rar);
+        srpc::Deserialize_::deserialize(v_err, rar);
+        srpc::Deserialize_::deserialize(v_instance, rar);
         EXPECT_EQ(static_cast<i64>(v_xid.get()), static_cast<i64>(i + 1));
         EXPECT_EQ(v_err.get(), 0);
         i64 user_value;
-        rrr::Deserialize_::deserialize(user_value, rar);
+        srpc::Deserialize_::deserialize(user_value, rar);
         EXPECT_EQ(user_value, static_cast<i64>((i + 1) * 10));
     }
 }
@@ -249,4 +249,4 @@ TEST_F(ServerChannelSendTest, ChannelModeStartsFalse) {
 // at the call site.)
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

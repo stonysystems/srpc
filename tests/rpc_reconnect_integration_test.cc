@@ -5,16 +5,16 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.reconnect_policy;
+import srpc.reconnect_policy;
 #include "benchmark_service.h"
 #include "rpc_test_ports.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -174,7 +174,7 @@ TEST_F(ReconnectIntegrationTest, DISABLED_ReconnectPolicyWithoutAutoRetryFailsFa
     client->set_reconnect_policy(policy);
 
     auto start = steady_clock::now();
-    int result = client->reconnect(rrr::OnReconnectCompleteCallbackFn{});
+    int result = client->reconnect(srpc::OnReconnectCompleteCallbackFn{});
     auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start).count();
 
     EXPECT_NE(result, 0);
@@ -216,7 +216,7 @@ TEST_F(ReconnectIntegrationTest, DISABLED_ReconnectPolicyAppliesRetryDelays) {
     client->set_reconnect_policy(policy);
 
     auto start = steady_clock::now();
-    int result = client->reconnect(rrr::OnReconnectCompleteCallbackFn{});
+    int result = client->reconnect(srpc::OnReconnectCompleteCallbackFn{});
     auto elapsed_ms = duration_cast<milliseconds>(steady_clock::now() - start).count();
 
     EXPECT_NE(result, 0);
@@ -284,7 +284,7 @@ TEST_F(ReconnectIntegrationTest, ReconnectAfterServerRestart) {
     std::string input = "test";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     if (fu_result.is_ok()) {
         auto fu = fu_result.unwrap();
@@ -318,7 +318,7 @@ TEST_F(ReconnectIntegrationTest, ReconnectAfterServerRestart) {
         // Make a request on the new connection
         auto fu2_result = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         if (fu2_result.is_ok()) {
             auto fu2 = fu2_result.unwrap();
@@ -349,7 +349,7 @@ TEST_F(ReconnectIntegrationTest, DISABLED_AutoReconnectTriggeredAfterConnectionF
     std::string input = "auto_reconnect";
     auto warmup = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(warmup.is_ok());
     auto warmup_fu = warmup.unwrap();
@@ -372,7 +372,7 @@ TEST_F(ReconnectIntegrationTest, DISABLED_AutoReconnectTriggeredAfterConnectionF
     for (int attempt = 0; attempt < 6 && !observed_failure; ++attempt) {
         auto failing = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         if (!failing.is_ok()) {
             observed_failure = true;
@@ -397,7 +397,7 @@ TEST_F(ReconnectIntegrationTest, DISABLED_AutoReconnectTriggeredAfterConnectionF
 
     auto after = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(after.is_ok());
     auto after_fu = after.unwrap();
@@ -659,7 +659,7 @@ TEST_F(ReconnectIntegrationTest, ReconnectWithoutPreviousConnection) {
     auto client = Client::create(poll_thread_.as_ref().unwrap());
 
     // Try to reconnect without ever connecting - should fail
-    int result = client->reconnect(rrr::OnReconnectCompleteCallbackFn{});
+    int result = client->reconnect(srpc::OnReconnectCompleteCallbackFn{});
 
     // Reconnect should fail because there's no address to reconnect to
     // (depends on implementation - might return error code or succeed with no-op)
@@ -676,7 +676,7 @@ TEST_F(ReconnectIntegrationTest, ReconnectWhileConnected) {
     EXPECT_TRUE(client->connected());
 
     // Try to reconnect while already connected - should be no-op or fail
-    int result = client->reconnect(rrr::OnReconnectCompleteCallbackFn{});
+    int result = client->reconnect(srpc::OnReconnectCompleteCallbackFn{});
     // Either succeeds silently or returns an error
 
     EXPECT_TRUE(client->connected());  // Still connected
@@ -704,7 +704,7 @@ TEST_F(ReconnectIntegrationTest, MultipleReconnectAttempts) {
         std::string input = "test_" + std::to_string(i);
         auto fu_result = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();

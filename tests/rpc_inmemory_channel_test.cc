@@ -19,12 +19,12 @@
 #include <rusty/arc.hpp>
 #include <rusty/box.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "../rpc/inmemory_channel.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 class InMemoryChannelTest : public ::testing::Test {
@@ -644,4 +644,4 @@ TEST_F(InMemoryChannelTest, InjectDropZeroClears) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

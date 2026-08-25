@@ -7,11 +7,11 @@
 #include <rusty/option.hpp>
 
 #include "gtest/gtest.h"
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 
 class GracefulShutdownTest : public ::testing::Test {
 protected:
@@ -324,4 +324,4 @@ TEST_F(GracefulShutdownTest, GracefulShutdownProceedsOnDrainTimeout) {
     server.decrement_pending();
 }
 
-} // namespace rrr
+} // namespace srpc

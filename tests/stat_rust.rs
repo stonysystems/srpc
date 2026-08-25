@@ -1,6 +1,6 @@
 // Exercise the extracted module exactly as an external rustc consumer does.
 // Public fields are part of the existing production C++ aggregate surface.
-use rrr::stat::AvgStat;
+use srpc::stat::AvgStat;
 
 fn assert_stat(stat: &AvgStat, count: i64, sum: i64, average: i64, maximum: i64, minimum: i64) {
     assert_eq!(stat.n_stat_, count);

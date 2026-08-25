@@ -10,18 +10,18 @@
 /***********************************************************************
  *
  * test_transport_integration.cc:
- *   Integration tests for the rrr/rpc transport (RrrRpcBackend)
+ *   Integration tests for the srpc/rpc transport (SrpcRpcBackend)
  *   Tests actual network I/O and request/response cycles
  *
- *   This test uses the underlying rrr/rpc library directly to test
- *   the same RPC patterns that RrrRpcBackend uses internally.
+ *   This test uses the underlying srpc/rpc library directly to test
+ *   the same RPC patterns that SrpcRpcBackend uses internally.
  *
  **********************************************************************/
 
 #include <gtest/gtest.h>
 
-// RRR/RPC includes for direct testing
-#include "../rrr.hpp"
+// SRPC/RPC includes for direct testing
+#include "../srpc.hpp"
 
 import std;
 import rusty;
@@ -47,21 +47,21 @@ constexpr int32_t TEST_REQ_TYPE_END = static_cast<int32_t>(10);
 // ============= Test Service Classes =============
 
 // TestRangeService: handles a range of RPC IDs for testing
-class TestRangeService : public rrr::Service {
+class TestRangeService : public srpc::Service {
 public:
-    using Handler = rusty::Function<void(uint8_t, rusty::Box<rrr::Request>, rrr::WeakServerConnection)>;
+    using Handler = rusty::Function<void(uint8_t, rusty::Box<srpc::Request>, srpc::WeakServerConnection)>;
 
-    TestRangeService(rrr::i32 rpc_start, rrr::i32 rpc_end, Handler handler)
+    TestRangeService(srpc::i32 rpc_start, srpc::i32 rpc_end, Handler handler)
         : rpc_start_(rpc_start), rpc_end_(rpc_end), handler_(std::move(handler)) {}
 
     // @safe - with @unsafe block for loop
-    int __reg_to__(rrr::Server& svr, size_t svc_index) override {
+    int __reg_to__(srpc::Server& svr, size_t svc_index) override {
         // @unsafe - loop iteration
         {
-            for (rrr::i32 rpc_id = rpc_start_; rpc_id <= rpc_end_; ++rpc_id) {
+            for (srpc::i32 rpc_id = rpc_start_; rpc_id <= rpc_end_; ++rpc_id) {
                 int ret = svr.reg_rpc(rpc_id, svc_index);
                 if (ret != 0) {
-                    for (rrr::i32 id = rpc_start_; id < rpc_id; ++id) {
+                    for (srpc::i32 id = rpc_start_; id < rpc_id; ++id) {
                         svr.unreg(id);
                     }
                     return ret;
@@ -71,50 +71,50 @@ public:
         return 0;
     }
 
-    void __dispatch__(rrr::i32 rpc_id, rusty::Box<rrr::Request> req,
-                      rrr::WeakServerConnection weak_sconn) override {
+    void __dispatch__(srpc::i32 rpc_id, rusty::Box<srpc::Request> req,
+                      srpc::WeakServerConnection weak_sconn) override {
         handler_(static_cast<uint8_t>(rpc_id), std::move(req), weak_sconn);
     }
 
 private:
-    rrr::i32 rpc_start_;
-    rrr::i32 rpc_end_;
+    srpc::i32 rpc_start_;
+    srpc::i32 rpc_end_;
     Handler handler_;
 };
 
 // TestSingleService: handles a single RPC ID for testing
-class TestSingleService : public rrr::Service {
+class TestSingleService : public srpc::Service {
 public:
-    using Handler = rusty::Function<void(rusty::Box<rrr::Request>, rrr::WeakServerConnection)>;
+    using Handler = rusty::Function<void(rusty::Box<srpc::Request>, srpc::WeakServerConnection)>;
 
-    TestSingleService(rrr::i32 rpc_id, Handler handler)
+    TestSingleService(srpc::i32 rpc_id, Handler handler)
         : rpc_id_(rpc_id), handler_(std::move(handler)) {}
 
-    int __reg_to__(rrr::Server& svr, size_t svc_index) override {
+    int __reg_to__(srpc::Server& svr, size_t svc_index) override {
         return svr.reg_rpc(rpc_id_, svc_index);
     }
 
-    void __dispatch__(rrr::i32 rpc_id, rusty::Box<rrr::Request> req,
-                      rrr::WeakServerConnection weak_sconn) override {
+    void __dispatch__(srpc::i32 rpc_id, rusty::Box<srpc::Request> req,
+                      srpc::WeakServerConnection weak_sconn) override {
         if (rpc_id == rpc_id_) {
             handler_(std::move(req), weak_sconn);
         }
     }
 
 private:
-    rrr::i32 rpc_id_;
+    srpc::i32 rpc_id_;
     Handler handler_;
 };
 
-// ============= RRR/RPC Direct Integration Tests =============
-// These tests use the underlying rrr/rpc library directly,
-// which is what RrrRpcBackend wraps
+// ============= SRPC/RPC Direct Integration Tests =============
+// These tests use the underlying srpc/rpc library directly,
+// which is what SrpcRpcBackend wraps
 
-class RrrRpcDirectTest : public ::testing::Test {
+class SrpcRpcDirectTest : public ::testing::Test {
 protected:
-    rusty::Option<rusty::Arc<rrr::PollThread>> poll_thread_worker_;
-    rrr::Server* server_{nullptr};
-    rusty::Option<rusty::Arc<rrr::Client>> client_;
+    rusty::Option<rusty::Arc<srpc::PollThread>> poll_thread_worker_;
+    srpc::Server* server_{nullptr};
+    rusty::Option<rusty::Arc<srpc::Client>> client_;
     int port_;
     std::atomic<int> request_count_{0};
     std::atomic<bool> server_running_{false};
@@ -125,16 +125,16 @@ protected:
         port_ = port_counter.fetch_add(1);
 
         // Create PollThread
-        poll_thread_worker_ = rusty::Some(rrr::PollThread::create());
+        poll_thread_worker_ = rusty::Some(srpc::PollThread::create());
 
         // Create server
-        server_ = new rrr::Server(rrr::Server::new_(rusty::Some(poll_thread_worker_.as_ref().unwrap().clone())));
+        server_ = new srpc::Server(srpc::Server::new_(rusty::Some(poll_thread_worker_.as_ref().unwrap().clone())));
 
         // Register TestRangeService to handle test request types
         auto svc = rusty::make_box<TestRangeService>(
-            static_cast<rrr::i32>(TEST_REQ_TYPE_START),
-            static_cast<rrr::i32>(TEST_REQ_TYPE_END),
-            [this](uint8_t req_type, rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {
+            static_cast<srpc::i32>(TEST_REQ_TYPE_START),
+            static_cast<srpc::i32>(TEST_REQ_TYPE_END),
+            [this](uint8_t req_type, rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {
                 HandleRequest(req_type, std::move(req), weak_sconn);
             }
         );
@@ -146,7 +146,7 @@ protected:
         server_running_ = true;
 
         // Create client
-        client_ = rusty::Some(rrr::Client::create(poll_thread_worker_.as_ref().unwrap()));
+        client_ = rusty::Some(srpc::Client::create(poll_thread_worker_.as_ref().unwrap()));
         std::string connect_addr = "127.0.0.1:" + std::to_string(port_);
         ASSERT_EQ(client_.as_ref().unwrap()->connect(reinterpret_cast<const int8_t*>(connect_addr.c_str()), true), 0)
             << "Failed to connect to " << connect_addr;
@@ -172,8 +172,8 @@ protected:
         }
     }
 
-    void HandleRequest(uint8_t req_type, rusty::Box<rrr::Request> req,
-                       rrr::WeakServerConnection weak_sconn) {
+    void HandleRequest(uint8_t req_type, rusty::Box<srpc::Request> req,
+                       srpc::WeakServerConnection weak_sconn) {
         request_count_++;
 
         auto sconn_opt = weak_sconn.upgrade();
@@ -200,16 +200,16 @@ protected:
         response.magic = 0xDEADBEEF;
 
         // Send response
-        const_cast<rrr::ServerConnection&>(*sconn).reply(*req, 0, [&](rrr::BinaryWriteArchive& out) {
+        const_cast<srpc::ServerConnection&>(*sconn).reply(*req, 0, [&](srpc::BinaryWriteArchive& out) {
             out.write_bytes(reinterpret_cast<const std::uint8_t*>(&response), sizeof(response));
         });
     }
 };
 
-TEST_F(RrrRpcDirectTest, BasicRequestResponse) {
+TEST_F(SrpcRpcDirectTest, BasicRequestResponse) {
     // Send a simple request
     std::string request_data = "Hello, Transport!";
-    auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+    auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
         m.write_bytes(reinterpret_cast<const std::uint8_t*>(request_data.data()), request_data.size());
     });
     ASSERT_TRUE(fu_result.is_ok()) << "Failed to begin request";
@@ -235,11 +235,11 @@ TEST_F(RrrRpcDirectTest, BasicRequestResponse) {
     EXPECT_EQ(response.magic, 0xDEADBEEF);
 }
 
-TEST_F(RrrRpcDirectTest, MultipleRequestTypes) {
+TEST_F(SrpcRpcDirectTest, MultipleRequestTypes) {
     // Test sending different request types
     for (uint8_t req_type = TEST_REQ_TYPE_START; req_type <= TEST_REQ_TYPE_END; req_type++) {
         std::string data = "Request_" + std::to_string(req_type);
-        auto fu_result = client_.as_ref().unwrap()->request(req_type, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+        auto fu_result = client_.as_ref().unwrap()->request(req_type, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
             m.write_bytes(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
         });
         ASSERT_TRUE(fu_result.is_ok()) << "Failed to begin request type " << (int)req_type;
@@ -261,14 +261,14 @@ TEST_F(RrrRpcDirectTest, MultipleRequestTypes) {
     EXPECT_EQ(request_count_, TEST_REQ_TYPE_END - TEST_REQ_TYPE_START + 1);
 }
 
-TEST_F(RrrRpcDirectTest, ConcurrentRequests) {
+TEST_F(SrpcRpcDirectTest, ConcurrentRequests) {
     const int num_requests = 100;
-    std::vector<rusty::Arc<rrr::Future>> futures;
+    std::vector<rusty::Arc<srpc::Future>> futures;
 
     // Send all requests without waiting
     for (int i = 0; i < num_requests; i++) {
         std::string data = "Concurrent_" + std::to_string(i);
-        auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+        auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
             m.write_bytes(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
         });
         ASSERT_TRUE(fu_result.is_ok());
@@ -284,12 +284,12 @@ TEST_F(RrrRpcDirectTest, ConcurrentRequests) {
     EXPECT_EQ(request_count_, num_requests);
 }
 
-TEST_F(RrrRpcDirectTest, LargePayload) {
+TEST_F(SrpcRpcDirectTest, LargePayload) {
     // Test with 1MB payload
     const size_t payload_size = 1024 * 1024;
     std::vector<char> large_data(payload_size, 'X');
 
-    auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+    auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
         m.write_bytes(reinterpret_cast<const std::uint8_t*>(large_data.data()), large_data.size());
     });
     ASSERT_TRUE(fu_result.is_ok());
@@ -308,7 +308,7 @@ TEST_F(RrrRpcDirectTest, LargePayload) {
     EXPECT_EQ(response.req_size, payload_size);
 }
 
-TEST_F(RrrRpcDirectTest, ThreadSafetyMultipleClients) {
+TEST_F(SrpcRpcDirectTest, ThreadSafetyMultipleClients) {
     const int num_threads = 4;
     const int requests_per_thread = 50;
     std::atomic<int> success_count{0};
@@ -317,7 +317,7 @@ TEST_F(RrrRpcDirectTest, ThreadSafetyMultipleClients) {
     for (int t = 0; t < num_threads; t++) {
         threads.emplace_back([this, t, requests_per_thread, &success_count]() {
             // Each thread creates its own client
-            auto thread_client = rrr::Client::create(poll_thread_worker_.as_ref().unwrap());
+            auto thread_client = srpc::Client::create(poll_thread_worker_.as_ref().unwrap());
             int ret = thread_client->connect(reinterpret_cast<const int8_t*>(("127.0.0.1:" + std::to_string(port_)).c_str()), true);
             if (ret != 0) return;
 
@@ -325,7 +325,7 @@ TEST_F(RrrRpcDirectTest, ThreadSafetyMultipleClients) {
 
             for (int i = 0; i < requests_per_thread; i++) {
                 std::string data = "Thread_" + std::to_string(t) + "_" + std::to_string(i);
-                auto fu_result = thread_client->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+                auto fu_result = thread_client->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
                     m.write_bytes(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
                 });
                 if (fu_result.is_err()) continue;
@@ -349,9 +349,9 @@ TEST_F(RrrRpcDirectTest, ThreadSafetyMultipleClients) {
     EXPECT_EQ(request_count_, num_threads * requests_per_thread);
 }
 
-TEST_F(RrrRpcDirectTest, RequestWithTimeout) {
+TEST_F(SrpcRpcDirectTest, RequestWithTimeout) {
     std::string data = "Timeout_Test";
-    auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+    auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
         m.write_bytes(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
     });
     ASSERT_TRUE(fu_result.is_ok());
@@ -366,13 +366,13 @@ TEST_F(RrrRpcDirectTest, RequestWithTimeout) {
 
 // ============= Stress Test =============
 
-TEST_F(RrrRpcDirectTest, StressThroughput) {
+TEST_F(SrpcRpcDirectTest, StressThroughput) {
     const int num_requests = 10000;
     auto start = high_resolution_clock::now();
 
     for (int i = 0; i < num_requests; i++) {
         uint32_t seq = i;
-        auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+        auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
             m.write_bytes(reinterpret_cast<const std::uint8_t*>(&seq), sizeof(seq));
         });
         ASSERT_TRUE(fu_result.is_ok());
@@ -394,19 +394,19 @@ TEST_F(RrrRpcDirectTest, StressThroughput) {
     EXPECT_GT(ops_per_sec, 700.0);
 }
 
-TEST_F(RrrRpcDirectTest, StressPipelined) {
+TEST_F(SrpcRpcDirectTest, StressPipelined) {
     const int batch_size = 50;
     const int num_batches = 20;
 
     auto start = high_resolution_clock::now();
 
     for (int batch = 0; batch < num_batches; batch++) {
-        std::vector<rusty::Arc<rrr::Future>> futures;
+        std::vector<rusty::Arc<srpc::Future>> futures;
 
         // Send batch
         for (int i = 0; i < batch_size; i++) {
             uint32_t seq = batch * batch_size + i;
-            auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, rrr::FutureAttr(), [&](rrr::BinaryWriteArchive& m) {
+            auto fu_result = client_.as_ref().unwrap()->request(TEST_REQ_TYPE_START, srpc::FutureAttr(), [&](srpc::BinaryWriteArchive& m) {
                 m.write_bytes(reinterpret_cast<const std::uint8_t*>(&seq), sizeof(seq));
             });
             if (fu_result.is_err()) continue;
@@ -434,13 +434,13 @@ TEST_F(RrrRpcDirectTest, StressPipelined) {
 
 class ConnectionResilienceTest : public ::testing::Test {
 protected:
-    rusty::Option<rusty::Arc<rrr::PollThread>> poll_thread_worker_;
+    rusty::Option<rusty::Arc<srpc::PollThread>> poll_thread_worker_;
     int port_;
 
     void SetUp() override {
         static std::atomic<int> port_counter{TEST_PORT_BASE + 100};
         port_ = port_counter.fetch_add(1);
-        poll_thread_worker_ = rusty::Some(rrr::PollThread::create());
+        poll_thread_worker_ = rusty::Some(srpc::PollThread::create());
     }
 
     void TearDown() override {
@@ -451,7 +451,7 @@ protected:
 };
 
 TEST_F(ConnectionResilienceTest, ConnectToNonExistentServer) {
-    auto client = rrr::Client::create(poll_thread_worker_.as_ref().unwrap());
+    auto client = srpc::Client::create(poll_thread_worker_.as_ref().unwrap());
     int result = client->connect(reinterpret_cast<const int8_t*>("127.0.0.1:19999"), true);
     EXPECT_NE(result, 0);
     client->close();
@@ -461,26 +461,26 @@ TEST_F(ConnectionResilienceTest, ReconnectAfterServerRestart) {
     std::atomic<int> request_count{0};
 
     // Start server
-    auto server = new rrr::Server(rrr::Server::new_(rusty::Some(poll_thread_worker_.as_ref().unwrap().clone())));
-    auto svc = rusty::make_box<TestSingleService>(1, [&](rusty::Box<rrr::Request> req, rrr::WeakServerConnection weak_sconn) {
+    auto server = new srpc::Server(srpc::Server::new_(rusty::Some(poll_thread_worker_.as_ref().unwrap().clone())));
+    auto svc = rusty::make_box<TestSingleService>(1, [&](rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {
         request_count++;
         auto sconn_opt = weak_sconn.upgrade();
         if (sconn_opt.is_some()) {
             auto sconn = sconn_opt.unwrap();
-            const_cast<rrr::ServerConnection&>(*sconn).reply(*req, 0, rrr::ServerReplyFn{});
+            const_cast<srpc::ServerConnection&>(*sconn).reply(*req, 0, srpc::ServerReplyFn{});
         }
     });
     server->reg_service(std::move(svc));
     ASSERT_EQ(server->start(reinterpret_cast<const int8_t*>(("0.0.0.0:" + std::to_string(port_)).c_str())), 0);
 
     // Connect client
-    auto client = rrr::Client::create(poll_thread_worker_.as_ref().unwrap());
+    auto client = srpc::Client::create(poll_thread_worker_.as_ref().unwrap());
     ASSERT_EQ(client->connect(reinterpret_cast<const int8_t*>(("127.0.0.1:" + std::to_string(port_)).c_str()), true), 0);
     std::this_thread::sleep_for(milliseconds(100));
 
     // Send request - use no-op lambda to avoid template overload issues
     {
-        auto fu_result = client->request(1, rrr::FutureAttr(), [](rrr::BinaryWriteArchive&) {});
+        auto fu_result = client->request(1, srpc::FutureAttr(), [](srpc::BinaryWriteArchive&) {});
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();
         fu->wait();
@@ -492,13 +492,13 @@ TEST_F(ConnectionResilienceTest, ReconnectAfterServerRestart) {
     client->close();
     std::this_thread::sleep_for(milliseconds(100));
 
-    auto client2 = rrr::Client::create(poll_thread_worker_.as_ref().unwrap());
+    auto client2 = srpc::Client::create(poll_thread_worker_.as_ref().unwrap());
     ASSERT_EQ(client2->connect(reinterpret_cast<const int8_t*>(("127.0.0.1:" + std::to_string(port_)).c_str()), true), 0);
     std::this_thread::sleep_for(milliseconds(100));
 
     // Send another request
     {
-        auto fu_result = client2->request(1, rrr::FutureAttr(), [](rrr::BinaryWriteArchive&) {});
+        auto fu_result = client2->request(1, srpc::FutureAttr(), [](srpc::BinaryWriteArchive&) {});
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();
         fu->wait();
@@ -516,7 +516,7 @@ TEST_F(ConnectionResilienceTest, ReconnectAfterServerRestart) {
 class BufferPatternTest : public ::testing::Test {};
 
 TEST_F(BufferPatternTest, ThreadLocalBuffers) {
-    // Test pattern: thread-local buffers like RrrRpcBackend uses
+    // Test pattern: thread-local buffers like SrpcRpcBackend uses
     struct ThreadBuffers {
         std::vector<char> request_buffer;
         size_t response_len{0};

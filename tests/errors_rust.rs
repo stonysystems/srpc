@@ -1,4 +1,4 @@
-use rrr::errors::{
+use srpc::errors::{
     get_error_category, is_connection_error, is_retryable_error, is_timeout_error,
     rpc_error_category_to_string, rpc_error_to_string, RpcError, RpcErrorCategory,
 };

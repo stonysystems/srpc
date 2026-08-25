@@ -1,19 +1,19 @@
 //! Thread-safe connection lifecycle callback registration and dispatch.
 //!
 //! The public names, field order, and method signatures intentionally match
-//! the legacy `rrr.callbacks` C++ module. Callback lists are cloned under the
+//! the legacy `srpc.callbacks` C++ module. Callback lists are cloned under the
 //! mutex and invoked after releasing it, and `clear_all` drains dispatches that
 //! already took a snapshot before returning.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex};
 
-// This otherwise-unused source-owned import keeps the exact `rrr.errors`
+// This otherwise-unused source-owned import keeps the exact `srpc.errors`
 // provider visible to generated C++. The private alias below remains the real
 // Rust enum for rustc callers; the checked type map preserves its public C++
-// spelling as `::rrr::RpcError`.
+// spelling as `::srpc::RpcError`.
 #[allow(unused_imports)]
-use cpp::rrr::errors as cpp_errors;
+use cpp::srpc::errors as cpp_errors;
 use rusty as cpp;
 
 // Native Rust uses `String`. The SRPC consumer profile maps this private alias

@@ -1,6 +1,6 @@
-// Canonical Rust source for the rrr.logging module.
+// Canonical Rust source for the srpc.logging module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
-use cpp::rrr::debugging as cpp_debugging;
+use cpp::srpc::debugging as cpp_debugging;
 use cpp::std as cpp_std;
 use rusty as cpp;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -12,7 +12,7 @@ type LegacyStdString = String;
 /// Process-wide maximum enabled severity. The default keeps DEBUG enabled.
 pub static LOG_LEVEL_S: AtomicI32 = AtomicI32::new(4_i32);
 
-/// All-static compatibility facade used by C++ callers and `rrr_log.h`.
+/// All-static compatibility facade used by C++ callers and `srpc_log.h`.
 pub struct Log {}
 
 impl Log {

@@ -21,14 +21,14 @@
 #include <gtest/gtest.h>
 
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.internal_protocol;
+import srpc.internal_protocol;
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 using Bytes = std::vector<std::uint8_t>;
@@ -481,7 +481,7 @@ TEST(RpcFrameCodecTest, FrameDecodeStatusStringification) {
     // Rust DSL now, and Rust's `&'static str` lowers to
     // std::string_view rather than const char*. That lowering is
     // correct, so the call site changes rather than the translator —
-    // rule 2 of docs/dev/rrr_migration_policy.md.
+    // rule 2 of docs/dev/srpc_migration_policy.md.
     EXPECT_EQ("NeedMoreBytes",
               frame_decode_status_to_string(FrameDecodeStatus::NeedMoreBytes));
     EXPECT_EQ("Complete",
@@ -591,4 +591,4 @@ TEST(CpuInfoTelemetry, SingletonInitialisesOnceAndKeepsSampling) {
 */
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

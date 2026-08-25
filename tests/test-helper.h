@@ -2,12 +2,12 @@
 
 #include <sstream>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "memdb/row.h"
 #include "memdb/schema.h"
 #include "memdb/txn.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 
 template <class T>

@@ -9,7 +9,7 @@ void srpc_fd_write_all(int fd, const void* pointer, std::size_t length);
 std::size_t srpc_fd_read_upto(int fd, void* pointer, std::size_t length);
 }
 
-// C++-only support for canonical `rrr.serializable`.  These helpers model
+// C++-only support for canonical `srpc.serializable`.  These helpers model
 // operations whose Rust spelling is intentionally an inert rustc facade:
 // open-set ADL dispatch and polymorphic Arc construction.  They are templates,
 // so no extra provider ABI or C shim is introduced.

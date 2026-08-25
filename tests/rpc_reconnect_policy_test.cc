@@ -6,14 +6,14 @@
 #include <stdint.h>
 
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.reconnect_policy;
+import srpc.reconnect_policy;
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 
 // ============================================================================
 // ReconnectPolicy Configuration Tests

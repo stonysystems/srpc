@@ -11,14 +11,14 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "benchmark_service.h"
 #include "rpc_test_ports.h"
 
 import std;
 
-using namespace rrr;
-using namespace rrr::chaos;
+using namespace srpc;
+using namespace srpc::chaos;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -137,7 +137,7 @@ protected:
         std::string input = "chaos_test";
         auto fu_result = client->request(
             BenchmarkService::FAST_NOP,
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         if (fu_result.is_err()) return false;
         auto fu = fu_result.unwrap();

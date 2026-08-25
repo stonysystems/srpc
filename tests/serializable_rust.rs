@@ -1,8 +1,8 @@
-use rrr::serializable::{
+use srpc::serializable::{
     BufferSink, BufferSource, Deserialize, Serializable, SerializableRegistry, Serialize, SinkBase,
     SourceBase, make_serializable_proxy_copy, make_serializable_proxy_default,
 };
-use rusty::rrr::basetypes::SparseInt;
+use rusty::srpc::basetypes::SparseInt;
 use rusty::{SerializableV32, SerializableV64};
 
 fn expected_sparse(value: i64) -> (usize, [u8; 9]) {
@@ -149,13 +149,13 @@ fn buffer_source_sink_and_sparse_leaf_impls_match_wire_contract() {
     // bridge whose rustc-only trait-object constructor is intentionally inert.
     let mut v32 = SerializableV32::new(-8_193);
     let mut v64 = SerializableV64::new(36_028_797_018_963_968);
-    let _serialize32: fn(&SerializableV32, &mut rrr::serializable::BinaryWriteArchive) =
+    let _serialize32: fn(&SerializableV32, &mut srpc::serializable::BinaryWriteArchive) =
         <SerializableV32 as Serialize>::serialize;
-    let _serialize64: fn(&SerializableV64, &mut rrr::serializable::BinaryWriteArchive) =
+    let _serialize64: fn(&SerializableV64, &mut srpc::serializable::BinaryWriteArchive) =
         <SerializableV64 as Serialize>::serialize;
-    let _deserialize32: fn(&mut SerializableV32, &mut rrr::serializable::BinaryReadArchive) =
+    let _deserialize32: fn(&mut SerializableV32, &mut srpc::serializable::BinaryReadArchive) =
         <SerializableV32 as Deserialize>::deserialize;
-    let _deserialize64: fn(&mut SerializableV64, &mut rrr::serializable::BinaryReadArchive) =
+    let _deserialize64: fn(&mut SerializableV64, &mut srpc::serializable::BinaryReadArchive) =
         <SerializableV64 as Deserialize>::deserialize;
     v32.set(v32.get());
     v64.set(v64.get());

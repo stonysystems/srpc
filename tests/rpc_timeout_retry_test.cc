@@ -12,15 +12,15 @@
 #include <rusty/arc.hpp>
 #include <rusty/cell.hpp>
 #include <rusty/traits.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.request_options;
+import srpc.request_options;
 #include "rpc_test_ports.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 namespace {
@@ -44,8 +44,8 @@ public:
         }
 
         v32 payload;
-        rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));
-        rrr::Deserialize_::deserialize(payload, __req_ar__);
+        srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
+        srpc::Deserialize_::deserialize(payload, __req_ar__);
 
         int call = call_count.fetch_add(1) + 1;
         if (call <= drops_before_reply_) {
@@ -59,7 +59,7 @@ public:
 
         auto sconn = sconn_opt.unwrap();
         const_cast<ServerConnection&>(*sconn).reply(*req, 0, [payload](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(payload, m);
+            srpc::Serialize_::serialize(payload, m);
         });
     }
 
@@ -454,7 +454,7 @@ TEST_F(TimeoutRetryIntegrationTest, IdempotentRequestRetriesAfterTimeoutAndThenS
         TimeoutRetryService::kRpcId, opts,
         [&](BinaryWriteArchive& m) {
             marshal_calls.fetch_add(1);
-            rrr::Serialize_::serialize(v32(123), m);
+            srpc::Serialize_::serialize(v32(123), m);
         });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -469,7 +469,7 @@ TEST_F(TimeoutRetryIntegrationTest, IdempotentRequestRetriesAfterTimeoutAndThenS
     EXPECT_GE(elapsed_ms, 100);  // Timeout + configured deterministic backoff.
 
     v32 reply_value;
-    rrr::deserialize_from(fu->get_reply(), reply_value);
+    srpc::deserialize_from(fu->get_reply(), reply_value);
     EXPECT_EQ(reply_value.get(), 123);
     EXPECT_EQ(service->call_count.load(), 2);
     EXPECT_EQ(marshal_calls.load(), 1);  // Request payload serialized once.
@@ -498,7 +498,7 @@ TEST_F(TimeoutRetryIntegrationTest, NonIdempotentRequestNeverRetriesOnTimeout) {
 
     auto fu_result = client->request_with_options(
         TimeoutRetryService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(456), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(456), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 
@@ -535,7 +535,7 @@ TEST_F(TimeoutRetryIntegrationTest, RetryLoopStopsAtRetryLimitWithPerAttemptTime
     auto start = steady_clock::now();
     auto fu_result = client->request_with_options(
         TimeoutRetryService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(9), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(9), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 
@@ -576,7 +576,7 @@ TEST_F(TimeoutRetryIntegrationTest, DisconnectedFailFastSetsConnectTimeoutType) 
 
     auto fu_result = client->request_with_options(
         TimeoutRetryService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(3), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(3), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 
@@ -616,7 +616,7 @@ TEST_F(TimeoutRetryIntegrationTest, QueueRejectSetsRequestTimeoutType) {
 
     auto fu_result = client->request_with_options(
         TimeoutRetryService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(5), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(5), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 
@@ -653,7 +653,7 @@ TEST_F(TimeoutRetryIntegrationTest, TotalTimeoutBudgetCutsOffRetriesBeforeNextAt
     auto start = steady_clock::now();
     auto fu_result = client->request_with_options(
         TimeoutRetryService::kRpcId, opts,
-        [](BinaryWriteArchive& m) { rrr::Serialize_::serialize(v32(77), m); });
+        [](BinaryWriteArchive& m) { srpc::Serialize_::serialize(v32(77), m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
 

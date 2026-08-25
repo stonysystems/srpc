@@ -1,7 +1,7 @@
 use core::mem::{align_of, size_of};
-use rrr::misc::Job;
-use rrr::pollable_proxy::PollableProxy;
-use rrr::reactor::*;
+use srpc::misc::Job;
+use srpc::pollable_proxy::PollableProxy;
+use srpc::reactor::*;
 use std::sync::Arc;
 
 #[test]
@@ -119,10 +119,10 @@ fn janus_placement_markers_cover_the_quorum_surface() {
         "unexpected number of janus placement markers"
     );
 
-    // The target must stay absolute: `rrr::janus` and a relative `janus` are
+    // The target must stay absolute: `srpc::janus` and a relative `janus` are
     // both invalid substitutes with different mangling.
     assert!(!source.contains("cpp_namespace(janus)"));
-    assert!(!source.contains("cpp_namespace(rrr::janus)"));
+    assert!(!source.contains("cpp_namespace(srpc::janus)"));
 }
 
 /// W2 shape pin: teardown owes waiters an error.

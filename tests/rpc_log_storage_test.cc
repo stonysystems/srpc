@@ -12,12 +12,12 @@
 #include "deptran/raft/log_storage.hpp"
 #include "deptran/raft/memory_log_storage.hpp"
 #include "deptran/classic/tpc_command.h"  // TpcEmptyCommand for nested-command tests
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-using namespace rrr;
+using namespace srpc;
 using namespace janus::raft;
 
 // ============================================================================
@@ -86,16 +86,16 @@ TEST_F(LogEntryTest, SerializationWithoutCommand) {
     // `load(BinaryReadArchive&)`. Drive bytes through a
     // BufferSink/BufferSource pair so this test continues to
     // exercise an on-wire round-trip.
-    rrr::BufferSink sink;
+    srpc::BufferSink sink;
     {
-        rrr::BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
+        srpc::BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
         original.save(writer);
     }
 
     LogEntry restored;
     {
-        rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-        rrr::BinaryReadArchive reader(make_source_proxy_buffer(&src));
+        srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+        srpc::BinaryReadArchive reader(make_source_proxy_buffer(&src));
         restored.load(reader);
     }
 
@@ -114,9 +114,9 @@ TEST_F(LogEntryTest, SerializationWithCommand) {
 
     // see SerializationWithoutCommand for
     // the to_marshal → save migration rationale.
-    rrr::BufferSink sink;
+    srpc::BufferSink sink;
     {
-        rrr::BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
+        srpc::BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
         original.save(writer);
     }
 
@@ -127,10 +127,10 @@ TEST_F(LogEntryTest, SerializationWithCommand) {
     // which is done at application startup. Here we just verify serialization works.
     // The basic fields can still be deserialized:
     LogEntry partial;
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(partial.slot_id, rar);
-    rrr::Deserialize_::deserialize(partial.term, rar);
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(make_source_proxy_buffer(&src));
+    srpc::Deserialize_::deserialize(partial.slot_id, rar);
+    srpc::Deserialize_::deserialize(partial.term, rar);
 
     EXPECT_EQ(partial.slot_id, 100u);
     EXPECT_EQ(partial.term, 20u);

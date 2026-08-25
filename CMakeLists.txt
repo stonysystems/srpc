@@ -77,8 +77,8 @@ add_link_options(-stdlib=libc++ -lc++abi)
 #
 # reactor/CANONICAL_CHECKPOINT.md makes ASan and TSan runtime coverage a
 # promotion gate.  A sanitized reactor cannot be produced by adding flags to
-# the test executables alone: the reactor lives in librrr.a and in the BMIs
-# that the tests import, so the whole tree (rrr, the generated crate providers
+# the test executables alone: the reactor lives in libsrpc.a and in the BMIs
+# that the tests import, so the whole tree (srpc, the generated crate providers
 # and the rusty runtime ports) has to be instrumented with the same flags.
 # This is therefore a whole-configuration switch; configure a *separate* build
 # directory per sanitizer, e.g.
@@ -149,14 +149,14 @@ set(BENCH_CXXFLAGS
     -fno-omit-frame-pointer
 )
 
-# rrr: STATIC library compiled from the remaining NATIVE units (C++, C, ASM).
+# srpc: STATIC library compiled from the remaining NATIVE units (C++, C, ASM).
 # The canonical Rust providers are not native sources and are now named .rs,
 # so these patterns no longer match them at all; the explicit REMOVE_ITEM
 # below is kept as a belt-and-braces guard in case a canonical path ever
 # re-enters the glob. The .cpp/.cc patterns stay so that genuine C++ added to
 # these directories later is still compiled. Migration is measurement-gated —
 # see the Goal-0 migration notes in this repository.
-file(GLOB RRR_BENCH_SRC
+file(GLOB SRPC_BENCH_SRC
     "${CMAKE_CURRENT_SOURCE_DIR}/base/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/misc/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/rpc/*.cpp"
@@ -169,62 +169,62 @@ file(GLOB RRR_BENCH_SRC
 # Remaining C++23 named-module interface units whose Rust is still embedded in
 # an inline carrier. Keep this census complete so none is also compiled through
 # the regular source glob.
-set(RRR_INLINE_MODULE_SRC
+set(SRPC_INLINE_MODULE_SRC
 )
-set(RRR_EXPECTED_INLINE_MODULES
+set(SRPC_EXPECTED_INLINE_MODULES
 )
 
 # Fail closed on both paths and declared provider names. A mere length check
 # lets one carrier be replaced by a duplicate while still reporting 37 module
 # inputs, which can silently remove a production provider.
-set(_RRR_INLINE_UNIQUE_SRC ${RRR_INLINE_MODULE_SRC})
-list(REMOVE_DUPLICATES _RRR_INLINE_UNIQUE_SRC)
-list(LENGTH RRR_INLINE_MODULE_SRC _RRR_INLINE_SRC_COUNT)
-list(LENGTH _RRR_INLINE_UNIQUE_SRC _RRR_INLINE_UNIQUE_SRC_COUNT)
-if(NOT _RRR_INLINE_SRC_COUNT EQUAL _RRR_INLINE_UNIQUE_SRC_COUNT)
+set(_SRPC_INLINE_UNIQUE_SRC ${SRPC_INLINE_MODULE_SRC})
+list(REMOVE_DUPLICATES _SRPC_INLINE_UNIQUE_SRC)
+list(LENGTH SRPC_INLINE_MODULE_SRC _SRPC_INLINE_SRC_COUNT)
+list(LENGTH _SRPC_INLINE_UNIQUE_SRC _SRPC_INLINE_UNIQUE_SRC_COUNT)
+if(NOT _SRPC_INLINE_SRC_COUNT EQUAL _SRPC_INLINE_UNIQUE_SRC_COUNT)
     message(FATAL_ERROR
         "Goal-0 inline module carrier inventory contains duplicate paths")
 endif()
-set(_RRR_ACTUAL_INLINE_MODULES)
-foreach(_RRR_INLINE_SOURCE IN LISTS RRR_INLINE_MODULE_SRC)
-    file(READ "${_RRR_INLINE_SOURCE}" _RRR_INLINE_TEXT)
+set(_SRPC_ACTUAL_INLINE_MODULES)
+foreach(_SRPC_INLINE_SOURCE IN LISTS SRPC_INLINE_MODULE_SRC)
+    file(READ "${_SRPC_INLINE_SOURCE}" _SRPC_INLINE_TEXT)
     string(REGEX MATCHALL
-        "export[ \t\r\n]+module[ \t\r\n]+rrr\\.[A-Za-z_][A-Za-z0-9_]*"
-        _RRR_INLINE_DECLARATIONS "${_RRR_INLINE_TEXT}")
-    list(LENGTH _RRR_INLINE_DECLARATIONS _RRR_INLINE_DECLARATION_COUNT)
-    if(NOT _RRR_INLINE_DECLARATION_COUNT EQUAL 1)
+        "export[ \t\r\n]+module[ \t\r\n]+srpc\\.[A-Za-z_][A-Za-z0-9_]*"
+        _SRPC_INLINE_DECLARATIONS "${_SRPC_INLINE_TEXT}")
+    list(LENGTH _SRPC_INLINE_DECLARATIONS _SRPC_INLINE_DECLARATION_COUNT)
+    if(NOT _SRPC_INLINE_DECLARATION_COUNT EQUAL 1)
         message(FATAL_ERROR
-            "Inline carrier must declare exactly one rrr module: "
-            "${_RRR_INLINE_SOURCE}")
+            "Inline carrier must declare exactly one srpc module: "
+            "${_SRPC_INLINE_SOURCE}")
     endif()
-    list(GET _RRR_INLINE_DECLARATIONS 0 _RRR_INLINE_DECLARATION)
+    list(GET _SRPC_INLINE_DECLARATIONS 0 _SRPC_INLINE_DECLARATION)
     string(REGEX REPLACE
-        ".*rrr\\.([A-Za-z_][A-Za-z0-9_]*)" "\\1"
-        _RRR_INLINE_MODULE "${_RRR_INLINE_DECLARATION}")
-    list(APPEND _RRR_ACTUAL_INLINE_MODULES "${_RRR_INLINE_MODULE}")
+        ".*srpc\\.([A-Za-z_][A-Za-z0-9_]*)" "\\1"
+        _SRPC_INLINE_MODULE "${_SRPC_INLINE_DECLARATION}")
+    list(APPEND _SRPC_ACTUAL_INLINE_MODULES "${_SRPC_INLINE_MODULE}")
 endforeach()
-set(_RRR_EXPECTED_INLINE_MODULES_SORTED ${RRR_EXPECTED_INLINE_MODULES})
-set(_RRR_ACTUAL_INLINE_MODULES_SORTED ${_RRR_ACTUAL_INLINE_MODULES})
-list(SORT _RRR_EXPECTED_INLINE_MODULES_SORTED)
-list(SORT _RRR_ACTUAL_INLINE_MODULES_SORTED)
+set(_SRPC_EXPECTED_INLINE_MODULES_SORTED ${SRPC_EXPECTED_INLINE_MODULES})
+set(_SRPC_ACTUAL_INLINE_MODULES_SORTED ${_SRPC_ACTUAL_INLINE_MODULES})
+list(SORT _SRPC_EXPECTED_INLINE_MODULES_SORTED)
+list(SORT _SRPC_ACTUAL_INLINE_MODULES_SORTED)
 # Quote both operands.  `set(X)` UNSETS X in CMake, so once every carrier is
 # canonical and both inventories are empty, the unquoted form compares the
 # literal variable NAMES -- which always differ -- and this guard fires on a
 # correct tree.  Quoting compares the (empty) values, which is what is meant.
-if(NOT "${_RRR_ACTUAL_INLINE_MODULES_SORTED}" STREQUAL
-       "${_RRR_EXPECTED_INLINE_MODULES_SORTED}")
+if(NOT "${_SRPC_ACTUAL_INLINE_MODULES_SORTED}" STREQUAL
+       "${_SRPC_EXPECTED_INLINE_MODULES_SORTED}")
     message(FATAL_ERROR
         "Goal-0 inline module declarations differ from the exact retained "
-        "inventory; expected=${_RRR_EXPECTED_INLINE_MODULES_SORTED}; "
-        "actual=${_RRR_ACTUAL_INLINE_MODULES_SORTED}")
+        "inventory; expected=${_SRPC_EXPECTED_INLINE_MODULES_SORTED}; "
+        "actual=${_SRPC_ACTUAL_INLINE_MODULES_SORTED}")
 endif()
-if(RRR_INLINE_MODULE_SRC)
-    list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_INLINE_MODULE_SRC})
+if(SRPC_INLINE_MODULE_SRC)
+    list(REMOVE_ITEM SRPC_BENCH_SRC ${SRPC_INLINE_MODULE_SRC})
 endif()
 
 # These modules are owned by canonical Rust sources. rusty-cpp generates
 # their complete C++ module interfaces; no hand-authored carrier remains.
-set(RRR_GOAL0_CANONICAL_MODULES
+set(SRPC_GOAL0_CANONICAL_MODULES
     basetypes
     callback_wrapper
     internal_protocol
@@ -263,66 +263,66 @@ set(RRR_GOAL0_CANONICAL_MODULES
     server
     client
 )
-set(RRR_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.rs)
-set(RRR_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.rs)
-set(RRR_GOAL0_SOURCE_internal_protocol ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.rs)
-set(RRR_GOAL0_SOURCE_stat ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.rs)
-set(RRR_GOAL0_SOURCE_errors ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.rs)
-set(RRR_GOAL0_SOURCE_connection_metrics ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.rs)
-set(RRR_GOAL0_SOURCE_completion_tracker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.rs)
-set(RRR_GOAL0_SOURCE_rand ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.rs)
-set(RRR_GOAL0_SOURCE_request_options ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.rs)
-set(RRR_GOAL0_SOURCE_reconnect_policy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.rs)
-set(RRR_GOAL0_SOURCE_circuit_breaker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.rs)
-set(RRR_GOAL0_SOURCE_connection_state ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.rs)
-set(RRR_GOAL0_SOURCE_heartbeat ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.rs)
-set(RRR_GOAL0_SOURCE_request_queue ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.rs)
-set(RRR_GOAL0_SOURCE_load_balancer ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.rs)
-set(RRR_GOAL0_SOURCE_utils ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.rs)
-set(RRR_GOAL0_SOURCE_frame_codec ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.rs)
-set(RRR_GOAL0_SOURCE_serializable ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.rs)
-set(RRR_GOAL0_SOURCE_serializable_envelope ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.rs)
-set(RRR_GOAL0_SOURCE_future ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.rs)
-set(RRR_GOAL0_SOURCE_logging ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.rs)
-set(RRR_GOAL0_SOURCE_idempotency ${CMAKE_CURRENT_SOURCE_DIR}/rpc/idempotency.rs)
-set(RRR_GOAL0_SOURCE_fiber ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.rs)
-set(RRR_GOAL0_SOURCE_misc ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.rs)
-set(RRR_GOAL0_SOURCE_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.rs)
-set(RRR_GOAL0_SOURCE_epoll_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.rs)
-set(RRR_GOAL0_SOURCE_pollable_proxy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.rs)
-set(RRR_GOAL0_SOURCE_callbacks ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.rs)
-set(RRR_GOAL0_SOURCE_inmemory_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.rs)
-set(RRR_GOAL0_SOURCE_fiber_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.rs)
-set(RRR_GOAL0_SOURCE_threading ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.rs)
-set(RRR_GOAL0_SOURCE_debugging ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.rs)
-set(RRR_GOAL0_SOURCE_any_message ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.rs)
-set(RRR_GOAL0_SOURCE_tcp_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.rs)
-set(RRR_GOAL0_SOURCE_reactor ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.rs)
-set(RRR_GOAL0_SOURCE_server ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.rs)
-set(RRR_GOAL0_SOURCE_client ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs)
-set(_RRR_GOAL0_UNIQUE_MODULES ${RRR_GOAL0_CANONICAL_MODULES})
-list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_MODULES)
-list(LENGTH RRR_GOAL0_CANONICAL_MODULES _RRR_GOAL0_MODULE_COUNT)
-list(LENGTH _RRR_GOAL0_UNIQUE_MODULES _RRR_GOAL0_UNIQUE_MODULE_COUNT)
-if(_RRR_GOAL0_MODULE_COUNT EQUAL 0 OR
-   NOT _RRR_GOAL0_MODULE_COUNT EQUAL _RRR_GOAL0_UNIQUE_MODULE_COUNT)
+set(SRPC_GOAL0_SOURCE_basetypes ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.rs)
+set(SRPC_GOAL0_SOURCE_callback_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.rs)
+set(SRPC_GOAL0_SOURCE_internal_protocol ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.rs)
+set(SRPC_GOAL0_SOURCE_stat ${CMAKE_CURRENT_SOURCE_DIR}/misc/stat.rs)
+set(SRPC_GOAL0_SOURCE_errors ${CMAKE_CURRENT_SOURCE_DIR}/rpc/errors.rs)
+set(SRPC_GOAL0_SOURCE_connection_metrics ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_metrics.rs)
+set(SRPC_GOAL0_SOURCE_completion_tracker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/completion_tracker.rs)
+set(SRPC_GOAL0_SOURCE_rand ${CMAKE_CURRENT_SOURCE_DIR}/misc/rand.rs)
+set(SRPC_GOAL0_SOURCE_request_options ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_options.rs)
+set(SRPC_GOAL0_SOURCE_reconnect_policy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/reconnect_policy.rs)
+set(SRPC_GOAL0_SOURCE_circuit_breaker ${CMAKE_CURRENT_SOURCE_DIR}/rpc/circuit_breaker.rs)
+set(SRPC_GOAL0_SOURCE_connection_state ${CMAKE_CURRENT_SOURCE_DIR}/rpc/connection_state.rs)
+set(SRPC_GOAL0_SOURCE_heartbeat ${CMAKE_CURRENT_SOURCE_DIR}/rpc/heartbeat.rs)
+set(SRPC_GOAL0_SOURCE_request_queue ${CMAKE_CURRENT_SOURCE_DIR}/rpc/request_queue.rs)
+set(SRPC_GOAL0_SOURCE_load_balancer ${CMAKE_CURRENT_SOURCE_DIR}/rpc/load_balancer.rs)
+set(SRPC_GOAL0_SOURCE_utils ${CMAKE_CURRENT_SOURCE_DIR}/rpc/utils.rs)
+set(SRPC_GOAL0_SOURCE_frame_codec ${CMAKE_CURRENT_SOURCE_DIR}/rpc/frame_codec.rs)
+set(SRPC_GOAL0_SOURCE_serializable ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable.rs)
+set(SRPC_GOAL0_SOURCE_serializable_envelope ${CMAKE_CURRENT_SOURCE_DIR}/misc/serializable_envelope.rs)
+set(SRPC_GOAL0_SOURCE_future ${CMAKE_CURRENT_SOURCE_DIR}/reactor/future.rs)
+set(SRPC_GOAL0_SOURCE_logging ${CMAKE_CURRENT_SOURCE_DIR}/base/logging.rs)
+set(SRPC_GOAL0_SOURCE_idempotency ${CMAKE_CURRENT_SOURCE_DIR}/rpc/idempotency.rs)
+set(SRPC_GOAL0_SOURCE_fiber ${CMAKE_CURRENT_SOURCE_DIR}/reactor/fiber.rs)
+set(SRPC_GOAL0_SOURCE_misc ${CMAKE_CURRENT_SOURCE_DIR}/base/misc.rs)
+set(SRPC_GOAL0_SOURCE_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/channel.rs)
+set(SRPC_GOAL0_SOURCE_epoll_wrapper ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_wrapper.rs)
+set(SRPC_GOAL0_SOURCE_pollable_proxy ${CMAKE_CURRENT_SOURCE_DIR}/rpc/pollable_proxy.rs)
+set(SRPC_GOAL0_SOURCE_callbacks ${CMAKE_CURRENT_SOURCE_DIR}/rpc/callbacks.rs)
+set(SRPC_GOAL0_SOURCE_inmemory_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/inmemory_channel.rs)
+set(SRPC_GOAL0_SOURCE_fiber_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/fiber_channel.rs)
+set(SRPC_GOAL0_SOURCE_threading ${CMAKE_CURRENT_SOURCE_DIR}/base/threading.rs)
+set(SRPC_GOAL0_SOURCE_debugging ${CMAKE_CURRENT_SOURCE_DIR}/base/debugging.rs)
+set(SRPC_GOAL0_SOURCE_any_message ${CMAKE_CURRENT_SOURCE_DIR}/misc/any_message.rs)
+set(SRPC_GOAL0_SOURCE_tcp_channel ${CMAKE_CURRENT_SOURCE_DIR}/rpc/tcp_channel.rs)
+set(SRPC_GOAL0_SOURCE_reactor ${CMAKE_CURRENT_SOURCE_DIR}/reactor/reactor.rs)
+set(SRPC_GOAL0_SOURCE_server ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.rs)
+set(SRPC_GOAL0_SOURCE_client ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs)
+set(_SRPC_GOAL0_UNIQUE_MODULES ${SRPC_GOAL0_CANONICAL_MODULES})
+list(REMOVE_DUPLICATES _SRPC_GOAL0_UNIQUE_MODULES)
+list(LENGTH SRPC_GOAL0_CANONICAL_MODULES _SRPC_GOAL0_MODULE_COUNT)
+list(LENGTH _SRPC_GOAL0_UNIQUE_MODULES _SRPC_GOAL0_UNIQUE_MODULE_COUNT)
+if(_SRPC_GOAL0_MODULE_COUNT EQUAL 0 OR
+   NOT _SRPC_GOAL0_MODULE_COUNT EQUAL _SRPC_GOAL0_UNIQUE_MODULE_COUNT)
     message(FATAL_ERROR
         "Goal-0 canonical module inventory must contain unique names")
 endif()
 
-set(RRR_GOAL0_CRATE_CPP_DIR
+set(SRPC_GOAL0_CRATE_CPP_DIR
     ${CMAKE_CURRENT_BINARY_DIR}/goal0-crate-cpp
 )
-set(RRR_GOAL0_CANONICAL_RUST_SRC)
-set(RRR_GOAL0_CRATE_CHILD_SRC)
-foreach(_RRR_GOAL0_MODULE IN LISTS RRR_GOAL0_CANONICAL_MODULES)
-    list(APPEND RRR_GOAL0_CANONICAL_RUST_SRC
-        ${RRR_GOAL0_SOURCE_${_RRR_GOAL0_MODULE}})
-    list(APPEND RRR_GOAL0_CRATE_CHILD_SRC
-        ${RRR_GOAL0_CRATE_CPP_DIR}/rrr.${_RRR_GOAL0_MODULE}.cppm)
+set(SRPC_GOAL0_CANONICAL_RUST_SRC)
+set(SRPC_GOAL0_CRATE_CHILD_SRC)
+foreach(_SRPC_GOAL0_MODULE IN LISTS SRPC_GOAL0_CANONICAL_MODULES)
+    list(APPEND SRPC_GOAL0_CANONICAL_RUST_SRC
+        ${SRPC_GOAL0_SOURCE_${_SRPC_GOAL0_MODULE}})
+    list(APPEND SRPC_GOAL0_CRATE_CHILD_SRC
+        ${SRPC_GOAL0_CRATE_CPP_DIR}/srpc.${_SRPC_GOAL0_MODULE}.cppm)
 endforeach()
 
-set(RRR_GOAL0_RETIRED_CARRIER_SRC
+set(SRPC_GOAL0_RETIRED_CARRIER_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/base/basetypes.rs
     ${CMAKE_CURRENT_SOURCE_DIR}/base/callback_wrapper.rs
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/internal_protocol.rs
@@ -361,47 +361,47 @@ set(RRR_GOAL0_RETIRED_CARRIER_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/server.rs
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs
 )
-set(_RRR_GOAL0_RETIRED_SORTED ${RRR_GOAL0_RETIRED_CARRIER_SRC})
-set(_RRR_GOAL0_CANONICAL_SORTED ${RRR_GOAL0_CANONICAL_RUST_SRC})
-set(_RRR_GOAL0_UNIQUE_RETIRED ${RRR_GOAL0_RETIRED_CARRIER_SRC})
-list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_RETIRED)
-list(LENGTH RRR_GOAL0_RETIRED_CARRIER_SRC _RRR_GOAL0_RETIRED_COUNT)
-list(LENGTH _RRR_GOAL0_UNIQUE_RETIRED _RRR_GOAL0_UNIQUE_RETIRED_COUNT)
-list(SORT _RRR_GOAL0_RETIRED_SORTED)
-list(SORT _RRR_GOAL0_CANONICAL_SORTED)
-if(NOT _RRR_GOAL0_RETIRED_COUNT EQUAL _RRR_GOAL0_UNIQUE_RETIRED_COUNT OR
-   NOT _RRR_GOAL0_RETIRED_SORTED STREQUAL _RRR_GOAL0_CANONICAL_SORTED)
+set(_SRPC_GOAL0_RETIRED_SORTED ${SRPC_GOAL0_RETIRED_CARRIER_SRC})
+set(_SRPC_GOAL0_CANONICAL_SORTED ${SRPC_GOAL0_CANONICAL_RUST_SRC})
+set(_SRPC_GOAL0_UNIQUE_RETIRED ${SRPC_GOAL0_RETIRED_CARRIER_SRC})
+list(REMOVE_DUPLICATES _SRPC_GOAL0_UNIQUE_RETIRED)
+list(LENGTH SRPC_GOAL0_RETIRED_CARRIER_SRC _SRPC_GOAL0_RETIRED_COUNT)
+list(LENGTH _SRPC_GOAL0_UNIQUE_RETIRED _SRPC_GOAL0_UNIQUE_RETIRED_COUNT)
+list(SORT _SRPC_GOAL0_RETIRED_SORTED)
+list(SORT _SRPC_GOAL0_CANONICAL_SORTED)
+if(NOT _SRPC_GOAL0_RETIRED_COUNT EQUAL _SRPC_GOAL0_UNIQUE_RETIRED_COUNT OR
+   NOT _SRPC_GOAL0_RETIRED_SORTED STREQUAL _SRPC_GOAL0_CANONICAL_SORTED)
     message(FATAL_ERROR
         "Goal-0 retired carriers must equal the unique canonical Rust "
         "source inventory exactly")
 endif()
-foreach(_RRR_GOAL0_CANONICAL_SOURCE IN LISTS RRR_GOAL0_CANONICAL_RUST_SRC)
-    if(NOT EXISTS "${_RRR_GOAL0_CANONICAL_SOURCE}")
+foreach(_SRPC_GOAL0_CANONICAL_SOURCE IN LISTS SRPC_GOAL0_CANONICAL_RUST_SRC)
+    if(NOT EXISTS "${_SRPC_GOAL0_CANONICAL_SOURCE}")
         message(FATAL_ERROR
             "Goal-0 canonical Rust source is missing: "
-            "${_RRR_GOAL0_CANONICAL_SOURCE}")
+            "${_SRPC_GOAL0_CANONICAL_SOURCE}")
     endif()
 endforeach()
 # Canonical Rust sources are transpiler inputs, not native C++. They held their
 # historical .cpp/.cc paths only long enough for Git to record the C++→Rust
 # rename lineage; they are named .rs now, so this removal is a no-op guard.
-list(REMOVE_ITEM RRR_BENCH_SRC ${RRR_GOAL0_RETIRED_CARRIER_SRC})
-set(RRR_GOAL0_CRATE_ROOT_SRC
-    ${RRR_GOAL0_CRATE_CPP_DIR}/rrr.cppm
+list(REMOVE_ITEM SRPC_BENCH_SRC ${SRPC_GOAL0_RETIRED_CARRIER_SRC})
+set(SRPC_GOAL0_CRATE_ROOT_SRC
+    ${SRPC_GOAL0_CRATE_CPP_DIR}/srpc.cppm
 )
-list(LENGTH RRR_GOAL0_CANONICAL_RUST_SRC _RRR_GOAL0_CANONICAL_COUNT)
-list(LENGTH RRR_GOAL0_CRATE_CHILD_SRC _RRR_GOAL0_CHILD_COUNT)
-set(_RRR_GOAL0_UNIQUE_CANONICAL_RUST_SRC ${RRR_GOAL0_CANONICAL_RUST_SRC})
-set(_RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC ${RRR_GOAL0_CRATE_CHILD_SRC})
-list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_CANONICAL_RUST_SRC)
-list(REMOVE_DUPLICATES _RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC)
-list(LENGTH _RRR_GOAL0_UNIQUE_CANONICAL_RUST_SRC
-    _RRR_GOAL0_UNIQUE_CANONICAL_COUNT)
-list(LENGTH _RRR_GOAL0_UNIQUE_CRATE_CHILD_SRC _RRR_GOAL0_UNIQUE_CHILD_COUNT)
-if(NOT _RRR_GOAL0_CANONICAL_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT OR
-   NOT _RRR_GOAL0_CHILD_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT OR
-   NOT _RRR_GOAL0_UNIQUE_CANONICAL_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT OR
-   NOT _RRR_GOAL0_UNIQUE_CHILD_COUNT EQUAL _RRR_GOAL0_MODULE_COUNT)
+list(LENGTH SRPC_GOAL0_CANONICAL_RUST_SRC _SRPC_GOAL0_CANONICAL_COUNT)
+list(LENGTH SRPC_GOAL0_CRATE_CHILD_SRC _SRPC_GOAL0_CHILD_COUNT)
+set(_SRPC_GOAL0_UNIQUE_CANONICAL_RUST_SRC ${SRPC_GOAL0_CANONICAL_RUST_SRC})
+set(_SRPC_GOAL0_UNIQUE_CRATE_CHILD_SRC ${SRPC_GOAL0_CRATE_CHILD_SRC})
+list(REMOVE_DUPLICATES _SRPC_GOAL0_UNIQUE_CANONICAL_RUST_SRC)
+list(REMOVE_DUPLICATES _SRPC_GOAL0_UNIQUE_CRATE_CHILD_SRC)
+list(LENGTH _SRPC_GOAL0_UNIQUE_CANONICAL_RUST_SRC
+    _SRPC_GOAL0_UNIQUE_CANONICAL_COUNT)
+list(LENGTH _SRPC_GOAL0_UNIQUE_CRATE_CHILD_SRC _SRPC_GOAL0_UNIQUE_CHILD_COUNT)
+if(NOT _SRPC_GOAL0_CANONICAL_COUNT EQUAL _SRPC_GOAL0_MODULE_COUNT OR
+   NOT _SRPC_GOAL0_CHILD_COUNT EQUAL _SRPC_GOAL0_MODULE_COUNT OR
+   NOT _SRPC_GOAL0_UNIQUE_CANONICAL_COUNT EQUAL _SRPC_GOAL0_MODULE_COUNT OR
+   NOT _SRPC_GOAL0_UNIQUE_CHILD_COUNT EQUAL _SRPC_GOAL0_MODULE_COUNT)
     message(FATAL_ERROR
         "Goal-0 crate production must own one unique Rust/generated "
         "provider pair per canonical module")
@@ -410,53 +410,53 @@ endif()
 # Production always combines the remaining inline carriers with the canonical
 # generated providers. The partial crate root remains compile-only until all
 # 37 retained named modules are canonical Rust (CPUInfo was removed entirely).
-set(RRR_MODULE_SRC ${RRR_INLINE_MODULE_SRC} ${RRR_GOAL0_CRATE_CHILD_SRC})
-set(RRR_MODULE_BASE_DIRS
+set(SRPC_MODULE_SRC ${SRPC_INLINE_MODULE_SRC} ${SRPC_GOAL0_CRATE_CHILD_SRC})
+set(SRPC_MODULE_BASE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/base
     ${CMAKE_CURRENT_SOURCE_DIR}/misc
     ${CMAKE_CURRENT_SOURCE_DIR}/reactor
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc
-    ${RRR_GOAL0_CRATE_CPP_DIR}
+    ${SRPC_GOAL0_CRATE_CPP_DIR}
 )
-set_source_files_properties(${RRR_GOAL0_CRATE_CHILD_SRC}
+set_source_files_properties(${SRPC_GOAL0_CRATE_CHILD_SRC}
     PROPERTIES GENERATED TRUE)
 
-list(LENGTH RRR_INLINE_MODULE_SRC _RRR_INLINE_MODULE_COUNT)
-list(LENGTH RRR_MODULE_SRC _RRR_PRODUCTION_MODULE_COUNT)
-set(_RRR_PRODUCTION_MODULE_NAMES
-    ${RRR_GOAL0_CANONICAL_MODULES}
-    ${_RRR_ACTUAL_INLINE_MODULES}
+list(LENGTH SRPC_INLINE_MODULE_SRC _SRPC_INLINE_MODULE_COUNT)
+list(LENGTH SRPC_MODULE_SRC _SRPC_PRODUCTION_MODULE_COUNT)
+set(_SRPC_PRODUCTION_MODULE_NAMES
+    ${SRPC_GOAL0_CANONICAL_MODULES}
+    ${_SRPC_ACTUAL_INLINE_MODULES}
 )
-set(_RRR_UNIQUE_PRODUCTION_MODULE_NAMES ${_RRR_PRODUCTION_MODULE_NAMES})
-list(REMOVE_DUPLICATES _RRR_UNIQUE_PRODUCTION_MODULE_NAMES)
-list(LENGTH _RRR_UNIQUE_PRODUCTION_MODULE_NAMES
-    _RRR_UNIQUE_PRODUCTION_MODULE_NAME_COUNT)
-math(EXPR _RRR_EXPECTED_INLINE_COUNT
-    "37 - ${_RRR_GOAL0_MODULE_COUNT}")
-if(NOT _RRR_INLINE_MODULE_COUNT EQUAL _RRR_EXPECTED_INLINE_COUNT OR
-   NOT _RRR_PRODUCTION_MODULE_COUNT EQUAL 37 OR
-   NOT _RRR_UNIQUE_PRODUCTION_MODULE_NAME_COUNT EQUAL 37)
+set(_SRPC_UNIQUE_PRODUCTION_MODULE_NAMES ${_SRPC_PRODUCTION_MODULE_NAMES})
+list(REMOVE_DUPLICATES _SRPC_UNIQUE_PRODUCTION_MODULE_NAMES)
+list(LENGTH _SRPC_UNIQUE_PRODUCTION_MODULE_NAMES
+    _SRPC_UNIQUE_PRODUCTION_MODULE_NAME_COUNT)
+math(EXPR _SRPC_EXPECTED_INLINE_COUNT
+    "37 - ${_SRPC_GOAL0_MODULE_COUNT}")
+if(NOT _SRPC_INLINE_MODULE_COUNT EQUAL _SRPC_EXPECTED_INLINE_COUNT OR
+   NOT _SRPC_PRODUCTION_MODULE_COUNT EQUAL 37 OR
+   NOT _SRPC_UNIQUE_PRODUCTION_MODULE_NAME_COUNT EQUAL 37)
     message(FATAL_ERROR
         "Goal-0 production must contain all 37 retained module providers")
 endif()
-list(FIND RRR_MODULE_SRC "${RRR_GOAL0_CRATE_ROOT_SRC}" _RRR_GOAL0_ROOT_INDEX)
-if(NOT _RRR_GOAL0_ROOT_INDEX EQUAL -1)
+list(FIND SRPC_MODULE_SRC "${SRPC_GOAL0_CRATE_ROOT_SRC}" _SRPC_GOAL0_ROOT_INDEX)
+if(NOT _SRPC_GOAL0_ROOT_INDEX EQUAL -1)
     message(FATAL_ERROR
         "Partial Goal-0 crate root must not be a production module provider")
 endif()
-foreach(_RRR_GOAL0_CHILD IN LISTS RRR_GOAL0_CRATE_CHILD_SRC)
-    list(FIND RRR_MODULE_SRC "${_RRR_GOAL0_CHILD}" _RRR_GOAL0_CHILD_INDEX)
-    if(_RRR_GOAL0_CHILD_INDEX EQUAL -1)
+foreach(_SRPC_GOAL0_CHILD IN LISTS SRPC_GOAL0_CRATE_CHILD_SRC)
+    list(FIND SRPC_MODULE_SRC "${_SRPC_GOAL0_CHILD}" _SRPC_GOAL0_CHILD_INDEX)
+    if(_SRPC_GOAL0_CHILD_INDEX EQUAL -1)
         message(FATAL_ERROR
-            "Goal-0 production is missing generated provider: ${_RRR_GOAL0_CHILD}")
+            "Goal-0 production is missing generated provider: ${_SRPC_GOAL0_CHILD}")
     endif()
 endforeach()
-# Platform implementation units for rrr.epoll_wrapper (Rust std's
+# Platform implementation units for srpc.epoll_wrapper (Rust std's
 # sys-module pattern): exactly one is compiled, selected below.
-list(REMOVE_ITEM RRR_BENCH_SRC
+list(REMOVE_ITEM SRPC_BENCH_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
 
-set(RRR_CXXFLAGS ${BENCH_CXXFLAGS})
+set(SRPC_CXXFLAGS ${BENCH_CXXFLAGS})
 
 # The `rusty` umbrella module — historically defined here because the
 # 29122d04-lineage rusty-cpp shipped rusty.cppm only as a header on the
@@ -478,7 +478,7 @@ if(NOT TARGET rusty)
     target_compile_features(rusty PUBLIC cxx_std_23)
     # Mako-default toolchain uses `-std=gnu++23` (CMAKE_CXX_EXTENSIONS=ON
     # at the top level — matches how CMake builds std.pcm). The rusty
-    # umbrella has to match so consumers in rrr can `import rusty;`
+    # umbrella has to match so consumers in srpc can `import rusty;`
     # without tripping the "GNU extensions was disabled in precompiled
     # file" PCM-config check.
     target_compile_options(rusty PRIVATE
@@ -496,39 +496,39 @@ endif()
 # supply deterministic definitions for exact draw/destroy and clock behavior.
 # This separate executable pulls the real C archive and smoke-tests both seams
 # without introducing another generated provider into either comparison lane.
-add_library(rrr_goal0_rand_c_kernel STATIC EXCLUDE_FROM_ALL
+add_library(srpc_goal0_rand_c_kernel STATIC EXCLUDE_FROM_ALL
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_rand.c
     ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_timing.c
 )
-set_target_properties(rrr_goal0_rand_c_kernel PROPERTIES CXX_MODULE_STD OFF)
-target_include_directories(rrr_goal0_rand_c_kernel PRIVATE
+set_target_properties(srpc_goal0_rand_c_kernel PROPERTIES CXX_MODULE_STD OFF)
+target_include_directories(srpc_goal0_rand_c_kernel PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/misc
 )
-target_link_libraries(rrr_goal0_rand_c_kernel PUBLIC pthread)
-add_executable(rrr_goal0_rand_kernel_smoke EXCLUDE_FROM_ALL
+target_link_libraries(srpc_goal0_rand_c_kernel PUBLIC pthread)
+add_executable(srpc_goal0_rand_kernel_smoke EXCLUDE_FROM_ALL
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/rand_kernel_smoke.c
 )
-set_target_properties(rrr_goal0_rand_kernel_smoke PROPERTIES CXX_MODULE_STD OFF)
-target_include_directories(rrr_goal0_rand_kernel_smoke PRIVATE
+set_target_properties(srpc_goal0_rand_kernel_smoke PROPERTIES CXX_MODULE_STD OFF)
+target_include_directories(srpc_goal0_rand_kernel_smoke PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(rrr_goal0_rand_kernel_smoke PRIVATE
-    rrr_goal0_rand_c_kernel
+target_link_libraries(srpc_goal0_rand_kernel_smoke PRIVATE
+    srpc_goal0_rand_c_kernel
 )
 
-if(NOT TARGET rrr)
-    add_library(rrr STATIC ${RRR_BENCH_SRC})
-    if(RRR_MODULE_SRC)
-        target_sources(rrr PUBLIC
-            FILE_SET rrr_modules TYPE CXX_MODULES
-            BASE_DIRS ${RRR_MODULE_BASE_DIRS}
-            FILES ${RRR_MODULE_SRC}
+if(NOT TARGET srpc)
+    add_library(srpc STATIC ${SRPC_BENCH_SRC})
+    if(SRPC_MODULE_SRC)
+        target_sources(srpc PUBLIC
+            FILE_SET srpc_modules TYPE CXX_MODULES
+            BASE_DIRS ${SRPC_MODULE_BASE_DIRS}
+            FILES ${SRPC_MODULE_SRC}
         )
     endif()
     # Goal-0 C demotion: syscall ladders that will never be Rust live as
     # plain C with C signatures (the crate's own extern-C kernels mirror
     # them); the C++ modules keep thin type-converting shims.
-    target_sources(rrr PRIVATE
+    target_sources(srpc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/rpc/srpc_connect.c
         ${CMAKE_CURRENT_SOURCE_DIR}/rpc/srpc_server.c
         ${CMAKE_CURRENT_SOURCE_DIR}/rpc/srpc_net.c
@@ -538,26 +538,26 @@ if(NOT TARGET rrr)
         ${CMAKE_CURRENT_SOURCE_DIR}/base/srpc_base.c
         ${CMAKE_CURRENT_SOURCE_DIR}/reactor/srpc_fiber.c
     )
-    target_include_directories(rrr PUBLIC
+    target_include_directories(srpc PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${SRPC_RUSTY_CPP_DIR}/include
     )
-    target_compile_options(rrr PUBLIC ${RRR_CXXFLAGS})
-    target_link_libraries(rrr pthread rusty)
-    target_sources(rrr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
+    target_compile_options(srpc PUBLIC ${SRPC_CXXFLAGS})
+    target_link_libraries(srpc pthread rusty)
+    target_sources(srpc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
 
-    # Remaining hand-authored RRR C++ module units for borrow checking. The
+    # Remaining hand-authored SRPC C++ module units for borrow checking. The
     # canonical Rust modules are checked by rustc and are not duplicated
     # here as generated C++ providers.
-    set(RRR_BORROW_SRC ${RRR_INLINE_MODULE_SRC})
-    set(_RRR_BORROW_SORTED ${RRR_BORROW_SRC})
-    set(_RRR_INLINE_SORTED ${RRR_INLINE_MODULE_SRC})
-    list(SORT _RRR_BORROW_SORTED)
-    list(SORT _RRR_INLINE_SORTED)
+    set(SRPC_BORROW_SRC ${SRPC_INLINE_MODULE_SRC})
+    set(_SRPC_BORROW_SORTED ${SRPC_BORROW_SRC})
+    set(_SRPC_INLINE_SORTED ${SRPC_INLINE_MODULE_SRC})
+    list(SORT _SRPC_BORROW_SORTED)
+    list(SORT _SRPC_INLINE_SORTED)
     # Quoted for the same reason as the inline-inventory guard above: both
     # lists are empty now that every carrier is canonical, and `set(X)` with
     # no value unsets X, so the unquoted form would compare variable names.
-    if(NOT "${_RRR_BORROW_SORTED}" STREQUAL "${_RRR_INLINE_SORTED}")
+    if(NOT "${_SRPC_BORROW_SORTED}" STREQUAL "${_SRPC_INLINE_SORTED}")
         message(FATAL_ERROR
             "Borrow-check carriers must equal the remaining inline module "
             "inventory exactly")
@@ -567,45 +567,45 @@ if(NOT TARGET rrr)
     # normally). rusty-cpp retries without module arguments. The architecture
     # context-switch assembly remains deliberately outside this exact set.
 
-    if(ENABLE_BORROW_CHECKING AND RRR_BORROW_SRC)
-        add_library(rrr_borrow OBJECT ${RRR_BORROW_SRC})
-        set_target_properties(rrr_borrow PROPERTIES EXCLUDE_FROM_ALL YES)
-        target_include_directories(rrr_borrow PUBLIC
+    if(ENABLE_BORROW_CHECKING AND SRPC_BORROW_SRC)
+        add_library(srpc_borrow OBJECT ${SRPC_BORROW_SRC})
+        set_target_properties(srpc_borrow PROPERTIES EXCLUDE_FROM_ALL YES)
+        target_include_directories(srpc_borrow PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${SRPC_RUSTY_CPP_DIR}/include
         )
-        target_compile_options(rrr_borrow PUBLIC ${RRR_CXXFLAGS})
+        target_compile_options(srpc_borrow PUBLIC ${SRPC_CXXFLAGS})
 
-        add_borrow_check_target(rrr_borrow)
+        add_borrow_check_target(srpc_borrow)
 
-        # The rrr target owns the FILE_SET CXX_MODULES and is what emits the
+        # The srpc target owns the FILE_SET CXX_MODULES and is what emits the
         # per-source `.o.modmap` response files (which list `-fmodule-file=`
         # for every dependent BMI) plus the BMIs themselves. If we run the
-        # borrow checks before `rrr` has compiled, libclang sees neither —
+        # borrow checks before `srpc` has compiled, libclang sees neither —
         # parses proceed with "module 'std' not found" warnings and degraded
         # analysis. Force each individual check target to depend on the
-        # `rrr` library target so ninja serializes them after BMI emission.
-        # (Adding the dep only to `borrow_check_all_rrr_borrow` is not enough
+        # `srpc` library target so ninja serializes them after BMI emission.
+        # (Adding the dep only to `borrow_check_all_srpc_borrow` is not enough
         # — that's an aggregate, but ninja can still parallelize each per-file
         # check target without seeing the group-level dep.)
-        foreach(_BORROW_SRC ${RRR_BORROW_SRC})
+        foreach(_BORROW_SRC ${SRPC_BORROW_SRC})
             if(_BORROW_SRC MATCHES "\\.(cpp|cc|cxx)$")
                 get_filename_component(_BORROW_FILE_NAME ${_BORROW_SRC} NAME_WE)
-                set(_BORROW_CHECK_NAME "borrow_check_rrr_borrow_${_BORROW_FILE_NAME}")
+                set(_BORROW_CHECK_NAME "borrow_check_srpc_borrow_${_BORROW_FILE_NAME}")
                 if(TARGET ${_BORROW_CHECK_NAME})
-                    add_dependencies(${_BORROW_CHECK_NAME} rrr)
+                    add_dependencies(${_BORROW_CHECK_NAME} srpc)
                 endif()
             endif()
         endforeach()
 
-        add_custom_target(borrow_check_rrr
-            DEPENDS borrow_check_all_rrr_borrow
-            COMMENT "Running borrow checker on RRR library files"
+        add_custom_target(borrow_check_srpc
+            DEPENDS borrow_check_all_srpc_borrow
+            COMMENT "Running borrow checker on SRPC library files"
         )
     elseif(ENABLE_BORROW_CHECKING)
-        add_custom_target(borrow_check_rrr
-            COMMAND ${CMAKE_COMMAND} -E echo "No RRR files configured for borrow checking"
-            COMMENT "No RRR files configured for borrow checking"
+        add_custom_target(borrow_check_srpc
+            COMMAND ${CMAKE_COMMAND} -E echo "No SRPC files configured for borrow checking"
+            COMMENT "No SRPC files configured for borrow checking"
         )
     endif()
 endif()
@@ -614,19 +614,19 @@ endif()
 # custom targets (rather than configure-time checks) so every production build
 # observes changes made after CMake configuration.
 if(NOT TARGET build_rusty_cpp_transpiler)
-    message(FATAL_ERROR "rrr Goal-0 gates require build_rusty_cpp_transpiler")
+    message(FATAL_ERROR "srpc Goal-0 gates require build_rusty_cpp_transpiler")
 endif()
-find_program(RRR_BASH_EXECUTABLE NAMES bash REQUIRED)
-find_program(RRR_CARGO_EXECUTABLE NAMES cargo REQUIRED)
+find_program(SRPC_BASH_EXECUTABLE NAMES bash REQUIRED)
+find_program(SRPC_CARGO_EXECUTABLE NAMES cargo REQUIRED)
 
-add_custom_target(rrr_goal0_source_gate
+add_custom_target(srpc_goal0_source_gate
     COMMAND
-        "${RRR_BASH_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rrr_dsl_check.sh"
+        "${SRPC_BASH_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/srpc_dsl_check.sh"
         "${RUSTYCPP_TRANSPILER}"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extract_rrr_rust.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extract_srpc_rust.py"
         --check
         --transpiler "${RUSTYCPP_TRANSPILER}"
     COMMAND
@@ -639,14 +639,14 @@ add_custom_target(rrr_goal0_source_gate
         "${CMAKE_COMMAND}"
         -E env
         "RUSTFLAGS=-Dwarnings"
-        "${RRR_CARGO_EXECUTABLE}"
+        "${SRPC_CARGO_EXECUTABLE}"
         test
         --locked
         --workspace
         --all-targets
         --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     COMMAND
-        "${RRR_CARGO_EXECUTABLE}"
+        "${SRPC_CARGO_EXECUTABLE}"
         clippy
         --locked
         --workspace
@@ -659,8 +659,8 @@ add_custom_target(rrr_goal0_source_gate
     USES_TERMINAL
     VERBATIM
 )
-add_dependencies(rrr_goal0_source_gate build_rusty_cpp_transpiler)
-add_dependencies(rrr rrr_goal0_source_gate)
+add_dependencies(srpc_goal0_source_gate build_rusty_cpp_transpiler)
+add_dependencies(srpc srpc_goal0_source_gate)
 
 # Cargo owns the transpiler executable, but build_rusty_cpp_transpiler is an
 # always-run custom target and does not declare that executable as a CMake
@@ -669,21 +669,21 @@ add_dependencies(rrr rrr_goal0_source_gate)
 # replaces it in the same build. Instead, fingerprint the executable after the
 # Cargo edge and expose that fingerprint as a declared byproduct. The crate
 # generation rule consumes the fingerprint as a normal file dependency.
-set(RRR_GOAL0_TRANSPILER_FINGERPRINT
+set(SRPC_GOAL0_TRANSPILER_FINGERPRINT
     "${CMAKE_CURRENT_BINARY_DIR}/goal0-transpiler.fingerprint"
 )
-add_custom_target(rrr_goal0_transpiler_fingerprint
+add_custom_target(srpc_goal0_transpiler_fingerprint
     COMMAND
         "${CMAKE_COMMAND}"
         "-DINPUT=${RUSTYCPP_TRANSPILER}"
-        "-DOUTPUT=${RRR_GOAL0_TRANSPILER_FINGERPRINT}"
+        "-DOUTPUT=${SRPC_GOAL0_TRANSPILER_FINGERPRINT}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/update_file_fingerprint.cmake"
-    BYPRODUCTS "${RRR_GOAL0_TRANSPILER_FINGERPRINT}"
+    BYPRODUCTS "${SRPC_GOAL0_TRANSPILER_FINGERPRINT}"
     COMMENT "Fingerprinting the Goal-0 rusty-cpp emitter"
     VERBATIM
 )
 add_dependencies(
-    rrr_goal0_transpiler_fingerprint
+    srpc_goal0_transpiler_fingerprint
     build_rusty_cpp_transpiler
 )
 
@@ -701,73 +701,73 @@ file(GENERATE
 
 # Crate mode emits all children and the partial root in one invocation. Both
 # the production target and dual gate consume this one build-tree generation.
-# Only child .cppm files enter RRR_MODULE_SRC. The dual gate compiles
-# rrr.cppm after its children in temporary storage, but production never does.
-set(RRR_GOAL0_CRATE_GENERATED_OUTPUTS
-    ${RRR_GOAL0_CRATE_CHILD_SRC}
-    ${RRR_GOAL0_CRATE_ROOT_SRC}
-    ${RRR_GOAL0_CRATE_CPP_DIR}/CMakeLists.txt
-    ${RRR_GOAL0_CRATE_CPP_DIR}/rusty_hand_slots.md
+# Only child .cppm files enter SRPC_MODULE_SRC. The dual gate compiles
+# srpc.cppm after its children in temporary storage, but production never does.
+set(SRPC_GOAL0_CRATE_GENERATED_OUTPUTS
+    ${SRPC_GOAL0_CRATE_CHILD_SRC}
+    ${SRPC_GOAL0_CRATE_ROOT_SRC}
+    ${SRPC_GOAL0_CRATE_CPP_DIR}/CMakeLists.txt
+    ${SRPC_GOAL0_CRATE_CPP_DIR}/rusty_hand_slots.md
 )
-set(RRR_GOAL0_MODULE_PREAMBLE
+set(SRPC_GOAL0_MODULE_PREAMBLE
     ${CMAKE_CURRENT_SOURCE_DIR}/module-preambles.toml
 )
-set(RRR_GOAL0_TYPE_MAP
+set(SRPC_GOAL0_TYPE_MAP
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-type-map.toml
 )
-set(RRR_GOAL0_CPP_MODULE_INDEX
+set(SRPC_GOAL0_CPP_MODULE_INDEX
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp-module-index.toml
 )
 # Keep the crate manifest absolute at the process boundary. The crate
 # dependency validator deliberately resolves the exact local `rusty` facade;
 # an absolute entry manifest makes that walk independent of WORKING_DIRECTORY.
 get_filename_component(
-    RRR_GOAL0_CRATE_MANIFEST
+    SRPC_GOAL0_CRATE_MANIFEST
     "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     ABSOLUTE
 )
 add_custom_command(
-    OUTPUT ${RRR_GOAL0_CRATE_GENERATED_OUTPUTS}
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${RRR_GOAL0_CRATE_CPP_DIR}"
+    OUTPUT ${SRPC_GOAL0_CRATE_GENERATED_OUTPUTS}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${SRPC_GOAL0_CRATE_CPP_DIR}"
     COMMAND
         "${RUSTYCPP_TRANSPILER}"
-        --crate "${RRR_GOAL0_CRATE_MANIFEST}"
-        --output-dir "${RRR_GOAL0_CRATE_CPP_DIR}"
-        --cxx-namespace rrr
-        --flat-import-namespace rrr
-        --module-preamble "${RRR_GOAL0_MODULE_PREAMBLE}"
-        --type-map "${RRR_GOAL0_TYPE_MAP}"
-        --cpp-module-index "${RRR_GOAL0_CPP_MODULE_INDEX}"
+        --crate "${SRPC_GOAL0_CRATE_MANIFEST}"
+        --output-dir "${SRPC_GOAL0_CRATE_CPP_DIR}"
+        --cxx-namespace srpc
+        --flat-import-namespace srpc
+        --module-preamble "${SRPC_GOAL0_MODULE_PREAMBLE}"
+        --type-map "${SRPC_GOAL0_TYPE_MAP}"
+        --cpp-module-index "${SRPC_GOAL0_CPP_MODULE_INDEX}"
     DEPENDS
-        rrr_goal0_source_gate
-        rrr_goal0_transpiler_fingerprint
-        "${RRR_GOAL0_TRANSPILER_FINGERPRINT}"
-        "${RRR_GOAL0_CRATE_MANIFEST}"
+        srpc_goal0_source_gate
+        srpc_goal0_transpiler_fingerprint
+        "${SRPC_GOAL0_TRANSPILER_FINGERPRINT}"
+        "${SRPC_GOAL0_CRATE_MANIFEST}"
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
         "${CMAKE_CURRENT_SOURCE_DIR}/rusty-rustc/Cargo.toml"
         "${CMAKE_CURRENT_SOURCE_DIR}/rusty-rustc/src/lib.rs"
         "${CMAKE_CURRENT_SOURCE_DIR}/rust-modules.toml"
-        "${RRR_GOAL0_MODULE_PREAMBLE}"
-        "${RRR_GOAL0_TYPE_MAP}"
-        "${RRR_GOAL0_CPP_MODULE_INDEX}"
+        "${SRPC_GOAL0_MODULE_PREAMBLE}"
+        "${SRPC_GOAL0_TYPE_MAP}"
+        "${SRPC_GOAL0_CPP_MODULE_INDEX}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
-        ${RRR_GOAL0_CANONICAL_RUST_SRC}
+        ${SRPC_GOAL0_CANONICAL_RUST_SRC}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Generating Goal-0 rrr crate C++ child modules"
+    COMMENT "Generating Goal-0 srpc crate C++ child modules"
     USES_TERMINAL
     VERBATIM
 )
-add_custom_target(rrr_goal0_crate_codegen
-    DEPENDS ${RRR_GOAL0_CRATE_GENERATED_OUTPUTS}
+add_custom_target(srpc_goal0_crate_codegen
+    DEPENDS ${SRPC_GOAL0_CRATE_GENERATED_OUTPUTS}
 )
-add_dependencies(rrr rrr_goal0_crate_codegen)
+add_dependencies(srpc srpc_goal0_crate_codegen)
 
 # The Python gate links raw archives rather than a CMake target, so carry the
 # complete static runtime closure explicitly. Each archive is placed in a
 # linker rescan group by the gate; `$<TARGET_FILE:rusty>` alone would discard
 # CMake's PUBLIC dependency graph and leave imported-module initializers
 # unresolved.
-set(RRR_GOAL0_RUNTIME_TARGETS
+set(SRPC_GOAL0_RUNTIME_TARGETS
     rusty
     rusty_async
     vec_port
@@ -782,68 +782,68 @@ set(RRR_GOAL0_RUNTIME_TARGETS
     arc_port
     linked_list_port
 )
-set(RRR_GOAL0_RUNTIME_LIBRARY_ARGS)
-foreach(_RRR_GOAL0_RUNTIME_TARGET IN LISTS RRR_GOAL0_RUNTIME_TARGETS)
-    if(NOT TARGET ${_RRR_GOAL0_RUNTIME_TARGET})
+set(SRPC_GOAL0_RUNTIME_LIBRARY_ARGS)
+foreach(_SRPC_GOAL0_RUNTIME_TARGET IN LISTS SRPC_GOAL0_RUNTIME_TARGETS)
+    if(NOT TARGET ${_SRPC_GOAL0_RUNTIME_TARGET})
         message(FATAL_ERROR
             "Goal-0 crate gate runtime target is unavailable: "
-            "${_RRR_GOAL0_RUNTIME_TARGET}")
+            "${_SRPC_GOAL0_RUNTIME_TARGET}")
     endif()
-    list(APPEND RRR_GOAL0_RUNTIME_LIBRARY_ARGS
-        --runtime-library "$<TARGET_FILE:${_RRR_GOAL0_RUNTIME_TARGET}>")
+    list(APPEND SRPC_GOAL0_RUNTIME_LIBRARY_ARGS
+        --runtime-library "$<TARGET_FILE:${_SRPC_GOAL0_RUNTIME_TARGET}>")
 endforeach()
 
 # Match the configured Clang/libc++ ABI in the gate's direct compile and link
 # commands. Also preserve the selected Homebrew libc++ search path/rpath when
 # the toolchain setup above supplied one.
-set(RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS)
+set(SRPC_GOAL0_DIRECT_TOOLCHAIN_ARGS)
 # The configured `rusty` BMI is compiled with `-march=native` above.  Clang
 # requires every importer of that BMI to use the same target-feature set, so
 # carry the architecture selection into the gate's direct module commands.
-list(APPEND RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS
+list(APPEND SRPC_GOAL0_DIRECT_TOOLCHAIN_ARGS
     --cxx-flag=-march=native
 )
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    list(APPEND RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS
+    list(APPEND SRPC_GOAL0_DIRECT_TOOLCHAIN_ARGS
         --cxx-flag=-stdlib=libc++
         --link-flag=-lc++abi
     )
-    separate_arguments(_RRR_GOAL0_BREW_LINK_FLAGS
+    separate_arguments(_SRPC_GOAL0_BREW_LINK_FLAGS
         NATIVE_COMMAND "${SRPC_BREW_LIBCXX_FLAGS}")
-    foreach(_RRR_GOAL0_LINK_FLAG IN LISTS _RRR_GOAL0_BREW_LINK_FLAGS)
-        list(APPEND RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS
-            "--link-flag=${_RRR_GOAL0_LINK_FLAG}")
+    foreach(_SRPC_GOAL0_LINK_FLAG IN LISTS _SRPC_GOAL0_BREW_LINK_FLAGS)
+        list(APPEND SRPC_GOAL0_DIRECT_TOOLCHAIN_ARGS
+            "--link-flag=${_SRPC_GOAL0_LINK_FLAG}")
     endforeach()
 endif()
 
-add_custom_target(rrr_goal0_dual_compile ALL
-    COMMAND "$<TARGET_FILE:rrr_goal0_rand_kernel_smoke>"
+add_custom_target(srpc_goal0_dual_compile ALL
+    COMMAND "$<TARGET_FILE:srpc_goal0_rand_kernel_smoke>"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_rrr_crate_mode.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_srpc_crate_mode.py"
         --transpiler "${RUSTYCPP_TRANSPILER}"
-        --generated-dir "${RRR_GOAL0_CRATE_CPP_DIR}"
-        --production-library "$<TARGET_FILE:rrr>"
+        --generated-dir "${SRPC_GOAL0_CRATE_CPP_DIR}"
+        --production-library "$<TARGET_FILE:srpc>"
         --runtime-module-root
             "${CMAKE_BINARY_DIR}/third-party/rusty-cpp/CMakeFiles"
         --dependency-module-root
             "${CMAKE_BINARY_DIR}/CMakeFiles"
         --configured-module-map-root
             "${CMAKE_BINARY_DIR}"
-        ${RRR_GOAL0_RUNTIME_LIBRARY_ARGS}
-        ${RRR_GOAL0_DIRECT_TOOLCHAIN_ARGS}
+        ${SRPC_GOAL0_RUNTIME_LIBRARY_ARGS}
+        ${SRPC_GOAL0_DIRECT_TOOLCHAIN_ARGS}
         --clang "${CMAKE_CXX_COMPILER}"
         --nm "${CMAKE_NM}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Checking whole rrr crate through rustc and rusty-cpp"
+    COMMENT "Checking whole srpc crate through rustc and rusty-cpp"
     USES_TERMINAL
     VERBATIM
 )
-add_dependencies(rrr_goal0_dual_compile
-    rrr
-    rrr_goal0_crate_codegen
-    rrr_goal0_rand_kernel_smoke
-    ${RRR_GOAL0_RUNTIME_TARGETS}
+add_dependencies(srpc_goal0_dual_compile
+    srpc
+    srpc_goal0_crate_codegen
+    srpc_goal0_rand_kernel_smoke
+    ${SRPC_GOAL0_RUNTIME_TARGETS}
 )
 
 # ---------------------------------------------------------------------------
@@ -854,7 +854,7 @@ add_dependencies(rrr_goal0_dual_compile
 # below.  All eight sources have always lived in tests/, but nothing in this
 # build ever compiled or ran them, so that gate had nothing to run.
 #
-# These targets link the CURRENT production librrr.a — whose `rrr.reactor`
+# These targets link the CURRENT production libsrpc.a — whose `srpc.reactor`
 # provider is the canonical Rust source `reactor/reactor.rs` —
 # which is precisely the incumbent baseline a promoted canonical-Rust Reactor
 # has to be compared against.  They do not require the canonical Rust Reactor
@@ -933,14 +933,14 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
 
     # The battery programs are this build's first pure module *consumers*.
     # CMake 4.4 cannot collate their dyndep: their link closure contains both
-    # `rrr` (whose module reference map resolves `std` to
+    # `srpc` (whose module reference map resolves `std` to
     # @cmake_cxx_std@synth_0) and the plain rusty/port targets (which resolve
     # `std` to @synth_1, because they compile -O3 -march=native).  That is a
     # hard "Disagreement of the location of the 'std' module" error, and
     # neither side of the divergence may be flattened: the ports really are
-    # built -march=native, and rrr's flags produce the gated production ABI.
+    # built -march=native, and srpc's flags produce the gated production ABI.
     # So the battery opts out of the scanner and is handed the exact module
-    # map rrr itself was built against; see scripts/emit_module_map.py.
+    # map srpc itself was built against; see scripts/emit_module_map.py.
     set(SRPC_BATTERY_MODMAP
         ${CMAKE_CURRENT_BINARY_DIR}/goal0-battery-modules.modmap)
     add_custom_command(
@@ -949,12 +949,12 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
             --build-dir "${CMAKE_BINARY_DIR}"
             --modules-json
-                "${CMAKE_BINARY_DIR}/CMakeFiles/rrr.dir/CXXModules.json"
+                "${CMAKE_BINARY_DIR}/CMakeFiles/srpc.dir/CXXModules.json"
             --output "${SRPC_BATTERY_MODMAP}"
         DEPENDS
-            rrr
+            srpc
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
-        COMMENT "Collecting the rrr module map for the Goal-0 runtime battery"
+        COMMENT "Collecting the srpc module map for the Goal-0 runtime battery"
         VERBATIM
     )
     add_custom_target(srpc_battery_modmap DEPENDS ${SRPC_BATTERY_MODMAP})
@@ -986,7 +986,7 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         set_source_files_properties(${_battery_source} PROPERTIES
             COMPILE_OPTIONS "@${SRPC_BATTERY_MODMAP}"
             OBJECT_DEPENDS "${SRPC_BATTERY_MODMAP}")
-        target_link_libraries(${_battery_target} PRIVATE rrr pthread)
+        target_link_libraries(${_battery_target} PRIVATE srpc pthread)
         add_dependencies(${_battery_target} srpc_battery_modmap)
         list(FIND SRPC_BATTERY_OWN_MAIN ${_battery_target} _battery_own_main)
         if(_battery_own_main EQUAL -1)
@@ -1041,6 +1041,6 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(
         NAME srpc_goal0_rand_kernel_smoke
-        COMMAND "$<TARGET_FILE:rrr_goal0_rand_kernel_smoke>"
+        COMMAND "$<TARGET_FILE:srpc_goal0_rand_kernel_smoke>"
     )
 endif()

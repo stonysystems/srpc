@@ -103,7 +103,7 @@ void srpc_fiber_yield(srpc_fiber* f);
  * table and one build's configuration into the source. Both facts are
  * therefore answered by this C translation unit, which is compiled by the
  * same build, with the same flags, against the same platform headers as
- * the rest of librrr.
+ * the rest of libsrpc.
  */
 
 /* The calling OS thread's kernel thread id: syscall(SYS_gettid) using

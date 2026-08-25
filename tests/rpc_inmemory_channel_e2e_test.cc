@@ -19,16 +19,16 @@
 #include <rusty/arc.hpp>
 #include <rusty/box.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
-// ReconnectPolicy lives in rrr.reconnect_policy (trimmed from the
+// ReconnectPolicy lives in srpc.reconnect_policy (trimmed from the
 // consumer umbrella in 08b68144) — import directly.
-import rrr.reconnect_policy;
+import srpc.reconnect_policy;
 #include "../rpc/inmemory_channel.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Tiny test service that dispatches an "echo" RPC by replying with
@@ -49,8 +49,8 @@ class EchoService {
     void __dispatch__(i32 /*rpc_id*/, rusty::Box<Request> req,
                       WeakServerConnection sconn) {
         std::string echo;
-        rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));
-        rrr::Deserialize_::deserialize(echo, __req_ar__);
+        srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
+        srpc::Deserialize_::deserialize(echo, __req_ar__);
         {
             std::lock_guard<std::mutex> lk(mu_);
             ++dispatch_count_;
@@ -59,7 +59,7 @@ class EchoService {
         auto sconn_opt = sconn.upgrade();
         if (sconn_opt.is_some()) {
             sconn_opt.unwrap()->reply(*req, /*err=*/0,
-                [&](BinaryWriteArchive& out) { rrr::Serialize_::serialize(echo, out); });
+                [&](BinaryWriteArchive& out) { srpc::Serialize_::serialize(echo, out); });
         }
     }
 
@@ -147,14 +147,14 @@ TEST_F(InMemoryE2ETest, RoundTripFastRpc) {
 
     const std::string input = "hello-inmemory";
     auto fu_result = client->request(EchoService::kEchoRpcId, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); });
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
     fu->wait();
 
     EXPECT_EQ(fu->get_error_code(), 0);
     std::string echoed;
-    rrr::deserialize_from(fu->get_reply(), echoed);
+    srpc::deserialize_from(fu->get_reply(), echoed);
     EXPECT_EQ(echoed, input);
 
     EXPECT_EQ(svc_raw->dispatch_count(), 1);
@@ -187,14 +187,14 @@ TEST_F(InMemoryE2ETest, RoundTripFastRpcViaBinaryWriteArchive) {
 
     const std::string input = "hello-archive";
     auto fu_result = client->request(EchoService::kEchoRpcId, FutureAttr(),
-        [&](BinaryWriteArchive& ar) { rrr::Serialize_::serialize(input, ar); });
+        [&](BinaryWriteArchive& ar) { srpc::Serialize_::serialize(input, ar); });
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
     fu->wait();
 
     EXPECT_EQ(fu->get_error_code(), 0);
     std::string echoed;
-    rrr::deserialize_from(fu->get_reply(), echoed);
+    srpc::deserialize_from(fu->get_reply(), echoed);
     EXPECT_EQ(echoed, input);
 
     EXPECT_EQ(svc_raw->dispatch_count(), 1);
@@ -226,22 +226,22 @@ TEST_F(InMemoryE2ETest, RoundTripBothWriteFnSignatures) {
     {
         const std::string input = "via-marshal";
         auto fu = client->request(EchoService::kEchoRpcId, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }).unwrap();
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }).unwrap();
         fu->wait();
         ASSERT_EQ(fu->get_error_code(), 0);
         std::string echoed;
-        rrr::deserialize_from(fu->get_reply(), echoed);
+        srpc::deserialize_from(fu->get_reply(), echoed);
         EXPECT_EQ(echoed, input);
     }
     // Archive-flavoured request, same client.
     {
         const std::string input = "via-archive";
         auto fu = client->request(EchoService::kEchoRpcId, FutureAttr(),
-            [&](BinaryWriteArchive& ar) { rrr::Serialize_::serialize(input, ar); }).unwrap();
+            [&](BinaryWriteArchive& ar) { srpc::Serialize_::serialize(input, ar); }).unwrap();
         fu->wait();
         ASSERT_EQ(fu->get_error_code(), 0);
         std::string echoed;
-        rrr::deserialize_from(fu->get_reply(), echoed);
+        srpc::deserialize_from(fu->get_reply(), echoed);
         EXPECT_EQ(echoed, input);
     }
     EXPECT_EQ(svc_raw->dispatch_count(), 2);
@@ -268,13 +268,13 @@ TEST_F(InMemoryE2ETest, MultipleSequentialRequests) {
     for (int i = 0; i < kIterations; ++i) {
         std::string input = "req-" + std::to_string(i);
         auto fu_result = client->request(EchoService::kEchoRpcId, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); });
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); });
         ASSERT_TRUE(fu_result.is_ok()) << "iter=" << i;
         auto fu = fu_result.unwrap();
         fu->wait();
         ASSERT_EQ(fu->get_error_code(), 0) << "iter=" << i;
         std::string echoed;
-        rrr::deserialize_from(fu->get_reply(), echoed);
+        srpc::deserialize_from(fu->get_reply(), echoed);
         EXPECT_EQ(echoed, input);
     }
     EXPECT_EQ(svc_raw->dispatch_count(), kIterations);
@@ -349,4 +349,4 @@ TEST_F(InMemoryE2ETest, ConnectToUnboundAddrFailsFast) {
 // `peer_address()` if exposed.
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

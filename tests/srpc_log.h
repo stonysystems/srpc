@@ -1,30 +1,30 @@
 #pragma once
 
-// Consumer-side variadic `Log_*` wrappers — deliberately OUTSIDE the rrr
+// Consumer-side variadic `Log_*` wrappers — deliberately OUTSIDE the srpc
 // library sources, exactly as in the historical Mako consumer tree
-// (`src/rrr_log.h`).
+// (`src/srpc_log.h`).
 //
 // A parameter pack is the one construct no transpiler fix can reach: the
 // inline-Rust DSL is Rust parsed by `syn`, and Rust has no variadic-generics
 // grammar. So the wrapper lives on the CONSUMER's side of the boundary. What
-// stays in rrr is the whole logging IMPLEMENTATION, which is DSL:
-// `rrr::log_line` (level filter, tag, basename, timestamp, decoration, sink
-// routing) and `rrr::log_level_tag`.
+// stays in srpc is the whole logging IMPLEMENTATION, which is DSL:
+// `srpc::log_line` (level filter, tag, basename, timestamp, decoration, sink
+// routing) and `srpc::log_level_tag`.
 //
-// rrr-internal code does NOT use these. It calls the DSL directly:
+// srpc-internal code does NOT use these. It calls the DSL directly:
 //     log_line(Log::INFO, 0, nullptr, std::format("..."));
 //
 // Note the short-circuit: `log_line` re-checks the level, but only after its
 // argument has been evaluated, so the check here is what avoids formatting
 // entirely when a level is disabled.
 //
-// The includer is responsible for having pulled in the rrr umbrella
-// (`#include "../rrr.hpp"`) first; this header only adds the pack.
+// The includer is responsible for having pulled in the srpc umbrella
+// (`#include "../srpc.hpp"`) first; this header only adds the pack.
 
 #include <format>
 #include <utility>
 
-namespace rrr {
+namespace srpc {
 
 template <typename... Args>
 inline void Log_debug(std::format_string<Args...> fmt, Args&&... args) {
@@ -62,4 +62,4 @@ inline void Log_fatal(std::format_string<Args...> fmt, Args&&... args) {
     ::abort();
 }
 
-}  // namespace rrr
+}  // namespace srpc

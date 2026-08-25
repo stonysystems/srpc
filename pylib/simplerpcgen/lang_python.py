@@ -1,8 +1,22 @@
+import re
+
 from simplerpcgen.misc import SourceFile
+
+# The generated Python stubs are consumed by the external `simplerpc`
+# package, whose Marshal dispatches on the wire-type name.  It accepts both
+# the namespaced spelling it was originally taught and the BARE leaf, so the
+# stubs emit the bare leaf and stay independent of whatever the C++ half
+# calls its namespace.  (rpcgen returns ONE type string for both halves; the
+# C++ half keeps the namespace.)  Also strips inside template arguments,
+# e.g. std::map<srpc::i32, srpc::i64>.
+_WIRE_TYPE = re.compile(r"\bsrpc::(i8|i16|i32|i64|v32|v64)\b")
+
+def wire_type(t):
+    return _WIRE_TYPE.sub(r"\1", t)
 
 def emit_struct_python(struct, f):
     f.writeln("%s = Marshal.reg_type('%s', [%s])" % (
-        struct.name, struct.name, ", ".join(["('%s', '%s')" % (field.name, field.type) for field in struct.fields])))
+        struct.name, struct.name, ", ".join(["('%s', '%s')" % (field.name, wire_type(field.type)) for field in struct.fields])))
     f.writeln()
 
 
@@ -16,13 +30,13 @@ def emit_service_and_proxy_python(service, f, rpc_table):
         f.writeln("__input_type_info__ = {")
         with f.indent():
             for func in service.functions:
-                f.writeln("'%s': [%s]," % (func.name, ",".join(["'%s'" % a.type for a in func.input])))
+                f.writeln("'%s': [%s]," % (func.name, ",".join(["'%s'" % wire_type(a.type) for a in func.input])))
         f.writeln("}")
         f.writeln()
         f.writeln("__output_type_info__ = {")
         with f.indent():
             for func in service.functions:
-                f.writeln("'%s': [%s]," % (func.name, ",".join(["'%s'" % a.type for a in func.output])))
+                f.writeln("'%s': [%s]," % (func.name, ",".join(["'%s'" % wire_type(a.type) for a in func.output])))
         f.writeln("}")
         f.writeln()
         f.writeln("def __bind_helper__(self, func):")
@@ -37,8 +51,8 @@ def emit_service_and_proxy_python(service, f, rpc_table):
             for func in service.functions:
                 f.writeln("server.__reg_func__(%sService.%s, self.__bind_helper__(self.%s), [%s], [%s])" % (
                     service.name, func.name.upper(), func.name,
-                    ",".join(["'%s'" % a.type for a in func.input]),
-                    ",".join(["'%s'" % a.type for a in func.output])))
+                    ",".join(["'%s'" % wire_type(a.type) for a in func.input]),
+                    ",".join(["'%s'" % wire_type(a.type) for a in func.output])))
             if len(service.functions) == 0:
                 f.writeln("pass")
         for func in service.functions:

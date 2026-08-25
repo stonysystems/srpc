@@ -1,4 +1,4 @@
-//! Canonical Rust owner for `rrr.pollable_proxy`.
+//! Canonical Rust owner for `srpc.pollable_proxy`.
 
 use rusty::cpp_inherit;
 use std::sync::Arc;

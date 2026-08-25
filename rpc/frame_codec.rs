@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.frame_codec module.
+// Canonical Rust source for the srpc.frame_codec module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use std::cell::Cell;
 

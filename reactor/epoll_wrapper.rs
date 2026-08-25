@@ -1,4 +1,4 @@
-//! Canonical Rust owner for the `rrr.epoll_wrapper` C++ module.
+//! Canonical Rust owner for the `srpc.epoll_wrapper` C++ module.
 //!
 //! The historical `.cc` suffix is intentional: the generated `src/lib.rs`
 //! names this file in a `#[path]` attribute, so Cargo reads these exact

@@ -1,4 +1,4 @@
-use rrr::fiber::this_fiber;
+use srpc::fiber::this_fiber;
 
 #[test]
 fn context_identity_current_and_yield_preserve_behavior() {
@@ -7,7 +7,7 @@ fn context_identity_current_and_yield_preserve_behavior() {
     assert!(this_fiber::current().is_none());
     this_fiber::r#yield();
 
-    let ((id, present), yields) = rusty::rrr::reactor::with_test_fiber(73, || {
+    let ((id, present), yields) = rusty::srpc::reactor::with_test_fiber(73, || {
         assert!(this_fiber::in_fiber_context());
         let current = this_fiber::current().expect("test fiber must be installed");
         this_fiber::r#yield();
@@ -22,7 +22,7 @@ fn context_identity_current_and_yield_preserve_behavior() {
 
 #[test]
 fn sleep_helpers_preserve_unsigned_wrapping_and_past_deadlines() {
-    let _ = rusty::rrr::reactor::take_test_sleep_calls();
+    let _ = rusty::srpc::reactor::take_test_sleep_calls();
 
     this_fiber::sleep_us(17);
     this_fiber::sleep_ms(u64::MAX);
@@ -30,11 +30,11 @@ fn sleep_helpers_preserve_unsigned_wrapping_and_past_deadlines() {
     this_fiber::sleep_until_us(0);
 
     assert_eq!(
-        rusty::rrr::reactor::take_test_sleep_calls(),
+        rusty::srpc::reactor::take_test_sleep_calls(),
         vec![
             17,
             u64::MAX.wrapping_mul(1_000),
-            u64::MAX.wrapping_mul(rrr::basetypes::RRR_USEC_PER_SEC),
+            u64::MAX.wrapping_mul(srpc::basetypes::SRPC_USEC_PER_SEC),
         ]
     );
 }

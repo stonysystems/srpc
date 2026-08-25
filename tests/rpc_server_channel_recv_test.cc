@@ -23,13 +23,13 @@
 #include <rusty/box.hpp>
 #include <rusty/refcell.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
-import rrr.internal_protocol;
+import srpc.internal_protocol;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Stub that captures send_frame payloads AND lets the test deliver
@@ -93,11 +93,11 @@ inline ChannelConnectionProxy make_stub_proxy(
 //   [xid:v64][rpc_id:i32][user-data...]
 inline std::vector<std::uint8_t> build_request_frame(
         i64 xid, i32 rpc_id, const std::string& user = std::string()) {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(v64(xid), war);
-    rrr::Serialize_::serialize(rpc_id, war);
-    if (!user.empty()) rrr::Serialize_::serialize(user, war);
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+    srpc::Serialize_::serialize(v64(xid), war);
+    srpc::Serialize_::serialize(rpc_id, war);
+    if (!user.empty()) srpc::Serialize_::serialize(user, war);
     return std::vector<std::uint8_t>(
         sink.bytes.data(), sink.bytes.data() + sink.bytes.len());
 }
@@ -116,15 +116,15 @@ class RecordingService {
         last_rpc_id_ = rpc_id;
         last_xid_    = req->xid;
         std::string echo;
-        rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));
-        rrr::Deserialize_::deserialize(echo, __req_ar__);
+        srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
+        srpc::Deserialize_::deserialize(echo, __req_ar__);
         last_payload_ = echo;
         ++dispatch_count_;
         // Reply back to the client, echoing the payload.
         auto sconn_opt = sconn.upgrade();
         if (sconn_opt.is_some()) {
             sconn_opt.unwrap()->reply(*req, /*err=*/0,
-                [&](BinaryWriteArchive& out) { rrr::Serialize_::serialize(echo, out); });
+                [&](BinaryWriteArchive& out) { srpc::Serialize_::serialize(echo, out); });
         }
     }
 
@@ -227,15 +227,15 @@ TEST_F(ServerChannelRecvTest, UnhandledRpcRepliesEnoent) {
     stub->deliver(frame);
 
     ASSERT_EQ(stub->count(), 1u);
-    rrr::BufferSource src(stub->captured().front().data(),
+    srpc::BufferSource src(stub->captured().front().data(),
                stub->captured().front().size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     v64 v_xid;
     v32 v_err;
     v64 v_inst;
-    rrr::Deserialize_::deserialize(v_xid, rar);
-    rrr::Deserialize_::deserialize(v_err, rar);
-    rrr::Deserialize_::deserialize(v_inst, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_err, rar);
+    srpc::Deserialize_::deserialize(v_inst, rar);
     EXPECT_EQ(static_cast<i64>(v_xid.get()), 77);
     EXPECT_EQ(v_err.get(), ENOENT);
     EXPECT_EQ(static_cast<uint64_t>(v_inst.get()), kFakeServerInstanceId);
@@ -254,15 +254,15 @@ TEST_F(ServerChannelRecvTest, HeartbeatRpcRepliesZero) {
     stub->deliver(frame);
 
     ASSERT_EQ(stub->count(), 1u);
-    rrr::BufferSource src(stub->captured().front().data(),
+    srpc::BufferSource src(stub->captured().front().data(),
                stub->captured().front().size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     v64 v_xid;
     v32 v_err;
     v64 v_inst;
-    rrr::Deserialize_::deserialize(v_xid, rar);
-    rrr::Deserialize_::deserialize(v_err, rar);
-    rrr::Deserialize_::deserialize(v_inst, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_err, rar);
+    srpc::Deserialize_::deserialize(v_inst, rar);
     EXPECT_EQ(static_cast<i64>(v_xid.get()), 3);
     EXPECT_EQ(v_err.get(), 0);
     EXPECT_EQ(static_cast<uint64_t>(v_inst.get()), kFakeServerInstanceId);
@@ -276,21 +276,21 @@ TEST_F(ServerChannelRecvTest, MalformedFrameRepliesEinval) {
     auto stub = std::make_shared<StubChannel>();
     mut_sconn().bind_channel(make_stub_proxy(stub));
 
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(v64(/*xid=*/55), war);  // only xid, no rpc_id
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+    srpc::Serialize_::serialize(v64(/*xid=*/55), war);  // only xid, no rpc_id
     std::vector<std::uint8_t> bytes(
         sink.bytes.data(), sink.bytes.data() + sink.bytes.len());
     stub->deliver(bytes);
 
     ASSERT_EQ(stub->count(), 1u);
-    rrr::BufferSource src(stub->captured().front().data(),
+    srpc::BufferSource src(stub->captured().front().data(),
                stub->captured().front().size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     v64 v_xid;
     v32 v_err;
-    rrr::Deserialize_::deserialize(v_xid, rar);
-    rrr::Deserialize_::deserialize(v_err, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_err, rar);
     EXPECT_EQ(static_cast<i64>(v_xid.get()), 55);
     EXPECT_EQ(v_err.get(), EINVAL);
 }
@@ -347,21 +347,21 @@ TEST_F(ServerChannelRecvTest, RegisteredFastRpcDispatches) {
 
     // The handler's reply was captured by the stub.
     ASSERT_EQ(stub->count(), 1u);
-    rrr::BufferSource src(stub->captured().front().data(),
+    srpc::BufferSource src(stub->captured().front().data(),
                stub->captured().front().size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     v64 v_xid;
     v32 v_err;
     v64 v_inst;
     std::string echo;
-    rrr::Deserialize_::deserialize(v_xid, rar);
-    rrr::Deserialize_::deserialize(v_err, rar);
-    rrr::Deserialize_::deserialize(v_inst, rar);
-    rrr::Deserialize_::deserialize(echo, rar);
+    srpc::Deserialize_::deserialize(v_xid, rar);
+    srpc::Deserialize_::deserialize(v_err, rar);
+    srpc::Deserialize_::deserialize(v_inst, rar);
+    srpc::Deserialize_::deserialize(echo, rar);
     EXPECT_EQ(static_cast<i64>(v_xid.get()), 100);
     EXPECT_EQ(v_err.get(), 0);
     EXPECT_EQ(echo, "ping");
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

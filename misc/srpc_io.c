@@ -2,7 +2,7 @@
  * Contract mirrors srpc_net.c: no C++ type crosses this boundary. The
  * fds are NOT owned here; the caller keeps ownership.
  *
- * These were rrr::fd_sink_write / rrr::fd_source_read in
+ * These were srpc::fd_sink_write / srpc::fd_source_read in
  * misc/serializable.cpp. Both are pure ::write/::read EINTR-retry
  * ladders over a raw buffer — no C++ needed. The C++ side keeps a
  * two-line shim each so FdSink/FdSource call sites (including the

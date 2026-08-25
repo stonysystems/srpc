@@ -2,53 +2,53 @@
 #include <stdint.h>
 
 #include "simple_test_runner.h"
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-using namespace rrr;
+using namespace srpc;
 
 void test_basic_integers() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     i32 val_in = 42;
-    rrr::Serialize_::serialize(val_in, war);
+    srpc::Serialize_::serialize(val_in, war);
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     i32 val_out;
-    rrr::Deserialize_::deserialize(val_out, rar);
+    srpc::Deserialize_::deserialize(val_out, rar);
 
     TEST_ASSERT_EQ(val_in, val_out);
 }
 
 void test_multiple_integers() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     i8 i8_val = -128;
     i16 i16_val = -32768;
     i32 i32_val = -2147483648;
     i64 i64_val = -9223372036854775807LL;
 
-    rrr::Serialize_::serialize(i8_val, war);
-    rrr::Serialize_::serialize(i16_val, war);
-    rrr::Serialize_::serialize(i32_val, war);
-    rrr::Serialize_::serialize(i64_val, war);
+    srpc::Serialize_::serialize(i8_val, war);
+    srpc::Serialize_::serialize(i16_val, war);
+    srpc::Serialize_::serialize(i32_val, war);
+    srpc::Serialize_::serialize(i64_val, war);
 
     i8 i8_out;
     i16 i16_out;
     i32 i32_out;
     i64 i64_out;
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(i8_out, rar);
-    rrr::Deserialize_::deserialize(i16_out, rar);
-    rrr::Deserialize_::deserialize(i32_out, rar);
-    rrr::Deserialize_::deserialize(i64_out, rar);
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
+    srpc::Deserialize_::deserialize(i8_out, rar);
+    srpc::Deserialize_::deserialize(i16_out, rar);
+    srpc::Deserialize_::deserialize(i32_out, rar);
+    srpc::Deserialize_::deserialize(i64_out, rar);
     
     TEST_ASSERT_EQ(i8_val, i8_out);
     TEST_ASSERT_EQ(i16_val, i16_out);
@@ -57,31 +57,31 @@ void test_multiple_integers() {
 }
 
 void test_strings() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     std::string str_in = "Hello, Marshal!";
-    rrr::Serialize_::serialize(str_in, war);
+    srpc::Serialize_::serialize(str_in, war);
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     std::string str_out;
-    rrr::Deserialize_::deserialize(str_out, rar);
+    srpc::Deserialize_::deserialize(str_out, rar);
     
     TEST_ASSERT_EQ(str_in, str_out);
 }
 
 void test_vectors() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     std::vector<int> vec_in = {1, 2, 3, 4, 5};
-    rrr::Serialize_::serialize(vec_in, war);
+    srpc::Serialize_::serialize(vec_in, war);
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     std::vector<int> vec_out;
-    rrr::Deserialize_::deserialize(vec_out, rar);
+    srpc::Deserialize_::deserialize(vec_out, rar);
     
     TEST_ASSERT_EQ(vec_in.size(), vec_out.size());
     for (size_t i = 0; i < vec_in.size(); ++i) {
@@ -90,16 +90,16 @@ void test_vectors() {
 }
 
 void test_maps() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     std::map<int, std::string> map_in = {{1, "one"}, {2, "two"}, {3, "three"}};
-    rrr::Serialize_::serialize(map_in, war);
+    srpc::Serialize_::serialize(map_in, war);
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     std::map<int, std::string> map_out;
-    rrr::Deserialize_::deserialize(map_out, rar);
+    srpc::Deserialize_::deserialize(map_out, rar);
     
     TEST_ASSERT_EQ(map_in.size(), map_out.size());
     for (const auto& pair : map_in) {
@@ -109,50 +109,50 @@ void test_maps() {
 }
 
 void test_content_size() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     TEST_ASSERT_TRUE(sink.bytes.len() == 0);
     TEST_ASSERT_EQ(sink.bytes.len(), 0u);
 
     i32 val = 42;
-    rrr::Serialize_::serialize(val, war);
+    srpc::Serialize_::serialize(val, war);
 
     TEST_ASSERT_FALSE(sink.bytes.len() == 0);
     TEST_ASSERT_EQ(sink.bytes.len(), sizeof(i32));
 }
 
 void test_peek() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     i32 val1 = 100;
     i32 val2 = 200;
 
-    rrr::Serialize_::serialize(val1, war);
-    rrr::Serialize_::serialize(val2, war);
+    srpc::Serialize_::serialize(val1, war);
+    srpc::Serialize_::serialize(val2, war);
 
     // Non-consuming peek: read through a fresh BufferSource over the
     // same bytes; the main read cursor below is unaffected.
     i32 peeked_val;
-    rrr::BufferSource peek_src(sink.bytes.data(), sink.bytes.len());
+    srpc::BufferSource peek_src(sink.bytes.data(), sink.bytes.len());
     size_t peeked = peek_src.read_bytes(reinterpret_cast<uint8_t*>(&peeked_val), sizeof(i32));
     TEST_ASSERT_EQ(peeked, sizeof(i32));
     TEST_ASSERT_EQ(peeked_val, val1);
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     i32 read_val1, read_val2;
-    rrr::Deserialize_::deserialize(read_val1, rar);
-    rrr::Deserialize_::deserialize(read_val2, rar);
+    srpc::Deserialize_::deserialize(read_val1, rar);
+    srpc::Deserialize_::deserialize(read_val2, rar);
     
     TEST_ASSERT_EQ(read_val1, val1);
     TEST_ASSERT_EQ(read_val2, val2);
 }
 
 void test_large_data() {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     const size_t large_size = 10000;
     std::vector<i32> large_vec;
@@ -160,12 +160,12 @@ void test_large_data() {
         large_vec.push_back(i);
     }
 
-    rrr::Serialize_::serialize(large_vec, war);
+    srpc::Serialize_::serialize(large_vec, war);
 
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     std::vector<i32> large_vec_out;
-    rrr::Deserialize_::deserialize(large_vec_out, rar);
+    srpc::Deserialize_::deserialize(large_vec_out, rar);
     
     TEST_ASSERT_EQ(large_vec.size(), large_vec_out.size());
     for (size_t i = 0; i < large_size; ++i) {

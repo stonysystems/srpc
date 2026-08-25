@@ -107,7 +107,7 @@ if [ "$MODE" = check ]; then
 
     if [ -f "$here/tests/reactor_watchdog.h" ]; then
         ok "watchdog harness present"
-        n=$(grep -c 'RRR_TEST_WATCHDOG("' "$here/tests/reactor_stackless_battery.cc" 2>/dev/null || echo 0)
+        n=$(grep -c 'SRPC_TEST_WATCHDOG("' "$here/tests/reactor_stackless_battery.cc" 2>/dev/null || echo 0)
         if [ "$n" -ge "${#BATTERY_TESTS[@]}" ]; then
             ok "every battery test opens a watchdog ($n sites)"
         else
@@ -212,7 +212,7 @@ fi
 if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
     note "== item 11: ABI oracles =="
 
-    obj=$(find "$BUILD_DIR" -name 'rrr.reactor*.o' -print -quit 2>/dev/null)
+    obj=$(find "$BUILD_DIR" -name 'srpc.reactor*.o' -print -quit 2>/dev/null)
     if [ -z "$obj" ]; then
         skip "G3 symbol oracle (no generated reactor object in $BUILD_DIR)"
         skip "G4 layout oracle (needs the same object)"
@@ -227,7 +227,7 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
         # owner-visible rather than absorbed, and ANY undeclared new symbol or
         # ANY missing symbol is still a failure.  The same declaration, with
         # the full reason, is REACTOR_INCUMBENT_ORACLE_ADDITIONS in
-        # scripts/check_rrr_crate_mode.py.  Short version:
+        # scripts/check_srpc_crate_mode.py.  Short version:
         #   * 1  EventState::new_ -- EventState has no field defaults, so it is
         #     built by the mandated `fn new()` factory, and the incumbent
         #     oracle has no EventState constructor symbol at all.
@@ -239,71 +239,71 @@ if [ "$STAGE" = all ] || [ "$STAGE" = abi ]; then
         #     port-internal helpers now export normally by owner decision; the
         #     incumbent object owned none of them.
         AUTHORIZED_ADDITIONS=(
-            'rrr::EventState@rrr.reactor::new_()'
-            'rrr::current_thread_gettid@rrr.reactor()'
-            'rrr::EventPollable_::is_ready@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::is_ready@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::EventPollable_::log@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::log@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::log@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::log@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::log@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::log@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::EventPollable_::prunable@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::prunable@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::prunable@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::prunable@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::prunable@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::prunable@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::EventPollable_::set_prunable@rrr.reactor(janus::QuorumEvent@rrr.reactor const&, bool)'
-            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::IntEvent@rrr.reactor const&, bool)'
-            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::NeverEvent@rrr.reactor const&, bool)'
-            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&, bool)'
-            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::WaitAll@rrr.reactor const&, bool)'
-            'rrr::EventPollable_::set_prunable@rrr.reactor(rrr::WaitAny@rrr.reactor const&, bool)'
-            'rrr::EventPollable_::set_status@rrr.reactor(janus::QuorumEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
-            'rrr::EventPollable_::set_status@rrr.reactor(rrr::IntEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
-            'rrr::EventPollable_::set_status@rrr.reactor(rrr::NeverEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
-            'rrr::EventPollable_::set_status@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
-            'rrr::EventPollable_::set_status@rrr.reactor(rrr::WaitAll@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
-            'rrr::EventPollable_::set_status@rrr.reactor(rrr::WaitAny@rrr.reactor const&, rrr::EventStatus@rrr.reactor)'
-            'rrr::EventPollable_::status@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::status@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::status@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::status@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::status@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::status@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::EventPollable_::test@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::test@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::test@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::test@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::test@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::test@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::upgrade_fiber@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::EventPollable_::wakeup_time@rrr.reactor(janus::QuorumEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::IntEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::NeverEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::TimeoutEvent@rrr.reactor const&)'
-            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::WaitAll@rrr.reactor const&)'
-            'rrr::EventPollable_::wakeup_time@rrr.reactor(rrr::WaitAny@rrr.reactor const&)'
-            'rrr::reactor_log_line@rrr.reactor(int, int, signed char const*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >)'
-            'rrr::reactor_verify@rrr.reactor(bool)'
-            'rrr::reusing_fiber@rrr.reactor()'
-            'rrr::stackless_profile_enabled@rrr.reactor()'
-            'rrr::stackless_profile_env@rrr.reactor()'
-            'rrr::stackless_profile_report_periodic@rrr.reactor()'
-            'rrr::stackless_profile_update_max_slots@rrr.reactor(unsigned long)'
-            'rrr::STACKLESS_UNREGISTERED_SLOT@rrr.reactor'
-            'rrr::thread_id_to_u64@rrr.reactor(rusty::thread::ThreadId)'
+            'srpc::EventState@srpc.reactor::new_()'
+            'srpc::current_thread_gettid@srpc.reactor()'
+            'srpc::EventPollable_::is_ready@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::is_ready@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::is_ready@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::is_ready@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::is_ready@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::is_ready@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::EventPollable_::log@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::log@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::log@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::log@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::log@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::log@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::EventPollable_::prunable@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::prunable@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::prunable@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::prunable@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::prunable@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::prunable@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::EventPollable_::set_prunable@srpc.reactor(janus::QuorumEvent@srpc.reactor const&, bool)'
+            'srpc::EventPollable_::set_prunable@srpc.reactor(srpc::IntEvent@srpc.reactor const&, bool)'
+            'srpc::EventPollable_::set_prunable@srpc.reactor(srpc::NeverEvent@srpc.reactor const&, bool)'
+            'srpc::EventPollable_::set_prunable@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&, bool)'
+            'srpc::EventPollable_::set_prunable@srpc.reactor(srpc::WaitAll@srpc.reactor const&, bool)'
+            'srpc::EventPollable_::set_prunable@srpc.reactor(srpc::WaitAny@srpc.reactor const&, bool)'
+            'srpc::EventPollable_::set_status@srpc.reactor(janus::QuorumEvent@srpc.reactor const&, srpc::EventStatus@srpc.reactor)'
+            'srpc::EventPollable_::set_status@srpc.reactor(srpc::IntEvent@srpc.reactor const&, srpc::EventStatus@srpc.reactor)'
+            'srpc::EventPollable_::set_status@srpc.reactor(srpc::NeverEvent@srpc.reactor const&, srpc::EventStatus@srpc.reactor)'
+            'srpc::EventPollable_::set_status@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&, srpc::EventStatus@srpc.reactor)'
+            'srpc::EventPollable_::set_status@srpc.reactor(srpc::WaitAll@srpc.reactor const&, srpc::EventStatus@srpc.reactor)'
+            'srpc::EventPollable_::set_status@srpc.reactor(srpc::WaitAny@srpc.reactor const&, srpc::EventStatus@srpc.reactor)'
+            'srpc::EventPollable_::status@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::status@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::status@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::status@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::status@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::status@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::EventPollable_::test@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::test@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::test@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::test@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::test@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::test@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::EventPollable_::upgrade_fiber@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::upgrade_fiber@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::upgrade_fiber@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::upgrade_fiber@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::upgrade_fiber@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::upgrade_fiber@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::EventPollable_::wakeup_time@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::wakeup_time@srpc.reactor(srpc::IntEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::wakeup_time@srpc.reactor(srpc::NeverEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::wakeup_time@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'
+            'srpc::EventPollable_::wakeup_time@srpc.reactor(srpc::WaitAll@srpc.reactor const&)'
+            'srpc::EventPollable_::wakeup_time@srpc.reactor(srpc::WaitAny@srpc.reactor const&)'
+            'srpc::reactor_log_line@srpc.reactor(int, int, signed char const*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >)'
+            'srpc::reactor_verify@srpc.reactor(bool)'
+            'srpc::reusing_fiber@srpc.reactor()'
+            'srpc::stackless_profile_enabled@srpc.reactor()'
+            'srpc::stackless_profile_env@srpc.reactor()'
+            'srpc::stackless_profile_report_periodic@srpc.reactor()'
+            'srpc::stackless_profile_update_max_slots@srpc.reactor(unsigned long)'
+            'srpc::STACKLESS_UNREGISTERED_SLOT@srpc.reactor'
+            'srpc::thread_id_to_u64@srpc.reactor(rusty::thread::ThreadId)'
         )
         actual_manifest=$(mktemp /var/tmp/reactor-battery-nm.XXXXXX)
         expected_manifest=$(mktemp /var/tmp/reactor-battery-expected.XXXXXX)

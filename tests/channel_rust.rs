@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use rrr::channel::{
+use srpc::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ChannelListenerBase,
     ChannelListenerProxy, ConnectResult, OnAcceptCallback, OnClosedCallback, OnErrorCallback,

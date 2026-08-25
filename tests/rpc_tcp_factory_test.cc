@@ -32,11 +32,11 @@
 
 #include <rusty/arc.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 using namespace std::chrono_literals;
@@ -356,4 +356,4 @@ TEST_F(TcpFactoryTest, FactoryChannelProxyForwardsAllOps) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

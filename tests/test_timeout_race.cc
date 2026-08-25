@@ -2,11 +2,11 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 class TimeoutRaceTest : public ::testing::Test {

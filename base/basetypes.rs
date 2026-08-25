@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.basetypes module.
+// Canonical Rust source for the srpc.basetypes module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 pub use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -310,7 +310,7 @@ impl Counter {
     }
 }
 
-pub const RRR_USEC_PER_SEC: u64 = 1_000_000;
+pub const SRPC_USEC_PER_SEC: u64 = 1_000_000;
 
 pub fn abort_if_false(cond: bool) {
     if !cond {

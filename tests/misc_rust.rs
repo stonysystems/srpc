@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use rrr::misc::{clamp, format_thousands, get_ncpu, Job, OneTimeJob};
+use srpc::misc::{clamp, format_thousands, get_ncpu, Job, OneTimeJob};
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};

@@ -15,7 +15,7 @@
 # ONE FILE PER INVOCATION, deliberately: `inline-rust --check` stops at
 # the first mismatch in a file, so batching under-reports.
 #
-# Usage: scripts/rrr_dsl_check.sh [path/to/rusty-cpp-transpiler]
+# Usage: scripts/srpc_dsl_check.sh [path/to/rusty-cpp-transpiler]
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

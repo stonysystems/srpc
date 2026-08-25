@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-import rrr.basetypes;
+import srpc.basetypes;
 
-using namespace rrr;
+using namespace srpc;
 
 TEST(Time, ClocksAndSleepAreLive) {
     const auto monotonic_before = Time::now(true);

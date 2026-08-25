@@ -1,8 +1,8 @@
-//! Canonical Rust owner for `rrr.serializable_envelope`.
+//! Canonical Rust owner for `srpc.serializable_envelope`.
 
-use cpp::rrr::basetypes as cpp_basetypes;
-use cpp::rrr::debugging as cpp_debugging;
-use cpp::rrr::serializable as cpp_serializable;
+use cpp::srpc::basetypes as cpp_basetypes;
+use cpp::srpc::debugging as cpp_debugging;
+use cpp::srpc::serializable as cpp_serializable;
 use rusty as cpp;
 
 #[allow(unsafe_code)]

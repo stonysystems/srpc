@@ -1,7 +1,7 @@
 //! Open-set, name-tagged serializable payload envelope.
 //!
 //! This valid-Rust owner preserves the public surface of the legacy
-//! `rrr.any_message` C++ module: `AnyMessage` remains a two-field aggregate,
+//! `srpc.any_message` C++ module: `AnyMessage` remains a two-field aggregate,
 //! factories remain move-only callables, public type identity remains
 //! `TypeId`/`std::type_index`, and the wire format remains
 //! `[v64 string length][type name][payload bytes]`.
@@ -15,8 +15,8 @@
     clippy::unnecessary_unwrap
 )]
 
-use cpp::rrr::debugging;
-use cpp::rrr::serializable;
+use cpp::srpc::debugging;
+use cpp::srpc::serializable;
 use rusty as cpp;
 use std::any::TypeId;
 

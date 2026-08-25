@@ -1,4 +1,4 @@
-use rrr::serializable_envelope::{PayloadMember, SerializableEnvelope};
+use srpc::serializable_envelope::{PayloadMember, SerializableEnvelope};
 
 struct PayloadSet;
 

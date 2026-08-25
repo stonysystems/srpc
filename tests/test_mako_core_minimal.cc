@@ -4,15 +4,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "mako/varint.h"
 #include "mako/macros.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 
 int main() {
     Log_info("Mako core minimal test starting...");
@@ -40,7 +40,7 @@ int main() {
         }
     }
 
-    // Test 2: Timer test (from librrr)
+    // Test 2: Timer test (from libsrpc)
     Log_info("Testing timer...");
     {
         auto timer = Timer::new_();

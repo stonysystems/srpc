@@ -3,7 +3,7 @@
 // Measures the hot paths of the archive serde surface
 // (BufferSink/BufferSource + Binary{Write,Read}Archive) in isolation
 // (no network, no RPC scaffolding). Originally benchmarked the
-// chunk-linked-list rrr::Marshal; the scenarios keep their historical
+// chunk-linked-list srpc::Marshal; the scenarios keep their historical
 // names so runs stay comparable apples-to-apples.
 //
 // Each scenario runs for a fixed number of iterations; sinks are
@@ -23,13 +23,13 @@
 #include <rusty/box.hpp>
 #include <rusty/option.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-using rrr::i32;
-using rrr::i64;
+using srpc::i32;
+using srpc::i64;
 
 namespace {
 
@@ -83,14 +83,14 @@ int main() {
        2'000'000,
        [](std::size_t n) {
          for (std::size_t i = 0; i < n; ++i) {
-           rrr::BufferSink sink;
-           rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+           srpc::BufferSink sink;
+           srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
            i64 v = static_cast<i64>(i);
-           rrr::Serialize_::serialize(v, war);
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-           rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+           srpc::Serialize_::serialize(v, war);
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
            i64 out;
-           rrr::Deserialize_::deserialize(out, rar);
+           srpc::Deserialize_::deserialize(out, rar);
            if (out != v) std::abort();
          }
        }});
@@ -101,16 +101,16 @@ int main() {
   run({"write+read i64 (single Marshal, drains immediately)",
        5'000'000,
        [](std::size_t n) {
-         rrr::BufferSink sink;
-         rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+         srpc::BufferSink sink;
+         srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
          for (std::size_t i = 0; i < n; ++i) {
            sink.bytes.clear();
            i64 v = static_cast<i64>(i);
-           rrr::Serialize_::serialize(v, war);
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-           rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+           srpc::Serialize_::serialize(v, war);
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
            i64 out;
-           rrr::Deserialize_::deserialize(out, rar);
+           srpc::Deserialize_::deserialize(out, rar);
            if (out != v) std::abort();
          }
        }});
@@ -122,17 +122,17 @@ int main() {
        [](std::size_t n) {
          constexpr std::size_t kCount = 1024;
          for (std::size_t k = 0; k < n; ++k) {
-           rrr::BufferSink sink;
-           rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+           srpc::BufferSink sink;
+           srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
            for (std::size_t i = 0; i < kCount; ++i) {
              i64 v = static_cast<i64>(i);
-             rrr::Serialize_::serialize(v, war);
+             srpc::Serialize_::serialize(v, war);
            }
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-           rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
            for (std::size_t i = 0; i < kCount; ++i) {
              i64 out;
-             rrr::Deserialize_::deserialize(out, rar);
+             srpc::Deserialize_::deserialize(out, rar);
              if (out != static_cast<i64>(i)) std::abort();
            }
          }
@@ -142,13 +142,13 @@ int main() {
   run({"raw write(8) + read(8) (single Marshal)",
        5'000'000,
        [](std::size_t n) {
-         rrr::BufferSink sink;
+         srpc::BufferSink sink;
          std::uint64_t v = 0xDEADBEEFCAFEBABEull;
          std::uint64_t out = 0;
          for (std::size_t i = 0; i < n; ++i) {
            sink.bytes.clear();
            sink.write_bytes(reinterpret_cast<const std::uint8_t*>(&v), sizeof(v));
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
            src.read_bytes(reinterpret_cast<std::uint8_t*>(&out), sizeof(out));
            if (out != v) std::abort();
          }
@@ -161,9 +161,9 @@ int main() {
        [](std::size_t n) {
          std::vector<std::uint8_t> dst(kBlob1k.size());
          for (std::size_t i = 0; i < n; ++i) {
-           rrr::BufferSink sink;
+           srpc::BufferSink sink;
            sink.write_bytes(reinterpret_cast<const std::uint8_t*>(kBlob1k.data()), kBlob1k.size());
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
            src.read_bytes(reinterpret_cast<std::uint8_t*>(dst.data()), dst.size());
          }
        }});
@@ -175,12 +175,12 @@ int main() {
          std::string in = kStr100;
          std::string out;
          for (std::size_t i = 0; i < n; ++i) {
-           rrr::BufferSink sink;
-           rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
-           rrr::Serialize_::serialize(in, war);
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-           rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
-           rrr::Deserialize_::deserialize(out, rar);
+           srpc::BufferSink sink;
+           srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
+           srpc::Serialize_::serialize(in, war);
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
+           srpc::Deserialize_::deserialize(out, rar);
            if (out != in) std::abort();
          }
        }});
@@ -191,23 +191,23 @@ int main() {
        [](std::size_t n) {
          std::string in = kStr100;
          for (std::size_t i = 0; i < n; ++i) {
-           rrr::BufferSink sink;
-           rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+           srpc::BufferSink sink;
+           srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
            i32 a = 1, b = 2, c = 3, d = 4;
-           rrr::Serialize_::serialize(a, war);
-           rrr::Serialize_::serialize(b, war);
-           rrr::Serialize_::serialize(c, war);
-           rrr::Serialize_::serialize(d, war);
-           rrr::Serialize_::serialize(in, war);
+           srpc::Serialize_::serialize(a, war);
+           srpc::Serialize_::serialize(b, war);
+           srpc::Serialize_::serialize(c, war);
+           srpc::Serialize_::serialize(d, war);
+           srpc::Serialize_::serialize(in, war);
            i32 ao, bo, co, dxo;
            std::string so;
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-           rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
-           rrr::Deserialize_::deserialize(ao, rar);
-           rrr::Deserialize_::deserialize(bo, rar);
-           rrr::Deserialize_::deserialize(co, rar);
-           rrr::Deserialize_::deserialize(dxo, rar);
-           rrr::Deserialize_::deserialize(so, rar);
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
+           srpc::Deserialize_::deserialize(ao, rar);
+           srpc::Deserialize_::deserialize(bo, rar);
+           srpc::Deserialize_::deserialize(co, rar);
+           srpc::Deserialize_::deserialize(dxo, rar);
+           srpc::Deserialize_::deserialize(so, rar);
            if (so.size() != in.size()) std::abort();
          }
        }});
@@ -221,9 +221,9 @@ int main() {
          std::vector<std::uint8_t> blob(4096, 0xAB);
          std::vector<std::uint8_t> dst(4096);
          for (std::size_t i = 0; i < n; ++i) {
-           rrr::BufferSink sink;
+           srpc::BufferSink sink;
            sink.write_bytes(reinterpret_cast<const std::uint8_t*>(blob.data()), blob.size());
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
            src.read_bytes(reinterpret_cast<std::uint8_t*>(dst.data()), dst.size());
          }
        }});
@@ -235,11 +235,11 @@ int main() {
        [](std::size_t n) {
          std::vector<std::uint8_t> dst(kBlob1k.size());
          for (std::size_t k = 0; k < n; ++k) {
-           rrr::BufferSink sink;
+           srpc::BufferSink sink;
            for (int i = 0; i < 10; ++i) {
              sink.write_bytes(reinterpret_cast<const std::uint8_t*>(kBlob1k.data()), kBlob1k.size());
            }
-           rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
+           srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
            for (int i = 0; i < 10; ++i) {
              src.read_bytes(reinterpret_cast<std::uint8_t*>(dst.data()), dst.size());
            }

@@ -47,16 +47,16 @@ def compile_service_probe(repo_root: Path, cxx: str) -> None:
 
 using DispatchTypedSig = rusty::Result<
     janus::ClassicService::RpcRccDispatchResponse,
-    rrr::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccDispatchRequest&);
+    srpc::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccDispatchRequest&);
 using PreAcceptTypedSig = rusty::Result<
     janus::ClassicService::RpcRccPreAcceptResponse,
-    rrr::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccPreAcceptRequest&);
+    srpc::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccPreAcceptRequest&);
 using AcceptTypedSig = rusty::Result<
     janus::ClassicService::RpcRccAcceptResponse,
-    rrr::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccAcceptRequest&);
+    srpc::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccAcceptRequest&);
 using CommitTypedSig = rusty::Result<
     janus::ClassicService::RpcRccCommitResponse,
-    rrr::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccCommitRequest&);
+    srpc::i32>(janus::ClassicServiceImpl::*)(const janus::ClassicService::RpcRccCommitRequest&);
 
 int main() {
   DispatchTypedSig dispatch_typed = &janus::ClassicServiceImpl::RccDispatch;
@@ -88,7 +88,7 @@ int main() {
             "-I",
             str(repo_root / "src"),
             "-I",
-            str(repo_root / "src/rrr"),
+            str(repo_root / "src/srpc"),
             "-I",
             str(repo_root / "src/deptran"),
             "-I",
@@ -129,19 +129,19 @@ def main() -> int:
 
     require_contains(
         service_h_text,
-        "rusty::Result<ClassicService::RpcRccDispatchResponse, rrr::i32>",
+        "rusty::Result<ClassicService::RpcRccDispatchResponse, srpc::i32>",
     )
     require_contains(
         service_h_text,
-        "rusty::Result<ClassicService::RpcRccPreAcceptResponse, rrr::i32>",
+        "rusty::Result<ClassicService::RpcRccPreAcceptResponse, srpc::i32>",
     )
     require_contains(
         service_h_text,
-        "rusty::Result<ClassicService::RpcRccAcceptResponse, rrr::i32>",
+        "rusty::Result<ClassicService::RpcRccAcceptResponse, srpc::i32>",
     )
     require_contains(
         service_h_text,
-        "rusty::Result<ClassicService::RpcRccCommitResponse, rrr::i32>",
+        "rusty::Result<ClassicService::RpcRccCommitResponse, srpc::i32>",
     )
 
     require_contains(
@@ -177,19 +177,19 @@ def main() -> int:
         header_text = header_path.read_text(encoding="utf-8")
         require_contains(
             header_text,
-            "virtual rusty::Result<RpcRccDispatchResponse, rrr::i32> RccDispatch(",
+            "virtual rusty::Result<RpcRccDispatchResponse, srpc::i32> RccDispatch(",
         )
         require_contains(
             header_text,
-            "virtual rusty::Result<RpcRccPreAcceptResponse, rrr::i32> RccPreAccept(",
+            "virtual rusty::Result<RpcRccPreAcceptResponse, srpc::i32> RccPreAccept(",
         )
         require_contains(
             header_text,
-            "virtual rusty::Result<RpcRccAcceptResponse, rrr::i32> RccAccept(",
+            "virtual rusty::Result<RpcRccAcceptResponse, srpc::i32> RccAccept(",
         )
         require_contains(
             header_text,
-            "virtual rusty::Result<RpcRccCommitResponse, rrr::i32> RccCommit(",
+            "virtual rusty::Result<RpcRccCommitResponse, srpc::i32> RccCommit(",
         )
 
     compile_service_probe(repo_root, args.cxx)

@@ -1,6 +1,6 @@
 // Import the generated module exactly as an external rustc consumer does. This
 // is also the visibility boundary used when rusty-cpp emits the C++ module.
-use rrr::internal_protocol::{
+use srpc::internal_protocol::{
     encode_response_size, kInternalHeartbeatRpcId, kResponseHeaderExtFlag,
     kResponseSizeMask, response_has_extended_header, response_payload_size,
 };

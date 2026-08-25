@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.heartbeat module.
+// Canonical Rust source for the srpc.heartbeat module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use std::cell::{Cell, RefCell};
 

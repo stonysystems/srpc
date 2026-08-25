@@ -1,8 +1,8 @@
-//! Canonical Rust owner for the `rrr.threading` pthread wrappers and spin lock.
+//! Canonical Rust owner for the `srpc.threading` pthread wrappers and spin lock.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use cpp::rrr::debugging;
+use cpp::srpc::debugging;
 use rusty as cpp;
 
 pub type AtomicBool = rusty::sync::atomic::AtomicBool;

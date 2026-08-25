@@ -20,12 +20,12 @@
 #include <type_traits>
 
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 template <typename T>
@@ -138,10 +138,10 @@ using CacheCounterFn = std::uint64_t (IdempotencyCache::*)() const;
 using CacheRateFn = double (IdempotencyCache::*)() const;
 using CacheEvictFn = std::size_t (IdempotencyCache::*)(std::uint64_t) const;
 
-static_assert(std::is_same_v<decltype(&rrr::serialize), SerializeFn>);
-static_assert(std::is_same_v<decltype(&rrr::deserialize), DeserializeFn>);
-static_assert(std::is_same_v<decltype(&rrr::cached_response_set), SetResponseFn>);
-static_assert(std::is_same_v<decltype(&rrr::cached_response_get), GetResponseFn>);
+static_assert(std::is_same_v<decltype(&srpc::serialize), SerializeFn>);
+static_assert(std::is_same_v<decltype(&srpc::deserialize), DeserializeFn>);
+static_assert(std::is_same_v<decltype(&srpc::cached_response_set), SetResponseFn>);
+static_assert(std::is_same_v<decltype(&srpc::cached_response_get), GetResponseFn>);
 static_assert(std::is_same_v<decltype(&IdempotencyKey::new_), KeyFactoryFn>);
 static_assert(std::is_same_v<decltype(&IdempotencyKey::empty), EmptyKeyFn>);
 static_assert(std::is_same_v<decltype(&IdempotencyKey::is_valid), KeyValidFn>);
@@ -177,9 +177,9 @@ static_assert(std::is_same_v<decltype(&IdempotencyCache::evict_expired), CacheEv
 // type since the Marshal-deprecation retype).
 template <typename T>
 static rusty::Vec<std::uint8_t> to_bytes(const T& v) {
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive ar(rrr::make_sink_proxy_buffer(&sink));
-    rrr::Serialize_::serialize(v, ar);
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive ar(srpc::make_sink_proxy_buffer(&sink));
+    srpc::Serialize_::serialize(v, ar);
     return std::move(sink.bytes);
 }
 
@@ -261,10 +261,10 @@ TEST_F(IdempotencyKeyTest, MarshalRoundTrip) {
                 sizeof(original.sequence));
 
     // Serialize
-    rrr::BufferSink sink;
+    srpc::BufferSink sink;
     {
-        rrr::BinaryWriteArchive ar(rrr::make_sink_proxy_buffer(&sink));
-        rrr::Serialize_::serialize(original, ar);
+        srpc::BinaryWriteArchive ar(srpc::make_sink_proxy_buffer(&sink));
+        srpc::Serialize_::serialize(original, ar);
     }
 
     ASSERT_EQ(sink.bytes.len(), expected.size());
@@ -273,10 +273,10 @@ TEST_F(IdempotencyKeyTest, MarshalRoundTrip) {
     }
 
     // Decode the independent bytes, rather than the encoder's output.
-    rrr::BufferSource src(expected.data(), expected.size());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
+    srpc::BufferSource src(expected.data(), expected.size());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
     auto restored = IdempotencyKey::empty();
-    rrr::Deserialize_::deserialize(restored, rar);
+    srpc::Deserialize_::deserialize(restored, rar);
 
     EXPECT_EQ(restored, original);
 }

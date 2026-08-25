@@ -21,7 +21,7 @@
  *   - completion always runs on the owning thread;
  *   - teardown owes every stranded waiter an error, never silence.
  *
- * EVERY test body opens with RRR_TEST_WATCHDOG.  See reactor_watchdog.h for
+ * EVERY test body opens with SRPC_TEST_WATCHDOG.  See reactor_watchdog.h for
  * why that is not optional here.
  *
  * NOTE ON RUNNABILITY: authored ahead of the compiling provider, per the plan
@@ -47,12 +47,12 @@
 #include <rusty/async.hpp>
 #include <rusty/option.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "reactor_watchdog.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 
 namespace {
 
@@ -177,8 +177,8 @@ protected:
     void TearDown() override {
         // Drop the thread-local reactor between tests so each one gets a fresh
         // owner thread_id_, registry entry and slot space.
-        *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        rrr::sp_reactor_th_ = rusty::None;
+        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+        srpc::sp_reactor_th_ = rusty::None;
     }
 };
 
@@ -191,7 +191,7 @@ protected:
 // wakers) cannot satisfy even in principle -- under (i) there is no defined
 // cross-thread wake to observe.  It is the direct proof of shape (ii).
 TEST_F(StacklessBatteryTest, stackless_foreign_wake_completes_on_owner_tid) {
-    RRR_TEST_WATCHDOG("stackless_foreign_wake_completes_on_owner_tid");
+    SRPC_TEST_WATCHDOG("stackless_foreign_wake_completes_on_owner_tid");
 
     const long owner_tid = current_tid();
     auto reactor = Reactor::get_reactor();
@@ -231,7 +231,7 @@ TEST_F(StacklessBatteryTest, stackless_foreign_wake_completes_on_owner_tid) {
 // out during the first poll(ectx) exists before register_stackless_poller has
 // published a slot, so a wake landing in that window must not be lost.
 TEST_F(StacklessBatteryTest, stackless_wake_during_initial_poll) {
-    RRR_TEST_WATCHDOG("stackless_wake_during_initial_poll");
+    SRPC_TEST_WATCHDOG("stackless_wake_during_initial_poll");
 
     auto reactor = Reactor::get_reactor();
 
@@ -268,7 +268,7 @@ TEST_F(StacklessBatteryTest, stackless_wake_during_initial_poll) {
 // pending entry per ticket, bounded memory.  This is what the ticket's atomic
 // `enqueued` bit is for; without it the pending queue grows without bound.
 TEST_F(StacklessBatteryTest, stackless_duplicate_and_concurrent_wake_coalescing) {
-    RRR_TEST_WATCHDOG("stackless_duplicate_and_concurrent_wake_coalescing");
+    SRPC_TEST_WATCHDOG("stackless_duplicate_and_concurrent_wake_coalescing");
 
     auto reactor = Reactor::get_reactor();
 
@@ -327,7 +327,7 @@ TEST_F(StacklessBatteryTest, stackless_duplicate_and_concurrent_wake_coalescing)
 // has been handed to a new task.  The stale ticket must read as a tombstone at
 // drain and must not complete the new occupant.
 TEST_F(StacklessBatteryTest, stackless_completion_races_forced_slot_reuse) {
-    RRR_TEST_WATCHDOG("stackless_completion_races_forced_slot_reuse");
+    SRPC_TEST_WATCHDOG("stackless_completion_races_forced_slot_reuse");
 
     auto reactor = Reactor::get_reactor();
 
@@ -385,7 +385,7 @@ TEST_F(StacklessBatteryTest, stackless_completion_races_forced_slot_reuse) {
 // become defined no-ops, nothing is resurrected in the registry, and no
 // allocation outlives the last waker Arc.
 TEST_F(StacklessBatteryTest, stackless_reactor_destruction_races_retained_waker) {
-    RRR_TEST_WATCHDOG("stackless_reactor_destruction_races_retained_waker");
+    SRPC_TEST_WATCHDOG("stackless_reactor_destruction_races_retained_waker");
 
     ManualGate gate;
     rusty::Waker retained;
@@ -406,8 +406,8 @@ TEST_F(StacklessBatteryTest, stackless_reactor_destruction_races_retained_waker)
     });
 
     // Destroy the reactor underneath the spinning waker.
-    *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-    rrr::sp_reactor_th_ = rusty::None;
+    *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+    srpc::sp_reactor_th_ = rusty::None;
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     stop.store(true, std::memory_order_release);
@@ -423,7 +423,7 @@ TEST_F(StacklessBatteryTest, stackless_reactor_destruction_races_retained_waker)
 // 6. PollThread shutdown racing a waker.   [ASan]
 // ---------------------------------------------------------------------------
 TEST_F(StacklessBatteryTest, stackless_pollthread_shutdown_races_waker) {
-    RRR_TEST_WATCHDOG("stackless_pollthread_shutdown_races_waker");
+    SRPC_TEST_WATCHDOG("stackless_pollthread_shutdown_races_waker");
 
     ManualGate gate;
     rusty::Waker retained;
@@ -444,8 +444,8 @@ TEST_F(StacklessBatteryTest, stackless_pollthread_shutdown_races_waker) {
             (*reactor).process_stackless_tasks();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        rrr::sp_reactor_th_ = rusty::None;
+        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+        srpc::sp_reactor_th_ = rusty::None;
     });
 
     while (!spawned.load(std::memory_order_acquire)) {
@@ -476,7 +476,7 @@ TEST_F(StacklessBatteryTest, stackless_pollthread_shutdown_races_waker) {
 // Reactor on a plain thread has to satisfy the same owner-thread contract as
 // the two TLS factories.  Disk TLS is a third, independent registry entry.
 TEST_F(StacklessBatteryTest, stackless_direct_and_nonpollthread_reactors) {
-    RRR_TEST_WATCHDOG("stackless_direct_and_nonpollthread_reactors");
+    SRPC_TEST_WATCHDOG("stackless_direct_and_nonpollthread_reactors");
 
     std::atomic<int> completed{0};
 
@@ -508,8 +508,8 @@ TEST_F(StacklessBatteryTest, stackless_direct_and_nonpollthread_reactors) {
         });
         disk_foreign.join();
 
-        *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        rrr::sp_reactor_th_ = rusty::None;
+        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+        srpc::sp_reactor_th_ = rusty::None;
     });
     plain.join();
 
@@ -524,7 +524,7 @@ TEST_F(StacklessBatteryTest, stackless_direct_and_nonpollthread_reactors) {
 // on_ready callback at all, so a foreign wake there has to be proven through
 // the coroutine's own completion.
 TEST_F(StacklessBatteryTest, stackless_void_spawn_completes_on_owner_tid) {
-    RRR_TEST_WATCHDOG("stackless_void_spawn_completes_on_owner_tid");
+    SRPC_TEST_WATCHDOG("stackless_void_spawn_completes_on_owner_tid");
 
     const long owner_tid = current_tid();
     auto reactor = Reactor::get_reactor();
@@ -555,7 +555,7 @@ TEST_F(StacklessBatteryTest, stackless_void_spawn_completes_on_owner_tid) {
 // future change lets an owner block indefinitely, this test is what fails, and
 // the fix is a doorbell in stackless_wake_request -- not a longer bound here.
 TEST_F(StacklessBatteryTest, stackless_wake_latency_bound) {
-    RRR_TEST_WATCHDOG("stackless_wake_latency_bound");
+    SRPC_TEST_WATCHDOG("stackless_wake_latency_bound");
 
     auto reactor = Reactor::get_reactor();
 
@@ -667,7 +667,7 @@ struct CompletionHandle {
 }  // namespace
 
 TEST_F(StacklessBatteryTest, stackless_client_hang_regression) {
-    RRR_TEST_WATCHDOG("stackless_client_hang_regression");
+    SRPC_TEST_WATCHDOG("stackless_client_hang_regression");
 
     // ---- variant (a): admitted response, foreign wake, A unblocks OK ----
     {
@@ -704,8 +704,8 @@ TEST_F(StacklessBatteryTest, stackless_client_hang_regression) {
         EXPECT_FALSE(a_errored.load(std::memory_order_acquire))
             << "variant (a): a normal completion reported an error";
 
-        *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        rrr::sp_reactor_th_ = rusty::None;
+        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+        srpc::sp_reactor_th_ = rusty::None;
     }
 
     // ---- variant (b): teardown between admission and wake -> ERROR, not hang
@@ -739,8 +739,8 @@ TEST_F(StacklessBatteryTest, stackless_client_hang_regression) {
                 copy.wake();
             }
 
-            *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-            rrr::sp_reactor_th_ = rusty::None;  // ~Reactor runs here
+            *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+            srpc::sp_reactor_th_ = rusty::None;  // ~Reactor runs here
 
             a.join();
         }

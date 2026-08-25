@@ -1,5 +1,5 @@
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 #include "memdb/value.h"
 #include "deptran/marshal-value.h"
@@ -15,20 +15,20 @@ TEST(marshal, value) {
     Value v2((i64)2);
     Value v3((double)3.14);
     Value v4(s);
-    rrr::BufferSink sink;
-    rrr::BinaryWriteArchive war(rrr::make_sink_proxy_buffer(&sink));
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive war(srpc::make_sink_proxy_buffer(&sink));
 
     Value v5, v6, v7, v8;
-    rrr::Serialize_::serialize(v1, war);
-    rrr::Serialize_::serialize(v2, war);
-    rrr::Serialize_::serialize(v3, war);
-    rrr::Serialize_::serialize(v4, war);
-    rrr::BufferSource src(sink.bytes.data(), sink.bytes.len());
-    rrr::BinaryReadArchive rar(rrr::make_source_proxy_buffer(&src));
-    rrr::Deserialize_::deserialize(v5, rar);
-    rrr::Deserialize_::deserialize(v6, rar);
-    rrr::Deserialize_::deserialize(v7, rar);
-    rrr::Deserialize_::deserialize(v8, rar);
+    srpc::Serialize_::serialize(v1, war);
+    srpc::Serialize_::serialize(v2, war);
+    srpc::Serialize_::serialize(v3, war);
+    srpc::Serialize_::serialize(v4, war);
+    srpc::BufferSource src(sink.bytes.data(), sink.bytes.len());
+    srpc::BinaryReadArchive rar(srpc::make_source_proxy_buffer(&src));
+    srpc::Deserialize_::deserialize(v5, rar);
+    srpc::Deserialize_::deserialize(v6, rar);
+    srpc::Deserialize_::deserialize(v7, rar);
+    srpc::Deserialize_::deserialize(v8, rar);
 
     EXPECT_EQ(v5.get_i32(), (int32_t)1);
 

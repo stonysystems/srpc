@@ -5,9 +5,9 @@
 
 #include <gtest/gtest.h>
 #include <rusty/option.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
-namespace rrr {
+namespace srpc {
 
 class FiberTest : public ::testing::Test {
 protected:
@@ -21,8 +21,8 @@ protected:
         // suspended in one test (e.g. after a yield/sleep) stay registered
         // in the next test's `reactor->run_loop(false, true)` call and block it forever.
         // The Rc<Reactor> goes out of scope on assignment, running ~Reactor.
-        *rrr::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        rrr::sp_reactor_th_ = rusty::None;
+        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
+        srpc::sp_reactor_th_ = rusty::None;
     }
 
     // Drive the reactor until `done` holds, or give up after timeout_us.
@@ -44,13 +44,13 @@ protected:
     template <typename ReactorHandle, typename Pred>
     static bool DriveUntil(const ReactorHandle& reactor, Pred done,
                            uint64_t timeout_us) {
-        const uint64_t deadline = rrr::Time::now(true) + timeout_us;
+        const uint64_t deadline = srpc::Time::now(true) + timeout_us;
         while (!done()) {
-            if (rrr::Time::now(true) >= deadline) {
+            if (srpc::Time::now(true) >= deadline) {
                 return false;
             }
             reactor->run_loop(false, true);
-            rrr::Time::sleep(100);
+            srpc::Time::sleep(100);
         }
         return true;
     }
@@ -276,7 +276,7 @@ TEST_F(FiberTest, SleepSConversion) {
     // Note: Even sleep_s(0) creates a TimeoutEvent that may yield
 
     // Verify the conversion factor is correct: 1 second = 1,000,000 us
-    static_assert(rrr::RRR_USEC_PER_SEC == 1000000,
+    static_assert(srpc::SRPC_USEC_PER_SEC == 1000000,
                   "1 second should be 1,000,000 microseconds");
 
     // Just verify the function exists and is callable
@@ -490,7 +490,7 @@ TEST_F(FiberTest, FutureWithVectorType) {
     EXPECT_EQ(5, result[4]);
 }
 
-}  // namespace rrr
+}  // namespace srpc
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

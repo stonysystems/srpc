@@ -47,28 +47,28 @@ def validate_provider_inventory(cmake: str, manifest: dict[str, object]) -> None
     modules = manifest["module"]
     assert isinstance(modules, list)
     canonical_names = [
-        entry["cpp_module"].removeprefix("rrr.") for entry in modules
+        entry["cpp_module"].removeprefix("srpc.") for entry in modules
     ]
     canonical_sources = [entry["source"] for entry in modules]
-    if cmake_set(cmake, "RRR_GOAL0_CANONICAL_MODULES") != canonical_names:
+    if cmake_set(cmake, "SRPC_GOAL0_CANONICAL_MODULES") != canonical_names:
         raise AssertionError("canonical CMake names differ from manifest order")
     inline_sources = [
-        source_token(token) for token in cmake_set(cmake, "RRR_INLINE_MODULE_SRC")
+        source_token(token) for token in cmake_set(cmake, "SRPC_INLINE_MODULE_SRC")
     ]
     if inline_sources != list(EXPECTED_INLINE_SOURCES):
         raise AssertionError("inline carrier path inventory drifted or duplicated")
     if len(set(inline_sources)) != len(inline_sources):
         raise AssertionError("inline carrier path inventory contains duplicates")
-    expected_inline_names = cmake_set(cmake, "RRR_EXPECTED_INLINE_MODULES")
+    expected_inline_names = cmake_set(cmake, "SRPC_EXPECTED_INLINE_MODULES")
     if expected_inline_names != list(EXPECTED_INLINE_SOURCES.values()):
         raise AssertionError("inline module-name inventory drifted")
     retired = [
         source_token(token)
-        for token in cmake_set(cmake, "RRR_GOAL0_RETIRED_CARRIER_SRC")
+        for token in cmake_set(cmake, "SRPC_GOAL0_RETIRED_CARRIER_SRC")
     ]
     if retired != canonical_sources or len(set(retired)) != len(retired):
         raise AssertionError("retired carriers must equal canonical sources")
-    if cmake_set(cmake, "RRR_BORROW_SRC") != ["${RRR_INLINE_MODULE_SRC}"]:
+    if cmake_set(cmake, "SRPC_BORROW_SRC") != ["${SRPC_INLINE_MODULE_SRC}"]:
         raise AssertionError("borrow inventory must derive exactly from inline carriers")
 
 
@@ -84,7 +84,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
         )
         lib = (ROOT / "src/lib.rs").read_text(encoding="utf-8")
         for entry in modules:
-            rust_name = entry["cpp_module"].removeprefix("rrr.")
+            rust_name = entry["cpp_module"].removeprefix("srpc.")
             source = ROOT / entry["source"]
             # Canonical sources are Rust and are named .rs. They kept .cpp/.cc
             # only until the C++ -> Rust rename lineage was recorded in Git.
@@ -110,7 +110,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         validate_provider_inventory(cmake, manifest)
         inventory = re.search(
-            r"set\(RRR_GOAL0_CANONICAL_MODULES\s+(.*?)\n\)",
+            r"set\(SRPC_GOAL0_CANONICAL_MODULES\s+(.*?)\n\)",
             cmake,
             flags=re.DOTALL,
         )
@@ -119,14 +119,14 @@ class StandaloneGoal0Tests(unittest.TestCase):
         self.assertEqual(
             set(inventory.group(1).split()),
             {
-                entry["cpp_module"].removeprefix("rrr.")
+                entry["cpp_module"].removeprefix("srpc.")
                 for entry in modules
             },
         )
         for entry in modules:
-            rust_name = entry["cpp_module"].removeprefix("rrr.")
+            rust_name = entry["cpp_module"].removeprefix("srpc.")
             self.assertIn(
-                f"set(RRR_GOAL0_SOURCE_{rust_name} "
+                f"set(SRPC_GOAL0_SOURCE_{rust_name} "
                 f"${{CMAKE_CURRENT_SOURCE_DIR}}/{entry['source']})",
                 cmake,
             )
@@ -139,8 +139,8 @@ class StandaloneGoal0Tests(unittest.TestCase):
         # REAPPEARING -- a canonical provider silently re-served from a
         # hand-written inline unit.
         mutated = cmake.replace(
-            "set(RRR_INLINE_MODULE_SRC\n)",
-            "set(RRR_INLINE_MODULE_SRC\n"
+            "set(SRPC_INLINE_MODULE_SRC\n)",
+            "set(SRPC_INLINE_MODULE_SRC\n"
             "    ${CMAKE_CURRENT_SOURCE_DIR}/rpc/client.rs\n)",
             1,
         )
@@ -151,7 +151,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
     def test_empty_inline_inventory_is_not_a_vacuous_check(self) -> None:
         """An empty expected inventory must still reject a stray module NAME.
 
-        `RRR_INLINE_MODULE_SRC` and `RRR_EXPECTED_INLINE_MODULES` are checked
+        `SRPC_INLINE_MODULE_SRC` and `SRPC_EXPECTED_INLINE_MODULES` are checked
         independently; with both empty it would be easy for the pair to drift
         apart unnoticed.
         """
@@ -161,8 +161,8 @@ class StandaloneGoal0Tests(unittest.TestCase):
         self.assertEqual(EXPECTED_INLINE_SOURCES, {})
         validate_provider_inventory(cmake, manifest)
         mutated = cmake.replace(
-            "set(RRR_EXPECTED_INLINE_MODULES\n)",
-            "set(RRR_EXPECTED_INLINE_MODULES\n    client\n)",
+            "set(SRPC_EXPECTED_INLINE_MODULES\n)",
+            "set(SRPC_EXPECTED_INLINE_MODULES\n    client\n)",
             1,
         )
         self.assertNotEqual(mutated, cmake)
@@ -174,8 +174,8 @@ class StandaloneGoal0Tests(unittest.TestCase):
             scratch = Path(raw)
             (scratch / "scripts").mkdir()
             shutil.copy2(
-                ROOT / "scripts/rrr_dsl_check.sh",
-                scratch / "scripts/rrr_dsl_check.sh",
+                ROOT / "scripts/srpc_dsl_check.sh",
+                scratch / "scripts/srpc_dsl_check.sh",
             )
             for relative in EXPECTED_DSL_SOURCES:
                 destination = scratch / relative
@@ -187,7 +187,7 @@ class StandaloneGoal0Tests(unittest.TestCase):
 
             def check() -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
-                    ["bash", "scripts/rrr_dsl_check.sh", str(transpiler)],
+                    ["bash", "scripts/srpc_dsl_check.sh", str(transpiler)],
                     cwd=scratch,
                     text=True,
                     stdout=subprocess.PIPE,
@@ -231,13 +231,13 @@ class StandaloneGoal0Tests(unittest.TestCase):
         self.assertIn("--dependency-module-root", cmake)
         self.assertIn("--configured-module-map-root", cmake)
         self.assertIn('"${CMAKE_BINARY_DIR}/CMakeFiles"', cmake)
-        self.assertNotIn("${CMAKE_SOURCE_DIR}/src/rrr", cmake)
+        self.assertNotIn("${CMAKE_SOURCE_DIR}/src/srpc", cmake)
         self.assertNotIn("${CMAKE_SOURCE_DIR}/scripts", cmake)
         self.assertNotIn("MAKO_BREW_LIBCXX_FLAGS", cmake)
         for relative in (
-            "scripts/rrr_dsl_check.sh",
-            "scripts/extract_rrr_rust.py",
-            "scripts/check_rrr_crate_mode.py",
+            "scripts/srpc_dsl_check.sh",
+            "scripts/extract_srpc_rust.py",
+            "scripts/check_srpc_crate_mode.py",
             "scripts/update_file_fingerprint.cmake",
         ):
             self.assertTrue((ROOT / relative).is_file(), relative)

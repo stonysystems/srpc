@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use rrr::heartbeat::{
+use srpc::heartbeat::{
     heartbeat_time_us, HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback,
 };
 

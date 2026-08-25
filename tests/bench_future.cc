@@ -5,12 +5,12 @@
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
 #include <rusty/mutex.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 // Simple test service for benchmarking
@@ -39,14 +39,14 @@ private:
     void echo_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) {
         call_count++;
         i32 input;
-        rrr::BinaryReadArchive __req_ar__(rrr::make_source_proxy_buffer(&req->src));
-        rrr::Deserialize_::deserialize(input, __req_ar__);
+        srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
+        srpc::Deserialize_::deserialize(input, __req_ar__);
 
         auto sconn_opt = weak_sconn.upgrade();
         if (sconn_opt.is_some()) {
             auto sconn = sconn_opt.unwrap();
             const_cast<ServerConnection&>(*sconn).reply(*req, 0, [&](BinaryWriteArchive& out) {
-                rrr::Serialize_::serialize(input, out);
+                srpc::Serialize_::serialize(input, out);
             });
         }
     }
@@ -112,7 +112,7 @@ TEST_F(FutureBenchmark, CreateReleaseThroughput) {
     for (int i = 0; i < iterations; i++) {
         i32 val = i;
         auto fu_result = client.as_ref().unwrap()->request(BenchService::ECHO, FutureAttr(), [&](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(val, m);
+            srpc::Serialize_::serialize(val, m);
         });
         ASSERT_TRUE(fu_result.is_ok());
         // Arc auto-released (fire-and-forget)
@@ -133,14 +133,14 @@ TEST_F(FutureBenchmark, CreateWaitReleaseThroughput) {
     for (int i = 0; i < iterations; i++) {
         i32 val = i;
         auto fu_result = client.as_ref().unwrap()->request(BenchService::ECHO, FutureAttr(), [&](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(val, m);
+            srpc::Serialize_::serialize(val, m);
         });
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();
 
         fu->wait();
         i32 result;
-        rrr::deserialize_from(fu->get_reply(), result);
+        srpc::deserialize_from(fu->get_reply(), result);
         // Arc auto-released
     }
 
@@ -165,7 +165,7 @@ TEST_F(FutureBenchmark, BatchOperations) {
         for (int i = 0; i < batch_size; i++) {
             i32 val = batch * batch_size + i;
             auto fu_result = client.as_ref().unwrap()->request(BenchService::ECHO, FutureAttr(), [&](BinaryWriteArchive& m) {
-                rrr::Serialize_::serialize(val, m);
+                srpc::Serialize_::serialize(val, m);
             });
             ASSERT_TRUE(fu_result.is_ok());
             futures.push_back(fu_result.unwrap());
@@ -175,7 +175,7 @@ TEST_F(FutureBenchmark, BatchOperations) {
         for (auto& fu : futures) {
             fu->wait();
             i32 result;
-            rrr::deserialize_from(fu->get_reply(), result);
+            srpc::deserialize_from(fu->get_reply(), result);
             // Arc auto-released
         }
     }
@@ -195,7 +195,7 @@ TEST_F(FutureBenchmark, RefCopyOverhead) {
     for (int i = 0; i < iterations; i++) {
         i32 val = i;
         auto fu_result = client.as_ref().unwrap()->request(BenchService::ECHO, FutureAttr(), [&](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(val, m);
+            srpc::Serialize_::serialize(val, m);
         });
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();
@@ -225,12 +225,12 @@ TEST_F(FutureBenchmark, CallbackOverhead) {
         FutureAttr attr{FutureCallback::from_callable([&callback_count](rusty::Arc<Future> f) {
             callback_count++;
             i32 result;
-            rrr::deserialize_from(f->get_reply(), result);
+            srpc::deserialize_from(f->get_reply(), result);
         })};
 
         i32 val = i;
         auto fu_result = client.as_ref().unwrap()->request(BenchService::ECHO, attr, [&](BinaryWriteArchive& m) {
-            rrr::Serialize_::serialize(val, m);
+            srpc::Serialize_::serialize(val, m);
         });
         ASSERT_TRUE(fu_result.is_ok());
         auto fu = fu_result.unwrap();

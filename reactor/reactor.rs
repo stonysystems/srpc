@@ -1,4 +1,4 @@
-//! Canonical Rust source for the historical `rrr.reactor` provider.
+//! Canonical Rust source for the historical `srpc.reactor` provider.
 //!
 //! This file intentionally retains the historical `.cpp` path.  The crate
 //! view is `#[path = "../reactor/reactor.rs"] pub mod reactor;` in the
@@ -50,7 +50,7 @@ use crate::epoll_wrapper::{Epoll, PollMode, PollReady, Pollable};
 use crate::misc::Job;
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 use crate::logging::Log;
-use cpp::rrr::{debugging as cpp_debugging, logging as cpp_logging};
+use cpp::srpc::{debugging as cpp_debugging, logging as cpp_logging};
 use cpp::std as cpp_std;
 use rusty as cpp;
 
@@ -122,24 +122,24 @@ fn reusing_fiber() -> bool {
 
 // NOT named `verify`, for exactly the reason spelled out for
 // `reactor_log_line` below, and MEASURED here rather than assumed:
-// `rrr.debugging` exports `template<typename Expr> void verify(const Expr&,
-// source_location = current())` into the SAME C++ namespace `rrr`. A local
-// non-template `rrr::verify(bool)` is an exact match for a `bool` argument
+// `srpc.debugging` exports `template<typename Expr> void verify(const Expr&,
+// source_location = current())` into the SAME C++ namespace `srpc`. A local
+// non-template `srpc::verify(bool)` is an exact match for a `bool` argument
 // and therefore BEATS that template in overload resolution — so the forward
 // below resolved back to ITSELF. Infinite recursion is UB, so at the
-// production `-O2` the whole body was deleted: `rrr::verify(bool)` compiled
+// production `-O2` the whole body was deleted: `srpc::verify(bool)` compiled
 // to `push %rbp; mov %rsp,%rbp; pop %rbp; ret` and EVERY assertion in this
 // file silently did nothing, while an unoptimized build stack-overflowed.
 // The incumbent had no wrapper at all; it called the imported template
 // directly, which is what this rename restores.
 fn reactor_verify(value: bool) {
     // The checked foreign facade models the same abort-on-false contract as
-    // the imported `rrr.debugging` provider.
+    // the imported `srpc.debugging` provider.
     unsafe { cpp_debugging::verify(value) };
 }
 
-// NOT named `log_line`: the imported `rrr::logging::log_line` lands in the
-// same C++ namespace `rrr`, so a same-named local wrapper joins its overload
+// NOT named `log_line`: the imported `srpc::logging::log_line` lands in the
+// same C++ namespace `srpc`, so a same-named local wrapper joins its overload
 // set and the forwarding call below resolves back to ITSELF. The parameter is
 // `LegacyStdString` (the established alias every other module uses for a
 // value that crosses into the C++ logger) rather than `String`, so the
@@ -1041,13 +1041,13 @@ pub fn stackless_cancel_report<WakeDomain>() -> StacklessCancelReport {
 // Dropping it collapses every domain onto one slot AND moves the ABI: the four
 // functions stop being templates, so they stop being weak/linkonce
 // instantiations and become provider-owned STRONG symbols.  Measured on the
-// real object (R/M/T1-rrr.reactor.*): 301 -> 305 unique demangled strong
+// real object (R/M/T1-srpc.reactor.*): 301 -> 305 unique demangled strong
 // symbols, only-AFTER = 4 —
-//     rrr::stackless_wake_owners_slot@rrr.reactor()
-//     rrr::stackless_wake_reactor_key@rrr.reactor(rrr::Reactor const&)
-//     rrr::stackless_wake_request@rrr.reactor(Arc<StacklessWakeIngress> const&,
+//     srpc::stackless_wake_owners_slot@srpc.reactor()
+//     srpc::stackless_wake_reactor_key@srpc.reactor(srpc::Reactor const&)
+//     srpc::stackless_wake_request@srpc.reactor(Arc<StacklessWakeIngress> const&,
 //                                             Arc<StacklessWakeTicket> const&)
-//     rrr::stackless_wake_binding_context@rrr.reactor(Box<StacklessWakeBinding>&)
+//     srpc::stackless_wake_binding_context@srpc.reactor(Box<StacklessWakeBinding>&)
 // which the frozen incumbent oracle does not have.  The removal also cascades:
 // four more `WakeDomain` parameters become "unused" the moment these four go,
 // and clippy's own --fix leaves the crate not compiling (E0107 x4,
@@ -2175,11 +2175,11 @@ impl Drop for PollThread {
 // ---------------------------------------------------------------------------
 //
 // The Quorum family is the one part of this module that does NOT live in the
-// module-wide `rrr` namespace.  The incumbent ABI roots it directly in global
+// module-wide `srpc` namespace.  The incumbent ABI roots it directly in global
 // `janus`: 46 strong entries plus QuorumEvent's RTTI/vtable identity, all of
-// them still attached to module `rrr.reactor`
-// (`janus::QuorumEvent@rrr.reactor::...`).  `rrr::QuorumEvent` and
-// `rrr::janus::QuorumEvent` mangle differently and are NOT substitutes; nor is
+// them still attached to module `srpc.reactor`
+// (`janus::QuorumEvent@srpc.reactor::...`).  `srpc::QuorumEvent` and
+// `srpc::janus::QuorumEvent` mangle differently and are NOT substitutes; nor is
 // a namespace alias or a type alias.
 //
 // The contract is carried by an inert `#[cfg_attr(any(), cpp_namespace(::janus))]`
@@ -2553,7 +2553,7 @@ fn event_state_seed(st: &EventState) {
 // 'rusty::Rc<NeverEvent>' to 'rusty::Arc<NeverEvent>'").  Eighteen entries of
 // the frozen incumbent symbol oracle carry `rusty::Arc` in their mangled
 // signature, and `Reactor`'s own constructor embeds four
-// `rusty::RefCell<rusty::VecDeque<rusty::Arc<rrr::EventPollable>>>` fields, so
+// `rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable>>>` fields, so
 // the layout oracle moves too.  The C++ ABI contract wins.
 //
 // Each of the eight factories carries the allow on its own item; this note is
@@ -3017,11 +3017,11 @@ fn fiber_current_fiber() -> Option<Rc<Fiber>> {
 }
 
 // `pub` restores the incumbent carrier's visibility. In the hand-written
-// reactor/reactor.cpp this declaration lived inside `export namespace rrr`
+// reactor/reactor.cpp this declaration lived inside `export namespace srpc`
 // (line 1899 of the c6c55ba carrier), so importers could name it; the
 // promotion to canonical Rust dropped the `pub` and made it module-private.
-// rrr.server calls it by name through cpp-module-index.toml
-// (`[modules."rrr::reactor".symbols.fiber_create_run_impl]`, kind =
+// srpc.server calls it by name through cpp-module-index.toml
+// (`[modules."srpc::reactor".symbols.fiber_create_run_impl]`, kind =
 // "function"), which only resolves against an exported declaration. The
 // strong symbol itself is unchanged and was already in the reactor ratchet
 // and in the frozen incumbent oracle (line 197 of
@@ -3539,7 +3539,7 @@ fn pollworker_process_pending_removals(w: &mut PollThreadWorker) {
 // a binding.  Narrowing to `&dyn PollableBase` emits
 //     const PollableBase& b = p;   // p is rusty::Box<PollableBase>
 // and the module fails to compile -- 3 errors, "no viable conversion from
-// 'const ::rrr::PollableProxy' (aka 'const rusty::Box<PollableBase>') to
+// 'const ::srpc::PollableProxy' (aka 'const rusty::Box<PollableBase>') to
 // 'const PollableBase'" (R/M/obj-BB1.log).  The C++ ABI contract wins.
 #[allow(clippy::borrowed_box)]
 fn pollable_proxy_fd(p: &PollableProxy) -> i32 {

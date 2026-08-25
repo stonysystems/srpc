@@ -13,11 +13,11 @@
 #include <stddef.h>
 
 #include <gtest/gtest.h>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 // ===========================================================================

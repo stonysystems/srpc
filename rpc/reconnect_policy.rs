@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.reconnect_policy module.
+// Canonical Rust source for the srpc.reconnect_policy module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use std::cell::Cell;
 

@@ -1,2 +1,2 @@
 #pragma once
-import rrr.idempotency;
+import srpc.idempotency;

@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.errors module.
+// Canonical Rust source for the srpc.errors module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, PartialEq, Eq)]

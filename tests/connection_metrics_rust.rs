@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use rrr::connection_metrics::ConnectionMetrics;
+use srpc::connection_metrics::ConnectionMetrics;
 
 fn assert_send_sync<T: Send + Sync>() {}
 

@@ -1,13 +1,13 @@
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
-// PollMode et al. live in rrr.epoll_wrapper (trimmed from the consumer
+// PollMode et al. live in srpc.epoll_wrapper (trimmed from the consumer
 // umbrella in 08b68144) — import directly.
-import rrr.epoll_wrapper;
+import srpc.epoll_wrapper;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Plain struct (no PollableBase inheritance): consumed only via the
@@ -93,4 +93,4 @@ TEST(RpcPollableProxyFacadeTest, AdapterPropagatesCloseAndPendingState) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

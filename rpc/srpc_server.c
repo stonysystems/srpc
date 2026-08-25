@@ -1,4 +1,4 @@
-// Terminal C kernels for the canonical Rust `rrr.server` module.
+// Terminal C kernels for the canonical Rust `srpc.server` module.
 //
 // Both entry points exist because the operations have no spelling in the
 // canonical Rust the emitter accepts: `strtoll`'s `char**` out-parameter and

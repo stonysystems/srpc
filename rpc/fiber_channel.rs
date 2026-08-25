@@ -1,6 +1,6 @@
 //! Fiber-blocking receive wrapper for the callback-driven channel facade.
 //!
-//! This is the valid-Rust owner of the legacy `rrr.fiber_channel` module.  A
+//! This is the valid-Rust owner of the legacy `srpc.fiber_channel` module.  A
 //! `FiberChannel` must reach its final address before [`FiberChannel::bind_callbacks`]
 //! is called: the installed callbacks retain a raw pointer to the wrapper.  The
 //! pin marker makes the generated C++ type non-copyable and non-movable, as the
@@ -23,7 +23,7 @@
     clippy::type_complexity
 )]
 
-use cpp::rrr::reactor as cpp_reactor;
+use cpp::srpc::reactor as cpp_reactor;
 use rusty as cpp;
 use std::cell::Cell;
 use std::collections::VecDeque;

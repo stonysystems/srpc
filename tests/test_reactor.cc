@@ -12,15 +12,15 @@
 #include <rusty/arc.hpp>
 #include <rusty/function.hpp>
 #include <rusty/mutex.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
-// PollMode et al. live in rrr.epoll_wrapper (trimmed from the consumer
+// PollMode et al. live in srpc.epoll_wrapper (trimmed from the consumer
 // umbrella in 08b68144) — import directly.
-import rrr.epoll_wrapper;
+import srpc.epoll_wrapper;
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace std::chrono;
 
 // Concrete test double consumed through `PollableArcShim<TestPollable>`
@@ -546,8 +546,8 @@ TEST_F(ReactorTest, DestructorCleanupWithoutExplicitRemove) {
     }
 
     // Reset the global remove counter (was Epoll::remove_count_ static member;
-    // hoisted to rrr::epoll_remove_count when Epoll moved to the DSL).
-    rrr::epoll_remove_count.store(0);
+    // hoisted to srpc::epoll_remove_count when Epoll moved to the DSL).
+    srpc::epoll_remove_count.store(0);
 
     {
         auto test_poll_worker = PollThread::create();
@@ -562,7 +562,7 @@ TEST_F(ReactorTest, DestructorCleanupWithoutExplicitRemove) {
         std::this_thread::sleep_for(milliseconds(100));
 
         // Verify no removes happened yet
-        EXPECT_EQ(rrr::epoll_remove_count.load(), 0);
+        EXPECT_EQ(srpc::epoll_remove_count.load(), 0);
 
         // Destroy PollThread WITHOUT calling remove() on pollables
         // With the FIX, the destructor will:
@@ -576,7 +576,7 @@ TEST_F(ReactorTest, DestructorCleanupWithoutExplicitRemove) {
     }
 
     // Now check the global remove counter
-    int final_remove_count = rrr::epoll_remove_count.load();
+    int final_remove_count = srpc::epoll_remove_count.load();
 
     std::cout << "Remove count after destruction: " << final_remove_count << std::endl;
     std::cout << "Expected (correct behavior): " << NUM_POLLABLES << std::endl;

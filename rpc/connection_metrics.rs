@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.connection_metrics module.
+// Canonical Rust source for the srpc.connection_metrics module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;

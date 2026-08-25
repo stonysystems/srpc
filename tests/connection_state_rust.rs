@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::mem::{align_of, offset_of, size_of};
 use std::rc::Rc;
 
-use rrr::connection_state::{
+use srpc::connection_state::{
     connection_state_to_string, ConnectionState, ConnectionStateMachine, StateChangeCallback,
 };
 

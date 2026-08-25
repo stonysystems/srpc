@@ -12,11 +12,11 @@
 #include <rusty/box.hpp>
 
 #include "deptran/raft/rocksdb_log_storage.hpp"
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace janus::raft;
 
 // removed the unused `TestCommand`

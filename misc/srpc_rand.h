@@ -1,4 +1,4 @@
-/* srpc_rand.h -- plain-C PRNG kernel boundary for rrr.rand. */
+/* srpc_rand.h -- plain-C PRNG kernel boundary for srpc.rand. */
 #ifndef SRPC_RAND_H
 #define SRPC_RAND_H
 

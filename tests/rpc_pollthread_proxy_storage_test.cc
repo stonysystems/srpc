@@ -10,15 +10,15 @@
 #include <rusty/arc.hpp>
 #include <rusty/function.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
-// PollMode et al. live in rrr.epoll_wrapper (trimmed from the consumer
+// PollMode et al. live in srpc.epoll_wrapper (trimmed from the consumer
 // umbrella in 08b68144) — import directly.
-import rrr.epoll_wrapper;
+import srpc.epoll_wrapper;
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 using namespace std::chrono;
@@ -303,4 +303,4 @@ TEST(RpcPollThreadProxyStorageTest, DirectTypedProxySupportsNonPollableClass) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

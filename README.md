@@ -1,6 +1,6 @@
 # SRPC
 
-SRPC is the standalone Repeatable Research Runtime extracted from Mako with
+SRPC is the standalone Simple RPC framework extracted from Mako with
 its path history intact. Canonical Rust implementations live in `base/`,
 `misc/`, `reactor/` and `rpc/`, and are named `.rs`. They held their historical
 `.cpp`/`.cc` paths until the C++→Rust rename lineage was recorded in Git; the
@@ -29,11 +29,11 @@ toolchain.
 ```sh
 cargo test --locked --workspace --all-targets
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel 4 --target rrr_goal0_dual_compile
+cmake --build build --parallel 4 --target srpc_goal0_dual_compile
 ctest --test-dir build --output-on-failure
 ```
 
-The `rrr_goal0_dual_compile` target builds the pinned transpiler, validates
+The `srpc_goal0_dual_compile` target builds the pinned transpiler, validates
 the remaining inline Rust DSL, generates the canonical Rust providers, builds
 the production SRPC archive, and compares generated and production ABI/runtime
 behavior.

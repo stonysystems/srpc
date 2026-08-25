@@ -1,4 +1,4 @@
-use rrr::pollable_proxy::{PollableArcShim, PollableBase, PollableProxy};
+use srpc::pollable_proxy::{PollableArcShim, PollableBase, PollableProxy};
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 

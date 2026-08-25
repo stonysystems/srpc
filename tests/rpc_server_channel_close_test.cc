@@ -18,12 +18,12 @@
 #include <rusty/box.hpp>
 #include <rusty/refcell.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 import std;
 import rusty;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // Stub that exposes the installed callbacks so tests can fire them
@@ -200,4 +200,4 @@ TEST_F(ServerChannelCloseTest, OnClosedAfterDestroyIsNoop) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

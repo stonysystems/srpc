@@ -8,13 +8,13 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 #include "benchmark_service.h"
 #include "rpc_test_ports.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -380,7 +380,7 @@ TEST_F(ClientPoolTest, GetClientWithRealRequests) {
         std::string input = "test_" + std::to_string(i);
         auto fu_result = client->request(
             benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         ASSERT_TRUE(fu_result.is_ok());
         fu_result.unwrap()->wait();

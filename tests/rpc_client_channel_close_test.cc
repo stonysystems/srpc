@@ -27,14 +27,14 @@
 #include <rusty/sync/weak.hpp>  // rusty::sync::downgrade
 #include <rusty/box.hpp>
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.reconnect_policy;
+import srpc.reconnect_policy;
 
 import std;
 
-namespace rrr {
+namespace srpc {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -280,4 +280,4 @@ TEST_F(ClientChannelCloseTest, RequestAfterCloseFailsFastWithENOTCONN) {
 }
 
 }  // namespace
-}  // namespace rrr
+}  // namespace srpc

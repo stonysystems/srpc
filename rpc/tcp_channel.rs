@@ -24,7 +24,7 @@ use crate::channel::{
 use crate::frame_codec::{FrameDecodeStatus, FrameHeader, FrameStreamReader, FrameView};
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 
-use cpp::rrr::reactor as cpp_reactor;
+use cpp::srpc::reactor as cpp_reactor;
 use rusty as cpp;
 
 type LegacyStdString = String;

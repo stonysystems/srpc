@@ -7,10 +7,10 @@
 #include <gtest/gtest.h>
 
 
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 using namespace std;
-using namespace rrr;
+using namespace srpc;
 
 //TEST(fiber, hello) {
 //  ASSERT_EQ(1, 1);
@@ -19,8 +19,8 @@ using namespace rrr;
 //}
 
 #include "gtest/gtest.h"
-// the variadic Log_* wrappers now live outside src/rrr
-#include "rrr_log.h"
+// the variadic Log_* wrappers now live outside src/srpc
+#include "srpc_log.h"
 
 import std;
 import rusty;

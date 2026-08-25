@@ -16,11 +16,11 @@
 #include <unistd.h>
 #include <rusty/arc.hpp>
 #include <rusty/mutex.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.connection_metrics;
-import rrr.load_balancer;
+import srpc.connection_metrics;
+import srpc.load_balancer;
 #include "benchmark_service.h"
 
 import std;
@@ -36,7 +36,7 @@ static std::atomic<int> g_lb_next_port{12000};
 //   std::map::erase: [unsafe]
 // }
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -471,7 +471,7 @@ TEST_F(ClientPoolLoadBalancerTest, PoolConfigCanBeSetToLeastConnections) {
     std::string input = "test";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();
@@ -496,7 +496,7 @@ TEST_F(ClientPoolLoadBalancerTest, LeastConnectionsPrefersClientWithLowerInFligh
     // Keep one request in-flight on the selected client.
     auto sleep_result = busy_client->request(
         benchmark::BenchmarkService::SLEEP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(0.30, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(0.30, m); }
     );
     ASSERT_TRUE(sleep_result.is_ok());
     auto sleep_future = sleep_result.unwrap();
@@ -538,7 +538,7 @@ TEST_F(ClientPoolLoadBalancerTest, PoolConfigCanBeSetToLeastLatency) {
     std::string input = "test";
     auto fu_result = client->request(
         benchmark::BenchmarkService::FAST_NOP, FutureAttr(),
-        [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+        [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
     );
     ASSERT_TRUE(fu_result.is_ok());
     auto fu = fu_result.unwrap();

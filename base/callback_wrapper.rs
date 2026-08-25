@@ -1,4 +1,4 @@
-// Canonical Rust source for the rrr.callback_wrapper module.
+// Canonical Rust source for the srpc.callback_wrapper module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 pub mod detail {
     #[repr(C)]

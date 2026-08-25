@@ -8,17 +8,17 @@
 
 #include <gtest/gtest.h>
 #include <rusty/arc.hpp>
-#include "../rrr.hpp"
+#include "../srpc.hpp"
 
 // Trimmed from the consumer umbrella (08b68144) — import directly.
-import rrr.circuit_breaker;
-import rrr.reconnect_policy;
+import srpc.circuit_breaker;
+import srpc.reconnect_policy;
 #include "benchmark_service.h"
 #include "rpc_test_ports.h"
 
 import std;
 
-using namespace rrr;
+using namespace srpc;
 using namespace benchmark;
 using namespace std::chrono;
 
@@ -199,7 +199,7 @@ protected:
         std::string input = "stress";
         auto fu_result = client->request(
             BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         if (fu_result.is_err()) {
             stats.requests_failed++;
@@ -306,7 +306,7 @@ TEST_F(StressCrashTest, ServerCrashWith100PendingRequests) {
         std::string input = "req_" + std::to_string(i);
         auto fu_result = client->request(
             BenchmarkService::FAST_NOP, FutureAttr(),
-            [&](BinaryWriteArchive& m) { rrr::Serialize_::serialize(input, m); }
+            [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(input, m); }
         );
         if (fu_result.is_ok()) {
             futures.push_back(fu_result.unwrap());

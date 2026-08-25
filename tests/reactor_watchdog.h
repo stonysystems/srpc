@@ -31,8 +31,8 @@
  * own to the sanitizer runs (battery items 1-9 under TSan, 5-7 under ASan).
  */
 
-#ifndef RRR_TESTS_REACTOR_WATCHDOG_H
-#define RRR_TESTS_REACTOR_WATCHDOG_H
+#ifndef SRPC_TESTS_REACTOR_WATCHDOG_H
+#define SRPC_TESTS_REACTOR_WATCHDOG_H
 
 #include <chrono>
 #include <condition_variable>
@@ -49,7 +49,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-namespace rrr_test {
+namespace srpc_test {
 
 // Signal used to ask every thread to print its own backtrace.  SIGUSR2 is not
 // used by the reactor, the fiber runtime, or gtest.
@@ -200,10 +200,10 @@ private:
     std::thread thread_;
 };
 
-}  // namespace rrr_test
+}  // namespace srpc_test
 
 // Every battery test starts with this.  Naming the test in the macro keeps the
 // watchdog report self-identifying in a parallel ctest run.
-#define RRR_TEST_WATCHDOG(name) ::rrr_test::Watchdog rrr_test_watchdog_(name, 30)
+#define SRPC_TEST_WATCHDOG(name) ::srpc_test::Watchdog srpc_test_watchdog_(name, 30)
 
-#endif  // RRR_TESTS_REACTOR_WATCHDOG_H
+#endif  // SRPC_TESTS_REACTOR_WATCHDOG_H

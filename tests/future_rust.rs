@@ -1,4 +1,4 @@
-use rrr::future::{make_promise, make_ready_future, FiberFuture, FiberPromise};
+use srpc::future::{make_promise, make_ready_future, FiberFuture, FiberPromise};
 
 #[test]
 fn promise_future_delivery_is_one_shot_and_repeatable_to_read() {
