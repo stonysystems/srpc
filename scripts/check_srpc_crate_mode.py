@@ -7553,8 +7553,22 @@ int main() {
     }
     stat.sample(-7);
     stat.sample(-2);
-    if (!stat_is(stat, 2, -9, -4, 0, -7) || stat.avg() != -4) {
+    // max is the true maximum (-2), not the zero-seeded field; the former
+    // seed-at-0 body reported 0 here. See the srpc.stat first-sample Verus spec.
+    if (!stat_is(stat, 2, -9, -4, -2, -7) || stat.avg() != -4) {
         return 14;
+    }
+    {
+        // all-positive stream must report its real minimum, not 0.
+        auto pos = srpc::AvgStat::new_();
+        pos.sample(12);
+        pos.sample(7);
+        pos.sample(33);
+        pos.sample(5);
+        pos.sample(91);
+        if (!stat_is(pos, 5, 148, 29, 91, 5)) {
+            return 15;
+        }
     }
     stat.clear();
     if (!stat_is(stat, 0, 0, 0, 0, 0)) {

@@ -16,3 +16,6 @@ rusty = { path = "rusty-rustc" }
 
 [lints.rust]
 unsafe_code = "deny"
+# `verus` is the verification-only cfg set by scripts/verify_srpc.sh; declare
+# it so `cargo` under -Dwarnings does not flag `#[cfg(verus)]` as unexpected.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus)'] }

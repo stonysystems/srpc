@@ -1,5 +1,14 @@
 // Canonical Rust source for the srpc.stat module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
+//
+// Verus verification annotations are gated behind `cfg(verus)`, set only by
+// scripts/verify_srpc.sh. Under plain rustc and rusty-cpp they are absent, so
+// this module compiles and lowers exactly as before. Run the verifier to check
+// the `sample` first-sample contract in place.
+#[cfg(verus)]
+use vstd::prelude::*;
+
+#[cfg_attr(verus, verus_verify)]
 pub struct AvgStat {
     pub n_stat_: i64,
     pub sum_: i64,
@@ -9,6 +18,7 @@ pub struct AvgStat {
 }
 
 impl AvgStat {
+    #[cfg_attr(verus, verus_verify(external_body))]
     pub fn new() -> AvgStat {
         AvgStat {
             n_stat_: 0i64,
@@ -19,18 +29,40 @@ impl AvgStat {
         }
     }
 
+    // The first sample of a fresh stat becomes both the running min and max.
+    // The former body seeded `max_`/`min_` from the zero-initialised fields
+    // and only moved them with `if s > max_` / `if s < min_`, so an all-positive
+    // stream left `min_` stuck at 0 and an all-negative stream left `max_` stuck
+    // at 0 -- neither the true extremum. Verus proves the first-sample contract
+    // below holds for this body and fails for the old one.
+    #[cfg_attr(verus, verus_spec(
+        requires
+            old(self).n_stat_ == 0,
+            old(self).sum_ == 0,
+            s > i64::MIN,
+            s < i64::MAX,
+        ensures
+            final(self).min_ == s,
+            final(self).max_ == s,
+    ))]
     pub fn sample(&mut self, s: i64) {
         self.n_stat_ += 1i64;
         self.sum_ += s;
         self.avg_ = self.sum_ / self.n_stat_;
-        if s > self.max_ {
+        if self.n_stat_ == 1i64 {
             self.max_ = s;
-        }
-        if s < self.min_ {
             self.min_ = s;
+        } else {
+            if s > self.max_ {
+                self.max_ = s;
+            }
+            if s < self.min_ {
+                self.min_ = s;
+            }
         }
     }
 
+    #[cfg_attr(verus, verus_verify(external_body))]
     pub fn clear(&mut self) {
         self.n_stat_ = 0i64;
         self.sum_ = 0i64;
@@ -43,6 +75,7 @@ impl AvgStat {
     // the cpp_ctor is gone, AvgStat is a plain aggregate and the
     // populated form `AvgStat { n_stat_: ..., ... }` lowers to a clean
     // C++ designated initializer `AvgStat{.n_stat_ = ...}`.
+    #[cfg_attr(verus, verus_verify(external_body))]
     pub fn reset(&mut self) -> AvgStat {
         let stat: AvgStat = AvgStat {
             n_stat_: self.n_stat_,
@@ -55,6 +88,7 @@ impl AvgStat {
         stat
     }
 
+    #[cfg_attr(verus, verus_verify(external_body))]
     pub fn peek(&self) -> AvgStat {
         AvgStat {
             n_stat_: self.n_stat_,
@@ -65,6 +99,7 @@ impl AvgStat {
         }
     }
 
+    #[cfg_attr(verus, verus_verify(external_body))]
     pub fn avg(&self) -> i64 {
         self.avg_
     }
