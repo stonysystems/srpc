@@ -1,10 +1,12 @@
 // Canonical Rust source for the srpc.stat module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 //
-// Verus verification annotations are gated behind `cfg(verus)`, set only by
-// scripts/verify_srpc.sh. Under plain rustc and rusty-cpp they are absent, so
-// this module compiles and lowers exactly as before. Run the verifier to check
-// the `sample` first-sample contract in place.
+// Verus verification annotations are gated behind `cfg(verus)` -- the same cfg
+// the rusty-cpp transpiler strips, so under plain rustc and rusty-cpp they are
+// absent and this module compiles and lowers exactly as before. The `verify/`
+// package includes this real file in place (`#[path]`, no copy) and forces
+// `--cfg verus`, so `cargo verus verify` (run via scripts/verify_srpc.sh)
+// activates and checks the `sample` first-sample contract here.
 #[cfg(verus)]
 use vstd::prelude::*;
 

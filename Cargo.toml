@@ -6,6 +6,9 @@ publish = false
 
 [workspace]
 members = ["rusty-cpp-markers", "rusty-rustc"]
+# verify/ is the Verus harness; it pulls vstd and must never enter the
+# production build or the rusty-cpp transpile, so keep it out of the workspace.
+exclude = ["verify"]
 resolver = "2"
 
 [lib]

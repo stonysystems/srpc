@@ -1,54 +1,35 @@
 #!/usr/bin/env bash
 #
-# Verify srpc's in-place Verus specs.
+# Verify srpc's in-place Verus specs with `cargo verus verify`.
 #
-# Leaf modules carry `#[cfg(verus)]`-gated Verus annotations (see misc/stat.rs).
-# They are invisible to `cargo build`/`cargo test` and to the rusty-cpp C++
-# transpile, and are activated only here, by running the standalone Verus
-# driver with `--cfg verus`. This is the "driver over the module" route: the
-# prebuilt Verus dist ships libvstd.rlib / libverus_builtin.rlib that the
-# driver links, so no cargo dependency on Verus is needed (and `cargo verus
-# verify` -- which would rebuild the macro crates from source -- is not used).
+# Leaf modules carry `#[cfg(verus_only)]`-gated Verus annotations (see
+# misc/stat.rs). They are invisible to `cargo build`/`cargo test` and to the
+# rusty-cpp C++ transpile, because only `cargo verus verify` sets `verus_only`.
 #
-# Usage:  VERUS=/path/to/verus  scripts/verify_srpc.sh
+# The verify/ package is a separate, workspace-excluded crate whose modules are
+# `#[path]` links to the REAL srpc sources -- the same bytes rustc compiles and
+# rusty-cpp translates -- so this checks the actual code in place, not a copy.
+# verify/ is the only crate that depends on vstd, keeping it out of production.
 #
-# Each verified module must be dep-free (a leaf): the driver compiles the one
-# file as a standalone crate. `use crate::...` modules need the whole-crate
-# driver invocation and are out of scope for this script.
+# Requirements:
+#   - `cargo-verus` and `verus` on PATH (a prebuilt Verus dist provides both),
+#     or point at a dist explicitly:  VERUS_HOME=/path/to/verus-x86-linux
+#   - the vstd / verus_* registry crates resolvable (crates.io or a vendor dir)
+#
+# Usage:  scripts/verify_srpc.sh
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERUS="${VERUS:-verus}"
 
-if ! command -v "$VERUS" >/dev/null 2>&1 && [ ! -x "$VERUS" ]; then
-    echo "verify_srpc: Verus driver not found (set VERUS=/path/to/verus)" >&2
+# Allow VERUS_HOME to prepend a dist to PATH (it ships both cargo-verus + verus).
+if [ -n "${VERUS_HOME:-}" ]; then
+    export PATH="$VERUS_HOME:$PATH"
+fi
+
+if ! command -v cargo-verus >/dev/null 2>&1; then
+    echo "verify_srpc: cargo-verus not found (put a Verus dist on PATH or set VERUS_HOME)" >&2
     exit 2
 fi
 
-# Leaf modules with in-place specs. Extend as more leaves are annotated.
-LEAVES=(
-    "misc/stat.rs"
-)
-
-rc=0
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-for rel in "${LEAVES[@]}"; do
-    src="$HERE/$rel"
-    # The driver needs the module as a crate root. Prepend nothing; the gated
-    # `use vstd::prelude::*;` inside the file supplies the prelude under
-    # --cfg verus. A trailing `fn main(){}` lets it compile as an executable
-    # crate without requiring --crate-type.
-    unit="$tmp/$(echo "$rel" | tr '/' '_')"
-    { cat "$src"; printf '\n#[cfg(verus)]\nfn main() {}\n'; } > "$unit"
-    echo "== verifying $rel =="
-    if "$VERUS" --cfg verus "$unit"; then
-        echo "   OK: $rel"
-    else
-        echo "   FAIL: $rel" >&2
-        rc=1
-    fi
-done
-
-exit $rc
+cd "$HERE/verify" || exit 2
+exec cargo verus verify "$@"
