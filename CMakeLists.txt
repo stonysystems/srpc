@@ -958,6 +958,20 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         test_fiber_runtime
     )
 
+    # Documentation suites. They are built through the battery loop below
+    # because they need exactly the same plumbing (`import std;` => the
+    # modmap response file, the scanner opt-out, gtest_main), but they are
+    # deliberately NOT members of SRPC_RUNTIME_BATTERY: that list is the
+    # checkpoint's exact eight incumbent suites, and it also drives the
+    # `runtime_battery` ctest label and the RUN_SERIAL / TIMEOUT 600 policy,
+    # which exist for suites that drive real epoll threads and fibers.  A
+    # docs test only reads a file and searches strings, so it neither belongs
+    # under that label nor needs to be serialised against them.
+    set(SRPC_DOCS_BATTERY
+        test_rpc_docs_symbols
+    )
+    set(SRPC_BATTERY_SRC_test_rpc_docs_symbols  tests/rpc_docs_symbols_test.cc)
+
     # The battery programs are this build's first pure module *consumers*.
     # CMake 4.4 cannot collate their dyndep: their link closure contains both
     # `srpc` (whose module reference map resolves `std` to
@@ -998,7 +1012,7 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     )
     add_custom_target(srpc_battery_modmap DEPENDS ${SRPC_BATTERY_MODMAP})
 
-    foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY)
+    foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY SRPC_DOCS_BATTERY)
         set(_battery_source
             ${CMAKE_CURRENT_SOURCE_DIR}/${SRPC_BATTERY_SRC_${_battery_target}})
         if(NOT EXISTS "${_battery_source}")
@@ -1036,6 +1050,16 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         endif()
     endforeach()
 
+    # The suite's built-in fallback is the RELATIVE path "docs/srpc-book.md",
+    # which would resolve against whatever working directory ctest runs the
+    # binary in (the build tree), not the source tree.  Hand it the absolute
+    # source path.  Only the book: the migration guide does not exist in this
+    # repository.  This is a compile DEFINITION, not a compile option, so it
+    # is safe at target scope -- the `@modmap` response file above is the one
+    # thing that must stay at source scope.
+    target_compile_definitions(test_rpc_docs_symbols PRIVATE
+        "SRPC_BOOK_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-book.md\"")
+
     add_custom_target(srpc_runtime_battery
         DEPENDS ${SRPC_RUNTIME_BATTERY}
         COMMENT "Goal-0 runtime test battery (incumbent reactor)"
@@ -1056,6 +1080,13 @@ if(BUILD_TESTING)
                 RUN_SERIAL TRUE
                 LABELS "runtime_battery")
         endforeach()
+        # Pure file I/O and string search: no reactor, no serialisation, and
+        # a short timeout.  Not labelled `runtime_battery`.
+        add_test(NAME test_rpc_docs_symbols
+            COMMAND "$<TARGET_FILE:test_rpc_docs_symbols>")
+        set_tests_properties(test_rpc_docs_symbols PROPERTIES
+            TIMEOUT 120
+            LABELS "docs")
     endif()
     add_test(
         NAME srpc_goal0_standalone_structure
@@ -1082,4 +1113,19 @@ if(BUILD_TESTING)
         NAME srpc_goal0_rand_kernel_smoke
         COMMAND "$<TARGET_FILE:srpc_goal0_rand_kernel_smoke>"
     )
+    # Lint half only: it checks that every ```cpp fence in the book carries
+    # exactly one known tag.  That needs no compiler, no build tree and no
+    # submodule, so it runs everywhere.  The compile half of the same script
+    # is deliberately NOT wired up: it needs a configured build directory to
+    # recover the module flags from compile_commands.json.
+    add_test(
+        NAME srpc_docs_snippet_lint
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/rpc_docs_snippet_compile_test.py"
+            --lint-only
+            --book "${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-book.md"
+            --repo "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    set_tests_properties(srpc_docs_snippet_lint PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()

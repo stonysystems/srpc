@@ -42,7 +42,7 @@ safety net, and the `Verified:` paragraph the commit convention demands is copie
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets  # -> passed/failed counts
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release             # -> configure exit code
 cmake --build build --parallel 4                                    # -> build exit code (ALL pulls in both gates)
-ctest --test-dir build --output-on-failure                          # -> must say 12 tests, not 4
+ctest --test-dir build --output-on-failure                          # -> must say 14 tests, not 5
 ```
 
 Submodules must be initialized before anything CMake- or transpiler-related
@@ -123,8 +123,8 @@ clippy warning breaks the C++ build. A green source gate says nothing about ABI.
 ## Invariants that will bite you
 
 **`#[cfg_attr(any(), …)]` is the emitter's directive language, and rustc never sees it.** `any()` is
-always false, so these 38 attributes are invisible to `cargo build`, `cargo test` and clippy while being
-the only way to state a C++ contract Rust cannot: `thread_local` (10, all in `reactor/reactor.rs`),
+always false, so these 37 attributes are invisible to `cargo build`, `cargo test` and clippy while being
+the only way to state a C++ contract Rust cannot: `thread_local` (9, all in `reactor/reactor.rs`),
 `cpp_namespace(::janus)` (9 — the Quorum surface, which must live in *global* `::janus`; `srpc::janus::QuorumEvent`
 mangles differently and is not a substitute), `cpp_noexcept` (4), `cpp_no_fieldwise_ctor` (3),
 `cpp_no_auto_traits` (3), `cpp_abi` (3), `cpp_trait_member_dispatch` (2), `cpp_default_argument` (2),
@@ -233,14 +233,14 @@ Four non-obvious things about these tests:
   is always false, `RandomGenerator::rand(min, max)` returns `min`, `log_line` is a no-op. Its
   `with_test_fiber` / `take_test_sleep_calls` hooks are what such tests are actually for. Reaching a *new*
   C++ runtime API from a canonical module means writing its facade here first, plus a `rust-type-map.toml` row.
-- **`reactor/reactor.rs` is deliberately not executable as Rust** — its own header says so. The ten
+- **`reactor/reactor.rs` is deliberately not executable as Rust** — its own header says so. The nine
   `#[cfg_attr(any(), thread_local)]` statics are plain process-global `static mut` under rustc, so TLS, race
   and teardown behavior are covered only by the C++ battery.
 - Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
   *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
   drop order by byte offset. A cosmetic refactor turns these red.
 
-**C++ lane (narrow).** `tests/` holds 76 `.cc` files but CMake builds exactly **8**, named in explicit
+**C++ lane (narrow).** `tests/` holds 76 `.cc` files but CMake builds exactly **9**, named in explicit
 `set()` lists — there is no glob for test sources, so adding a `.cc` to `tests/` does nothing. Three of the
 eight have target names differing from their file names (`tests/fiber_test.cc` → `test_fiber`). The other 68
 are dead: nothing compiles them, so nothing proves they still build. Five reference the Mako monorepo
@@ -249,10 +249,11 @@ directly (`deptran/…` in `rpc_log_storage_test.cc`, `rpc_marshallable_proxy_te
 pull `tests/benchmark_service.h`, whose `#include "srpc/srpc.hpp"` is monorepo-relative and does not resolve
 here. The rest include the same headers the built suites do — assume nothing without trying.
 
-`ctest` registers 12 tests: the 8 battery binaries plus `srpc_goal0_standalone_structure`,
-`srpc_goal0_cargo`, `srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`. `srpc_goal0_cargo` just re-runs
-the whole Cargo suite. If the googletest submodule is missing, CMake only *warns* and silently registers 4
-tests instead of 12 — a green `ctest` is not proof the battery ran.
+`ctest` registers 14 tests: the 8 battery binaries and `test_rpc_docs_symbols` (label `docs`), plus
+`srpc_goal0_standalone_structure`, `srpc_goal0_cargo`, `srpc_goal0_contracts`,
+`srpc_goal0_rand_kernel_smoke` and `srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole
+Cargo suite. If the googletest submodule is missing, CMake only *warns* and silently registers 5 tests
+instead of 14 — a green `ctest` is not proof the battery ran.
 
 **Verus lane.** `verify/` is a workspace-excluded crate that `#[path]`-links the real sources and runs
 `cargo verus verify` against them; only `misc/stat.rs` and `rpc/internal_protocol.rs` carry specs today. A
@@ -310,7 +311,8 @@ connection exists, so it must be called *after* `connect`. `LoadBalancer` is use
 
 ## The hand-written C++ seam
 
-`srpc.hpp` is the consumer umbrella nearly every C++ test includes (72 of 76, and all eight built suites).
+`srpc.hpp` is the consumer umbrella nearly every C++ test includes (72 of 76, and eight of the nine built
+suites — the ninth, `rpc_docs_symbols_test.cc`, only reads files).
 Its `import srpc.*;` list is hand-maintained and nothing generates or checks it, so a newly consumer-facing
 module is not reachable *through the umbrella* until it is added there — a test needing one of the eight
 modules commented out as "trimmed from consumer umbrella: nothing outside srpc names it (build-time opt)"
@@ -394,8 +396,11 @@ commit it; watch out for `git add -A`.
   `misc/{serializable,serializable_envelope,any_message}.rs`). For the other 17 the rewrite was too dissimilar
   for rename detection and `--follow` stops at the promotion commit — reach the C++ era by naming the old
   path: `git log --all -- rpc/frame_codec.cpp`.
-- **`docs/srpc-book.md` and `docs/rpc/migration-guide.md`** do not exist, though
-  `tests/rpc_docs_symbols_test.cc` and `tests/rpc_docs_snippet_compile_test.py` read them. `docs/` contains
-  only `verification.md`.
+- **`docs/rpc/migration-guide.md`** does not exist, though `tests/rpc_docs_symbols_test.cc` reads it.
+  `docs/srpc-book.md` now does exist — ported from the Mako monorepo and rewritten chapter by chapter
+  against these sources — but neither doc test is wired into CMake, and the symbols test's `required` list
+  is itself partly stale (it demands `server.reg_service(`, an `RpcResult<…>` type that exists nowhere in
+  this repo, and three spellings that name stubs). Fix that list before wiring the test up, or it will pin
+  bad guidance in place.
 
 When prose and code disagree, `CMakeLists.txt`, `rust-modules.toml`, and `scripts/` are the truth.

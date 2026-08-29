@@ -523,7 +523,7 @@ that links it — runs the whole Rust suite and `clippy -D warnings` first, so a
 warning breaks the C++ build.
 
 `third-party/googletest` is only needed for the test battery; without it CMake warns
-and builds fewer tests. Of the 76 C++ test files in `tests/`, the build compiles 8; the
+and builds fewer tests. Of the 76 C++ test files in `tests/`, the build compiles 9; the
 rest are not currently wired into CMake.
 
 Sanitizers are a whole-configuration switch, so give them their own build directory:
@@ -605,6 +605,14 @@ Worth knowing before you rely on them:
 - The heartbeat protocol is implemented end to end, but nothing currently ticks the
   client-side timer.
 - `set_keepalive()` stores its configuration but does not yet push it to the socket.
+
+## Going deeper
+
+`docs/srpc-book.md` is the reference behind this tutorial: eighteen chapters taking the
+same machinery apart layer by layer — the fiber context switch, the reactor and its
+event system, the wire format, the client and server state machines, serialization, the
+code generator, and the reliability features. `docs/verification.md` covers the Verus
+lane.
 
 ## Not documented yet
 
