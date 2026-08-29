@@ -1066,6 +1066,10 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     )
 endif()
 
+# Every test registered below carries the label `srpc`, because
+# add_subdirectory(third-party/rusty-cpp) also registers ~69 tests of its own
+# whose executables are NOT in ALL.  A bare `ctest` therefore reports them as
+# "Not Run" and exits non-zero; `ctest -L srpc` selects exactly this project's.
 if(BUILD_TESTING)
     if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY)
@@ -1078,7 +1082,7 @@ if(BUILD_TESTING)
             set_tests_properties(${_battery_target} PROPERTIES
                 TIMEOUT 600
                 RUN_SERIAL TRUE
-                LABELS "runtime_battery")
+                LABELS "runtime_battery;srpc")
         endforeach()
         # Pure file I/O and string search: no reactor, no serialisation, and
         # a short timeout.  Not labelled `runtime_battery`.
@@ -1086,7 +1090,7 @@ if(BUILD_TESTING)
             COMMAND "$<TARGET_FILE:test_rpc_docs_symbols>")
         set_tests_properties(test_rpc_docs_symbols PROPERTIES
             TIMEOUT 120
-            LABELS "docs")
+            LABELS "docs;srpc")
     endif()
     add_test(
         NAME srpc_goal0_standalone_structure
@@ -1094,30 +1098,35 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_standalone.py"
     )
     set_tests_properties(srpc_goal0_standalone_structure PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
     add_test(
         NAME srpc_goal0_cargo
         COMMAND "${CMAKE_COMMAND}" -E env RUSTFLAGS=-Dwarnings
             "${CARGO_EXECUTABLE}" test --locked --workspace --all-targets
     )
     set_tests_properties(srpc_goal0_cargo PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
     add_test(
         NAME srpc_goal0_contracts
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
     )
     set_tests_properties(srpc_goal0_contracts PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
     add_test(
         NAME srpc_goal0_rand_kernel_smoke
         COMMAND "$<TARGET_FILE:srpc_goal0_rand_kernel_smoke>"
     )
+    set_tests_properties(srpc_goal0_rand_kernel_smoke PROPERTIES
+        LABELS "srpc")
     # Lint half only: it checks that every ```cpp fence in the book carries
     # exactly one known tag.  That needs no compiler, no build tree and no
     # submodule, so it runs everywhere.  The compile half of the same script
-    # is deliberately NOT wired up: it needs a configured build directory to
-    # recover the module flags from compile_commands.json.
+    # is deliberately NOT wired up: it needs a configured build tree so it can
+    # pick up goal0-battery-modules.modmap.
     add_test(
         NAME srpc_docs_snippet_lint
         COMMAND "${Python3_EXECUTABLE}"
@@ -1127,5 +1136,6 @@ if(BUILD_TESTING)
             --repo "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     set_tests_properties(srpc_docs_snippet_lint PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
 endif()

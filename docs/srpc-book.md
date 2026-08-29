@@ -6340,7 +6340,7 @@ cargo test --locked --workspace --all-targets
 # C++ lane.
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -L srpc --output-on-failure
 
 # One suite, then one case inside it.
 ctest --test-dir build -R '^test_fiber$' --output-on-failure
@@ -6355,10 +6355,13 @@ type, so `gdb ./build/test_fiber` gives usable frames without a special build.
 Those flags are exported `PUBLIC`, which is also why your own warnings disappear
 once you link srpc: the `-w` in that same list comes along.
 
-Two caveats about the tests themselves. `ctest` registers 14 tests, of which 8
-are the runtime battery — if the googletest submodule is missing, CMake only
-warns and registers 5, so a green run is not proof the battery ran. And of the 76
-`.cc` files in `tests/`, CMake builds exactly 9; the rest are not compiled
+Three caveats about the tests themselves. Filter with `-L srpc`: the vendored
+rusty-cpp subdirectory registers about 69 tests whose binaries are not in `ALL`,
+so a bare `ctest` reports them as "Not Run" and exits non-zero. `ctest -L srpc`
+selects the 14 this project owns, of which 8 are the runtime battery — and if the
+googletest submodule is missing, CMake only warns and registers 5, so a green run
+is not proof the battery ran. And of the 76 `.cc` files in `tests/`, CMake builds
+exactly 9; the rest are not compiled
 by anything and several no longer build at all. Do not use them as a reference
 for current API.
 

@@ -515,8 +515,12 @@ builds the archive, and compares the generated and shipped ABI:
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4 --target srpc_goal0_dual_compile
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -L srpc --output-on-failure
 ```
+
+Use `-L srpc`, not a bare `ctest`: the vendored rusty-cpp subdirectory registers ~69
+tests of its own whose binaries are not built by default, so an unfiltered run reports
+them as "Not Run" and exits non-zero. Everything this project owns carries that label.
 
 Budget minutes, not seconds, for a cold build. Building `srpc` — and therefore anything
 that links it — runs the whole Rust suite and `clippy -D warnings` first, so a Rust

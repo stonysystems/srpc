@@ -42,7 +42,7 @@ safety net, and the `Verified:` paragraph the commit convention demands is copie
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets  # -> passed/failed counts
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release             # -> configure exit code
 cmake --build build --parallel 4                                    # -> build exit code (ALL pulls in both gates)
-ctest --test-dir build --output-on-failure                          # -> must say 14 tests, not 5
+ctest --test-dir build -L srpc --output-on-failure                  # -> must say 14 tests, not 5
 ```
 
 Submodules must be initialized before anything CMake- or transpiler-related
@@ -68,7 +68,7 @@ cargo test --test stat_rust -- --exact some_test_fn_name             # one test 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4 --target srpc_goal0_dual_compile
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -L srpc --output-on-failure
 ```
 
 Budget for it: a cold C++ lane is minutes, not seconds — CMake builds the pinned transpiler from
@@ -249,11 +249,16 @@ directly (`deptran/…` in `rpc_log_storage_test.cc`, `rpc_marshallable_proxy_te
 pull `tests/benchmark_service.h`, whose `#include "srpc/srpc.hpp"` is monorepo-relative and does not resolve
 here. The rest include the same headers the built suites do — assume nothing without trying.
 
-`ctest` registers 14 tests: the 8 battery binaries and `test_rpc_docs_symbols` (label `docs`), plus
-`srpc_goal0_standalone_structure`, `srpc_goal0_cargo`, `srpc_goal0_contracts`,
-`srpc_goal0_rand_kernel_smoke` and `srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole
-Cargo suite. If the googletest submodule is missing, CMake only *warns* and silently registers 5 tests
-instead of 14 — a green `ctest` is not proof the battery ran.
+**Always run `ctest -L srpc`, never a bare `ctest`.** `add_subdirectory(third-party/rusty-cpp)` also
+registers ~69 tests of its own whose executables are *not* in `ALL`, so a bare `ctest --test-dir build`
+reports 83 tests, marks those 69 "Not Run" and exits 8 — a failure that says nothing about SRPC. Every
+test this project owns carries the `srpc` label.
+
+`ctest -L srpc` selects 14: the 8 battery binaries (also labelled `runtime_battery`),
+`test_rpc_docs_symbols` (also `docs`), `srpc_goal0_standalone_structure`, `srpc_goal0_cargo`,
+`srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke` and `srpc_docs_snippet_lint`. `srpc_goal0_cargo`
+just re-runs the whole Cargo suite. If the googletest submodule is missing, CMake only *warns* and
+silently registers 5 instead of 14 — a green run is not proof the battery ran.
 
 **Verus lane.** `verify/` is a workspace-excluded crate that `#[path]`-links the real sources and runs
 `cargo verus verify` against them; only `misc/stat.rs` and `rpc/internal_protocol.rs` carry specs today. A
