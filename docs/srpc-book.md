@@ -4836,22 +4836,53 @@ new spec must be shown to go red on a perturbed body before it is believed.
 
 ## 15. Performance Tuning
 
-There is no benchmark you can build here. `cmake --build build --target rpcbench` fails —
-no such target exists. `CMakeLists.txt` defines the `srpc` library (alongside the `srpc_goal0_rand_c_kernel`
-C archive and, when a GoogleTest checkout is present, `srpc_gtest` / `srpc_gtest_main`),
-eight test executables named in an explicit list, a C smoke-test binary, and a handful of
-custom gate targets; none of them generates load.
+There is no benchmark *target*. `cmake --build build --target rpcbench` fails, because
+`CMakeLists.txt` never declares one. But the load generator's source survives at
+`tests/rpcbench.cc`, and it does build and run — you just have to compile it yourself.
 
-A load generator's *source* does survive, at `tests/rpcbench.cc`, and it is worth reading
-as a worked example of the async client path. It is not wired into CMake, and it would not
-compile if it were: it pulls `tests/benchmark_service.h`, whose `#include "srpc/srpc.hpp"`
-is written for the monorepo layout this repository was extracted from and does not resolve
-against a standalone checkout. Treat it as a sketch to port, not a tool to run. Measuring
-SRPC means writing your own driver against your own workload.
+Two obstacles, both mechanical. It pulls `tests/benchmark_service.h`, whose
+`#include "srpc/srpc.hpp"` is written for the monorepo layout this repository was
+extracted from; point an include directory at a directory containing a symlink `srpc`
+back to the repository root and it resolves. And it consumes SRPC's C++ modules, so it
+needs a module map: `scripts/emit_module_map.py --modules-json
+build/CMakeFiles/srpc.dir/CXXModules.json --build-dir build --output bench.modmap`
+produces one. Compile `tests/benchmark_service.cc` and `tests/rpcbench.cc` with
+`-std=gnu++23 -stdlib=libc++ -march=native @bench.modmap`, then link them against
+`libsrpc.a` and the rusty-cpp archives inside `-Wl,--start-group`.
 
-What this chapter can honestly give you instead is the map of where the cost actually sits,
-read off the code: which dispatch decision spawns a stack, which client entry point
-allocates what, which limits are real knobs and which only look like knobs.
+`rpcbench` is a client/server pair: `-s <addr>` serves, `-c <addr>` drives load. `-m`
+picks the dispatch mode, `-n` the duration in seconds, `-t` client threads, `-o`
+outstanding requests, `-b` payload bytes, `-w` server worker threads.
+
+### Measured throughput
+
+Loopback, both ends on one host. `nop` RPC, 10-byte payload, 10-second runs, three
+trials per mode, mean of the client-reported `avg qps`:
+
+| Mode | Mean qps | Spread |
+|---|---:|---|
+| `fast` | 1,188,955 | ±1.9% |
+| `async` | 995,920 | ±4.8% |
+| `defer` | 753,513 | ±0.7% |
+| `fiber` (default) | 737,705 | ±3.6% |
+
+Measured 2026-08-29 at commit `24e9246`, on an AMD EPYC 7702P (64 cores / 128 threads,
+Linux 6.8.0), Clang 22.1.8, `-O2 -march=native`, load average ~1.3. Invocation:
+`rpcbench -s 127.0.0.1:18848 -m <mode> -e 2 -w 16` against
+`rpcbench -c 127.0.0.1:18848 -m <mode> -n 10 -b 10 -e 2 -o 1000 -w 16 -t 8`.
+
+The ordering is the one the code predicts. `fast` dispatches inline on the poll thread
+and wins by ~60% over the fiber default. `async` gives most of that back without a
+stack, since its coroutine only suspends if the handler actually awaits. `defer` and the
+plain fiber path both pay for a stackful spawn per request and land together.
+
+Treat these as a shape, not a spec: one box, loopback, one payload size, a handler that
+does nothing. Your own driver against your own workload is still the only number that
+matters — but the harness above is real, and these are its numbers.
+
+The rest of this chapter is the map of where the cost sits, read off the code: which
+dispatch decision spawns a stack, which client entry point allocates what, which limits
+are real knobs and which only look like knobs.
 
 ### Server side: `fast` versus a fiber
 
