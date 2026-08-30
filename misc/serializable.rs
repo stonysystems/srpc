@@ -2,7 +2,7 @@
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use cpp::srpc::basetypes as cpp_basetypes;
+use crate::basetypes::SparseInt;
 use cpp::srpc::debugging as cpp_debugging;
 use cpp::rusty as cpp_rusty;
 #[allow(unused_imports)]
@@ -10,10 +10,18 @@ use cpp::std as _;
 use rusty as cpp;
 use rusty::Arc;
 
-// Keep these module-owned aliases explicit.  Pulling the types through an
-// ordinary Rust `use crate::basetypes::{...}` made the C++ emitter invent a
+// Keep these two module-owned aliases explicit.  Pulling *these types* through
+// an ordinary Rust `use crate::basetypes::{...}` made the C++ emitter invent a
 // nonexistent nested `srpc::basetypes` namespace; the actual provider exports
 // both directly from `srpc`.
+//
+// The restriction is narrower than it looks, and does not cover the
+// `use crate::basetypes::SparseInt;` above.  A carrier reached only for its
+// associated functions lowers correctly: the emitter writes `using
+// ::srpc::SparseInt;` at namespace-`srpc` scope and rewrites the calls to
+// `SparseInt::dump32(...)`, leaving `import srpc.basetypes;` unchanged.  It is
+// the *type alias* position that trips the namespace invention, so `v32`/`v64`
+// stay spelled through `rusty::` while ordinary items may use `crate::`.
 pub type v32 = rusty::SerializableV32;
 pub type v64 = rusty::SerializableV64;
 
@@ -246,7 +254,7 @@ pub trait Serialize {
 impl Serialize for rusty::SerializableV32 {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let mut b: [u8; 9] = [0u8; 9];
-        let bsize = unsafe { cpp_basetypes::SparseInt::dump32(self.get(), b.as_mut_ptr()) };
+        let bsize = unsafe { SparseInt::dump32(self.get(), b.as_mut_ptr()) };
         unsafe { ar.write_bytes(b.as_ptr(), bsize) };
     }
 }
@@ -254,7 +262,7 @@ impl Serialize for rusty::SerializableV32 {
 impl Serialize for rusty::SerializableV64 {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let mut b: [u8; 9] = [0u8; 9];
-        let bsize = unsafe { cpp_basetypes::SparseInt::dump64(self.get(), b.as_mut_ptr()) };
+        let bsize = unsafe { SparseInt::dump64(self.get(), b.as_mut_ptr()) };
         unsafe { ar.write_bytes(b.as_ptr(), bsize) };
     }
 }
@@ -629,13 +637,13 @@ impl Deserialize for rusty::SerializableV32 {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut b: [u8; 9] = [0u8; 9];
         unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr(), 1)) };
-        let total = unsafe { cpp_basetypes::SparseInt::buf_size(b[0]) };
+        let total = SparseInt::buf_size(b[0]);
         if total > 1 {
             // @unsafe - the tail read lands after the already-consumed
             // first byte (the retired `varint_tail` kernel's whole job).
             unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr().add(1), total - 1)) };
         }
-        self.set(unsafe { cpp_basetypes::SparseInt::load32(b.as_ptr()) });
+        self.set(unsafe { SparseInt::load32(b.as_ptr()) });
     }
 }
 #[allow(unsafe_code)]
@@ -643,13 +651,13 @@ impl Deserialize for rusty::SerializableV64 {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut b: [u8; 9] = [0u8; 9];
         unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr(), 1)) };
-        let total = unsafe { cpp_basetypes::SparseInt::buf_size(b[0]) };
+        let total = SparseInt::buf_size(b[0]);
         if total > 1 {
             // @unsafe - the tail read lands after the already-consumed
             // first byte (the retired `varint_tail` kernel's whole job).
             unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr().add(1), total - 1)) };
         }
-        self.set(unsafe { cpp_basetypes::SparseInt::load64(b.as_ptr()) });
+        self.set(unsafe { SparseInt::load64(b.as_ptr()) });
     }
 }
 #[allow(unsafe_code)]

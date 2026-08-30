@@ -663,6 +663,9 @@ add_custom_target(srpc_goal0_source_gate
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
     COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
+    COMMAND
         "${CMAKE_COMMAND}"
         -E env
         "RUSTFLAGS=-Dwarnings"
@@ -1114,6 +1117,16 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
     )
     set_tests_properties(srpc_goal0_contracts PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    # Guards the rustc-only `rusty` facade against re-growing mocks that shadow
+    # canonical Rust.  Needs no transpiler, no build tree and no submodule.
+    add_test(
+        NAME srpc_facade_shadow
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
+    )
+    set_tests_properties(srpc_facade_shadow PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
     add_test(

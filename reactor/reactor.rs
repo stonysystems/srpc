@@ -49,8 +49,8 @@ use crate::basetypes::Time;
 use crate::epoll_wrapper::{Epoll, PollMode, PollReady, Pollable};
 use crate::misc::Job;
 use crate::pollable_proxy::{PollableBase, PollableProxy};
-use crate::logging::Log;
-use cpp::srpc::{debugging as cpp_debugging, logging as cpp_logging};
+use crate::logging::{log_line, Log};
+use cpp::srpc::debugging as cpp_debugging;
 use cpp::std as cpp_std;
 use rusty as cpp;
 
@@ -148,7 +148,7 @@ fn reactor_verify(value: bool) {
 fn reactor_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
     // The production logger consumes the message synchronously and retains no
     // borrow; the owned Rust value therefore has exactly the required extent.
-    unsafe { cpp_logging::log_line(level, line, file, &message) };
+    unsafe { log_line(level, line, file, &message) };
 }
 
 fn move_matching<T, F>(source: &mut VecDeque<T>, destination: &mut VecDeque<T>, mut predicate: F)

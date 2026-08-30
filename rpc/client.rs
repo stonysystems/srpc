@@ -86,7 +86,7 @@ use crate::errors::RpcError;
 use crate::fiber_channel::{FiberChannel, OwnedFrame};
 use crate::heartbeat::{HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback};
 use crate::load_balancer::{LoadBalancer, LoadBalancerState, LoadBalancingStrategy};
-use crate::logging::Log;
+use crate::logging::{log_line, Log};
 use crate::misc::OneTimeJob;
 use crate::reconnect_policy::{ReconnectPolicy};
 use crate::request_options::{RequestOptions, TimeoutType};
@@ -180,7 +180,7 @@ pub fn client_verify(value: bool) {
 pub fn client_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
     // SAFETY: all canonical callers currently pass a null file pointer; the
     // owned message remains live through the synchronous logging call.
-    unsafe { crate::logging::log_line(level, line, file, &message) }
+    unsafe { log_line(level, line, file, &message) }
 }
 
 pub fn client_text(text: &str) -> LegacyStdString {

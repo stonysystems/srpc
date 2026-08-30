@@ -1,7 +1,6 @@
 // Canonical Rust source for the srpc.utils module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
-use cpp::srpc::logging as cpp_logging;
-use rusty as cpp;
+use crate::logging::log_line;
 use std::cell::Cell;
 
 // The emitter maps these source-level aliases back to the exact legacy C++
@@ -79,13 +78,13 @@ pub fn find_open_port() -> i32 {
         let mut message: LegacyStdString = "Found open port: ".to_string();
         message += &port.to_string();
         // SAFETY: the file pointer is null, so the logger performs no path scan.
-        unsafe { cpp_logging::log_line(3, 0, core::ptr::null(), &message) };
+        unsafe { log_line(3, 0, core::ptr::null(), &message) };
         return port;
     }
 
     let message: LegacyStdString = "Failed to find open port.".to_string();
     // SAFETY: the file pointer is null, so the logger performs no path scan.
-    unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+    unsafe { log_line(1, 0, core::ptr::null(), &message) };
     -1
 }
 
@@ -96,7 +95,7 @@ pub fn get_host_name() -> LegacyStdString {
     if name.is_empty() {
         let message: LegacyStdString = "Failed to get hostname.".to_string();
         // SAFETY: the file pointer is null, so the logger performs no path scan.
-        unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+        unsafe { log_line(1, 0, core::ptr::null(), &message) };
     }
     name
 }

@@ -189,7 +189,7 @@ pub fn anymessage_unpack<T: 'static>(message: &AnyMessage) -> Option<rusty::Arc<
         return None;
     }
     let base = message.payload_.as_ref().unwrap().get();
-    let holder = unsafe { serializable::serializable_holder_of::<T>(base) };
+    let holder = unsafe { crate::serializable::serializable_holder_of::<T>(base) };
     if holder.is_null() {
         return None;
     }

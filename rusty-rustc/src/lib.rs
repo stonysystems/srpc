@@ -1468,53 +1468,6 @@ impl RustyStdStringCStr for ::std::string::String {
 /// The exact local `rusty` facade dependency is omitted from generated C++.
 #[allow(clippy::missing_safety_doc)]
 pub mod srpc {
-    pub mod basetypes {
-        pub struct Time;
-
-        impl Time {
-            /// # Safety
-            ///
-            /// Both clock selectors are valid; `unsafe` records the foreign
-            /// named-module boundary used by canonical Fiber code.
-            #[allow(unsafe_code)]
-            pub unsafe fn now(_monotonic: bool) -> u64 {
-                use ::std::time::{SystemTime, UNIX_EPOCH};
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_micros() as u64
-            }
-        }
-
-        #[allow(non_snake_case)]
-        pub mod SparseInt {
-            #[allow(unsafe_code)]
-            pub unsafe fn buf_size(byte0: u8) -> usize {
-                crate::sparse_buf_size(byte0)
-            }
-
-            #[allow(unsafe_code)]
-            pub unsafe fn dump32(value: i32, buffer: *mut u8) -> usize {
-                unsafe { crate::sparse_dump32(value, buffer) }
-            }
-
-            #[allow(unsafe_code)]
-            pub unsafe fn dump64(value: i64, buffer: *mut u8) -> usize {
-                unsafe { crate::sparse_dump64(value, buffer) }
-            }
-
-            #[allow(unsafe_code)]
-            pub unsafe fn load32(buffer: *const u8) -> i32 {
-                unsafe { crate::sparse_load32(buffer) }
-            }
-
-            #[allow(unsafe_code)]
-            pub unsafe fn load64(buffer: *const u8) -> i64 {
-                unsafe { crate::sparse_load64(buffer) }
-            }
-        }
-    }
-
     pub mod debugging {
         #[allow(unsafe_code)]
         pub unsafe fn verify(value: bool) {
@@ -1550,17 +1503,6 @@ pub mod srpc {
     /// generation; the wrapper template itself is reached through the
     /// `rusty::CallbackWrapper` facade type.
     pub mod callback_wrapper {}
-
-    pub mod logging {
-        /// Rust-side no-op model of the production logging entry point.
-        ///
-        /// # Safety
-        ///
-        /// `file` must be null or point to a valid NUL-terminated path for the
-        /// duration of the call. The production logger scans any non-null path.
-        #[allow(unsafe_code)]
-        pub unsafe fn log_line(_level: i32, _line: i32, _file: *const i8, _message: &String) {}
-    }
 
     pub mod reactor {
         use crate::{ReactorBoxEvent, ReactorFiber, REACTOR_CURRENT_FIBER, REACTOR_SLEEP_CALLS};
@@ -1613,25 +1555,6 @@ pub mod srpc {
             pub unsafe fn shutdown(&self) {}
         }
 
-        /// Rustc-only affinity model. Tests execute outside the poll worker.
-        pub fn pollworker_is_on_poll_thread() -> bool {
-            false
-        }
-
-
-        /// # Safety
-        ///
-        /// `func` must be a well-formed owning closure; the production fiber
-        /// runtime takes ownership and runs it on a new stack. `file` must be
-        /// null or a NUL-terminated static string.
-        #[allow(unsafe_code)]
-        pub unsafe fn fiber_create_run_impl<F: FnMut()>(
-            mut func: F,
-            _file: *const i8,
-            _line: i64,
-        ) {
-            func();
-        }
 
         /// Rust-only model of the reactor's fiber-aware integer event.
         pub struct IntEvent {
@@ -1730,7 +1653,6 @@ pub mod srpc {
         pub unsafe fn make_source_proxy_buffer<S, P>(_source: *mut S) -> P {
             unreachable!("rustc-only serializable proxy facade")
         }
-        use crate::{SerializableBase, SerializableProxy, SerializableSharedPtrHolder};
 
         fn encoded_length_size(value: usize) -> usize {
             if value <= 63 {
@@ -1833,23 +1755,6 @@ pub mod srpc {
                 let mut bytes = vec![0u8; length];
                 unsafe { archive.read_or_abort(bytes.as_mut_ptr(), bytes.len()) };
                 *value = String::from_utf8(bytes).expect("valid UTF-8 AnyMessage type name");
-            }
-        }
-
-        #[allow(unsafe_code)]
-        pub unsafe fn serializable_holder_of<T: 'static>(
-            _base: *const SerializableBase,
-        ) -> *const SerializableSharedPtrHolder<T> {
-            core::ptr::null()
-        }
-
-        #[allow(non_snake_case)]
-        pub mod SerializableRegistry {
-            use super::{SerializableBase, SerializableProxy};
-
-            #[allow(unsafe_code)]
-            pub unsafe fn create(_kind: i32) -> SerializableProxy {
-                SerializableProxy::make(SerializableBase)
             }
         }
     }
@@ -2048,126 +1953,6 @@ pub mod std {
     pub unsafe fn make_pair<A, B>(first: A, second: B) -> StdPair<A, B> {
         StdPair::new(first, second)
     }
-}
-
-fn sparse_buf_size(byte0: u8) -> usize {
-    if byte0 & 0x80 == 0 {
-        1
-    } else if byte0 & 0xc0 == 0x80 {
-        2
-    } else if byte0 & 0xe0 == 0xc0 {
-        3
-    } else if byte0 & 0xf0 == 0xe0 {
-        4
-    } else if byte0 & 0xf8 == 0xf0 {
-        5
-    } else if byte0 & 0xfc == 0xf8 {
-        6
-    } else if byte0 & 0xfe == 0xfc {
-        7
-    } else if byte0 == 0xfe {
-        8
-    } else {
-        9
-    }
-}
-
-#[allow(unsafe_code)]
-unsafe fn sparse_dump32(value: i32, buffer: *mut u8) -> usize {
-    unsafe { sparse_dump64(value as i64, buffer) }
-}
-
-#[allow(unsafe_code)]
-unsafe fn sparse_load32(buffer: *const u8) -> i32 {
-    unsafe { sparse_load_signed(buffer, 4) as i32 }
-}
-
-fn sparse_value_size(value: i64) -> usize {
-    if (-64..=63).contains(&value) {
-        1
-    } else if (-8_192..=8_191).contains(&value) {
-        2
-    } else if (-1_048_576..=1_048_575).contains(&value) {
-        3
-    } else if (-134_217_728..=134_217_727).contains(&value) {
-        4
-    } else if (-17_179_869_184..=17_179_869_183).contains(&value) {
-        5
-    } else if (-2_199_023_255_552..=2_199_023_255_551).contains(&value) {
-        6
-    } else if (-281_474_976_710_656..=281_474_976_710_655).contains(&value) {
-        7
-    } else if (-36_028_797_018_963_968..=36_028_797_018_963_967).contains(&value) {
-        8
-    } else {
-        9
-    }
-}
-
-#[allow(unsafe_code)]
-unsafe fn sparse_dump64(value: i64, buffer: *mut u8) -> usize {
-    let encoded = value as u64;
-    let size = sparse_value_size(value);
-    unsafe {
-        if size <= 7 {
-            for index in 0..size {
-                *buffer.add(index) = ((encoded >> (8 * (size - 1 - index))) & 0xff) as u8;
-            }
-            let prefix = match size {
-                1 => 0x00,
-                2 => 0x80,
-                3 => 0xc0,
-                4 => 0xe0,
-                5 => 0xf0,
-                6 => 0xf8,
-                7 => 0xfc,
-                _ => unreachable!(),
-            };
-            *buffer &= 0xff >> size;
-            *buffer |= prefix;
-            return size;
-        }
-        for index in 0..8 {
-            *buffer.add(index + 1) = ((encoded >> (8 * (7 - index))) & 0xff) as u8;
-        }
-        *buffer = if size == 8 { 0xfe } else { 0xff };
-    }
-    size
-}
-
-#[allow(unsafe_code)]
-unsafe fn sparse_load_signed(buffer: *const u8, width: usize) -> i64 {
-    let size = unsafe { sparse_buf_size(*buffer) };
-    // The 64-bit marker 0xfe reports eight while still carrying eight payload
-    // bytes after the marker. The historical decoder therefore enters this
-    // full-width branch for `size == width`, not only `width + 1`.
-    let full_width_marker = if width == 8 { width } else { width + 1 };
-    if size >= full_width_marker {
-        let mut value = 0u64;
-        for index in 0..width {
-            value |= unsafe { *buffer.add(width - index) as u64 } << (8 * index);
-        }
-        return value as i64;
-    }
-    let mut value = 0u64;
-    for index in 0..size.saturating_sub(1) {
-        value |= unsafe { *buffer.add(size - 1 - index) as u64 } << (8 * index);
-    }
-    let mut top = unsafe { *buffer } & (0xff >> size);
-    let negative = ((top >> (7 - size)) & 1) == 1;
-    if negative {
-        top |= (0xff << (7 - size)) as u8;
-        for index in size..width {
-            value |= 0xffu64 << (8 * index);
-        }
-    }
-    value |= (top as u64) << (8 * (size - 1));
-    value as i64
-}
-
-#[allow(unsafe_code)]
-unsafe fn sparse_load64(buffer: *const u8) -> i64 {
-    unsafe { sparse_load_signed(buffer, 8) }
 }
 
 pub struct Arc<T: ?Sized> {

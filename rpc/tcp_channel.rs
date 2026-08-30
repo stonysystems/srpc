@@ -835,8 +835,8 @@ unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> Chan
     }
 
     if let Some(pt) = conn.poll_thread_.as_ref() {
-        // SAFETY: the predicate only reads reactor-owned TLS for this thread.
-        if unsafe { cpp_reactor::pollworker_is_on_poll_thread() } {
+        // The predicate only reads reactor-owned TLS for this thread.
+        if crate::reactor::pollworker_is_on_poll_thread() {
             conn.pending_write_update_.store(true, Ordering::Release);
             return ChannelError::None;
         }

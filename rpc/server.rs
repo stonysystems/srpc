@@ -26,23 +26,23 @@ use std::sync::{Arc, Weak as ArcWeak};
 // exact spelling.
 use rusty::{HashMap, HashSet};
 
+use crate::basetypes::Time;
 use crate::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ChannelListenerBase,
     ChannelListenerProxy, OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
 };
+use crate::logging::log_line;
 use crate::misc::OneTimeJob;
 use crate::serializable::{BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource};
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
-use cpp::srpc::basetypes as cpp_basetypes;
 use cpp::srpc::debugging as cpp_debugging;
 // This otherwise-unused source-owned import keeps the exact
 // `srpc.internal_protocol` provider visible to generated C++; the heartbeat
 // rpc-id constant below is read through the crate path.
 #[allow(unused_imports)]
 use cpp::srpc::internal_protocol as cpp_internal_protocol;
-use cpp::srpc::logging as cpp_logging;
 use cpp::srpc::reactor as cpp_reactor;
 use cpp::srpc::serializable as cpp_serializable;
 use rusty as cpp;
@@ -382,7 +382,7 @@ impl ServerConnection {
             let message: LegacyStdString =
                 format!("server@{} close ServerConnection", self.ctx_.addr);
             // SAFETY: the file pointer is null, so the logger performs no path scan.
-            unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &message) };
+            unsafe { log_line(4, 0, core::ptr::null(), &message) };
             // Tear down the channel proxy. Idempotent per channel-layer contract.
             let mut guard = self.channel_proxy_.lock().unwrap();
             if (*guard).is_some() {
@@ -439,7 +439,7 @@ impl ServerConnection {
             let message: LegacyStdString =
                 "srpc::ServerConnection::run_async called with empty callback".to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+            unsafe { log_line(2, 0, core::ptr::null(), &message) };
             return SERVER_ERR_INVALID_ARGUMENT;
         }
         f();
@@ -495,7 +495,7 @@ impl DeferredReply {
             let message: LegacyStdString =
                 "DeferredReply::reply() called multiple times, ignoring".to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+            unsafe { log_line(2, 0, core::ptr::null(), &message) };
             return;
         }
         let cb = cb_opt.unwrap();
@@ -506,7 +506,7 @@ impl DeferredReply {
             let message: LegacyStdString =
                 "Connection closed before reply sent, dropping reply".to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &message) };
+            unsafe { log_line(4, 0, core::ptr::null(), &message) };
         }
     }
 
@@ -515,7 +515,7 @@ impl DeferredReply {
             let message: LegacyStdString =
                 "DeferredReply::reply_error() called multiple times, ignoring".to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+            unsafe { log_line(2, 0, core::ptr::null(), &message) };
             return;
         }
         let sconn_opt = self.weak_sconn_field.upgrade();
@@ -526,7 +526,7 @@ impl DeferredReply {
             let message: LegacyStdString =
                 "Connection closed before error reply sent, dropping reply".to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &message) };
+            unsafe { log_line(4, 0, core::ptr::null(), &message) };
         }
     }
 }
@@ -595,8 +595,7 @@ pub fn server_random_u64() -> u64 {
 /// id-mix historically used; entropy comes from the random_u64 mix, not
 /// clock granularity).
 pub fn server_now_nanos() -> u64 {
-    // SAFETY: `unsafe` records the `srpc.basetypes` named-module boundary.
-    (unsafe { cpp_basetypes::Time::now(true) }) * 1000u64
+    Time::now(true) * 1000u64
 }
 
 /// Block until `do_shutdown()` flips the flag.
@@ -616,7 +615,7 @@ pub fn server_wait_for_shutdown_impl(
 ) {
     let entering: LegacyStdString = "Server::wait_for_shutdown".to_string();
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &entering) };
+    unsafe { log_line(4, 0, core::ptr::null(), &entering) };
     let mut guard = state.lock().unwrap();
     guard = cond
         .wait_while(guard, |s: &mut ShutdownState| !s.shutdown)
@@ -624,7 +623,7 @@ pub fn server_wait_for_shutdown_impl(
     drop(guard);
     let leaving: LegacyStdString = "Server::wait_for_shutdown - done".to_string();
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &leaving) };
+    unsafe { log_line(4, 0, core::ptr::null(), &leaving) };
 }
 
 pub fn server_generate_instance_id() -> u64 {
@@ -640,7 +639,7 @@ pub fn server_generate_instance_id() -> u64 {
     }
     let message: LegacyStdString = format!("Server: generated instance_id={}", id);
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &message) };
+    unsafe { log_line(4, 0, core::ptr::null(), &message) };
     id
 }
 
@@ -657,7 +656,7 @@ pub fn server_drain_impl(
             shutdown_phase_to_string(current_phase)
         );
         // SAFETY: the file pointer is null.
-        unsafe { cpp_logging::log_line(4, 0, core::ptr::null(), &message) };
+        unsafe { log_line(4, 0, core::ptr::null(), &message) };
         return pending.load(Ordering::Relaxed) == 0i32;
     }
     let entering: LegacyStdString = format!(
@@ -665,7 +664,7 @@ pub fn server_drain_impl(
         pending.load(Ordering::Relaxed)
     );
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(3, 0, core::ptr::null(), &entering) };
+    unsafe { log_line(3, 0, core::ptr::null(), &entering) };
     phase.set(ShutdownPhase::DRAINING);
     let start_us = rusty::sys::time::clock_monotonic_us();
     let timeout_us = timeout_ms * 1000u64;
@@ -678,14 +677,14 @@ pub fn server_drain_impl(
                 pending.load(Ordering::Relaxed)
             );
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &expired) };
+            unsafe { log_line(2, 0, core::ptr::null(), &expired) };
             return false;
         }
         rusty::sys::time::sleep_us(1000u64);
     }
     let done: LegacyStdString = "Server::drain: completed, all requests drained".to_string();
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(3, 0, core::ptr::null(), &done) };
+    unsafe { log_line(3, 0, core::ptr::null(), &done) };
     true
 }
 
@@ -695,7 +694,7 @@ pub fn server_run_shutdown_hooks(hooks: &rusty::Mutex<Vec<ShutdownHook>>) {
     let message: LegacyStdString =
         "Server::graceful_shutdown: transitioning to CLOSING, executing hooks".to_string();
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(3, 0, core::ptr::null(), &message) };
+    unsafe { log_line(3, 0, core::ptr::null(), &message) };
     let mut guard = hooks.lock().unwrap();
     for hook in (*guard).iter_mut() {
         server_invoke_shutdown_hook_safely(hook);
@@ -742,12 +741,12 @@ pub fn server_invoke_shutdown_hook_safely(hook: &mut ShutdownHook) {
             text
         );
         // SAFETY: the file pointer is null.
-        unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+        unsafe { log_line(1, 0, core::ptr::null(), &message) };
     } else {
         let message: LegacyStdString =
             "Server::graceful_shutdown: hook threw unknown exception".to_string();
         // SAFETY: the file pointer is null.
-        unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+        unsafe { log_line(1, 0, core::ptr::null(), &message) };
     }
 }
 
@@ -1007,7 +1006,7 @@ impl Server {
         if bind_addr.is_null() {
             let message: LegacyStdString = "srpc::Server::start: bind_addr is NULL!".to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+            unsafe { log_line(1, 0, core::ptr::null(), &message) };
             return -1i32;
         }
         // SAFETY: the caller guarantees a NUL-terminated readable string that
@@ -1060,7 +1059,7 @@ impl Server {
                     "unknown"
                 );
                 // SAFETY: the file pointer is null.
-                unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+                unsafe { log_line(1, 0, core::ptr::null(), &message) };
                 self.ctx_field = None;
                 return -1i32;
             }
@@ -1108,7 +1107,7 @@ impl Server {
                         let message: LegacyStdString =
                             format!("srpc::Server: channel listener error {}: {}", reason, msg);
                         // SAFETY: the file pointer is null.
-                        unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+                        unsafe { log_line(2, 0, core::ptr::null(), &message) };
                     },
                 ) as Box<dyn Fn(ChannelError, &str) + Send + Sync>));
             }
@@ -1124,7 +1123,7 @@ impl Server {
                     addr_str, reason
                 );
                 // SAFETY: the file pointer is null.
-                unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+                unsafe { log_line(1, 0, core::ptr::null(), &message) };
                 self.ctx_field = None;
                 return -1i32;
             }
@@ -1160,7 +1159,7 @@ impl Server {
             let message: LegacyStdString =
                 format!("Server::get_bound_port: malformed local_address {}", local);
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+            unsafe { log_line(1, 0, core::ptr::null(), &message) };
             return -1i32;
         }
         let tail: LegacyStdString = local[colon.unwrap() + 1usize..].to_string();
@@ -1171,7 +1170,7 @@ impl Server {
                 local
             );
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(1, 0, core::ptr::null(), &message) };
+            unsafe { log_line(1, 0, core::ptr::null(), &message) };
             return -1i32;
         }
         parsed.unwrap()
@@ -1296,7 +1295,7 @@ pub fn sconn_on_channel_error(weak: &ArcWeak<ServerConnection>, err: ChannelErro
     let message: LegacyStdString =
         format!("srpc::ServerConnection: channel error {}: {}", reason, msg);
     // SAFETY: the file pointer is null.
-    unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+    unsafe { log_line(2, 0, core::ptr::null(), &message) };
     (*sconn).close();
 }
 
@@ -1372,7 +1371,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         let message: LegacyStdString =
             "srpc::ServerConnection: empty channel-mode request frame, dropping".to_string();
         // SAFETY: the file pointer is null.
-        unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+        unsafe { log_line(2, 0, core::ptr::null(), &message) };
         return;
     }
     let mut header_ar = BinaryReadArchive {
@@ -1420,7 +1419,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
                 rpc_id
             );
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+            unsafe { log_line(2, 0, core::ptr::null(), &message) };
         }
         let empty_fn3: ServerReplyFn = no_reply_writer();
         sconn_reply(sconn, &req_box, SERVER_ERR_NO_ENTRY, empty_fn3);
@@ -1453,7 +1452,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         // Same redundant-`mut` reason as the service loop above: the C++
         // lowering must move the Function into `fiber_create_run_impl`.
         #[allow(unused_mut)]
-        let mut job_fn: Box<dyn FnMut()> = Box::new(move || {
+        let mut job_fn: crate::reactor::FiberFn = crate::reactor::FiberFn::from_callable(move || {
             let taken_req = parked_req.take();
             let taken_weak = parked_weak.take();
             if taken_req.is_none() {
@@ -1471,9 +1470,9 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         // itself calls; naming it directly keeps this an ordinary imported
         // method rather than an imported member template.
         //
-        // SAFETY: `srpc.reactor` is a foreign named module; the closure is a
-        // well-formed owning job the fiber runtime takes over.
-        unsafe { cpp_reactor::fiber_create_run_impl(job_fn, core::ptr::null(), 0i64) };
+        // The closure is a well-formed owning job the fiber runtime takes
+        // over; `FiberFn` is the reactor's own erased-callable type.
+        crate::reactor::fiber_create_run_impl(job_fn, "", 0i64);
     }
 }
 
@@ -1510,7 +1509,7 @@ pub unsafe fn sconn_dispatch_response_frame_via_channel(
                 "srpc::ServerConnection::dispatch_response_frame_via_channel: channel mode flipped on but proxy is unbound (race?). Dropping reply."
                     .to_string();
             // SAFETY: the file pointer is null.
-            unsafe { cpp_logging::log_line(2, 0, core::ptr::null(), &message) };
+            unsafe { log_line(2, 0, core::ptr::null(), &message) };
             return;
         }
         conn_ptr = sconn_proxy_ptr(&guard);

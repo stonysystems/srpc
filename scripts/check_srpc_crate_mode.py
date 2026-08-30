@@ -658,11 +658,15 @@ EXPECTED_IMPORTS = {
         "srpc.channel",
         "srpc.debugging",
         "srpc.internal_protocol",
-        "srpc.logging",
         "srpc.misc",
         "srpc.reactor",
         "srpc.serializable",
         "srpc.tcp_channel",
+        # `log_line` is now item-imported from the canonical `crate::logging`
+        # rather than the retired `cpp::srpc::logging` facade alias, so the
+        # emitter appends its provider after the aliased group -- the same
+        # trailing placement `srpc.debugging` already has in srpc.client.
+        "srpc.logging",
     ],
     "srpc.client": [
         'vec_port.vec',
@@ -1638,8 +1642,11 @@ ABI_SPECS = {
                 "~AddrInfo() noexcept(false);",
                 "export int32_t find_open_port();",
                 "export std::string get_host_name();",
-                "srpc::log_line(3, 0, rusty::ptr::null(), message);",
-                "srpc::log_line(1, 0, rusty::ptr::null(), message);",
+                # Leading space, deliberately: the facade route emitted
+                # `::srpc::log_line(`, so a bare `log_line(` pin would still
+                # match the pre-rewire output and stop discriminating.
+                " log_line(3, 0, rusty::ptr::null(), message);",
+                " log_line(1, 0, rusty::ptr::null(), message);",
                 "rusty::sys::env::hostname();",
                 "utils_ffi::srpc_find_open_port();",
                 "utils_ffi::freeaddrinfo(this->info_);",

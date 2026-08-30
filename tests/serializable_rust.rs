@@ -2,7 +2,7 @@ use srpc::serializable::{
     BufferSink, BufferSource, Deserialize, Serializable, SerializableRegistry, Serialize, SinkBase,
     SourceBase, make_serializable_proxy_copy, make_serializable_proxy_default,
 };
-use rusty::srpc::basetypes::SparseInt;
+use srpc::basetypes::SparseInt;
 use rusty::{SerializableV32, SerializableV64};
 
 fn expected_sparse(value: i64) -> (usize, [u8; 9]) {
@@ -91,7 +91,7 @@ fn sparse_facade_matches_independent_wire_oracle() {
         let written = if expected_size == 8 { 9 } else { expected_size };
         assert_eq!(&actual[..written], &expected[..written], "value {value}");
         assert_eq!(actual[written], 0xa5, "value {value}");
-        assert_eq!(unsafe { SparseInt::buf_size(actual[0]) }, expected_size);
+        assert_eq!(SparseInt::buf_size(actual[0]), expected_size);
         assert_eq!(unsafe { SparseInt::load64(actual.as_ptr()) }, value);
 
         if expected_size == 8 {

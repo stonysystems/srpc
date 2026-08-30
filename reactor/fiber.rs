@@ -5,7 +5,7 @@
 
 /// Operations on the reactor fiber currently installed on this thread.
 pub mod this_fiber {
-    use cpp::srpc::basetypes as cpp_basetypes;
+    use crate::basetypes::Time;
     use cpp::srpc::reactor as cpp_reactor;
     use rusty as cpp;
     use std::rc::Rc;
@@ -69,8 +69,7 @@ pub mod this_fiber {
     /// Suspend until an absolute microsecond deadline. Past deadlines return
     /// immediately without entering the scheduler.
     pub fn sleep_until_us(abs_time_us: u64) {
-        // SAFETY: the monotonic-clock selector has no caller precondition.
-        let now: u64 = unsafe { cpp_basetypes::Time::now(true) };
+        let now: u64 = Time::now(true);
         if abs_time_us > now {
             // SAFETY: the subtraction is guarded and yields a valid duration.
             unsafe { cpp_reactor::fiber_sleep(abs_time_us - now) };

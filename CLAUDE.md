@@ -42,7 +42,7 @@ safety net, and the `Verified:` paragraph the commit convention demands is copie
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets  # -> passed/failed counts
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release             # -> configure exit code
 cmake --build build --parallel 4                                    # -> build exit code (ALL pulls in both gates)
-ctest --test-dir build -L srpc --output-on-failure                  # -> must say 14 tests, not 5
+ctest --test-dir build -L srpc --output-on-failure                  # -> must say 15 tests, not 6
 ```
 
 Submodules must be initialized before anything CMake- or transpiler-related
@@ -96,6 +96,7 @@ versus `srpc_dsl_check.sh <path>` as a bare positional argument (it reads neithe
 ```sh
 python3 scripts/tests/test_goal0_standalone.py   # manifest <-> lib.rs <-> CMakeLists inventory agreement
 python3 scripts/tests/test_goal0_contracts.py    # fail-closed negative controls on the ratchets
+python3 scripts/check_facade_shadow.py           # no rusty-rustc stub may shadow a canonical fn
 python3 scripts/extract_srpc_rust.py --check     # needs transpiler; src/lib.rs vs rust-modules.toml (--write regenerates)
 bash scripts/srpc_dsl_check.sh                   # needs transpiler; DSL drift in reactor/epoll_platform_linux.cc
 ```
@@ -226,13 +227,24 @@ Four non-obvious things about these tests:
 - **There is no `build.rs`, so the plain-C kernels are never linked.** A test touching a module with a C
   seam must define the stubs itself (`#[unsafe(no_mangle)] pub extern "C" fn srpc_clock_monotonic_us…`);
   ~12 test files already do. Otherwise it fails to *link*.
-- **A test that reaches through the `cpp::`/`rusty` facade proves nothing.** `rusty-rustc/src/lib.rs` is a
-  2.6k-line hand-written facade that rusty-cpp omits from generated C++ by package identity — so it is
-  allowed to lie, and does: `fiber_create_run_impl` runs the closure inline on the calling thread,
-  `fiber_sleep` only records the duration, `PollThread` mutators are empty, `pollworker_is_on_poll_thread()`
-  is always false, `RandomGenerator::rand(min, max)` returns `min`, `log_line` is a no-op. Its
-  `with_test_fiber` / `take_test_sleep_calls` hooks are what such tests are actually for. Reaching a *new*
-  C++ runtime API from a canonical module means writing its facade here first, plus a `rust-type-map.toml` row.
+- **A test that reaches through the `cpp::`/`rusty` facade may prove nothing.** `rusty-rustc/src/lib.rs` is a
+  2.4k-line hand-written facade that rusty-cpp omits from generated C++ by package identity — so it is
+  allowed to lie, and still does where it must: `fiber_sleep` only records the duration, `PollThread`
+  mutators are empty, `RandomGenerator::rand(min, max)` returns `min`. Its `with_test_fiber` /
+  `take_test_sleep_calls` hooks are what such tests are actually for. Reaching a *new* C++ runtime API from
+  a canonical module means writing its facade here first, plus a `rust-type-map.toml` row.
+
+  What it may no longer do is *shadow* a canonical implementation. `scripts/check_facade_shadow.py` (in the
+  source gate and in `ctest -L srpc`) fails if a facade item shares a name with a canonical one, unless it
+  is listed in that script's `ALLOWED_SHADOWS` with a reason. The eleven entries there are the real
+  boundary of the Rust lane, each one measured against the pinned transpiler rather than reasoned about:
+  `debugging::verify` is generic, and the flat-import contract requires a route-(a) leaf to be a
+  non-generic free function; `rand::RandomGenerator` carries `cpp_abi` markers that make it an adapted
+  sibling; `reactor::Fiber` collides with the pre-existing `pub type Fiber` alias in `rpc/client.rs`;
+  retargeting `reactor::PollThread` makes the emitter rewrite unrelated `HashMap::remove` receivers into
+  `__rusty_alias_PollThread_remove`; and the four remaining `reactor` entries need a live reactor and a
+  current fiber that rustc does not have. Everything else was retired — `basetypes` and `logging` are gone
+  from the facade entirely, and 80-odd call sites now reach canonical Rust.
 - **`reactor/reactor.rs` is deliberately not executable as Rust** — its own header says so. The nine
   `#[cfg_attr(any(), thread_local)]` statics are plain process-global `static mut` under rustc, so TLS, race
   and teardown behavior are covered only by the C++ battery.
@@ -254,11 +266,12 @@ registers ~69 tests of its own whose executables are *not* in `ALL`, so a bare `
 reports 83 tests, marks those 69 "Not Run" and exits 8 — a failure that says nothing about SRPC. Every
 test this project owns carries the `srpc` label.
 
-`ctest -L srpc` selects 14: the 8 battery binaries (also labelled `runtime_battery`),
+`ctest -L srpc` selects 15: the 8 battery binaries (also labelled `runtime_battery`),
 `test_rpc_docs_symbols` (also `docs`), `srpc_goal0_standalone_structure`, `srpc_goal0_cargo`,
-`srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke` and `srpc_docs_snippet_lint`. `srpc_goal0_cargo`
-just re-runs the whole Cargo suite. If the googletest submodule is missing, CMake only *warns* and
-silently registers 5 instead of 14 — a green run is not proof the battery ran.
+`srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`, `srpc_facade_shadow` and
+`srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole Cargo suite. If the googletest
+submodule is missing, CMake only *warns* and silently registers 6 instead of 15 — a green run is not
+proof the battery ran.
 
 **Verus lane.** `verify/` is a workspace-excluded crate that `#[path]`-links the real sources and runs
 `cargo verus verify` against them; only `misc/stat.rs` and `rpc/internal_protocol.rs` carry specs today. A

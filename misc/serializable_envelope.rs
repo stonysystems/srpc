@@ -1,8 +1,12 @@
 //! Canonical Rust owner for `srpc.serializable_envelope`.
 
-use cpp::srpc::basetypes as cpp_basetypes;
+use crate::basetypes::SparseInt;
 use cpp::srpc::debugging as cpp_debugging;
-use cpp::srpc::serializable as cpp_serializable;
+// The `srpc.serializable` items below are reached through the crate path;
+// this otherwise-unused source-owned import keeps the exact
+// `srpc.serializable` provider visible to generated C++.
+#[allow(unused_imports)]
+use cpp::srpc::serializable as _;
 use rusty as cpp;
 
 #[allow(unsafe_code)]
@@ -84,7 +88,7 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
 
     #[allow(unsafe_code)]
     pub fn unpack<T: PayloadMember<PayloadSet> + 'static>(&self) -> *const T {
-        let h = unsafe { cpp_serializable::serializable_holder_of::<T>(self.base_ptr()) };
+        let h = unsafe { crate::serializable::serializable_holder_of::<T>(self.base_ptr()) };
         if h.is_null() {
             return core::ptr::null();
         }
@@ -93,7 +97,7 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
 
     #[allow(unsafe_code)]
     pub fn unpack_shared<T: PayloadMember<PayloadSet> + 'static>(&self) -> Option<rusty::Arc<T>> {
-        let h = unsafe { cpp_serializable::serializable_holder_of::<T>(self.base_ptr()) };
+        let h = unsafe { crate::serializable::serializable_holder_of::<T>(self.base_ptr()) };
         if h.is_null() {
             return None;
         }
@@ -111,7 +115,7 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
         let b = self.base_ptr();
         unsafe {
             let mut kind_bytes: [u8; 9] = [0u8; 9];
-            let byte_count = cpp_basetypes::SparseInt::dump32((*b).kind(), kind_bytes.as_mut_ptr());
+            let byte_count = SparseInt::dump32((*b).kind(), kind_bytes.as_mut_ptr());
             ar.write_bytes(kind_bytes.as_ptr(), byte_count);
             (*b).save(ar);
         }
@@ -121,15 +125,15 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
     pub fn load(&mut self, ar: &mut rusty::BinaryReadArchive) {
         let mut kind_bytes: [u8; 9] = [0u8; 9];
         unsafe { cpp_debugging::verify(ar.read_exact(kind_bytes.as_mut_ptr(), 1)) };
-        let byte_count = unsafe { cpp_basetypes::SparseInt::buf_size(kind_bytes[0]) };
+        let byte_count = SparseInt::buf_size(kind_bytes[0]);
         if byte_count > 1 {
             unsafe {
                 cpp_debugging::verify(ar.read_exact(kind_bytes.as_mut_ptr().add(1), byte_count - 1))
             };
         }
-        let kind: i32 = unsafe { cpp_basetypes::SparseInt::load32(kind_bytes.as_ptr()) };
+        let kind: i32 = unsafe { SparseInt::load32(kind_bytes.as_ptr()) };
         let mut proxy: rusty::SerializableProxy =
-            unsafe { cpp_serializable::SerializableRegistry::create(kind) };
+            crate::serializable::SerializableRegistry::create(kind);
         proxy.get_mut().unwrap().load(ar);
         self.inner_ = Some(proxy);
         self.refresh_kind();
@@ -146,7 +150,7 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
     /// envelope shares its holder and payload.
     #[allow(unsafe_code)]
     pub unsafe fn unpack_mut<T: PayloadMember<PayloadSet> + 'static>(&mut self) -> *mut T {
-        let h = unsafe { cpp_serializable::serializable_holder_of::<T>(self.base_ptr()) };
+        let h = unsafe { crate::serializable::serializable_holder_of::<T>(self.base_ptr()) };
         if h.is_null() {
             return core::ptr::null_mut();
         }
