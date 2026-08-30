@@ -1101,9 +1101,43 @@ macro_rules! serializable_std_map {
 serializable_std_map!(SerializableStdMap);
 serializable_std_map!(SerializableStdUnorderedMap);
 
-/// Type-only rustc stand-ins for compiler-generated trait adapters.
-pub struct RustcSinkBaseAdapterRefMut<T>(PhantomData<T>);
-pub struct RustcSourceBaseAdapterRefMut<T>(PhantomData<T>);
+/// Rustc stand-ins for the compiler-generated trait adapters.
+///
+/// `rust-type-map.toml` pins these NAMES to the C++ spellings
+/// `SinkBaseAdapterRefMut` / `SourceBaseAdapterRefMut`, so the emitted turbofish
+/// is fixed no matter what the Rust side means by them.  That frees the Rust
+/// meaning to be the honest one: a C++ `SinkBaseAdapterRefMut<T>` holds exactly
+/// one `T&`, so the Rust model is the raw pointer itself.  Being an alias rather
+/// than a struct is what lets `misc/serializable.rs` implement `SinkBase` for
+/// `*mut BufferSink` -- an impl the emitter lowers to nothing, because its self
+/// type is a pointer rather than a nominal type.
+pub type RustcSinkBaseAdapterRefMut<T> = *mut T;
+pub type RustcSourceBaseAdapterRefMut<T> = *mut T;
+
+/// Callable surface for the erased sink and source the archive layer writes
+/// through.
+///
+/// `srpc_sink_write` / `srpc_source_read` below stand in for C++ helpers whose
+/// parameter is unconstrained, so their Rust signatures take `?Sized` -- and an
+/// unbounded type parameter has no callable surface, which is why both were
+/// empty stubs that silently dropped every byte.  These traits are the bound
+/// that gives them one.  They are declared here because only `srpc` can
+/// implement them: coherence puts the impl next to the trait it forwards to.
+pub trait RustcSinkDyn {
+    /// # Safety
+    ///
+    /// `pointer` must address `length` readable bytes for the call.
+    #[allow(unsafe_code)]
+    unsafe fn rustc_sink_write(&mut self, pointer: *const u8, length: usize);
+}
+
+pub trait RustcSourceDyn {
+    /// # Safety
+    ///
+    /// `pointer` must address `length` writable bytes for the call.
+    #[allow(unsafe_code)]
+    unsafe fn rustc_source_read(&mut self, pointer: *mut u8, length: usize) -> usize;
+}
 
 /// Opaque rustc-only stand-in mapped to C++ `void` at the Serializable C ABI.
 pub enum LegacyCVoid {}
@@ -1112,9 +1146,8 @@ pub enum LegacyCVoid {}
 /// `rusty::make_box<Adapter>(value)`.  The divergent Rust facade lets the call
 /// coerce to the local trait-object return type without pretending to model
 /// C++'s generated adapter hierarchy.
-pub fn make_box<Adapter>(_value: impl Sized) -> ! {
-    let _ = core::marker::PhantomData::<Adapter>;
-    panic!("rustc-only make_box facade is not executable")
+pub fn make_box<Adapter>(value: Adapter) -> Box<Adapter> {
+    Box::new(value)
 }
 
 /// Declarations for module-local C++ templates supplied by
@@ -1208,11 +1241,13 @@ pub mod rusty {
     /// If `_length` is nonzero, `_pointer` must address that many initialized
     /// readable bytes for the duration of the call.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_sink_write<Sink: ?Sized>(
-        _sink: &mut Sink,
-        _pointer: *const u8,
-        _length: usize,
+    pub unsafe fn srpc_sink_write<Sink: crate::RustcSinkDyn + ?Sized>(
+        sink: &mut Sink,
+        pointer: *const u8,
+        length: usize,
     ) {
+        // SAFETY: the caller's contract is forwarded unchanged to the impl.
+        unsafe { sink.rustc_sink_write(pointer, length) }
     }
 
     /// # Safety
@@ -1220,12 +1255,13 @@ pub mod rusty {
     /// If `_length` is nonzero, `_pointer` must address that many writable
     /// bytes for the duration of the call.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_source_read<Source: ?Sized>(
-        _source: &mut Source,
-        _pointer: *mut u8,
-        _length: usize,
+    pub unsafe fn srpc_source_read<Source: crate::RustcSourceDyn + ?Sized>(
+        source: &mut Source,
+        pointer: *mut u8,
+        length: usize,
     ) -> usize {
-        0
+        // SAFETY: the caller's contract is forwarded unchanged to the impl.
+        unsafe { source.rustc_source_read(pointer, length) }
     }
 
     /// Rustc-only coercion into the move-only registry callback facade. The

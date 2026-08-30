@@ -203,6 +203,76 @@ impl SourceBase for FdSource {
     }
 }
 
+// Rustc-lane bodies for the erased sink and source proxies.  These six impls
+// emit NO C++: the transpiler lowers a trait impl to nothing when its self type
+// is a raw pointer or a trait object rather than a nominal type.  The rule is
+// narrow -- the same shape on a nominal struct DOES emit a member and its symbol
+// -- so do not restate any of these on a named type.
+//
+// They exist because `SinkProxy` is `Box<dyn SinkBase>`, so a proxy must OWN a
+// concrete `SinkBase`.  `rusty::RustcSinkBaseAdapterRefMut<T>` is `*mut T`
+// (the honest model of a C++ adapter whose only member is a `T&`), and
+// `rusty::make_box` returns `Box<Adapter>`, so the unsizing coercion to
+// `Box<dyn SinkBase>` fires at each `make_*_proxy_*` return position -- inside
+// the crate that owns the trait, which is the only place coherence allows it.
+// Without them every proxy construction panicked and nothing could serialize
+// under rustc.
+#[allow(unsafe_code)]
+impl SinkBase for *mut BufferSink {
+    // SAFETY: the proxy constructor's contract keeps the target alive, unmoved
+    // and exclusively borrowed for the proxy's whole lifetime.
+    unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
+        unsafe { (**self).write_bytes(p, n) }
+    }
+}
+
+#[allow(unsafe_code)]
+impl SinkBase for *mut FdSink {
+    // SAFETY: same exclusive-target contract as the buffer sink above.
+    unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
+        unsafe { (**self).write_bytes(p, n) }
+    }
+}
+
+#[allow(unsafe_code)]
+impl SourceBase for *mut BufferSource {
+    // SAFETY: same exclusive-target contract, read side.
+    unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
+        unsafe { (**self).read_bytes(p, n) }
+    }
+}
+
+#[allow(unsafe_code)]
+impl SourceBase for *mut FdSource {
+    // SAFETY: same exclusive-target contract, read side.
+    unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
+        unsafe { (**self).read_bytes(p, n) }
+    }
+}
+
+// The archive layer does not touch the proxies directly; it dispatches through
+// `rusty::srpc_sink_write` / `srpc_source_read`, which stand in for C++ helpers
+// whose sink parameter is unconstrained.  Their Rust signatures therefore take
+// `?Sized`, and an unbounded parameter has no callable surface -- so both were
+// empty stubs, and `BinaryWriteArchive::write_bytes` silently discarded every
+// byte even once the proxies worked.  These two impls are the bound's other
+// half.
+#[allow(unsafe_code)]
+impl cpp::RustcSinkDyn for dyn SinkBase {
+    // SAFETY: forwards the caller's pointer/length contract unchanged.
+    unsafe fn rustc_sink_write(&mut self, pointer: *const u8, length: usize) {
+        unsafe { self.write_bytes(pointer, length) }
+    }
+}
+
+#[allow(unsafe_code)]
+impl cpp::RustcSourceDyn for dyn SourceBase {
+    // SAFETY: forwards the caller's pointer/length contract unchanged.
+    unsafe fn rustc_source_read(&mut self, pointer: *mut u8, length: usize) -> usize {
+        unsafe { self.read_bytes(pointer, length) }
+    }
+}
+
 /// # Safety
 ///
 /// `sink` must satisfy the same exclusive-lifetime contract as

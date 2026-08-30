@@ -145,8 +145,7 @@ fn buffer_source_sink_and_sparse_leaf_impls_match_wire_contract() {
     assert_eq!(&rest[..2], &[0x40, 0x50]);
     assert!(source.eof());
 
-    // Pin the trait implementations themselves, independently of the archive
-    // bridge whose rustc-only trait-object constructor is intentionally inert.
+    // Pin the trait implementations themselves.
     let mut v32 = SerializableV32::new(-8_193);
     let mut v64 = SerializableV64::new(36_028_797_018_963_968);
     let _serialize32: fn(&SerializableV32, &mut srpc::serializable::BinaryWriteArchive) =
@@ -186,4 +185,83 @@ fn proxy_factories_keep_the_historical_unconstrained_template_shape() {
 #[should_panic(expected = "Serializable kind 0 is reserved")]
 fn serializable_kind_zero_is_rejected() {
     let _ = Serializable::<0>::static_kind();
+}
+
+// The proxies used to be unreachable in the Rust lane: `rusty::make_box` was a
+// diverging stub, so every `make_*_proxy_*` panicked.  Even once that was fixed,
+// `BinaryWriteArchive` dispatched through `rusty::srpc_sink_write`, whose facade
+// body was empty -- so writes were silently discarded.  These three tests pin
+// both halves, and they assert against the ORIGINAL sink/source rather than the
+// proxy, so a proxy that copied its target instead of borrowing it would fail.
+
+#[test]
+#[allow(unsafe_code)]
+fn sink_proxy_forwards_writes_to_the_pointed_to_buffer_sink() {
+    let mut sink = BufferSink { bytes: Vec::new() };
+    let first = [0xAAu8, 0xBB];
+    let second = [0xCCu8];
+    {
+        // SAFETY: `sink` outlives the proxy and is not moved while borrowed.
+        let mut proxy = unsafe { srpc::serializable::make_sink_proxy_buffer(&raw mut sink) };
+        // SAFETY: both slices are live for the duration of each call.
+        unsafe {
+            proxy.write_bytes(first.as_ptr(), first.len());
+            proxy.write_bytes(second.as_ptr(), second.len());
+        }
+    }
+    // Two writes through one proxy, observed on the caller's own sink: this is
+    // what fails if the proxy ever holds a copy.
+    assert_eq!(sink.bytes, vec![0xAA, 0xBB, 0xCC]);
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn source_proxy_forwards_reads_and_advances_the_pointed_to_cursor() {
+    let data = [1u8, 2, 3, 4, 5];
+    let mut source = BufferSource::new(data.as_ptr(), data.len());
+    let mut out = [0u8; 5];
+    let read = {
+        // SAFETY: `source` and `data` both outlive the proxy.
+        let mut proxy = unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) };
+        // SAFETY: `out` is live and large enough for the requested length.
+        unsafe { proxy.read_bytes(out.as_mut_ptr(), out.len()) }
+    };
+    assert_eq!(read, 5);
+    assert_eq!(out, data);
+    // The cursor moved on the caller's source, not on a copy.
+    assert_eq!(source.pos(), 5);
+    assert!(source.eof());
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn archive_round_trips_a_leaf_through_both_proxies() {
+    let mut sink = BufferSink { bytes: Vec::new() };
+    {
+        // SAFETY: `sink` outlives the archive that borrows it.
+        let mut archive = srpc::serializable::BinaryWriteArchive {
+            sink_: unsafe { srpc::serializable::make_sink_proxy_buffer(&raw mut sink) },
+        };
+        <SerializableV64 as Serialize>::serialize(&SerializableV64::new(-9_001), &mut archive);
+        <SerializableV32 as Serialize>::serialize(&SerializableV32::new(77), &mut archive);
+    }
+    // If `srpc_sink_write` were still the empty facade stub, this would be 0.
+    assert!(!sink.bytes.is_empty());
+
+    let encoded = sink.bytes.clone();
+    let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
+    let (v64, v32) = {
+        // SAFETY: `source` and `encoded` both outlive the archive.
+        let mut archive = srpc::serializable::BinaryReadArchive {
+            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) },
+        };
+        let mut v64 = SerializableV64::new(0);
+        let mut v32 = SerializableV32::new(0);
+        <SerializableV64 as Deserialize>::deserialize(&mut v64, &mut archive);
+        <SerializableV32 as Deserialize>::deserialize(&mut v32, &mut archive);
+        (v64, v32)
+    };
+    assert_eq!(v64.get(), -9_001);
+    assert_eq!(v32.get(), 77);
+    assert!(source.eof());
 }

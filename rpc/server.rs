@@ -15,7 +15,6 @@ use rusty::cpp_inherit;
 use rusty::RustyBoxGet as _;
 use rusty::RustyFunctionIsEmpty as _;
 use rusty::RustyHandleIsValid as _;
-use rusty::StdArcGetMutExt as _;
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
@@ -1075,18 +1074,35 @@ impl Server {
                         if !conn_proxy.is_valid() {
                             return;
                         }
-                        let mut sconn: Arc<ServerConnection> =
+                        let sconn: Arc<ServerConnection> =
                             Arc::new(ServerConnection::new(ctx_arc.clone(), -1i32));
-                        // get_mut, not const_cast: the Arc was just made and is
-                        // still uniquely owned — exactly when Arc::get_mut
-                        // yields a &mut.
+                        // as_ptr, not get_mut, and not const_cast: the Arc was
+                        // just made and has not been published, so this is the
+                        // unique minting window -- but `Arc::get_mut` cannot
+                        // express it here.  Installing the self-weak below makes
+                        // the weak count nonzero, and Rust's `Arc::get_mut`
+                        // yields `None` unless strong == 1 AND weak == 0, so
+                        // both `unwrap()`s below used to abort on every accepted
+                        // connection.  The C++ `rusty::Arc::get_mut` tests only
+                        // the strong count (third-party/rusty-cpp/include/rusty/
+                        // arc.hpp), which is why the C++ lane never saw it.
+                        // `Arc::as_ptr` is the house spelling for this window --
+                        // reactor/reactor.rs:1965 does the same -- and it is
+                        // documented in that header as working with live
+                        // references.
                         {
                             let weak = Arc::downgrade(&sconn);
-                            let mut_sconn: &mut ServerConnection = sconn.get_mut().unwrap();
+                            // SAFETY: sole strong owner, not yet published to any
+                            // other thread; the weak handle above cannot observe
+                            // the value, so this &mut is unaliased.
+                            let mut_sconn: &mut ServerConnection =
+                                unsafe { &mut *(Arc::as_ptr(&sconn) as *mut ServerConnection) };
                             mut_sconn.install_self_weak_for_testing(weak);
                         }
                         {
-                            let mut_sconn2: &mut ServerConnection = sconn.get_mut().unwrap();
+                            // SAFETY: same unpublished-minting-window contract.
+                            let mut_sconn2: &mut ServerConnection =
+                                unsafe { &mut *(Arc::as_ptr(&sconn) as *mut ServerConnection) };
                             mut_sconn2.bind_channel(conn_proxy);
                         }
                         {
