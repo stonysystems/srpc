@@ -4882,36 +4882,40 @@ matters — but the harness above is real, and these are its numbers.
 
 ### The Rust lane, measured
 
-Since the rustc lane became executable end to end, the same question can be asked of it —
-with one structural caveat. The Rust lane has no poll threads and no fibers, so its only
-executable path is the synchronous in-memory one: each RPC runs client → switchboard →
-inline fast dispatch → reply → future resolution on the calling thread. What it reports is
-therefore sequential round-trip *latency* (and its reciprocal, single-threaded op/s), where
-the table above reports *pipelined* throughput — 8 client threads with 1,000 outstanding
-requests over TCP through real epoll. The two are related but not comparable one-to-one.
-
-One thread, one core (`taskset -c 8`), `i64` echo through the real wire format
-(`v64 xid | i32 rpc_id | payload` out, the four-field reply header back), one million
-timed round trips per trial after warmup:
+Since the rustc lane became executable end to end — first over the in-memory channel,
+then over real TCP once the facade grew a real epoll poll thread — the same question can
+be asked of it directly. All numbers below are the same host as the table above
+(AMD EPYC 7702P), rustc 1.97.1, `-C opt-level=3 -C target-cpu=native`, thin LTO, `i64`
+echo through the real wire format (`v64 xid | i32 rpc_id | payload` out, the four-field
+reply header back), three trials each. The driver is `rust-inmemory-bench`, kept beside
+the rpcbench results outside the repository.
 
 | Metric | Mean | Spread |
 |---|---:|---|
-| RPC round trip | 1,207 ns/op (828,700 op/s) | ±0.3% |
-| wire serialization alone (both directions) | 60.1 ns/op | ±0.8% |
+| TCP loopback, pipelined (1 driver thread, o=1000) | 286,935 op/s | ±3.0% |
+| TCP loopback, pipelined (o=100) | 233,242 op/s | ±1.8% |
+| TCP loopback, sequential (one in flight) | 1.12 ms/op | ±1.2% |
+| in-memory round trip (synchronous) | 818,500 op/s | ±0.6% |
+| wire serialization alone (both directions) | 62 ns/op | ±2.2% |
 
-Measured 2026-08-30 at commit `aeca82a`, same host as the table above (AMD EPYC 7702P),
-rustc 1.97.1, `-C opt-level=3 -C target-cpu=native`, thin LTO, load average ~5.7 (higher
-than the ~1.3 the C++ numbers were taken at; the pinned core kept the spread tight
-regardless). The driver is `rust-inmemory-bench`, kept beside the rpcbench results outside
-the repository.
+The comparable C++ number is not the eight-thread 1,188,955 qps in the table above but a
+single-client-thread run of the same rpcbench (`-m fast -o 1000 -t 1`), measured in the
+same minute on the same box: **344,231 qps ±0.7%**. Same topology, same wire, same
+dispatch mode:
 
-The shape is worth a sentence: a single sequential Rust thread completes a full RPC every
-1.2 µs — about 70% of the *pipelined, eight-thread* C++ `fast` figure — and serialization
-is 5% of that budget. Most of the remaining 1.1 µs is the request path's bookkeeping
-(future creation and registration, circuit-breaker and expiry checks, callback dispatch
-through the channel), not copying. It says nothing about how a Rust TCP transport would
-scale under load, because none exists; it does say the canonical request path itself is
-not paying any pathological overhead when rustc compiles it.
+> **one driver thread, 1,000 outstanding — Rust 286,935 op/s vs C++ 344,231 qps: the
+> rustc lane runs at 83% of the shipped C++.**
+
+Measured 2026-08-31 at commit `aa73202`, load average 1.4–2.2 (the C++ table's runs were
+at ~1.3). Two shapes worth a sentence each. The sequential TCP figure *is* the ~1 ms poll
+tick, not a rustc artifact: `tcpconn_send_frame` always queues and wakes the poll thread
+through the command channel, and the C++ worker drains that channel on the same 1 ms
+cadence — throughput comes from pipelining in both lanes. And serialization is noise
+(62 ns against a 3.5 µs pipelined budget); the gap to C++ lives in the poll loop and
+request-path bookkeeping, not in copying. Untested and known-untested: multi-threaded
+client drive (`rusty::Arc` erases auto traits, so sharing a `Client` across rustc threads
+is its own piece of work), and the `fiber`/`defer`/`async` dispatch modes, which need the
+reactor's TLS model that deliberately does not exist under rustc.
 
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits
