@@ -4906,16 +4906,34 @@ dispatch mode:
 > **one driver thread, 1,000 outstanding — Rust 286,935 op/s vs C++ 344,231 qps: the
 > rustc lane runs at 83% of the shipped C++.**
 
+At the table's own topology — eight client threads, each with its own client, connection
+and poll thread (the same shape as rpcbench's `client_proc`), 1,000 outstanding per
+thread — the ordering flips:
+
+| 8 threads × o=1000, same box, same minutes | Mean | Spread |
+|---|---:|---|
+| Rust, `tcp-mt` (8 × 1M requests) | **1,572,941 op/s** | ±2.5% |
+| C++, `rpcbench -m fast -t 8` (rerun) | 1,249,818 qps | ±1.9% |
+
+Rust aggregates 126% of C++ here, despite the C++ server running two epoll instances and
+sixteen workers against the Rust server's single poll thread. Two caveats keep this from
+being a clean "Rust is faster": the C++ `nop` marshals a 10-byte `std::string` per
+request where the Rust echo carries a fixed 8-byte `i64` (a per-request allocation the
+Rust side never pays), and rpcbench's driver fires async callbacks where the Rust driver
+waits futures. What it does establish, without qualification, is that the rustc-compiled
+canonical stack scales past the C++ lane's headline number on identical hardware.
+
 Measured 2026-08-31 at commit `aa73202`, load average 1.4–2.2 (the C++ table's runs were
 at ~1.3). Two shapes worth a sentence each. The sequential TCP figure *is* the ~1 ms poll
 tick, not a rustc artifact: `tcpconn_send_frame` always queues and wakes the poll thread
 through the command channel, and the C++ worker drains that channel on the same 1 ms
 cadence — throughput comes from pipelining in both lanes. And serialization is noise
 (62 ns against a 3.5 µs pipelined budget); the gap to C++ lives in the poll loop and
-request-path bookkeeping, not in copying. Untested and known-untested: multi-threaded
-client drive (`rusty::Arc` erases auto traits, so sharing a `Client` across rustc threads
-is its own piece of work), and the `fiber`/`defer`/`async` dispatch modes, which need the
-reactor's TLS model that deliberately does not exist under rustc.
+request-path bookkeeping, not in copying. Untested and known-untested: *sharing* one
+`Client` across rustc threads (`rusty::Arc` erases auto traits; the multi-thread numbers
+above use one client per thread, which is also what rpcbench does), and the
+`fiber`/`defer`/`async` dispatch modes, which need the reactor's TLS model that
+deliberately does not exist under rustc.
 
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits
