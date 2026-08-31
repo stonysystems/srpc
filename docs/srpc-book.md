@@ -4906,22 +4906,33 @@ dispatch mode:
 > **one driver thread, 1,000 outstanding — Rust 286,935 op/s vs C++ 344,231 qps: the
 > rustc lane runs at 83% of the shipped C++.**
 
-At the table's own topology — eight client threads, each with its own client, connection
-and poll thread (the same shape as rpcbench's `client_proc`), 1,000 outstanding per
-thread — the ordering flips:
+Since the two lanes compile the same wire protocol from the same sources, the cleanest
+experiment crosses them: the **same rpcbench C++ client binary** against each server, and
+the Rust driver against each server, every cell carrying identical traffic — `fast_nop`
+(id `0x4b921bd9`), a 10-byte string argument, an empty reply, 1,000 outstanding per client
+thread. The Rust server's handler is faithful to the generated C++ wrapper: it unmarshals
+the string (v64 prefix + bytes, kept on the stack as libc++ SSO would) before replying.
+Same box, same session, three trials per cell:
 
-| 8 threads × o=1000, same box, same minutes | Mean | Spread |
-|---|---:|---|
-| Rust, `tcp-mt` (8 × 1M requests) | **1,572,941 op/s** | ±2.5% |
-| C++, `rpcbench -m fast -t 8` (rerun) | 1,249,818 qps | ±1.9% |
+| aggregate op/s | → C++ server (`-e 2 -w 16`) | → **Rust server** (one poll thread) |
+|---|---:|---:|
+| **C++ client** (`rpcbench`), t=1 | 371,760 | 478,764 |
+| **C++ client** (`rpcbench`), t=8 | 1,233,742 | **2,223,421** |
+| Rust client, 1 thread | 252,126 | 329,601 |
+| Rust client, 8 threads | 1,111,099 | 1,952,013 |
 
-Rust aggregates 126% of C++ here, despite the C++ server running two epoll instances and
-sixteen workers against the Rust server's single poll thread. Two caveats keep this from
-being a clean "Rust is faster": the C++ `nop` marshals a 10-byte `std::string` per
-request where the Rust echo carries a fixed 8-byte `i64` (a per-request allocation the
-Rust side never pays), and rpcbench's driver fires async callbacks where the Rust driver
-waits futures. What it does establish, without qualification, is that the rustc-compiled
-canonical stack scales past the C++ lane's headline number on identical hardware.
+Three readings, each isolated by the matrix:
+
+- **Swap only the server** (same C++ client, t=8): the Rust server carries **180%** of the
+  C++ server's throughput. Two honest components: the facade poll loop is leaner than the
+  canonical C++ worker by construction (no `Reactor::run_loop` coupling, no fiber
+  machinery — a documented rustc-lane departure), and fast mode never uses the `-w 16`
+  worker apparatus the C++ server pays to run.
+- **Swap only the client** (same C++ server, t=8): the Rust driver reaches 90% of
+  rpcbench — it waits `Arc<Future>`s where rpcbench uses `request_async`, which exists
+  (per its own comment) precisely to skip the future-map cost.
+- **Pure lane vs pure lane** (t=8): Rust 1,952,013 against C++ 1,233,742 — 158% — on
+  identical hardware, identical bytes on the wire.
 
 Measured 2026-08-31 at commit `aa73202`, load average 1.4–2.2 (the C++ table's runs were
 at ~1.3). Two shapes worth a sentence each. The sequential TCP figure *is* the ~1 ms poll
