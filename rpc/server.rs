@@ -77,7 +77,7 @@ type v64 = rusty::SerializableV64;
 // runtime headers include errno.h — the same seam tcp_channel.cpp uses.
 const SERVER_ERR_INVALID_ARGUMENT: i32 = 22;
 const SERVER_ERR_ALREADY_EXISTS: i32 = 17;
-const SERVER_ERR_NO_ENTRY: i32 = 2;
+pub const SERVER_ERR_NO_ENTRY: i32 = 2;
 
 #[allow(unsafe_code)]
 mod server_ffi {
@@ -1242,15 +1242,21 @@ pub fn sconn_reply(
     let mut ar_store = BinaryWriteArchive {
         // SAFETY: `body_sink` is a live, exclusively borrowed local that
         // outlives the archive built over it.
-        sink_: unsafe { cpp_serializable::make_sink_proxy_buffer(&raw mut body_sink) },
+        sink_: unsafe { crate::serializable::make_sink_proxy_buffer(&raw mut body_sink) },
     };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    crate::serializable::Serialize_::serialize(&v64::new(req.xid), ar);
-    crate::serializable::Serialize_::serialize(&v32::new(error_code), ar);
-    crate::serializable::Serialize_::serialize(
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&v64::new(req.xid), ar) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&v32::new(error_code), ar) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(
         &v64::new(sconn.ctx_.server_instance_id as i64),
         ar,
-    );
+    ) };
     if !write_fn.is_empty() {
         let mut write = write_fn;
         write(ar);
@@ -1392,10 +1398,12 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     }
     let mut header_ar = BinaryReadArchive {
         // SAFETY: `req_box.src` is owned by the live boxed request.
-        source_: unsafe { cpp_serializable::make_source_proxy_buffer(&raw mut req_box.src) },
+        source_: unsafe { crate::serializable::make_source_proxy_buffer(&raw mut req_box.src) },
     };
     let mut v_xid = v64::new(0i64);
-    crate::serializable::Deserialize_::deserialize(&mut v_xid, &mut header_ar);
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_xid, &mut header_ar) };
     req_box.xid = v_xid.get();
     let pending_counter = sconn.ctx_.pending_requests.clone();
     req_box.attach_pending_guard(&pending_counter);
@@ -1408,7 +1416,9 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     }
 
     let mut rpc_id: i32 = 0i32;
-    crate::serializable::Deserialize_::deserialize(&mut rpc_id, &mut header_ar);
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Deserialize_::deserialize(&mut rpc_id, &mut header_ar) };
     if rpc_id == crate::internal_protocol::kInternalHeartbeatRpcId {
         let hb: &Arc<ServerDropHeartbeatRepliesAtomic> = &sconn.ctx_.drop_heartbeat_replies;
         if !hb.load(Ordering::Acquire) {

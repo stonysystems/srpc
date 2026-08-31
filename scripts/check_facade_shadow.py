@@ -99,16 +99,6 @@ ALLOWED_SHADOWS = {
         "exists. rustc has no fiber runtime, so every `this_fiber::sleep_*` helper "
         "aborts. The facade's recording stub is what `take_test_sleep_calls` observes."
     ),
-    "serializable::make_sink_proxy_buffer": (
-        "rpc/client.rs and rpc/server.rs still build their body sink through the foreign "
-        "`srpc.serializable` module. Moving them to `crate::serializable::` is a separate "
-        "change: the canonical fns are typed on concrete `BufferSink`/`BufferSource` "
-        "rather than the stub's `<S, P>`, so the call sites need their raw pointers cast "
-        "at each use."
-    ),
-    "serializable::make_source_proxy_buffer": (
-        "Read-side twin of `make_sink_proxy_buffer`, with the same call-site typing work."
-    ),
     "serializable::Serialize_": (
         "misc/any_message.rs serializes `type_name_: LegacyStdString`. Canonical "
         "`Serialize_::serialize<T: Serialize>` is bounded and `String` does not implement "

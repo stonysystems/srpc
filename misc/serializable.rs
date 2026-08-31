@@ -257,6 +257,32 @@ impl SourceBase for *mut FdSource {
 // empty stubs, and `BinaryWriteArchive::write_bytes` silently discarded every
 // byte even once the proxies worked.  These two impls are the bound's other
 // half.
+// Rustc-lane bodies for the ADL dispatch bound.  `rusty::srpc_adl_serialize`
+// (the terminal of the GENERIC `Serialize_::serialize` chain) stays unbounded
+// and panics under rustc -- a `T: Serialize` bound there would cascade into the
+// generic container impls, which the emitter cannot lower (measured: it
+// degrades a constrained generic impl to hand slots), and the emitted C++ of
+// the chain and of every container element site must stay byte-identical
+// because the elements resolve through the QUALIFIED `Serialize_::serialize`
+// overload set, which poison-scoped ADL cannot see.  The bounded Rust-lane
+// entry is `rusty::SerializableSerializeDispatch::serialize` instead, whose
+// bound is the facade trait these two impls satisfy.  Measured: each impl
+// emits only an uninstantiated, empty-bodied member template that no C++
+// code calls.
+#[allow(unsafe_code)]
+impl<T: Serialize + ?Sized> cpp::RustcAdlSerialize<T> for BinaryWriteArchive {
+    unsafe fn rustc_adl_serialize(&mut self, value: &T) {
+        value.serialize(self)
+    }
+}
+
+#[allow(unsafe_code)]
+impl<T: Deserialize + ?Sized> cpp::RustcAdlDeserialize<T> for BinaryReadArchive {
+    unsafe fn rustc_adl_deserialize(&mut self, value: &mut T) {
+        value.deserialize(self)
+    }
+}
+
 #[allow(unsafe_code)]
 impl cpp::RustcSinkDyn for dyn SinkBase {
     // SAFETY: forwards the caller's pointer/length contract unchanged.

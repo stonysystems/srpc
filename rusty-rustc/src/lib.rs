@@ -1131,6 +1131,30 @@ pub trait RustcSinkDyn {
     unsafe fn rustc_sink_write(&mut self, pointer: *const u8, length: usize);
 }
 
+/// Rust bound for the poison-scoped ADL bridges `srpc_adl_serialize` /
+/// `srpc_adl_deserialize` below.  In C++ those are open-set ADL calls, so
+/// their Rust signatures historically left both parameters unconstrained --
+/// and an unbounded type parameter has no callable surface, which is why both
+/// were empty stubs that silently discarded every value.  The archive is
+/// `Self` here rather than the value: an `impl<T: Serialize> ... for T`
+/// blanket in `srpc` would leave `T` uncovered and violate the orphan rule,
+/// while the archive is a type `srpc` owns.
+pub trait RustcAdlSerialize<T: ?Sized> {
+    /// # Safety
+    ///
+    /// Both borrows are held only for the duration of the call.
+    #[allow(unsafe_code)]
+    unsafe fn rustc_adl_serialize(&mut self, value: &T);
+}
+
+pub trait RustcAdlDeserialize<T: ?Sized> {
+    /// # Safety
+    ///
+    /// Both borrows are held only for the duration of the call.
+    #[allow(unsafe_code)]
+    unsafe fn rustc_adl_deserialize(&mut self, value: &mut T);
+}
+
 pub trait RustcSourceDyn {
     /// # Safety
     ///
@@ -1226,7 +1250,19 @@ pub mod rusty {
     /// `serialize(const T&, Archive&)` overload which does not retain either
     /// borrowed argument.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_adl_serialize<T, Archive>(_value: &T, _archive: &mut Archive) {}
+    pub unsafe fn srpc_adl_serialize<T: ?Sized, Archive: ?Sized>(
+        _value: &T,
+        _archive: &mut Archive,
+    ) -> ! {
+        unimplemented!(
+            "generic serialization dispatch (Serialize_::serialize) has no Rust \
+             body: it is the C++ open-set ADL path, and bounding it would cascade \
+             into the generic container impls the emitter cannot lower. Rust-lane \
+             callers serialize leaves through \
+             rusty::SerializableSerializeDispatch::serialize or the Serialize \
+             trait; container serialization is C++-only"
+        )
+    }
 
     /// # Safety
     ///
@@ -1234,7 +1270,19 @@ pub mod rusty {
     /// `deserialize(T&, Archive&)` overload which does not retain either
     /// borrowed argument.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_adl_deserialize<T, Archive>(_value: &mut T, _archive: &mut Archive) {}
+    pub unsafe fn srpc_adl_deserialize<T: ?Sized, Archive: ?Sized>(
+        _value: &mut T,
+        _archive: &mut Archive,
+    ) -> ! {
+        unimplemented!(
+            "generic deserialization dispatch (Deserialize_::deserialize) has no \
+             Rust body: it is the C++ open-set ADL path, and bounding it would \
+             cascade into the generic container impls the emitter cannot lower. \
+             Rust-lane callers deserialize leaves through \
+             rusty::SerializableDeserializeDispatch::deserialize or the \
+             Deserialize trait; container deserialization is C++-only"
+        )
+    }
 
     /// # Safety
     ///
@@ -1669,27 +1717,6 @@ pub mod srpc {
     pub mod serializable {
         pub use crate::{BinaryReadArchive, BinaryWriteArchive};
 
-        /// # Safety
-        ///
-        /// `sink` must be non-null, uniquely borrowed, and remain alive and
-        /// unmoved for every use of the returned proxy. Production C++
-        /// resolves this to `make_sink_proxy_buffer`.
-        #[allow(unsafe_code)]
-        pub unsafe fn make_sink_proxy_buffer<S, P>(_sink: *mut S) -> P {
-            // The rustc facade never runs: the production emitter resolves
-            // this to the real `srpc::make_sink_proxy_buffer`.
-            unreachable!("rustc-only serializable proxy facade")
-        }
-
-        /// # Safety
-        ///
-        /// Same borrow and lifetime contract as [`make_sink_proxy_buffer`],
-        /// for the read side.
-        #[allow(unsafe_code)]
-        pub unsafe fn make_source_proxy_buffer<S, P>(_source: *mut S) -> P {
-            unreachable!("rustc-only serializable proxy facade")
-        }
-
         fn encoded_length_size(value: usize) -> usize {
             if value <= 63 {
                 1
@@ -1738,9 +1765,33 @@ pub mod srpc {
         pub struct Serialize_;
 
         impl Serialize_ {
-            #[allow(clippy::ptr_arg)]
+            /// The rustc-executable spelling of the C++ `Serialize_::serialize`
+            /// overload set.  The cpp-module-index row makes calls here emit
+            /// the QUALIFIED `::srpc::Serialize_::serialize(value, archive)` --
+            /// resolving the generated module's concrete leaf overloads before
+            /// its generic template, exactly as the retired wire sites did --
+            /// while under rustc the `RustcAdlSerialize` bound dispatches for
+            /// real: srpc's blanket impl covers its canonical archive over
+            /// `T: Serialize`, and the impls below cover this facade's own
+            /// archive for the `String` payloads AnyMessage writes.
+            /// # Safety
+            ///
+            /// Foreign named-module boundary; both borrows are held only for
+            /// the duration of the call.
             #[allow(unsafe_code)]
-            pub unsafe fn serialize(value: &String, archive: &mut BinaryWriteArchive) {
+            pub unsafe fn serialize<T: ?Sized, Archive: crate::RustcAdlSerialize<T> + ?Sized>(
+                value: &T,
+                archive: &mut Archive,
+            ) {
+                // SAFETY: forwarded unchanged to the archive's bound impl.
+                unsafe { archive.rustc_adl_serialize(value) }
+            }
+        }
+
+        #[allow(clippy::ptr_arg)]
+        #[allow(unsafe_code)]
+        impl crate::RustcAdlSerialize<String> for BinaryWriteArchive {
+            unsafe fn rustc_adl_serialize(&mut self, value: &String) {
                 let size = encoded_length_size(value.len());
                 let bits = value.len() as u64;
                 let mut encoded = [0u8; 9];
@@ -1758,8 +1809,8 @@ pub mod srpc {
                     }
                     encoded[0] = if size == 8 { 0xfe } else { 0xff };
                 }
-                unsafe { archive.write_bytes(encoded.as_ptr(), size) };
-                unsafe { archive.write_bytes(value.as_ptr(), value.len()) };
+                unsafe { self.write_bytes(encoded.as_ptr(), size) };
+                unsafe { self.write_bytes(value.as_ptr(), value.len()) };
             }
         }
 
@@ -1767,13 +1818,29 @@ pub mod srpc {
         pub struct Deserialize_;
 
         impl Deserialize_ {
+            /// Read-side twin of [`Serialize_::serialize`] above.
+            /// # Safety
+            ///
+            /// Foreign named-module boundary; both borrows are held only for
+            /// the duration of the call.
             #[allow(unsafe_code)]
-            pub unsafe fn deserialize(value: &mut String, archive: &mut BinaryReadArchive) {
+            pub unsafe fn deserialize<T: ?Sized, Archive: crate::RustcAdlDeserialize<T> + ?Sized>(
+                value: &mut T,
+                archive: &mut Archive,
+            ) {
+                // SAFETY: forwarded unchanged to the archive's bound impl.
+                unsafe { archive.rustc_adl_deserialize(value) }
+            }
+        }
+
+        #[allow(unsafe_code)]
+        impl crate::RustcAdlDeserialize<String> for BinaryReadArchive {
+            unsafe fn rustc_adl_deserialize(&mut self, value: &mut String) {
                 let mut encoded = [0u8; 9];
-                unsafe { archive.read_or_abort(encoded.as_mut_ptr(), 1) };
+                unsafe { self.read_or_abort(encoded.as_mut_ptr(), 1) };
                 let size = sparse_size(encoded[0]);
                 if size > 1 {
-                    unsafe { archive.read_or_abort(encoded.as_mut_ptr().add(1), size - 1) };
+                    unsafe { self.read_or_abort(encoded.as_mut_ptr().add(1), size - 1) };
                 }
                 let length = if size < 8 {
                     let mut bits = 0u64;
@@ -1789,7 +1856,7 @@ pub mod srpc {
                     bits
                 } as usize;
                 let mut bytes = vec![0u8; length];
-                unsafe { archive.read_or_abort(bytes.as_mut_ptr(), bytes.len()) };
+                unsafe { self.read_or_abort(bytes.as_mut_ptr(), bytes.len()) };
                 *value = String::from_utf8(bytes).expect("valid UTF-8 AnyMessage type name");
             }
         }

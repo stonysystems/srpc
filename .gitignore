@@ -4,3 +4,4 @@ event/build/*
 /target/
 /build*/
 /.apas
+/.claude/

@@ -112,6 +112,15 @@ pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
 pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &LegacyStdString) + Send + Sync>;
 pub type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
 pub type LegacyStdString = String;
+
+// The length-prefixed integer carriers are module-owned aliases for exactly
+// the reason rpc/server.rs:70 documents: `crate::basetypes::v64` and
+// `rusty::SerializableV64` are the same C++ `v64` (rust-type-map.toml), but
+// only the latter carries the Rust `Serialize`/`Deserialize` impls the bounded
+// ADL dispatchers require, and pulling the type through
+// `use crate::serializable::{..}` makes the emitter invent a nested namespace.
+type v32 = rusty::SerializableV32;
+type v64 = rusty::SerializableV64;
 pub type LegacyStdStringView<'a> = &'a str;
 pub type LegacyCallbackWrapper<F> = rusty::CallbackWrapper<F>;
 
@@ -292,11 +301,13 @@ pub fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
-pub fn deserialize_from<T>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
+pub fn deserialize_from<T: crate::serializable::Deserialize>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
     let mut ar = BinaryReadArchive {
         source_: client_source_proxy(&mut (*src).src),
     };
-    crate::serializable::Deserialize_::deserialize(value, &mut ar);
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Deserialize_::deserialize(value, &mut ar) };
 }
 
 // clippy::upper_case_acronyms -- renaming the variant renames the emitted enumerator AND the exported DisconnectBehavior_QUEUE() accessor; measured. See the Task-2 measurement block above.
@@ -527,12 +538,12 @@ impl Future {
         Arc::new(Future::new(xid, attr))
     }
 
-    fn ready(&self) -> bool {
+    pub fn ready(&self) -> bool {
         let guard = self.state_.lock().unwrap();
         guard.ready
     }
 
-    fn wait(&self) {
+    pub fn wait(&self) {
         if self.timeout_ > 0u64 {
             let sec: f64 = (self.timeout_ as f64) / 1000000.0;
             self.timed_wait(sec);
@@ -590,12 +601,12 @@ impl Future {
         true
     }
 
-    fn get_reply(&self) -> RefMut<'_, ReplyBuffer> {
+    pub fn get_reply(&self) -> RefMut<'_, ReplyBuffer> {
         self.wait();
         self.reply_.borrow_mut()
     }
 
-    fn get_error_code(&self) -> i32 {
+    pub fn get_error_code(&self) -> i32 {
         if self.timeout_ > 0u64 {
             let x: f64 = (self.timeout_ as f64) / 1000000.0f64;
             self.timed_wait(x);
@@ -1443,7 +1454,7 @@ impl Client {
 
     // clippy::arc_with_non_send_sync -- no fix short of changing the payload type; the C++ Arc erases Rust auto traits. See the Task-2 measurement block above.
     #[allow(clippy::arc_with_non_send_sync)]
-    fn create(poll_thread_worker: Arc<PollThread>) -> Arc<Client> {
+    pub fn create(poll_thread_worker: Arc<PollThread>) -> Arc<Client> {
         Arc::<Client>::new(Client::new(poll_thread_worker))
     }
 
@@ -1456,7 +1467,7 @@ impl Client {
     fn set_rpc_id(&self, v: i32) { self.rpc_id_field.set(v); }
     fn rpc_id(&self) -> i32 { self.rpc_id_field.get() }
 
-    fn request<F>(&self, rpc_id: i32, attr: &FutureAttr, write_fn: F) -> FutureResult
+    pub fn request<F>(&self, rpc_id: i32, attr: &FutureAttr, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) {
         let guard = self.connection_field.borrow();
         if guard.is_none() {
@@ -1493,7 +1504,7 @@ impl Client {
 
     fn set_valid(&self, _valid: bool) {}
 
-    fn connect(&self, addr: *const i8, client: bool) -> i32 {
+    pub fn connect(&self, addr: *const i8, client: bool) -> i32 {
         let conn: Arc<ClientConnection> = Arc::new_cyclic(|weak_conn| {
             let mut value = ClientConnection::new(self.poll_thread_worker_field.clone());
             value.weak_self_ = weak_conn.clone();
@@ -1592,7 +1603,7 @@ impl Client {
         guard.as_ref().unwrap().reconnect(on_complete)
     }
 
-    fn set_channel_factory(&self, factory: ChannelFactoryProxy) {
+    pub fn set_channel_factory(&self, factory: ChannelFactoryProxy) {
         if !factory.is_valid() {
             return;
         }
@@ -2202,8 +2213,12 @@ where F: FnMut(&mut BinaryWriteArchive) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    crate::serializable::Serialize_::serialize(&crate::basetypes::v64::new((*fu).xid_), ar);
-    crate::serializable::Serialize_::serialize(&rpc_id, ar);
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&v64::new((*fu).xid_), ar) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&rpc_id, ar) };
     write_fn(ar);
 
     let ch_err = unsafe {
@@ -2274,8 +2289,12 @@ where F: FnMut(&mut BinaryWriteArchive) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    crate::serializable::Serialize_::serialize(&crate::basetypes::v64::new(xid), ar);
-    crate::serializable::Serialize_::serialize(&rpc_id, ar);
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&v64::new(xid), ar) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&rpc_id, ar) };
     write_fn(ar);
 
     let ch_err = unsafe {
@@ -2535,11 +2554,15 @@ pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
-    crate::serializable::Serialize_::serialize(
-        &crate::basetypes::v64::new(conn.xid_counter_.next(1i64)),
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(
+        &v64::new(conn.xid_counter_.next(1i64)),
         ar,
-    );
-    crate::serializable::Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar);
+    ) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar) };
     // Send-side errors are ignored here (same as the legacy fd path).
     let _ = unsafe {
         conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
@@ -2751,14 +2774,20 @@ pub fn clientconn_decode_response_and_notify(conn: &ClientConnection,
     let mut src = BufferSource::new(bytes, size);
     let mut ar = BinaryReadArchive { source_: client_source_proxy(&mut src) };
 
-    let mut v_reply_xid = crate::basetypes::v64::new(0i64);
-    let mut v_error_code = crate::basetypes::v32::new(0i32);
+    let mut v_reply_xid = v64::new(0i64);
+    let mut v_error_code = v32::new(0i32);
     // In channel mode the extended-header flag is consumed by the
     // framing layer; the server always emits the extended form.
-    let mut v_server_instance_id = crate::basetypes::v64::new(0i64);
-    crate::serializable::Deserialize_::deserialize(&mut v_reply_xid, &mut ar);
-    crate::serializable::Deserialize_::deserialize(&mut v_error_code, &mut ar);
-    crate::serializable::Deserialize_::deserialize(&mut v_server_instance_id, &mut ar);
+    let mut v_server_instance_id = v64::new(0i64);
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_reply_xid, &mut ar) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_error_code, &mut ar) };
+    // SAFETY: foreign named-module serialization boundary; both borrows
+    // are held only for the duration of the call.
+    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_server_instance_id, &mut ar) };
     conn.check_server_instance(v_server_instance_id.get() as u64);
 
     let parsed_header_size: usize = src.pos();

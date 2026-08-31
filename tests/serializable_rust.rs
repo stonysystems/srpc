@@ -265,3 +265,89 @@ fn archive_round_trips_a_leaf_through_both_proxies() {
     assert_eq!(v32.get(), 77);
     assert!(source.eof());
 }
+
+// The wire sites in rpc/client.rs and rpc/server.rs serialize their headers
+// through the FACADE route `cpp_serializable::Serialize_::serialize` -- which
+// emits the same qualified `::srpc::Serialize_::serialize` call the C++ lane
+// always made, and under rustc dispatches through the `RustcAdlSerialize`
+// bound (srpc's blanket impl over `T: Serialize`).  Until this change the
+// facade's `Serialize_` accepted only `String`, so no wire header could
+// serialize at all.  This test pins the facade route over the CANONICAL
+// archives; the earlier round-trip test calls the trait methods directly and
+// would stay green if this path rotted again.
+#[test]
+#[allow(unsafe_code)]
+fn adl_dispatchers_round_trip_leaves_through_the_facade_bridge() {
+    let mut sink = BufferSink { bytes: Vec::new() };
+    {
+        let mut ar = srpc::serializable::BinaryWriteArchive {
+            // SAFETY: `sink` outlives the archive that borrows it.
+            sink_: unsafe { srpc::serializable::make_sink_proxy_buffer(&raw mut sink) },
+        };
+        // SAFETY (all six facade calls below): foreign named-module boundary;
+        // both borrows are held only for the duration of each call.
+        unsafe {
+            rusty::srpc::serializable::Serialize_::serialize(&SerializableV64::new(-77_000), &mut ar);
+            rusty::srpc::serializable::Serialize_::serialize(&123_456_789_i64, &mut ar);
+            rusty::srpc::serializable::Serialize_::serialize(&SerializableV32::new(63), &mut ar);
+        }
+    }
+    assert!(!sink.bytes.is_empty());
+
+    let encoded = sink.bytes.clone();
+    let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
+    {
+        let mut ar = srpc::serializable::BinaryReadArchive {
+            // SAFETY: `source` and `encoded` both outlive the archive.
+            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) },
+        };
+        let mut v64 = SerializableV64::new(0);
+        let mut plain = 0i64;
+        let mut v32 = SerializableV32::new(0);
+        // SAFETY: same facade-boundary contract as the write side.
+        unsafe {
+            rusty::srpc::serializable::Deserialize_::deserialize(&mut v64, &mut ar);
+            rusty::srpc::serializable::Deserialize_::deserialize(&mut plain, &mut ar);
+            rusty::srpc::serializable::Deserialize_::deserialize(&mut v32, &mut ar);
+        }
+        assert_eq!(v64.get(), -77_000);
+        assert_eq!(plain, 123_456_789);
+        assert_eq!(v32.get(), 63);
+    }
+    assert!(source.eof());
+}
+
+// The canonical GENERIC dispatch chain (`Serialize_::serialize` and its
+// Deserialize twin) has no Rust body: it is the C++ open-set ADL path, and a
+// `T: Serialize` bound on it would cascade into the generic container impls,
+// which the transpiler cannot lower (it degrades a constrained generic impl to
+// hand slots).  Everything that reaches it under rustc -- container
+// serialization first among them -- panics via `rusty::srpc_adl_serialize`'s
+// `unimplemented!`.  These pin that the failure is LOUD -- the alternative, an
+// empty stub, silently wrote nothing for years.
+#[test]
+#[allow(unsafe_code)]
+#[should_panic(expected = "generic deserialization dispatch (Deserialize_::deserialize) has no")]
+fn container_element_read_dispatch_fails_loudly_under_rustc() {
+    let encoded = [2u8, 0, 0]; // v64 length prefix of 2, then would-be elements
+    let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
+    let mut ar = srpc::serializable::BinaryReadArchive {
+        // SAFETY: `source` and `encoded` outlive the archive.
+        source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) },
+    };
+    let mut values: Vec<i64> = Vec::new();
+    srpc::serializable::Deserialize::deserialize(&mut values, &mut ar);
+}
+
+#[test]
+#[allow(unsafe_code)]
+#[should_panic(expected = "generic serialization dispatch (Serialize_::serialize) has no")]
+fn container_element_dispatch_fails_loudly_under_rustc() {
+    let mut sink = BufferSink { bytes: Vec::new() };
+    let mut ar = srpc::serializable::BinaryWriteArchive {
+        // SAFETY: `sink` outlives the archive that borrows it.
+        sink_: unsafe { srpc::serializable::make_sink_proxy_buffer(&raw mut sink) },
+    };
+    let values: Vec<i64> = vec![1, 2, 3];
+    srpc::serializable::Serialize::serialize(&values, &mut ar);
+}

@@ -210,14 +210,16 @@ build-dependent, so they go behind the plain-C seam (`srpc_reactor_gettid`, `srp
 
 ## Testing
 
-**Rust lane.** 37 auto-discovered integration tests in `tests/*_rust.rs`; the rule is
+**Rust lane.** 38 auto-discovered integration tests in `tests/*_rust.rs`; the rule is
 `<dir>/<module>.rs` → `tests/<module>_rust.rs`. The counts only *look* one-to-one: `frame_codec` has two
 (`frame_codec_rust.rs` plus the bug-named `frame_codec_desync_rust.rs`), and
-**`rpc/client.rs` and `rpc/server.rs` have no Rust test at all** — no test file so much as names
-`srpc::client` or `srpc::server`, and `client_teardown_drains_queue_rust.rs`, despite its name, imports only
-`srpc::request_queue`. A green `cargo test` therefore says nothing about `rpc/client.rs` (3.3k lines, the
-second-largest module) or `rpc/server.rs` — and the largest, `reactor/reactor.rs`, is untested for a
-different reason given below.
+`client_teardown_drains_queue_rust.rs`, despite its name, imports only `srpc::request_queue`.
+`rpc/client.rs` and `rpc/server.rs` share one real test, `tests/rpc_roundtrip_inmemory_rust.rs` — a full
+client→server→client RPC over the in-memory channel, possible under rustc only because everything on that
+path is synchronous: the RPC is registered with `reg_fast_rpc` (inline dispatch, no fiber), and teardown
+order inside it is load-bearing (its comments say why). Beyond that one path, a green `cargo test` still
+says little about `rpc/client.rs` (3.3k lines, the second-largest module) — and the largest,
+`reactor/reactor.rs`, is untested for a different reason given below.
 
 Tests import the library as an external consumer (`use srpc::<module>::…`), never via `#[path]` or `mod`.
 No canonical source has a `#[cfg(test)]` module; the workspace's only one is in `rusty-rustc/src/lib.rs`.
@@ -236,7 +238,7 @@ Four non-obvious things about these tests:
 
   What it may no longer do is *shadow* a canonical implementation. `scripts/check_facade_shadow.py` (in the
   source gate and in `ctest -L srpc`) fails if a facade item shares a name with a canonical one, unless it
-  is listed in that script's `ALLOWED_SHADOWS` with a reason. The eleven entries there are the real
+  is listed in that script's `ALLOWED_SHADOWS` with a reason. The ten entries there are the real
   boundary of the Rust lane, each one measured against the pinned transpiler rather than reasoned about:
   `debugging::verify` is generic, and the flat-import contract requires a route-(a) leaf to be a
   non-generic free function; `rand::RandomGenerator` carries `cpp_abi` markers that make it an adapted
@@ -245,6 +247,21 @@ Four non-obvious things about these tests:
   `__rusty_alias_PollThread_remove`; and the four remaining `reactor` entries need a live reactor and a
   current fiber that rustc does not have. Everything else was retired — `basetypes` and `logging` are gone
   from the facade entirely, and 80-odd call sites now reach canonical Rust.
+
+  Serialization is the sharpest example of what the boundary means in practice. The canonical GENERIC
+  dispatchers (`Serialize_::serialize` / `Deserialize_::deserialize`) are **C++-only**: in C++ the
+  qualified call resolves the generated module's concrete leaf overloads before the generic template
+  (poison-scoped ADL alone cannot see them — using-directives are invisible to ADL, and primitives have no
+  associated namespace), while under rustc a `T: Serialize` bound there would cascade into the generic
+  container impls, which the emitter degrades to hand slots. So they stay unbounded and their facade
+  terminal `rusty::srpc_adl_serialize` is a LOUD `unimplemented!` — replacing years of silently writing
+  nothing. **Rust-lane leaf serialization is real** through two spellings: the `Serialize`/`Deserialize`
+  traits directly, and the facade route `cpp_serializable::Serialize_::serialize` the wire sites use —
+  which emits the same qualified `::srpc::Serialize_::serialize` call C++ always made (its
+  cpp-module-index row makes it a known foreign symbol) and under rustc dispatches through the
+  `RustcAdlSerialize`/`RustcAdlDeserialize` bound, satisfied by srpc's blanket impls on its archives over
+  the canonical traits. Container serialization panics wholesale under rustc; C++ container emission is
+  byte-for-byte untouched.
 - **`reactor/reactor.rs` is deliberately not executable as Rust** — its own header says so. The nine
   `#[cfg_attr(any(), thread_local)]` statics are plain process-global `static mut` under rustc, so TLS, race
   and teardown behavior are covered only by the C++ battery.
