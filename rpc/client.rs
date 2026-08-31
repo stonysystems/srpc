@@ -1562,11 +1562,16 @@ impl Client {
                     Arc::<OneTimeJob>::new(OneTimeJob::new(Box::new(move || {
                         conn_arc.close();
                     })));
-                // Implicit Arc<OneTimeJob> -> Arc<Job> upcast via rusty::Arc's
-                // template ctor (U* convertible to T*).
+                // Explicit unsize to `Arc<dyn Job>` before the foreign call:
+                // the facade's REAL job queue is bounded on
+                // `rusty::RustcJobRun`, implemented for `dyn Job` (a nominal
+                // `OneTimeJob` impl would emit a new C++ member).  In C++ this
+                // is the same Arc<OneTimeJob> -> Arc<Job> template-ctor upcast
+                // that always happened at the add() boundary.
+                let close_job_erased: Arc<dyn crate::misc::Job> = close_job;
                 // SAFETY: foreign named-module boundary; the job handle is
                 // freshly built and uniquely owned here.
-                unsafe { self.poll_thread_worker_field.add(close_job) };
+                unsafe { self.poll_thread_worker_field.add(close_job_erased) };
             }
         }
     }
@@ -2709,11 +2714,13 @@ pub fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
     };
     let recv_job: Arc<OneTimeJob> =
         Arc::<OneTimeJob>::new(OneTimeJob::new(Box::new(job_fn)));
-    // Implicit Arc<OneTimeJob> -> Arc<Job> upcast for the queue.
+    // Explicit unsize to `Arc<dyn Job>`; see the close-job comment in
+    // `Client::close` for why the facade queue is bounded on the erased type.
+    let recv_job_erased: Arc<dyn crate::misc::Job> = recv_job;
     let pt: &Arc<PollThread> = &conn.poll_thread_worker_;
     // SAFETY: foreign named-module boundary; the job handle is freshly built
     // and uniquely owned here.
-    unsafe { pt.add(recv_job) };
+    unsafe { pt.add(recv_job_erased) };
 }
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.

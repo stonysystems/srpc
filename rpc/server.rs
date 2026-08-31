@@ -798,10 +798,13 @@ impl Drop for Server {
             let close_job: Arc<OneTimeJob> = Arc::new(OneTimeJob::new(Box::new(move || {
                 listener_box.close();
             })));
+            // Explicit unsize to `Arc<dyn Job>`; the facade queue is bounded
+            // on the erased type (see Client::close).
+            let close_job_erased: Arc<dyn crate::misc::Job> = close_job;
             let pt: &Arc<PollThread> = self.poll_thread_field.as_ref().unwrap();
             // SAFETY: `srpc.reactor` is a foreign named module; the job is a
             // well-formed owning handle the worker command queue takes over.
-            unsafe { pt.add(close_job) };
+            unsafe { pt.add(close_job_erased) };
         }
         {
             let mut guard = self.channel_sconns_field.lock().unwrap();

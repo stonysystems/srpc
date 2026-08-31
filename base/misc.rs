@@ -82,6 +82,27 @@ pub unsafe trait Job: Send + Sync {
     fn Done(&mut self) -> bool;
 }
 
+// Rustc-lane dispatch bridge for the facade's REAL poll thread.  The facade
+// cannot name `Job` (`rusty` does not depend on `srpc`), so its job queue
+// drives entries through `rusty::RustcJobRun`; the as-ptr cast below is the
+// same worker-exclusive mutable dispatch `reactor/reactor.rs`'s `job_ready` /
+// `job_spawn_work` perform.  The self type is a trait object, which the
+// emitter lowers to nothing.
+#[allow(unsafe_code)]
+impl rusty::RustcJobRun for dyn Job {
+    unsafe fn rustc_job_ready(&self) -> bool {
+        let job_mut = self as *const dyn Job as *mut dyn Job;
+        // SAFETY: the poll thread holds exclusive dispatch per the trait
+        // contract, exactly as job_ready's cast does.
+        unsafe { (*job_mut).Ready() }
+    }
+    unsafe fn rustc_job_work(&self) {
+        let job_mut = self as *const dyn Job as *mut dyn Job;
+        // SAFETY: as above, mirroring job_spawn_work.
+        unsafe { (*job_mut).Work() }
+    }
+}
+
 /// A job that starts ready and records completion after invoking its callback.
 pub struct OneTimeJob {
     // Kept private in Rust so a caller retaining an Arc cannot race the

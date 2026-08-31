@@ -234,15 +234,12 @@ fn client_calls_server_over_the_inmemory_channel_and_reads_the_reply() {
     deserialize_from(fu.get_reply(), &mut doubled);
     assert_eq!(doubled, 42, "the reply payload crossed both archives intact");
 
-    // Teardown order is load-bearing in the Rust lane.  `Client::close`
-    // defers its connection close to a poll-thread job, and the facade
-    // `PollThread::add` is an empty stub (an allowlisted mock: running jobs
-    // needs a live reactor), so the client side never marks the shared
-    // channel state closed.  If the client dropped first, the server's later
-    // close would fan out to the client's raw-address `on_closed` callback
-    // after the `ClientConnection` was freed.  Closing the server while the
-    // client connection is still alive lets the fan-out run safely and mark
-    // the state, after which the client's own drop is quiet.
+    // Explicit teardown order, kept for determinism.  Historically this was
+    // load-bearing: the facade `PollThread::add` used to discard the deferred
+    // close job, so a client dropped first left a raw-address `on_closed`
+    // callback aimed at a freed `ClientConnection`.  The facade poll thread
+    // is real now and runs the close job -- whose captured Arc keeps the
+    // connection alive until then -- so either order is safe.
     drop(server);
     drop(client);
 }
@@ -284,7 +281,7 @@ fn unknown_rpc_id_comes_back_as_an_error_not_a_hang() {
         "an unregistered rpc_id must surface as SERVER_ERR_NO_ENTRY on the future"
     );
 
-    // Same load-bearing teardown order as the happy-path test above.
+    // Same explicit teardown order as the happy-path test above.
     drop(server);
     drop(client);
 }

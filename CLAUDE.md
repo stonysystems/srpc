@@ -216,8 +216,9 @@ build-dependent, so they go behind the plain-C seam (`srpc_reactor_gettid`, `srp
 `client_teardown_drains_queue_rust.rs`, despite its name, imports only `srpc::request_queue`.
 `rpc/client.rs` and `rpc/server.rs` share one real test, `tests/rpc_roundtrip_inmemory_rust.rs` — a full
 client→server→client RPC over the in-memory channel, possible under rustc only because everything on that
-path is synchronous: the RPC is registered with `reg_fast_rpc` (inline dispatch, no fiber), and teardown
-order inside it is load-bearing (its comments say why). Beyond that one path, a green `cargo test` still
+path is synchronous: the RPC is registered with `reg_fast_rpc` (inline dispatch, no fiber). The real
+facade `PollThread` runs the deferred close jobs now, so teardown is safe in either order; the test keeps
+an explicit order anyway. Beyond that one path, a green `cargo test` still
 says little about `rpc/client.rs` (3.3k lines, the second-largest module) — and the largest,
 `reactor/reactor.rs`, is untested for a different reason given below.
 
@@ -231,10 +232,13 @@ Four non-obvious things about these tests:
   ~12 test files already do. Otherwise it fails to *link*.
 - **A test that reaches through the `cpp::`/`rusty` facade may prove nothing.** `rusty-rustc/src/lib.rs` is a
   2.4k-line hand-written facade that rusty-cpp omits from generated C++ by package identity — so it is
-  allowed to lie, and still does where it must: `fiber_sleep` only records the duration, `PollThread`
-  mutators are empty, `RandomGenerator::rand(min, max)` returns `min`. Its `with_test_fiber` /
-  `take_test_sleep_calls` hooks are what such tests are actually for. Reaching a *new* C++ runtime API from
-  a canonical module means writing its facade here first, plus a `rust-type-map.toml` row.
+  allowed to lie, and still does where it must: `fiber_sleep` only records the duration and
+  `RandomGenerator::rand(min, max)` returns `min`. Its `with_test_fiber` / `take_test_sleep_calls` hooks
+  are what such tests are actually for. It is no longer all mock, though: `PollThread` is a REAL epoll
+  loop (edge-triggered, 1 ms tick, command queue, job queue -- a faithful port of
+  `pollworker_poll_loop`'s semantics minus reactor coupling and fibers), which is what lets the canonical
+  TCP transport run under rustc. Reaching a *new* C++ runtime API from a canonical module means writing
+  its facade here first, plus a `rust-type-map.toml` row.
 
   What it may no longer do is *shadow* a canonical implementation. `scripts/check_facade_shadow.py` (in the
   source gate and in `ctest -L srpc`) fails if a facade item shares a name with a canonical one, unless it

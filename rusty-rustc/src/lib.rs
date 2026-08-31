@@ -1155,6 +1155,76 @@ pub trait RustcAdlDeserialize<T: ?Sized> {
     unsafe fn rustc_adl_deserialize(&mut self, value: &mut T);
 }
 
+/// Callable surface the rustc-lane poll thread drives.
+///
+/// The real `PollThread` below cannot name `srpc::pollable_proxy::PollableBase`
+/// (`rusty` does not depend on `srpc`), so this trait is the facade's spelling
+/// of that vtable; srpc implements it for `dyn PollableBase` (a trait-object
+/// impl, which the emitter lowers to nothing), and the `Box` blanket further
+/// down lets the canonical `PollableProxy = Box<dyn PollableBase>` ride in
+/// unchanged.  Method-for-method it mirrors `PollableBase`, and the loop's use
+/// of each mirrors `reactor/reactor.rs`'s `pollworker_poll_loop`.
+pub trait RustcPollable: Send {
+    fn rustc_fd(&self) -> i32;
+    fn rustc_poll_mode(&self) -> i32;
+    fn rustc_handle_read(&mut self) -> bool;
+    fn rustc_handle_write(&mut self) -> i32;
+    fn rustc_handle_error(&mut self);
+    fn rustc_close(&mut self);
+    fn rustc_check_pending_write_update(&self) -> bool;
+    fn rustc_is_closed(&self) -> bool;
+}
+
+impl<T: RustcPollable + ?Sized> RustcPollable for Box<T> {
+    fn rustc_fd(&self) -> i32 {
+        (**self).rustc_fd()
+    }
+    fn rustc_poll_mode(&self) -> i32 {
+        (**self).rustc_poll_mode()
+    }
+    fn rustc_handle_read(&mut self) -> bool {
+        (**self).rustc_handle_read()
+    }
+    fn rustc_handle_write(&mut self) -> i32 {
+        (**self).rustc_handle_write()
+    }
+    fn rustc_handle_error(&mut self) {
+        (**self).rustc_handle_error()
+    }
+    fn rustc_close(&mut self) {
+        (**self).rustc_close()
+    }
+    fn rustc_check_pending_write_update(&self) -> bool {
+        (**self).rustc_check_pending_write_update()
+    }
+    fn rustc_is_closed(&self) -> bool {
+        (**self).rustc_is_closed()
+    }
+}
+
+/// Callable surface for jobs queued onto the rustc-lane poll thread.
+///
+/// Mirrors `reactor/reactor.rs`'s `job_ready`/`job_spawn_work` contract: the
+/// worker has exclusive mutable dispatch over a queued job even though it is
+/// held by `Arc`, so both methods are unsafe and srpc's impl (on `dyn Job`, so
+/// it emits nothing) performs the same as-ptr cast the reference does.  The
+/// reference runs `Work` on a fresh fiber; the rustc lane has no fibers and
+/// runs it inline on the poll thread, which the sole current job -- the
+/// client's deferred connection close -- neither needs nor notices.
+pub trait RustcJobRun: Send + Sync {
+    /// # Safety
+    ///
+    /// Poll-thread-exclusive mutable dispatch; no other thread may be
+    /// touching the job's state during the call.
+    #[allow(unsafe_code)]
+    unsafe fn rustc_job_ready(&self) -> bool;
+    /// # Safety
+    ///
+    /// Same exclusivity contract as [`Self::rustc_job_ready`].
+    #[allow(unsafe_code)]
+    unsafe fn rustc_job_work(&self);
+}
+
 pub trait RustcSourceDyn {
     /// # Safety
     ///
@@ -1231,7 +1301,13 @@ pub mod rusty {
             let octets = value.ip().octets();
             SockAddrIn {
                 sin_addr: InAddr {
-                    s_addr: u32::from_ne_bytes(octets).to_be(),
+                    // Mirror the C++ runtime (rusty/net/tcp.hpp): assemble the
+                    // HOST-order word from the octets, then htonl.  The old
+                    // `from_ne_bytes(octets).to_be()` double-swapped on
+                    // little-endian -- the octets are already network order in
+                    // memory -- so every connect went to the byte-reversed
+                    // address (127.0.0.1 became 1.0.0.127) and timed out.
+                    s_addr: u32::from_be_bytes(octets).to_be(),
                 },
                 sin_port: value.port().to_be(),
             }
@@ -1597,21 +1673,344 @@ pub mod srpc {
         pub type Fiber = ReactorFiber;
 
         /// Rustc-only opaque model of the cross-thread poll command sender.
-        pub struct PollThread;
+        /// A REAL rustc-lane poll thread: one epoll instance driven by one
+        /// spawned thread, mirroring `reactor/reactor.rs`'s
+        /// `pollworker_poll_loop` and the platform flags in
+        /// `reactor/epoll_platform_linux.cc` (edge-triggered:
+        /// `EPOLLET|EPOLLIN|EPOLLRDHUP`, plus `EPOLLOUT` when write mode is
+        /// requested; `EEXIST` retried as del+re-add; `EBADF` drops the
+        /// pollable; `ENOENT`/`EBADF` tolerated on MOD; 100-event, 1 ms wait
+        /// passes).  Registered pollables are reached through the
+        /// [`crate::RustcPollable`] bound, which srpc implements for
+        /// `dyn PollableBase`.
+        ///
+        /// Deliberate departure from the C++ worker, rustc-lane-only: the
+        /// loop does not couple to a `Reactor` (`run_loop` drives timers,
+        /// fibers and stackless tasks, none of which exist under rustc), and
+        /// queued jobs run inline on the poll thread instead of on a fresh
+        /// fiber.
+        pub struct PollThread {
+            inner: ::std::sync::Arc<PollInner>,
+        }
+
+        enum PollCmd {
+            Add(Box<dyn crate::RustcPollable>),
+            UpdateMode(i32, i32),
+            Job(Box<dyn QueuedJob>),
+            Shutdown,
+        }
+
+        /// Facade-internal erasure of a queued [`crate::RustcJobRun`] handle.
+        trait QueuedJob: Send {
+            fn ready(&self) -> bool;
+            fn work(&self);
+        }
+
+        struct JobHolder<J: crate::RustcJobRun + ?Sized>(Arc<J>);
+
+        impl<J: crate::RustcJobRun + ?Sized> QueuedJob for JobHolder<J> {
+            fn ready(&self) -> bool {
+                // SAFETY: only the poll thread calls this; the RustcJobRun
+                // contract gives it exclusive mutable dispatch.
+                #[allow(unsafe_code)]
+                unsafe {
+                    self.0.rustc_job_ready()
+                }
+            }
+            fn work(&self) {
+                // SAFETY: as above.
+                #[allow(unsafe_code)]
+                unsafe {
+                    self.0.rustc_job_work()
+                }
+            }
+        }
+
+        struct PollInner {
+            commands: Mutex<Vec<PollCmd>>,
+            join: Mutex<Option<::std::thread::JoinHandle<()>>>,
+        }
+
+        mod poll_ffi {
+            // Direct glibc entry points, exactly as
+            // reactor/epoll_wrapper.rs declares `epoll_wait` for itself; no
+            // crate dependency is added.  The event struct is the same
+            // 12-byte packed x86-64 shape that file documents.
+            #[repr(C, packed)]
+            #[derive(Clone, Copy, Default)]
+            pub(super) struct EpollEvent {
+                pub events: u32,
+                pub fd: i32,
+                pub padding: u32,
+            }
+
+            #[allow(unsafe_code)]
+            unsafe extern "C" {
+                pub(super) fn epoll_create1(flags: i32) -> i32;
+                pub(super) fn epoll_ctl(
+                    epfd: i32,
+                    op: i32,
+                    fd: i32,
+                    event: *mut EpollEvent,
+                ) -> i32;
+                pub(super) fn epoll_wait(
+                    epfd: i32,
+                    events: *mut EpollEvent,
+                    max_events: i32,
+                    timeout_ms: i32,
+                ) -> i32;
+                pub(super) fn close(fd: i32) -> i32;
+            }
+
+            pub(super) const CTL_ADD: i32 = 1;
+            pub(super) const CTL_DEL: i32 = 2;
+            pub(super) const CTL_MOD: i32 = 3;
+            pub(super) const IN: u32 = 0x001;
+            pub(super) const OUT: u32 = 0x004;
+            pub(super) const ERR: u32 = 0x008;
+            pub(super) const HUP: u32 = 0x010;
+            pub(super) const RDHUP: u32 = 0x2000;
+            pub(super) const ET: u32 = 1 << 31;
+
+            pub(super) const MODE_READ: i32 = 0x1;
+            pub(super) const MODE_WRITE: i32 = 0x2;
+            pub(super) const MODE_NO_CHANGE: i32 = -1;
+            pub(super) const READY_READABLE: i32 = 0x1;
+            pub(super) const READY_WRITABLE: i32 = 0x2;
+            pub(super) const READY_ERROR: i32 = 0x4;
+
+            pub(super) fn event_bits(mode: i32) -> u32 {
+                let mut bits = ET | RDHUP;
+                if (mode & MODE_READ) != 0 {
+                    bits |= IN;
+                }
+                if (mode & MODE_WRITE) != 0 {
+                    bits |= OUT;
+                }
+                bits
+            }
+        }
+
+        struct PollWorker {
+            epoll_fd: i32,
+            pollables: ::std::collections::HashMap<i32, Box<dyn crate::RustcPollable>>,
+            modes: ::std::collections::HashMap<i32, i32>,
+            jobs: Vec<Box<dyn QueuedJob>>,
+        }
+
+        impl PollWorker {
+            #[allow(unsafe_code)]
+            fn ctl(&self, op: i32, fd: i32, mode: i32) -> i32 {
+                let mut ev = poll_ffi::EpollEvent {
+                    events: poll_ffi::event_bits(mode),
+                    fd,
+                    padding: 0,
+                };
+                // SAFETY: `ev` is a live, correctly-shaped epoll_event and
+                // `epoll_fd` is the descriptor this worker owns.
+                unsafe { poll_ffi::epoll_ctl(self.epoll_fd, op, fd, &mut ev) }
+            }
+
+            fn do_add(&mut self, poll: Box<dyn crate::RustcPollable>) {
+                let fd = poll.rustc_fd();
+                let mode = poll.rustc_poll_mode();
+                // Teardown race tolerance, per pollworker_do_add_pollable: a
+                // pollable that closed before registration reports fd -1 and
+                // can never produce events.
+                if fd < 0 || self.pollables.contains_key(&fd) {
+                    return;
+                }
+                let mut rc = self.ctl(poll_ffi::CTL_ADD, fd, mode);
+                if rc != 0 {
+                    // The platform impl retries EEXIST as del+re-add; errno is
+                    // not readable without libc, so retry unconditionally --
+                    // a second failure drops the pollable either way, which is
+                    // also the EBADF outcome the platform impl encodes.
+                    self.ctl(poll_ffi::CTL_DEL, fd, mode);
+                    rc = self.ctl(poll_ffi::CTL_ADD, fd, mode);
+                }
+                if rc != 0 {
+                    return;
+                }
+                self.pollables.insert(fd, poll);
+                self.modes.insert(fd, mode);
+            }
+
+            fn do_update_mode(&mut self, fd: i32, new_mode: i32) {
+                if !self.pollables.contains_key(&fd) {
+                    return;
+                }
+                let old = match self.modes.get(&fd) {
+                    Some(m) => *m,
+                    None => return,
+                };
+                self.modes.insert(fd, new_mode);
+                if new_mode != old {
+                    // ENOENT/EBADF are tolerated by the platform impl; the
+                    // return value is deliberately ignored to match.
+                    self.ctl(poll_ffi::CTL_MOD, fd, new_mode);
+                }
+            }
+
+            fn remove(&mut self, fd: i32) {
+                if self.modes.remove(&fd).is_some() {
+                    self.ctl(poll_ffi::CTL_DEL, fd, 0);
+                }
+                if let Some(mut p) = self.pollables.remove(&fd) {
+                    p.rustc_close();
+                }
+            }
+
+            #[allow(unsafe_code)]
+            fn wait_and_dispatch(&mut self) {
+                let mut events = [poll_ffi::EpollEvent::default(); 100];
+                // SAFETY: the buffer is live for the call and correctly sized.
+                let n = unsafe {
+                    poll_ffi::epoll_wait(self.epoll_fd, events.as_mut_ptr(), 100, 1)
+                };
+                let mut index = 0i32;
+                // Signed loop preserves the reference behavior: a failed wait
+                // performs zero callbacks.
+                while index < n {
+                    let ev = events[index as usize];
+                    let fd = ev.fd;
+                    let kernel = ev.events;
+                    let mut ready = 0i32;
+                    if (kernel & poll_ffi::IN) != 0 {
+                        ready |= poll_ffi::READY_READABLE;
+                    }
+                    if (kernel & poll_ffi::OUT) != 0 {
+                        ready |= poll_ffi::READY_WRITABLE;
+                    }
+                    if (kernel & (poll_ffi::ERR | poll_ffi::HUP | poll_ffi::RDHUP)) != 0 {
+                        ready |= poll_ffi::READY_ERROR;
+                    }
+                    let mut write_mode: Option<i32> = None;
+                    if let Some(p) = self.pollables.get_mut(&fd) {
+                        if (ready & poll_ffi::READY_READABLE) != 0 {
+                            p.rustc_handle_read();
+                        }
+                        if (ready & poll_ffi::READY_WRITABLE) != 0 {
+                            let new_mode = p.rustc_handle_write();
+                            if new_mode != poll_ffi::MODE_NO_CHANGE {
+                                write_mode = Some(new_mode);
+                            }
+                        }
+                    }
+                    if let Some(m) = write_mode {
+                        self.do_update_mode(fd, m);
+                    }
+                    if (ready & poll_ffi::READY_ERROR) != 0 {
+                        if let Some(p) = self.pollables.get_mut(&fd) {
+                            p.rustc_handle_error();
+                        }
+                    }
+                    index += 1;
+                }
+            }
+
+            fn sweep(&mut self) {
+                let fds: Vec<i32> = self.pollables.keys().copied().collect();
+                // end_reply() on a fiberless fast path sets the pending-write
+                // flag from the dispatch; pick it up exactly as the reference
+                // loop does.
+                for fd in &fds {
+                    let wants = match self.pollables.get(fd) {
+                        Some(p) => p.rustc_check_pending_write_update(),
+                        None => false,
+                    };
+                    if wants {
+                        self.do_update_mode(*fd, poll_ffi::MODE_READ | poll_ffi::MODE_WRITE);
+                    }
+                }
+                // Remove pollables closed by handle_error/handle_read so a
+                // reused fd number cannot alias a dead connection.
+                for fd in &fds {
+                    let dead = match self.pollables.get(fd) {
+                        Some(p) => p.rustc_is_closed(),
+                        None => false,
+                    };
+                    if dead {
+                        self.remove(*fd);
+                    }
+                }
+            }
+        }
+
+        fn poll_loop(inner: ::std::sync::Arc<PollInner>, epoll_fd: i32) {
+            let mut w = PollWorker {
+                epoll_fd,
+                pollables: ::std::collections::HashMap::new(),
+                modes: ::std::collections::HashMap::new(),
+                jobs: Vec::new(),
+            };
+            loop {
+                let drained: Vec<PollCmd> =
+                    ::std::mem::take(&mut *inner.commands.lock().unwrap());
+                let mut stop = false;
+                for cmd in drained {
+                    match cmd {
+                        PollCmd::Add(p) => w.do_add(p),
+                        PollCmd::UpdateMode(fd, mode) => w.do_update_mode(fd, mode),
+                        PollCmd::Job(j) => w.jobs.push(j),
+                        PollCmd::Shutdown => stop = true,
+                    }
+                }
+                // Ready jobs run before shutdown is honored, so a close job
+                // queued ahead of Shutdown in the same batch still executes --
+                // trigger-then-check, exactly as pollworker_trigger_job does.
+                let queued = ::std::mem::take(&mut w.jobs);
+                for job in queued {
+                    if job.ready() {
+                        job.work();
+                    } else {
+                        w.jobs.push(job);
+                    }
+                }
+                if stop {
+                    break;
+                }
+                w.wait_and_dispatch();
+                w.sweep();
+            }
+            let fds: Vec<i32> = w.pollables.keys().copied().collect();
+            for fd in fds {
+                w.remove(fd);
+            }
+            // SAFETY: the worker owns this descriptor; nothing uses it after
+            // the loop exits.
+            #[allow(unsafe_code)]
+            unsafe {
+                poll_ffi::close(epoll_fd)
+            };
+        }
 
         impl PollThread {
             /// # Safety
             ///
-            /// `poll` must be a well-formed owning pollable proxy. The
-            /// production method moves it into the worker command queue.
+            /// `poll` must be a well-formed owning pollable proxy. It is moved
+            /// into the worker command queue, exactly as the production
+            /// method's contract states.
             #[allow(unsafe_code)]
-            pub unsafe fn add_proxy<P>(&self, _poll: P) {}
+            pub unsafe fn add_proxy<P: crate::RustcPollable + 'static>(&self, poll: P) {
+                self.inner
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .push(PollCmd::Add(Box::new(poll)));
+            }
 
             /// # Safety
             ///
             /// `fd` must identify a pollable registered with this thread.
             #[allow(unsafe_code)]
-            pub unsafe fn update_mode(&self, _fd: i32, _new_mode: i32) {}
+            pub unsafe fn update_mode(&self, fd: i32, new_mode: i32) {
+                self.inner
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .push(PollCmd::UpdateMode(fd, new_mode));
+            }
 
             /// # Safety
             ///
@@ -1619,24 +2018,68 @@ pub mod srpc {
             /// named-module boundary.
             #[allow(unsafe_code)]
             pub unsafe fn create() -> Arc<PollThread> {
-                Arc::new(PollThread)
+                // SAFETY: epoll_create1(0) either yields an owned descriptor
+                // or -1; the panic below is the rustc-lane spelling of the
+                // platform impl's `verify(fd != -1)`.
+                let epoll_fd = unsafe { poll_ffi::epoll_create1(0) };
+                assert!(epoll_fd != -1, "epoll_create1 failed");
+                let inner = ::std::sync::Arc::new(PollInner {
+                    commands: Mutex::new(Vec::new()),
+                    join: Mutex::new(None),
+                });
+                let loop_inner = inner.clone();
+                let handle = ::std::thread::Builder::new()
+                    .name("srpc-pollthread".to_string())
+                    .spawn(move || poll_loop(loop_inner, epoll_fd))
+                    .expect("spawn poll thread");
+                *inner.join.lock().unwrap() = Some(handle);
+                Arc::new(PollThread { inner })
             }
 
             /// # Safety
             ///
-            /// `job` must be a well-formed owning job handle; the production
-            /// method moves it into the worker command queue. The parameter is
-            /// generic because the C++ surface takes `rusty::Arc<Job>` and
-            /// canonical callers pass a concrete job whose Arc upcasts.
+            /// `job` must be a well-formed owning job handle; it is moved into
+            /// the worker command queue and dispatched under the
+            /// [`crate::RustcJobRun`] exclusivity contract.  The client's
+            /// deferred connection close rides this: the job's captured Arc
+            /// keeps the `ClientConnection` alive until the poll thread runs
+            /// the close, which is what serializes teardown against event
+            /// dispatch -- the same protocol the C++ worker uses.
             #[allow(unsafe_code)]
-            pub unsafe fn add<J>(&self, _job: Arc<J>) {}
+            pub unsafe fn add<J: crate::RustcJobRun + ?Sized + 'static>(&self, job: Arc<J>) {
+                self.inner
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .push(PollCmd::Job(Box::new(JobHolder(job))));
+            }
 
             /// # Safety
             ///
             /// No caller-side precondition; `unsafe` records the foreign
-            /// named-module boundary.
+            /// named-module boundary. Idempotent; joins the worker unless
+            /// called from it.
             #[allow(unsafe_code)]
-            pub unsafe fn shutdown(&self) {}
+            pub unsafe fn shutdown(&self) {
+                self.inner.commands.lock().unwrap().push(PollCmd::Shutdown);
+                let handle = self.inner.join.lock().unwrap().take();
+                if let Some(h) = handle {
+                    if h.thread().id() != ::std::thread::current().id() {
+                        let _ = h.join();
+                    }
+                }
+            }
+        }
+
+        impl Drop for PollThread {
+            fn drop(&mut self) {
+                // SAFETY: same contract as shutdown(); Drop runs at the last
+                // strong reference, so no registration can race it.
+                #[allow(unsafe_code)]
+                unsafe {
+                    self.shutdown()
+                };
+            }
         }
 
 
