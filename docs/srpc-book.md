@@ -4880,6 +4880,39 @@ Treat these as a shape, not a spec: one box, loopback, one payload size, a handl
 does nothing. Your own driver against your own workload is still the only number that
 matters — but the harness above is real, and these are its numbers.
 
+### The Rust lane, measured
+
+Since the rustc lane became executable end to end, the same question can be asked of it —
+with one structural caveat. The Rust lane has no poll threads and no fibers, so its only
+executable path is the synchronous in-memory one: each RPC runs client → switchboard →
+inline fast dispatch → reply → future resolution on the calling thread. What it reports is
+therefore sequential round-trip *latency* (and its reciprocal, single-threaded op/s), where
+the table above reports *pipelined* throughput — 8 client threads with 1,000 outstanding
+requests over TCP through real epoll. The two are related but not comparable one-to-one.
+
+One thread, one core (`taskset -c 8`), `i64` echo through the real wire format
+(`v64 xid | i32 rpc_id | payload` out, the four-field reply header back), one million
+timed round trips per trial after warmup:
+
+| Metric | Mean | Spread |
+|---|---:|---|
+| RPC round trip | 1,207 ns/op (828,700 op/s) | ±0.3% |
+| wire serialization alone (both directions) | 60.1 ns/op | ±0.8% |
+
+Measured 2026-08-30 at commit `aeca82a`, same host as the table above (AMD EPYC 7702P),
+rustc 1.97.1, `-C opt-level=3 -C target-cpu=native`, thin LTO, load average ~5.7 (higher
+than the ~1.3 the C++ numbers were taken at; the pinned core kept the spread tight
+regardless). The driver is `rust-inmemory-bench`, kept beside the rpcbench results outside
+the repository.
+
+The shape is worth a sentence: a single sequential Rust thread completes a full RPC every
+1.2 µs — about 70% of the *pipelined, eight-thread* C++ `fast` figure — and serialization
+is 5% of that budget. Most of the remaining 1.1 µs is the request path's bookkeeping
+(future creation and registration, circuit-breaker and expiry checks, callback dispatch
+through the channel), not copying. It says nothing about how a Rust TCP transport would
+scale under load, because none exists; it does say the canonical request path itself is
+not paying any pathological overhead when rustc compiles it.
+
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits
 are real knobs and which only look like knobs.
