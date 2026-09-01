@@ -542,6 +542,28 @@ impl Drop for DeferredReply {
 /// default arg on `Server::drain()` and `Server::graceful_shutdown()`.
 pub const kDefaultDrainTimeoutMs: u64 = 30000u64;
 
+// Why this constant exists: every reply (sconn_reply) serializes into a fresh
+// `BufferSink` whose Vec starts empty, and the header alone is three to four
+// small `write_bytes` appends -- so an empty Vec re-allocates on nearly every
+// append while it doubles its way up. Measured on the TCP fast-path benchmark,
+// amortized Vec growth plus the allocator traffic it induces was 20-30% of
+// BOTH servers' samples (`RawVecInner::grow_amortized` in the C++ lane's vec
+// port, `finish_grow` under rustc). Seeding the hot sinks with one 64-byte
+// allocation covers the whole header-plus-small-payload class in a single
+// alloc; larger payloads grow amortized from 64 exactly as before. 64 is
+// deliberately modest: these sinks are per-call locals, not pooled buffers.
+// The same seeding is spelled kRequestSinkInitialCapacity in rpc/client.rs:
+// per-module (the flat-import contract does not admit a cross-module
+// root-level const), and per-NAME (two modules exporting one name into
+// namespace srpc is an import-time ambiguity for any TU importing both --
+// measured: the dual-compile importer and rpcbench both failed to compile).
+// Like every module-scope const here (the SERVER_ERR_* block above), this is
+// a strong `R` symbol in the module object (P1815 attaches it to the module;
+// see EXPECTED_TOTAL_PROVIDER_SYMBOLS' comment in check_srpc_crate_mode.py),
+// so it has a pinned row in ABI_SPECS["srpc.server"].
+pub const kReplySinkInitialCapacity: usize = 64;
+
+
 /// Shutdown coordination state — guarded by `Server::shutdown_state_field`.
 pub struct ShutdownState {
     pub shutdown: bool,
@@ -1240,7 +1262,7 @@ pub fn sconn_reply(
     write_fn: ServerReplyFn,
 ) {
     let mut body_sink: BufferSink = BufferSink {
-        bytes: Vec::<u8>::new(),
+        bytes: Vec::<u8>::with_capacity(kReplySinkInitialCapacity),
     };
     let mut ar_store = BinaryWriteArchive {
         // SAFETY: `body_sink` is a live, exclusively borrowed local that

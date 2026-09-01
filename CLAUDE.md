@@ -200,6 +200,17 @@ therefore not portable across CPUs.
 ident; renaming it breaks the whole-crate transpile. `verify/.cargo/config.toml` forces `--cfg verus`
 locally because `cargo verus` itself only sets `verus_only`.
 
+**A module-scope `const` IS ABI surface.** P1815 attaches it to the module, and it lands in the object
+as a strong `R` symbol regardless of use — the `SERVER_ERR_*` block, `kAsyncSlotCount` and the sink
+capacity seeds are all pinned rows. So adding one is an ordinary ratchet edit, not a trick to dodge:
+an `ABI_SPECS` row, the `EXPECTED_TOTAL_PROVIDER_SYMBOLS` bump with its delta comment, the module's
+incumbent-oracle reviewed-additions row where one exists (`srpc.client` and `srpc.reactor` have them),
+and `test_goal0_contracts.py`'s hard-coded totals. Two further wires, both measured: the exported name
+must be **unique across all 37 modules** — two modules exporting one name into `namespace srpc` is an
+import-time ambiguity for any TU importing both (it broke the dual-compile importer and the rpcbench
+link alike) — and the flat-import contract rejects importing a cross-module root-level const outright,
+which is why such constants are spelled per-module.
+
 **Errno values are spelled as raw numerics** (`SERVER_ERR_INVALID_ARGUMENT = 22`, the `TCP_ERR_*` block)
 so generated modules stay valid alongside `errno.h`. Syscall numbers and build flags are the *opposite*:
 `SYS_gettid` and `REUSE_FIBER` must never be Rust constants — their values are arch- and

@@ -84,7 +84,12 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 #     module), so it becomes an ordinary strong module-owned symbol.
 # All 64 land in srpc.reactor, so 1897 + 64 = 1961 and that module's pinned
 # set moves 299 -> 363.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1961
+#
+# 1961 -> 1963: the serialization-sink capacity seeds. kReplySinkInitialCapacity
+# (srpc.server) and kRequestSinkInitialCapacity (srpc.client) are module-scope
+# consts, so each is one more P1815-attached strong 'R' symbol, exactly like
+# the SERVER_ERR_* block and kAsyncSlotCount before them.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1963
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -487,6 +492,10 @@ CLIENT_INCUMBENT_ORACLE = frozenset(
 
 CLIENT_INCUMBENT_ORACLE_ADDITIONS = frozenset(
     {
+        # 2026-09-01, reviewed with the 1961 -> 1963 total bump: the
+        # serialization-sink capacity seed (a module-scope const, hence a
+        # P1815-attached strong 'R' symbol like the CLIENT_ERR_* block).
+        ('R', 'srpc::kRequestSinkInitialCapacity@srpc.client'),
         ('R', 'srpc::CLIENT_ERR_AGAIN@srpc.client'),
         ('R', 'srpc::CLIENT_ERR_BROKEN_PIPE@srpc.client'),
         ('R', 'srpc::CLIENT_ERR_BUSY@srpc.client'),
@@ -3475,6 +3484,7 @@ ABI_SPECS = {
                 ('R', 'srpc::SERVER_ERR_ALREADY_EXISTS@srpc.server'),
                 ('R', 'srpc::SERVER_ERR_INVALID_ARGUMENT@srpc.server'),
                 ('R', 'srpc::SERVER_ERR_NO_ENTRY@srpc.server'),
+                ('R', 'srpc::kReplySinkInitialCapacity@srpc.server'),
                 ('R', 'srpc::kDefaultDrainTimeoutMs@srpc.server'),
                 ('R', 'typeinfo name for srpc::Service@srpc.server'),
                 ('T', 'srpc::DeferredReply@srpc.server::DeferredReply(srpc::DeferredReply@srpc.server&&)'),
@@ -3789,6 +3799,7 @@ ABI_SPECS = {
                 ('R', 'srpc::CLIENT_RAND_MAX@srpc.client'),
                 ('R', 'srpc::CLIENT_REQUEST_QUEUE_REJECTED_ERROR@srpc.client'),
                 ('R', 'srpc::kAsyncSlotCount@srpc.client'),
+                ('R', 'srpc::kRequestSinkInitialCapacity@srpc.client'),
                 ('T', 'srpc::BufferingConfig@srpc.client::clone() const'),
                 ('T', 'srpc::BufferingConfig@srpc.client::defaults()'),
                 ('T', 'srpc::BufferingConfig@srpc.client::disabled()'),

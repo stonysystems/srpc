@@ -681,6 +681,28 @@ impl Future {
 
 pub const kAsyncSlotCount: usize = 16384;
 
+// Why this constant exists: every request and heartbeat serializes into a fresh
+// `BufferSink` whose Vec starts empty, and the header alone is three to four
+// small `write_bytes` appends -- so an empty Vec re-allocates on nearly every
+// append while it doubles its way up. Measured on the TCP fast-path benchmark,
+// amortized Vec growth plus the allocator traffic it induces was 20-30% of
+// BOTH servers' samples (`RawVecInner::grow_amortized` in the C++ lane's vec
+// port, `finish_grow` under rustc). Seeding the hot sinks with one 64-byte
+// allocation covers the whole header-plus-small-payload class in a single
+// alloc; larger payloads grow amortized from 64 exactly as before. 64 is
+// deliberately modest: these sinks are per-call locals, not pooled buffers.
+// The same seeding is spelled kReplySinkInitialCapacity in rpc/server.rs:
+// per-module (the flat-import contract does not admit a cross-module
+// root-level const), and per-NAME (two modules exporting one name into
+// namespace srpc is an import-time ambiguity for any TU importing both --
+// measured: the dual-compile importer and rpcbench both failed to compile).
+// Like `kAsyncSlotCount` above, this is a strong `R` symbol in the module
+// object (P1815 attaches module-scope consts to the module; see
+// EXPECTED_TOTAL_PROVIDER_SYMBOLS' comment in check_srpc_crate_mode.py), so
+// it has a pinned row in ABI_SPECS["srpc.client"].
+pub const kRequestSinkInitialCapacity: usize = 64;
+
+
 pub struct ReconnectState {
     reconnecting_: AtomicBool,
     reconnect_abort_: AtomicBool,
@@ -2215,7 +2237,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     // sconn_reply's archive shape: aggregate literals + the &mut alias
     // (bare reference args pass as lvalues where a by-value local would
     // be move-wrapped at its last use).
-    let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
+    let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::with_capacity(kRequestSinkInitialCapacity) };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
@@ -2291,7 +2313,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
         (*guard)[slot] = Some(on_reply);
     }
 
-    let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
+    let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::with_capacity(kRequestSinkInitialCapacity) };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
@@ -2385,7 +2407,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     // Turbofish, matching the three other `BufferSink` literals in this file:
     // a bare `Vec::new()` in a struct-literal field takes its emitted element
     // type from an unrelated binding instead of from `bytes: Vec<u8>`.
-    let mut args_sink = BufferSink { bytes: Vec::<u8>::new() };
+    let mut args_sink = BufferSink { bytes: Vec::<u8>::with_capacity(kRequestSinkInitialCapacity) };
     let mut ar: BinaryWriteArchive = make_write_archive(&raw mut args_sink);
     let ar_ref: &mut BinaryWriteArchive = &mut ar;
     write_fn(ar_ref);
@@ -2556,7 +2578,7 @@ pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     // Build the heartbeat frame body and dispatch through the channel
     // proxy. Same archive shape as the server's sconn_reply: aggregate
     // struct literals + the &mut alias so serialize's Archive& binds.
-    let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
+    let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::with_capacity(kRequestSinkInitialCapacity) };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
