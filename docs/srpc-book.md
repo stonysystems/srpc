@@ -4924,10 +4924,20 @@ Same box, same session, three trials per cell:
 Three readings, each isolated by the matrix:
 
 - **Swap only the server** (same C++ client, t=8): the Rust server carries **180%** of the
-  C++ server's throughput. Two honest components: the facade poll loop is leaner than the
-  canonical C++ worker by construction (no `Reactor::run_loop` coupling, no fiber
-  machinery — a documented rustc-lane departure), and fast mode never uses the `-w 16`
-  worker apparatus the C++ server pays to run.
+  C++ server's throughput. The lazy explanations do not survive measurement: sweeping the
+  C++ server from `-e 1 -w 1` to `-e 8 -w 16` moves nothing (837K vs 830K — the apparatus
+  is free and poller parallelism does not help), and `perf` shows the same canonical
+  functions dominating both profiles in the same order (`sconn_decode_request_and_dispatch`,
+  `send_frame`, `sconn_reply`, the SparseInt codecs). What differs is the layer *under*
+  the canonical code: the C++ lane runs the rusty runtime **ports** — its profile shows
+  the hashbrown port probing with a type-erased `std::function` equality predicate,
+  `pthread_mutex_lock/unlock` as 5% of samples where rustc's inlined futex path is
+  invisible, out-of-line `Arc` refcount helpers, and ~1.7× more allocator time per
+  request — while rustc compiles the real Rust std and hashbrown with full
+  monomorphization. Same architecture, same hot path; each request simply costs about
+  half as much compiled by rustc. (Both servers, incidentally, spend 20–30% of their
+  time in malloc and Vec growth from the shared outbound-buffer resize and per-request
+  `Box<Request>` churn — the top optimization target for either lane.)
 - **Swap only the client** (same C++ server, t=8): the Rust driver reaches 90% of
   rpcbench — it waits `Arc<Future>`s where rpcbench uses `request_async`, which exists
   (per its own comment) precisely to skip the future-map cost.
