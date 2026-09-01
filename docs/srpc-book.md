@@ -4936,8 +4936,12 @@ Three readings, each isolated by the matrix:
   request — while rustc compiles the real Rust std and hashbrown with full
   monomorphization. Same architecture, same hot path; each request simply costs about
   half as much compiled by rustc. (Both servers, incidentally, spend 20–30% of their
-  time in malloc and Vec growth from the shared outbound-buffer resize and per-request
-  `Box<Request>` churn — the top optimization target for either lane.)
+  time in malloc and Vec growth — and acting on that is a working demonstration of the
+  one-source-two-lanes premise: seeding the five hot serialization sinks with a single
+  64-byte allocation, one canonical change, moved *both* lanes at t=8 — the C++ server
+  +6.5%, the Rust cells +4–8% — and taught in passing that a module-scope const is ABI
+  surface, ratcheted like any other symbol. What remains is the discrete per-request
+  allocation floor: one sink, one `Box<Request>`, one body Vec.)
 - **Swap only the client** (same C++ server, t=8): the Rust driver reaches 90% of
   rpcbench — it waits `Arc<Future>`s where rpcbench uses `request_async`, which exists
   (per its own comment) precisely to skip the future-map cost.
