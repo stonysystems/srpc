@@ -1944,11 +1944,21 @@ pub mod srpc {
                 modes: ::std::collections::HashMap::new(),
                 jobs: Vec::new(),
             };
+            // Worker-owned command batch, swapped with the shared queue each
+            // pass: `mem::take` here would hand producers a fresh capacity-0
+            // Vec every tick, making every add_proxy/update_mode push
+            // re-allocate -- measured as a per-request malloc caller under
+            // TCP load. Swapping ping-pongs two buffers whose capacities
+            // stabilize at the high-water mark.
+            let mut drained: Vec<PollCmd> = Vec::new();
             loop {
-                let drained: Vec<PollCmd> =
-                    ::std::mem::take(&mut *inner.commands.lock().unwrap());
+                drained.clear();
+                {
+                    let mut queue = inner.commands.lock().unwrap();
+                    ::std::mem::swap(&mut *queue, &mut drained);
+                }
                 let mut stop = false;
-                for cmd in drained {
+                for cmd in drained.drain(..) {
                     match cmd {
                         PollCmd::Add(p) => w.do_add(p),
                         PollCmd::UpdateMode(fd, mode) => w.do_update_mode(fd, mode),
