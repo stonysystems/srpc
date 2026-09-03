@@ -4975,10 +4975,24 @@ reactor code, and `DeferredReply` works as-is. Same client, same minutes, t=8, o
 | `defer` | 806,244 | 1,062,478 | 132% |
 | `async` | 1,076,875 | 2,331,930 | 217%* |
 
-*The async row overstates the lane difference: rustc has no coroutine `Task`, so the
-Rust server serves `async_nop` inline — wire-identical, but without the coroutine-frame
-cost the C++ server pays. The genuinely multi-threaded reactor (several poll threads
-sharing fibers and timers) remains the one TLS-blocked configuration.
+*The async row above was measured with the Rust server serving `async_nop` inline, so
+it overstated the lane difference. That shortcut is gone: `async fn` is now a
+first-class canonical spelling — the pinned transpiler lowers `async fn f(..) -> T` to
+a C++ coroutine returning `rusty::Task<T>` (`.await` → `co_await`, `return` →
+`co_return`), and under rustc the same source is an ordinary Rust future, bridged by
+the facade's `Task::from_future` into the same
+`reactor_spawn_stackless_task_with_result` call the generated C++ async wrappers make.
+The first canonical pair (`srpc::misc::async_double`, `async_double_twice`) is
+exercised by both lanes' test batteries — and its chained `co_await` immediately
+exposed a latent runtime bug (the Task awaiter never started the lazy inner coroutine;
+a re-poll completed with a default-constructed result), fixed with symmetric transfer
+in the rusty-cpp pin bump. Re-measured with the Rust server running the real task
+machine per request, the async row reads 1,197,856 vs 1,076,875 — ~111%, a fair
+comparison at last. Suspension is the remaining boundary on the rustc side: the facade
+poll loop does not yet pump the reactor's wake plumbing, so rustc-lane tasks must be
+ready on first poll; the C++ lane's suspended tasks are covered by the battery. The
+genuinely multi-threaded reactor (several poll threads sharing fibers and timers)
+remains the one TLS-blocked configuration.
 
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits
