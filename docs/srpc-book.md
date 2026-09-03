@@ -4956,9 +4956,29 @@ cadence — throughput comes from pipelining in both lanes. And serialization is
 (62 ns against a 3.5 µs pipelined budget); the gap to C++ lives in the poll loop and
 request-path bookkeeping, not in copying. Untested and known-untested: *sharing* one
 `Client` across rustc threads (`rusty::Arc` erases auto traits; the multi-thread numbers
-above use one client per thread, which is also what rpcbench does), and the
-`fiber`/`defer`/`async` dispatch modes, which need the reactor's TLS model that
-deliberately does not exist under rustc.
+above use one client per thread, which is also what rpcbench does).
+
+The `fiber`, `defer` and `async` modes, which an earlier revision of this section claimed
+were blocked on the reactor's TLS model, turn out to run — and win — under rustc. The
+claim was wrong for this topology: the nine `thread_local`-marked reactor statics are
+process globals under rustc, which is only a hazard with *multiple* threads touching
+them, and every dispatch runs on the server's single poll thread. With the fiber engine
+linked (the same `srpc_fiber.c` + context-switch assembly the C++ lane uses, built with
+`-DREUSE_FIBER` — without the pool, per-request 1 MiB stack mmaps cap fiber mode at
+~72K/s), `reg_rpc` dispatch spawns a real fiber per request through the canonical
+reactor code, and `DeferredReply` works as-is. Same client, same minutes, t=8, o=1000:
+
+| Mode | C++ server | **Rust server** | ratio |
+|---|---:|---:|---:|
+| `fast` | 1,410,825 | 2,381,806 | 169% |
+| `fiber` | 816,758 | 1,123,166 | 138% |
+| `defer` | 806,244 | 1,062,478 | 132% |
+| `async` | 1,076,875 | 2,331,930 | 217%* |
+
+*The async row overstates the lane difference: rustc has no coroutine `Task`, so the
+Rust server serves `async_nop` inline — wire-identical, but without the coroutine-frame
+cost the C++ server pays. The genuinely multi-threaded reactor (several poll threads
+sharing fibers and timers) remains the one TLS-blocked configuration.
 
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits

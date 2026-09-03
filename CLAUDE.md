@@ -277,9 +277,15 @@ Four non-obvious things about these tests:
   `RustcAdlSerialize`/`RustcAdlDeserialize` bound, satisfied by srpc's blanket impls on its archives over
   the canonical traits. Container serialization panics wholesale under rustc; C++ container emission is
   byte-for-byte untouched.
-- **`reactor/reactor.rs` is deliberately not executable as Rust** — its own header says so. The nine
-  `#[cfg_attr(any(), thread_local)]` statics are plain process-global `static mut` under rustc, so TLS, race
-  and teardown behavior are covered only by the C++ battery.
+- **`reactor/reactor.rs` runs under rustc only single-threaded** — its header's old "not executable"
+  claim is half true. The nine `#[cfg_attr(any(), thread_local)]` statics are plain process-global
+  `static mut` under rustc, so any *multi-threaded* reactor use races (measured: 7 failures/600 runs
+  from parallel tests). But with all dispatch on one poll thread — the rustc lane's actual topology —
+  the fiber path works end to end: `Reactor::get_reactor()` constructs on demand,
+  `fiber_create_run_impl` spawns real fibers through the linked C engine (`srpc_fiber.c` + the
+  context-switch assembly, `-DREUSE_FIBER`), and the out-of-repo bench serves rpcbench's `fiber` and
+  `defer` modes at ~1.1M qps this way. TLS, cross-thread and teardown behavior remain covered only by
+  the C++ battery.
 - Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
   *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
   drop order by byte offset. A cosmetic refactor turns these red.
