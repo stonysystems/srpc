@@ -189,3 +189,23 @@ pub fn format_thousands(val: f64) -> LegacyStdString {
     }
     out
 }
+
+// Why these two functions exist: they are the executable proof that the
+// async-fn lowering is live end to end.  The transpiler emits each
+// `async fn` as a C++ coroutine returning `rusty::Task<T>` (`return` and the
+// trailing expression become `co_return`, `.await` becomes `co_await`), and
+// under rustc the same source is an ordinary Rust future.  `async_double`
+// is the leaf; `async_double_twice` awaits it twice, pinning sequential
+// `co_await` chaining.  Both are driven by tests in both lanes and by the
+// out-of-repo bench's `-m async` handler, which spawns them through the same
+// `reactor_spawn_stackless_task_with_result` path the generated C++ async
+// wrappers use.  Keep them side-effect-free: their observable value is the
+// lowering itself.
+pub async fn async_double(x: i64) -> i64 {
+    x * 2
+}
+
+pub async fn async_double_twice(x: i64) -> i64 {
+    let once = async_double(x).await;
+    async_double(once).await
+}

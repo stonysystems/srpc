@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <rusty/arc.hpp>
+#include <rusty/async.hpp>
 #include <rusty/function.hpp>
 #include <rusty/mutex.hpp>
 #include "../srpc.hpp"
@@ -599,3 +600,28 @@ int main(int argc, char** argv) {
 }
 
 // } @unsafe
+
+// The async-fn lowering, driven both ways the C++ lane can: the transpiler
+// emits base/misc.rs's `async fn` pair as coroutines returning
+// `rusty::Task<int64_t>`, so a direct poll must resolve a leaf-only await
+// chain in one step, and the generated-wrapper spawn path must deliver the
+// result synchronously when the first poll is ready (the same
+// `reactor_spawn_stackless_task_with_result` call rpcgen's async wrappers
+// make).
+TEST(StacklessTest, AsyncFnLoweringResolvesByPollAndBySpawn) {
+    // Direct poll: co_await chain inside async_double_twice.
+    auto task = srpc::async_double_twice(10);
+    rusty::Waker waker{[] {}};
+    rusty::Context cx{&waker};
+    auto polled = task.poll(cx);
+    ASSERT_TRUE(polled.is_ready());
+    EXPECT_EQ(polled.value, 40);
+
+    // Spawn path: ready-on-first-poll tasks complete inside the call.
+    long got = 0;
+    srpc::reactor_spawn_stackless_task_with_result(
+        *srpc::Reactor::get_reactor(),
+        srpc::async_double(21),
+        [&got](long value) { got = value; });
+    EXPECT_EQ(got, 42);
+}

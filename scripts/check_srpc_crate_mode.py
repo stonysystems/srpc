@@ -89,7 +89,12 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # (srpc.server) and kRequestSinkInitialCapacity (srpc.client) are module-scope
 # consts, so each is one more P1815-attached strong 'R' symbol, exactly like
 # the SERVER_ERR_* block and kAsyncSlotCount before them.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1963
+#
+# 1963 -> 1965: the async-fn lowering demos. async_double and
+# async_double_twice in base/misc.rs are the first canonical `async fn`s --
+# emitted as C++ coroutines returning rusty::Task<int64_t> -- and each is an
+# ordinary strong 'T' function symbol.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1965
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -2675,6 +2680,8 @@ ABI_SPECS = {
                 "T clamp(const T& value, const T1& lower, const T2& upper)",
                 "export int32_t get_ncpu();",
                 "export std::string format_thousands(double val);",
+                "export rusty::Task<int64_t> async_double(int64_t x);",
+                "export rusty::Task<int64_t> async_double_twice(int64_t x);",
                 "int32_t srpc_get_ncpu();",
                 "int32_t srpc_format_fixed_2(double value, int8_t* output, size_t capacity);",
                 "namespace Job_",
@@ -2691,6 +2698,8 @@ ABI_SPECS = {
                 ("D", "vtable for srpc::OneTimeJob@srpc.misc"),
                 ("R", "typeinfo name for srpc::Job@srpc.misc"),
                 ("R", "typeinfo name for srpc::OneTimeJob@srpc.misc"),
+                ("T", "srpc::async_double@srpc.misc(long)"),
+                ("T", "srpc::async_double_twice@srpc.misc(long)"),
                 *(
                     ("T", symbol)
                     for symbol in {
@@ -3157,7 +3166,7 @@ ABI_SPECS = {
                 ('T', 'janus::quorum_event_finalize@srpc.reactor(janus::QuorumEvent@srpc.reactor const&, unsigned long, rusty::Function<bool (rusty::port::vec::Vec@vec_port.vec<std::__1::pair<unsigned short, long>, rusty::alloc::Global>&)>)'),
                 ('T', 'janus::quorum_event_is_slow@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)'),
                 ('T', 'janus::quorum_event_make@srpc.reactor(int, int)'),
-                ('T', 'srpc::AddJob@srpc.reactor(rusty::Arc<srpc::Job@srpc.misc>)'),
+('T', 'srpc::AddJob@srpc.reactor(rusty::Arc<srpc::Job@srpc.misc>)'),
                 ('T', 'srpc::AddPollable@srpc.reactor(rusty::Box<srpc::PollableBase@srpc.pollable_proxy, rusty::alloc::Global>)'),
                 ('T', 'srpc::ClosePollable@srpc.reactor(int)'),
                 ('T', 'srpc::EventPollable@srpc.reactor::~EventPollable()'),

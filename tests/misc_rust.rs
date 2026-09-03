@@ -99,3 +99,39 @@ fn thousands_formatter_matches_the_legacy_surface() {
     assert_eq!(text(-1_234_567.89), "-1,234,567.89");
     assert_eq!(text(999.999), "1,000.00");
 }
+
+// The async-fn lowering demos, exercised the two ways the Rust lane can
+// drive them.  Under rustc an `async fn` is an ordinary Rust future (the
+// C++ lane gets a coroutine returning `rusty::Task` from the same bytes);
+// `Task::from_future` is the facade bridge that lets the canonical stackless
+// spawn path hold one as a task value.
+#[test]
+fn async_double_resolves_as_a_plain_rust_future() {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    let mut fut = pin!(srpc::misc::async_double_twice(10));
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(value) => assert_eq!(value, 40, "double twice: 10 -> 20 -> 40"),
+        Poll::Pending => panic!("a leaf-only await chain must resolve on the first poll"),
+    }
+}
+
+#[test]
+fn async_double_drives_through_the_facade_task_bridge() {
+    // The same shape the canonical reactor uses: a facade Context wrapping a
+    // facade Waker, polled through `Task::from_future`.
+    let mut waker = rusty::Waker {
+        wake_fn: Box::new(|| {}),
+    };
+    let mut cx = rusty::Context {
+        waker: &raw mut waker,
+    };
+    let mut task = rusty::Task::from_future(srpc::misc::async_double(21));
+    let poll = task.poll(&mut cx);
+    assert!(poll.is_ready(), "ready future resolves on the first task poll");
+    assert_eq!(poll.value, 42);
+}

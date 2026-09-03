@@ -86,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1963
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1965
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1963)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1965)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -200,7 +200,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1963)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1965)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -328,7 +328,7 @@ class GateContractTests(unittest.TestCase):
             # entries (39 -> 37), unique count unchanged.
             "srpc.idempotency": (36, 37),
             "srpc.fiber": (8, 9),
-            "srpc.misc": (18, 23),
+            "srpc.misc": (20, 25),
             "srpc.channel": (13, 20),
             # Factory-only construction: Epoll's public ctor became the static
             # `Epoll::new_()` factory. A ctor emits two raw ABI entries (C1/C2)
