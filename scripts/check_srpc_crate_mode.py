@@ -94,7 +94,13 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # async_double_twice in base/misc.rs are the first canonical `async fn`s --
 # emitted as C++ coroutines returning rusty::Task<int64_t> -- and each is an
 # ordinary strong 'T' function symbol.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1965
+#
+# 1965 -> 1968: the thread_local! pilot. The emitted
+# `thread_local rusty::LocalKey<...> TL_BUMP_COUNTER` contributes the TLS
+# variable itself ('B', module linkage) plus its per-thread initialization
+# routine ('T'), and thread_slot_bump() is an ordinary exported 'T'; the
+# thread-local *wrapper* routine is weak and not counted.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1968
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -2682,6 +2688,8 @@ ABI_SPECS = {
                 "export std::string format_thousands(double val);",
                 "export rusty::Task<int64_t> async_double(int64_t x);",
                 "export rusty::Task<int64_t> async_double_twice(int64_t x);",
+                "export int64_t thread_slot_bump();",
+                "thread_local rusty::LocalKey<rusty::Cell<int64_t>> TL_BUMP_COUNTER{",
                 "int32_t srpc_get_ncpu();",
                 "int32_t srpc_format_fixed_2(double value, int8_t* output, size_t capacity);",
                 "namespace Job_",
@@ -2700,6 +2708,9 @@ ABI_SPECS = {
                 ("R", "typeinfo name for srpc::OneTimeJob@srpc.misc"),
                 ("T", "srpc::async_double@srpc.misc(long)"),
                 ("T", "srpc::async_double_twice@srpc.misc(long)"),
+                ("B", "srpc::TL_BUMP_COUNTER@srpc.misc"),
+                ("T", "srpc::thread_slot_bump@srpc.misc()"),
+                ("T", "thread-local initialization routine for srpc::TL_BUMP_COUNTER@srpc.misc"),
                 *(
                     ("T", symbol)
                     for symbol in {

@@ -601,6 +601,26 @@ int main(int argc, char** argv) {
 
 // } @unsafe
 
+// The thread_local! pilot: the emitted `thread_local rusty::LocalKey<...>`
+// must give each thread an independent counter, lazily initialized per
+// thread -- the property the reactor's nine thread-local statics rely on,
+// and the one that silently vanishes under rustc's plain `static mut`
+// (which is why the pilot exists in both batteries).
+TEST(MiscTest, ThreadLocalLoweringIsPerThread) {
+    EXPECT_EQ(srpc::thread_slot_bump(), 1);
+    EXPECT_EQ(srpc::thread_slot_bump(), 2);
+    long other_first = 0;
+    long other_second = 0;
+    std::thread bumper([&] {
+        other_first = srpc::thread_slot_bump();
+        other_second = srpc::thread_slot_bump();
+    });
+    bumper.join();
+    EXPECT_EQ(other_first, 1);
+    EXPECT_EQ(other_second, 2);
+    EXPECT_EQ(srpc::thread_slot_bump(), 3);
+}
+
 // The async-fn lowering, driven both ways the C++ lane can: the transpiler
 // emits base/misc.rs's `async fn` pair as coroutines returning
 // `rusty::Task<int64_t>`, so a direct poll must resolve a leaf-only await

@@ -135,3 +135,23 @@ fn async_double_drives_through_the_facade_task_bridge() {
     assert!(poll.is_ready(), "ready future resolves on the first task poll");
     assert_eq!(poll.value, 42);
 }
+
+// The thread_local! pilot: each thread must see its own counter.  Under
+// rustc this is the std macro; the C++ lane's copy of this assertion lives
+// in tests/test_reactor.cc against the emitted rusty::LocalKey lowering.
+#[test]
+fn thread_slot_bump_is_per_thread() {
+    assert_eq!(srpc::misc::thread_slot_bump(), 1);
+    assert_eq!(srpc::misc::thread_slot_bump(), 2);
+    let other = std::thread::spawn(|| {
+        (srpc::misc::thread_slot_bump(), srpc::misc::thread_slot_bump())
+    })
+    .join()
+    .expect("bump thread");
+    assert_eq!(other, (1, 2), "a fresh thread starts from its own zero");
+    assert_eq!(
+        srpc::misc::thread_slot_bump(),
+        3,
+        "the other thread's bumps must not leak into this one"
+    );
+}

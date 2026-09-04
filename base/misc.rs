@@ -6,6 +6,8 @@
 
 #![allow(non_snake_case)]
 
+use std::cell::Cell;
+
 use rusty::cpp_inherit;
 
 // Consumer type mappings restore the historical `std::string` spelling. The
@@ -201,6 +203,28 @@ pub fn format_thousands(val: f64) -> LegacyStdString {
 // `reactor_spawn_stackless_task_with_result` path the generated C++ async
 // wrappers use.  Keep them side-effect-free: their observable value is the
 // lowering itself.
+// Why this pair exists: the executable pilot for the `thread_local!`
+// lowering, on the same pattern as the async pair below.  The transpiler
+// emits the declaration as `thread_local rusty::LocalKey<T>` (per-thread
+// storage, lazily initialized per thread, destroyed at thread exit -- the
+// std::thread::LocalKey semantics) and the `.with(closure)` access sites
+// lower through the ordinary method-call path.  Under rustc this is the
+// real std macro.  Both lanes' batteries assert two threads see independent
+// counters -- the exact property the reactor's nine statics need before
+// they can migrate off `#[cfg_attr(any(), thread_local)]` + `static mut`.
+thread_local! {
+    static TL_BUMP_COUNTER: Cell<i64> = const { Cell::new(0) };
+}
+
+// Per-thread monotonic counter: each calling thread sees 1, 2, 3, ...
+// regardless of what other threads do.
+pub fn thread_slot_bump() -> i64 {
+    TL_BUMP_COUNTER.with(|counter| {
+        counter.set(counter.get() + 1);
+        counter.get()
+    })
+}
+
 pub async fn async_double(x: i64) -> i64 {
     x * 2
 }
