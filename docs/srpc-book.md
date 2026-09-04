@@ -4988,9 +4988,12 @@ exposed a latent runtime bug (the Task awaiter never started the lazy inner coro
 a re-poll completed with a default-constructed result), fixed with symmetric transfer
 in the rusty-cpp pin bump. Re-measured with the Rust server running the real task
 machine per request, the async row reads 1,197,856 vs 1,076,875 — ~111%, a fair
-comparison at last. Suspension is the remaining boundary on the rustc side: the facade
-poll loop does not yet pump the reactor's wake plumbing, so rustc-lane tasks must be
-ready on first poll; the C++ lane's suspended tasks are covered by the battery. The
+comparison at last. Suspension works on both sides too: the facade
+`PollThread::add_tick_hook` lets a consumer register the one-line `Reactor::run_loop`
+pump (what pollworker's C++ loop does natively), and the two
+`tests/stackless_wake_*_rust.rs` binaries pin the full protocol — a future that wakes
+during its own first poll is parked by the canonical spawn, its ticket drained by the
+pump, and its result delivered through the same `on_ready` path in both lanes. The
 genuinely multi-threaded reactor (several poll threads sharing fibers and timers)
 remains the one TLS-blocked configuration.
 
