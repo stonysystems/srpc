@@ -1762,6 +1762,7 @@ pub mod srpc {
             Add(Box<dyn crate::RustcPollable>),
             UpdateMode(i32, i32),
             Job(Box<dyn QueuedJob>),
+            TickHook(Box<dyn FnMut() + Send>),
             Shutdown,
         }
 
@@ -1861,6 +1862,7 @@ pub mod srpc {
             pollables: ::std::collections::HashMap<i32, Box<dyn crate::RustcPollable>>,
             modes: ::std::collections::HashMap<i32, i32>,
             jobs: Vec<Box<dyn QueuedJob>>,
+            tick_hooks: Vec<Box<dyn FnMut() + Send>>,
         }
 
         impl PollWorker {
@@ -2008,6 +2010,7 @@ pub mod srpc {
                 pollables: ::std::collections::HashMap::new(),
                 modes: ::std::collections::HashMap::new(),
                 jobs: Vec::new(),
+                tick_hooks: Vec::new(),
             };
             // Worker-owned command batch, swapped with the shared queue each
             // pass: `mem::take` here would hand producers a fresh capacity-0
@@ -2028,6 +2031,7 @@ pub mod srpc {
                         PollCmd::Add(p) => w.do_add(p),
                         PollCmd::UpdateMode(fd, mode) => w.do_update_mode(fd, mode),
                         PollCmd::Job(j) => w.jobs.push(j),
+                        PollCmd::TickHook(h) => w.tick_hooks.push(h),
                         PollCmd::Shutdown => stop = true,
                     }
                 }
@@ -2041,6 +2045,15 @@ pub mod srpc {
                     } else {
                         w.jobs.push(job);
                     }
+                }
+                // Tick hooks run every pass, mirroring what pollworker's C++
+                // loop does by calling Reactor::run_loop each tick.  The
+                // facade cannot name srpc, so the consumer that owns both
+                // crates registers the reactor pump here (see
+                // PollThread::add_tick_hook); worst-case wake latency is the
+                // same 1 ms epoll tick the C++ lane has.
+                for hook in w.tick_hooks.iter_mut() {
+                    hook();
                 }
                 if stop {
                     break;
@@ -2127,6 +2140,22 @@ pub mod srpc {
                     .lock()
                     .unwrap()
                     .push(PollCmd::Job(Box::new(JobHolder(job))));
+            }
+
+            /// Register a closure the worker runs once per loop pass, on the
+            /// poll thread.  Rustc-lane only (the C++ PollThread has no such
+            /// method because pollworker's own loop already pumps the
+            /// reactor): this is how a consumer that owns both crates gives
+            /// the facade loop the `Reactor::run_loop` pump the C++ lane gets
+            /// for free, closing the "async tasks must be ready on first
+            /// poll" boundary.  Hooks are never removed; register once per
+            /// poll thread.
+            pub fn add_tick_hook<F: FnMut() + Send + 'static>(&self, hook: F) {
+                self.inner
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .push(PollCmd::TickHook(Box::new(hook)));
             }
 
             /// # Safety

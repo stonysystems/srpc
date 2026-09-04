@@ -221,7 +221,7 @@ build-dependent, so they go behind the plain-C seam (`srpc_reactor_gettid`, `srp
 
 ## Testing
 
-**Rust lane.** 38 auto-discovered integration tests in `tests/*_rust.rs`; the rule is
+**Rust lane.** 40 auto-discovered integration tests in `tests/*_rust.rs`; the rule is
 `<dir>/<module>.rs` → `tests/<module>_rust.rs`. The counts only *look* one-to-one: `frame_codec` has two
 (`frame_codec_rust.rs` plus the bug-named `frame_codec_desync_rust.rs`), and
 `client_teardown_drains_queue_rust.rs`, despite its name, imports only `srpc::request_queue`.
@@ -284,8 +284,11 @@ Four non-obvious things about these tests:
   the fiber path works end to end: `Reactor::get_reactor()` constructs on demand,
   `fiber_create_run_impl` spawns real fibers through the linked C engine (`srpc_fiber.c` + the
   context-switch assembly, `-DREUSE_FIBER`), and the out-of-repo bench serves rpcbench's `fiber` and
-  `defer` modes at ~1.1M qps this way. TLS, cross-thread and teardown behavior remain covered only by
-  the C++ battery.
+  `defer` modes at ~1.1M qps this way. Async suspension works too: a consumer registers the facade
+  `PollThread::add_tick_hook` reactor pump (`run_loop` every pass — what pollworker's C++ loop does
+  natively), and the two `stackless_wake_*_rust.rs` tests pin the wake protocol; they are separate
+  test binaries because the process-global reactor binds to whichever thread constructs it first.
+  TLS, cross-thread and teardown behavior remain covered only by the C++ battery.
 - Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
   *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
   drop order by byte offset. A cosmetic refactor turns these red.
