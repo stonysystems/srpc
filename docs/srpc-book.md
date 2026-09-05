@@ -1073,16 +1073,16 @@ to connections, and calls into that thread's reactor once per pass so the fibers
 callbacks unblocked actually get to run. **`PollThread`** is the handle you hold onto
 for the worker thread — a mailbox, not the worker itself.
 
-Both live in `reactor/reactor.rs`, exported from module `srpc.reactor`, which the
-umbrella `srpc.hpp` imports for you.
+All three live in `reactor/reactor.rs` — module `srpc::reactor` in Rust,
+`srpc.reactor` in C++ (imported for you by the umbrella `srpc.hpp`).
 
 ### The Reactor
 
-`Reactor::get_reactor()` returns the calling thread's reactor as `rusty::Rc<Reactor>`,
+`Reactor::get_reactor()` returns the calling thread's reactor as `Rc<Reactor>`,
 creating it on first use and stamping the creating thread's id into it. Its state is
 four event queues — `all_events_`, `waiting_events_`, `timeout_events_`,
 `composite_events_` — a registry of live fibers with a free list of recycled ones, and a
-slab of stackless `rusty::Task` pollers.
+slab of stackless task pollers.
 
 Thread affinity is checked, not merely documented. `run_loop`, `process_stackless_tasks`,
 `enqueue_stackless_task`, both stackless-task spawn paths and the destructor each begin
@@ -1103,21 +1103,21 @@ touches the main one.
 
 ### Running the loop
 
-```cpp srpc-no-compile
-auto reactor = Reactor::get_reactor();
+```rust
+let reactor = Reactor::get_reactor();
 
-reactor->create_run_fiber([]() {
-    this_fiber::yield();
-});
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(|| {
+    this_fiber::r#yield();
+})));
 
-reactor->run_loop(false, true);   // drain whatever is ready, then return
+reactor.run_loop(false, true); // drain whatever is ready, then return
 ```
 
 The signature is `run_loop(bool infinite, bool do_check_timeout)`. (The name is
 `run_loop`, and it always takes both booleans.) A single pass does this, in this order:
 
 1. **Stackless tasks.** Wakeups that arrived on the private owner-thread ingress are
-   enqueued, then every ready `rusty::Task` poller is polled; a poller that reports
+   enqueued, then every ready task poller is polled; a poller that reports
    ready has its slot closed and released.
 2. **`waiting_events_`.** Every event's `test()` is called, then the ones that turned
    `READY` are moved to a local ready list and the `DONE` ones are dropped from the queue.
@@ -1168,13 +1168,13 @@ fiber nests correctly (the outer fiber is saved and restored around the inner on
 
 ### PollThread and PollThreadWorker
 
-```cpp srpc-no-compile
-auto poll = PollThread::create();   // rusty::Arc<PollThread>; spawns the thread
+```rust
+let poll = PollThread::create(); // Arc<PollThread>; spawns the thread
 // ... build a Server or a Client on it ...
-poll->shutdown();                   // sends Shutdown, then joins
+poll.shutdown();                 // sends Shutdown, then joins
 ```
 
-`PollThread::create()` spawns the worker thread and returns an `rusty::Arc<PollThread>`.
+`PollThread::create()` spawns the worker thread and returns an `Arc<PollThread>`.
 The `PollThread` object itself holds almost nothing: the sending half of an mpsc channel,
 the join handle, the worker's thread id as raw bits, and a `shutdown_called_` flag. The
 `PollThreadWorker` — the epoll descriptor, the fd-to-pollable map, the mode map, the
@@ -1195,47 +1195,45 @@ consumer umbrella; name them and you need an explicit `import srpc.epoll_wrapper
 
 ### Jobs
 
-`PollThread::add(rusty::Arc<Job>)` hands the worker a `Job` — `Ready()`, `Work()`,
-`Done()`. Three times per pass the worker asks each job whether it is `Ready()`; the
+`PollThread::add(Arc<dyn Job>)` hands the worker a `Job` — `Ready()`, `Work()`,
+`Done()` (the trait lives in `base/misc.rs`). Three times per pass the worker asks each job whether it is `Ready()`; the
 first time one says yes, the worker spawns a fiber to run its `Work()` and **drops the
 job from the set**. So a job fires at most once and is not a recurring timer, and
 `Done()` is never consulted by the worker at all. `PollCommand::RemoveJob` exists in the
 enum and is handled by the worker, but no `PollThread` method sends it. Internally srpc
 uses jobs for deferred connection close and for the client's receive pump.
 
-### Thread-local design
+### Per-thread design
 
 Each thread gets its own reactor because the storage behind `get_reactor()` is
-per-thread. Be precise about where that is true: in the **generated C++** those are
-namespace-scope `thread_local` variables, and the nine `#[cfg_attr(any(), thread_local)]`
-markers in `reactor/reactor.rs` exist to carry that contract through the transpiler.
-Under plain `rustc` the condition `any()` is false, the markers vanish, and what is left
-is ordinary mutable globals — which is one of the reasons that file is explicitly not
-meant to be executed as Rust, and why native C++ TLS and multithread tests remain the
-gate for this module.
+per-thread in both lanes: the reactor statics are spelled with Rust's `thread_local!`,
+which rustc compiles natively and the transpiler lowers to C++
+`thread_local rusty::LocalKey` storage. Two threads that each call `get_reactor()` get
+two independent reactors — `tests/reactor_multithread_rust.rs` pins exactly that, two
+reactors running independent suspend/wake cycles in one process.
 
-What is real in both worlds is the owner check, and that is what catches misuse:
+The owner check is what catches misuse — a captured reactor handle used from the wrong
+thread panics loudly instead of corrupting the queues:
 
-```cpp srpc-no-compile
+```rust
 // WRONG - the reactor belongs to the thread that created it
-auto reactor = Reactor::get_reactor();
-std::thread t([reactor]() {
-    // This panics before the body ever runs: create_run_fiber calls
-    // Fiber::run(), whose first assertion counts the live fibers of
-    // THIS thread's own (empty) reactor, not of the captured one.
-    // The rusty::Rc copy is not atomic either.
-    reactor->create_run_fiber([]() { /* ... */ });
+let reactor = Reactor::get_reactor();
+std::thread::spawn(move || {
+    // Panics on the owner check before anything runs: this thread is not
+    // the recorded owner.  (Rc is not Send either; the canonical C++ lane
+    // has no such compiler check, only the runtime verify.)
+    reactor.create_run_fiber(/* ... */);
 });
 
 // RIGHT - ask for the reactor on the thread that will use it
-std::thread t2([]() {
-    auto reactor = Reactor::get_reactor();   // this thread's own
-    reactor->create_run_fiber([]() { /* ... */ });
-    reactor->run_loop(false, true);
+std::thread::spawn(|| {
+    let reactor = Reactor::get_reactor(); // this thread's own
+    reactor.create_run_fiber(rusty::Function::from_callable(Box::new(|| { /* ... */ })));
+    reactor.run_loop(false, true);
 });
 ```
 
-The same rule covers the objects the reactor hands out: fibers are `rusty::Rc`, and
+The same rule covers the objects the reactor hands out: fibers are `Rc`, and
 events are owned by the reactor that created them. Do not move either across a thread
 boundary. When you use the RPC framework you rarely construct any of this yourself —
 `Server` and `Client` take a `PollThread`, and everything above happens on it.
@@ -1276,8 +1274,8 @@ There is also no `WaitN` and no `NEvent`. The N-of-M primitive is `QuorumEvent`.
 | `create_sp_waitall()`, `create_sp_waitall_from(vec)` | `WaitAll` | every child is ready or already `DONE` |
 | `janus::create_sp_quorum_event(n_total, quorum)` | `QuorumEvent` | a quorum of yes votes, or enough no votes |
 
-Every one of these returns a `rusty::Arc<T>` of the *concrete* type — you keep the typed
-handle, and it converts to `rusty::Arc<EventPollable>` where a base handle is wanted. The
+Every one of these returns an `Arc<T>` of the *concrete* type — you keep the typed
+handle, and it coerces to `Arc<dyn EventPollable>` where a base handle is wanted. The
 factory also stamps the event with the current thread id, records the creating fiber, and
 files the event in the calling thread's reactor registry. `Reactor::get_reactor()` creates
 that reactor on demand, so the factory never fails for lack of one — but an event created
@@ -1290,7 +1288,7 @@ described at the end of the chapter.
 
 ### EventStatus
 
-```cpp srpc-no-compile
+```rust
 EventStatus::INIT     // 0
 EventStatus::WAIT     // 1
 EventStatus::READY    // 2
@@ -1302,7 +1300,7 @@ EventStatus::DEBUG    // 5
 Those are the six members, in that order, with those values; the enum is `i32`-wide.
 `DEBUG` is declared and never assigned — the only place it appears in the runtime is an
 assertion that the status *isn't* `DEBUG`. Read the current status off any event with
-`ev->status_.get()`.
+`ev.status_.get()`.
 
 The lifecycle is worth knowing, because half the questions about "my fiber didn't wake up"
 are answered by it:
@@ -1330,35 +1328,36 @@ Note the asymmetry: after a successful wait the status the fiber observes is `DO
 constructor argument, the value starts at zero, and the ready predicate is
 `value_ >= target_` — greater-or-equal, not equality, so overshooting still fires.
 
-```cpp srpc-no-compile
-auto reactor = Reactor::get_reactor();
-auto ev = create_sp_int_event(1);        // ready once value_ >= 1
+```rust
+let reactor = Reactor::get_reactor();
+let ev = create_sp_int_event(1); // ready once value_ >= 1
 
-reactor->create_run_fiber([ev]() {
-    ev->wait();                          // suspends this fiber
-    // resumed: ev->status_.get() == EventStatus::DONE
-});
+let ev_in = ev.clone();
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+    ev_in.wait(); // suspends this fiber
+    // resumed: ev_in.status_.get() == EventStatus::DONE
+})));
 
-ev->set(1);                              // tests inline; returns the PREVIOUS value
-reactor->run_loop(false, true);          // the loop resumes the fiber
+ev.set(1);                      // tests inline; returns the PREVIOUS value
+reactor.run_loop(false, true);  // the loop resumes the fiber
 ```
 
 `set()` returns the value the event held before the write, which is occasionally useful
 for detecting a double-signal. `get()` reads the current value; `value_` and `target_`
-are also public `Cell` fields (`ev->value_.get()`, `ev->target_.set(n)`) if you need to
+are also public `Cell` fields (`ev.value_.get()`, `ev.target_.set(n)`) if you need to
 retarget an event after construction.
 
 The RPC layer uses exactly this shape. `FiberChannel` (in `rpc/fiber_channel.rs`) turns
 callback-style frame delivery into a fiber-blocking `recv_frame()` by arming a *fresh*
 `IntEvent` before each wait, having the inbound callback `set(1)` it, and waiting on it:
 
-```cpp srpc-no-compile
+```rust
 // The arm / signal / wait shape, as the fiber channel uses it.
-auto pending = create_sp_int_event(1);   // arm before you can block
+let pending = create_sp_int_event(1); // arm before you can block
 // ... producer side, when a frame lands:
-pending->set(1);
+pending.set(1);
 // ... consumer fiber:
-pending->wait();
+pending.wait();
 ```
 
 A new event per wait is the point, not an inefficiency — see the reuse rule below.
@@ -1370,9 +1369,9 @@ records `Time::now(true) + wait_us` (all durations in this subsystem are microse
 It exposes `wait()` only — the duration is already in the object, so there is no
 `wait_timeout` overload on this type.
 
-```cpp srpc-no-compile
-auto t = create_sp_timeout_event(1000000);   // one second, in microseconds
-t->wait();
+```rust
+let t = create_sp_timeout_event(1_000_000); // one second, in microseconds
+t.wait();
 // one second has elapsed (assuming the loop was run with do_check_timeout = true)
 ```
 
@@ -1394,22 +1393,22 @@ deadline, or a placeholder in a composite where one branch must never fire.
 value and marks the slot full (which also runs `test()`); `get()` copies the value out;
 `clear()` empties it again; `is_ready()` reports whether the slot is full.
 
-```cpp srpc-no-compile
-auto slot = create_sp_box_event<int>();
+```rust
+let slot = create_sp_box_event::<i32>();
 
-reactor->create_run_fiber([slot]() {
-    slot->wait();
-    int v = slot->get();
-    (void)v;
-});
+let slot_in = slot.clone();
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+    slot_in.wait();
+    let v = slot_in.get();
+    let _ = v;
+})));
 
-int payload = 7;
-slot->set(payload);
-reactor->run_loop(false, true);
+slot.set(&7);
+reactor.run_loop(false, true);
 ```
 
-`T` must be default-constructible and copyable — `clear()` default-constructs and `get()`
-copies.
+`T` must be `Default + Clone` (in C++: default-constructible and copyable) —
+`clear()` default-constructs and `get()` copies.
 
 This is not a curiosity: `BoxEvent<T>` is the engine underneath `FiberPromise<T>` and
 `FiberFuture<T>` in the `srpc.future` module (`reactor/future.rs`). The promise owns the
@@ -1421,19 +1420,20 @@ different module with its own (much less forgiving) timeout behaviour.
 
 ### WaitAny — either of exactly two
 
-```cpp srpc-no-compile
-auto e1 = create_sp_int_event(1);
-auto e2 = create_sp_int_event(1);
-auto any = create_sp_waitany(e1, e2);
+```rust
+let e1 = create_sp_int_event(1);
+let e2 = create_sp_int_event(1);
+let any = create_sp_waitany(e1.clone(), e2.clone());
 
-reactor->create_run_fiber([any]() {
-    any->wait();     // returns as soon as EITHER child is ready
-});
-e2->set(1);
-reactor->run_loop(false, true);
+let any_in = any.clone();
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+    any_in.wait(); // returns as soon as EITHER child is ready
+})));
+e2.set(1);
+reactor.run_loop(false, true);
 ```
 
-The arity is fixed: `create_sp_waitany` takes exactly two `rusty::Arc<EventPollable>`
+The arity is fixed: `create_sp_waitany` takes exactly two `Arc<dyn EventPollable>`
 arguments and there is no `add_event` on `WaitAny`. For three or more, nest — or, if what
 you actually want is "the first of these, or a deadline", pair the real event with a
 `TimeoutEvent`, which is the common use.
@@ -1446,25 +1446,26 @@ without suspending.
 `WaitAll` is the composite that grows. Either build it empty and add children, or build it
 from a vector:
 
-```cpp srpc-no-compile
-auto event1 = create_sp_int_event(1);
-auto event2 = create_sp_int_event(1);
+```rust
+let event1 = create_sp_int_event(1);
+let event2 = create_sp_int_event(1);
 
-rusty::Vec<rusty::Arc<EventPollable>> events = {event1, event2};
-auto and_event = create_sp_waitall_from(events);
+let events: Vec<Arc<dyn EventPollable>> = vec![event1.clone(), event2.clone()];
+let and_event = create_sp_waitall_from(&events);
 
-reactor->create_run_fiber([and_event]() {
-    and_event->wait();
-});
+let and_in = and_event.clone();
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+    and_in.wait();
+})));
 
-event1->set(1);
-reactor->run_loop(false, true);   // still waiting: only one child is ready
-event2->set(1);
-reactor->run_loop(false, true);   // now the fiber resumes
+event1.set(1);
+reactor.run_loop(false, true); // still waiting: only one child is ready
+event2.set(1);
+reactor.run_loop(false, true); // now the fiber resumes
 ```
 
-The incremental form is `auto all = create_sp_waitall();` followed by
-`all->add_event(child);` for each child, where `child` is a `rusty::Arc<EventPollable>`.
+The incremental form is `let all = create_sp_waitall();` followed by
+`all.add_event(child);` for each child, where `child` is an `Arc<dyn EventPollable>`.
 
 `WaitAll::is_ready()` accepts a child that is *either* currently ready *or* already
 `DONE`. That matters: a child that was individually waited on and consumed earlier still
@@ -1477,20 +1478,21 @@ than hanging.
 total and a threshold, and becomes ready as soon as the outcome is decided in either
 direction.
 
-Its C++ spelling is `janus::QuorumEvent`, in the **global** `::janus` namespace, not
-`srpc::`. That placement is an ABI contract carried by an inert
+In Rust the quorum surface is spelled like everything else in `srpc::reactor`. Its
+C++ spelling is different: `janus::QuorumEvent`, in the **global** `::janus` namespace,
+not `srpc::` — an ABI contract carried by an inert
 `#[cfg_attr(any(), cpp_namespace(::janus))]` marker on each of the three types and five
-free functions in the quorum surface; `srpc::QuorumEvent` and `srpc::janus::QuorumEvent`
-mangle differently and are not substitutes. Everything else in this chapter is plain
-`srpc::`.
+free functions in the quorum surface. `srpc::QuorumEvent` and `srpc::janus::QuorumEvent`
+mangle differently and are not substitutes. Everything else in this chapter lands in
+plain `srpc::` on the C++ side.
 
-```cpp srpc-no-compile
-auto q = janus::create_sp_quorum_event(3, 2);   // 3 replicas, 2 needed
+```rust
+let q = create_sp_quorum_event(3, 2); // 3 replicas, 2 needed
 
-q->vote_yes();
-// q->is_ready() is still false
-q->vote_yes();
-// q->is_ready() is true, and q->yes() is true
+q.vote_yes();
+// q.is_ready() is still false
+q.vote_yes();
+// q.is_ready() is true, and q.yes() is true
 ```
 
 `vote_yes()` / `vote_no()` bump the counters, run `test()`, and also tick an internal
@@ -1540,15 +1542,15 @@ Two more pieces of the surface:
 single event at all. It is a plain struct — a current value plus a vector of per-waiter
 `IntEvent`s — and it is constructed directly, not through a `create_sp_*` factory.
 
-```cpp srpc-no-compile
-// `counter` is a plain SharedIntEvent value — a member of your own type, say.
+```rust
+// `counter` is a plain SharedIntEvent value — a field of your own type, say.
 // There is no create_sp_* factory for it.
 
 // fiber A — returns true if it gave up before the value arrived
-bool timed_out = counter.wait_until_gte(5, 100000);   // want >= 5, 100 ms budget
+let timed_out = counter.wait_until_gte(5, 100_000); // want >= 5, 100 ms budget
 
 // fiber B
-counter.set(5);                     // wakes every waiter whose target is satisfied
+counter.set(5); // wakes every waiter whose target is satisfied
 ```
 
 `set(v)` overwrites the value, returns the previous one, and signals every parked waiter
@@ -1560,8 +1562,8 @@ everywhere else in the chapter. `wait(pred)` is the general form: it installs a 
 over the current value on a fresh event, which is the supported way to get a condition
 other than "value reached target".
 
-Note the methods are non-const: a `SharedIntEvent` you intend to signal cannot be held
-behind a const reference.
+Note the methods take `&mut self` (non-const in C++): a `SharedIntEvent` you intend to
+signal cannot be held behind a shared reference.
 
 ### Composite events need the loop to poll them
 
@@ -1573,8 +1575,8 @@ and why a composite only makes progress while the loop is running.
 Timeouts have the same dependency, plus one more: they are only checked when the loop is
 asked to check them.
 
-```cpp srpc-no-compile
-reactor->run_loop(false, true);   // (infinite, do_check_timeout)
+```rust
+reactor.run_loop(false, true); // (infinite, do_check_timeout)
 ```
 
 With `do_check_timeout = false` a `wait_timeout` deadline is never examined and the fiber
