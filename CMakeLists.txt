@@ -938,6 +938,7 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         test_fiber
         test_fiber_runtime
         test_rpc_pollthread_proxy_storage
+        test_rpc_transport_matrix
     )
     set(SRPC_BATTERY_SRC_test_reactor                    tests/test_reactor.cc)
     set(SRPC_BATTERY_SRC_test_reactor_extended           tests/test_reactor_extended.cc)
@@ -948,6 +949,8 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     set(SRPC_BATTERY_SRC_test_fiber_runtime              tests/fiber_runtime.cc)
     set(SRPC_BATTERY_SRC_test_rpc_pollthread_proxy_storage
         tests/rpc_pollthread_proxy_storage_test.cc)
+    set(SRPC_BATTERY_SRC_test_rpc_transport_matrix
+        tests/rpc_transport_matrix_test.cc)
 
     # Suites that define their own `int main`. Everything else links
     # gtest_main. test_reactor_minimal is a plain program with no gtest at all.

@@ -42,7 +42,7 @@ safety net, and the `Verified:` paragraph the commit convention demands is copie
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets  # -> passed/failed counts
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release             # -> configure exit code
 cmake --build build --parallel 4                                    # -> build exit code (ALL pulls in both gates)
-ctest --test-dir build -L srpc --output-on-failure                  # -> must say 15 tests, not 6
+ctest --test-dir build -L srpc --output-on-failure                  # -> must say 16 tests, not 6
 ```
 
 Submodules must be initialized before anything CMake- or transpiler-related
@@ -321,7 +321,7 @@ registers ~69 tests of its own whose executables are *not* in `ALL`, so a bare `
 reports 83 tests, marks those 69 "Not Run" and exits 8 — a failure that says nothing about SRPC. Every
 test this project owns carries the `srpc` label.
 
-`ctest -L srpc` selects 15: the 8 battery binaries (also labelled `runtime_battery`),
+`ctest -L srpc` selects 16: the 8 battery binaries (also labelled `runtime_battery`),
 `test_rpc_docs_symbols` (also `docs`), `srpc_goal0_standalone_structure`, `srpc_goal0_cargo`,
 `srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`, `srpc_facade_shadow` and
 `srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole Cargo suite. If the googletest

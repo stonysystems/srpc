@@ -6724,7 +6724,7 @@ once you link srpc: the `-w` in that same list comes along.
 Three caveats about the tests themselves. Filter with `-L srpc`: the vendored
 rusty-cpp subdirectory registers about 69 tests whose binaries are not in `ALL`,
 so a bare `ctest` reports them as "Not Run" and exits non-zero. `ctest -L srpc`
-selects the 15 this project owns, of which 8 are the runtime battery — and if the
+selects the 16 this project owns, of which 8 are the runtime battery — and if the
 googletest submodule is missing, CMake only warns and registers 6, so a green run
 is not proof the battery ran. And of the 76 `.cc` files in `tests/`, CMake builds
 exactly 9; the rest are not compiled
