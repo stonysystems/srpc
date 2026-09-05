@@ -3688,7 +3688,14 @@ Everything in this chapter lives on the client side. A `ClientConnection` embeds
 reliability machinery by value — a `ConnectionStateMachine`, a `ReconnectPolicy`, a
 `CircuitBreaker`, a `HeartbeatManager`, a `RequestQueue` and a `ConnectionMetrics` are
 all fields of that one struct — and `Client` is a thin front for whichever connection
-it currently holds. The canonical sources are `rpc/connection_state.rs`,
+it currently holds.
+
+A lane note for the whole chapter: the machinery itself is canonical Rust and runs
+identically in both lanes (the circuit-breaker gate, stale-request expiry and the
+offline queue sit on every request path, Rust or C++), but the *configuration
+setters* are not yet `pub` in the Rust modules — the C++ lane exports them as
+public members regardless. The snippets below are therefore C++; a Rust consumer
+today gets the defaults. The canonical sources are `rpc/connection_state.rs`,
 `rpc/reconnect_policy.rs`, `rpc/circuit_breaker.rs`, `rpc/heartbeat.rs`,
 `rpc/request_queue.rs`, `rpc/connection_metrics.rs`, `rpc/errors.rs` and the parts of
 `rpc/client.rs` that wire them together.
@@ -4482,18 +4489,18 @@ object. Almost everything in this chapter follows from that split.
 
 ### One PollThread is one OS thread
 
-`PollThread::create()` spawns a single worker thread and hands back a
-`rusty::Arc<PollThread>`. There is no thread count to configure. The handle is an `Arc`, so
+`PollThread::create()` spawns a single worker thread and hands back an
+`Arc<PollThread>`. There is no thread count to configure. The handle is an `Arc`, so
 several clients and servers can share one thread, or each can have its own:
 
-```cpp srpc-no-compile
-auto poll = PollThread::create();               // rusty::Arc<PollThread>
-Server svr = Server::new_(rusty::Some(poll.clone()));
-auto cl = Client::create(poll.clone());         // rusty::Arc<Client>
+```rust
+let poll = PollThread::create();            // Arc<PollThread>
+let mut svr = Server::new(Some(poll.clone()));
+let cl = Client::create(poll.clone());      // Arc<Client>
 
 // ... run ...
 
-poll->shutdown();   // sends the Shutdown command, then joins the worker
+poll.shutdown(); // sends the Shutdown command, then joins the worker
 ```
 
 The handle is the *only* thing that crosses a thread boundary. Nothing reaches into the
@@ -4503,10 +4510,10 @@ return immediately. The worker drains that queue between epoll waits and applies
 commands on its own thread. That is why the reactor suites sleep after registering a
 pollable — the call has posted a message, not performed a registration:
 
-```cpp srpc-no-compile
-poll->add_proxy(make_pollable_proxy_from_typed_arc(p.clone()));
-std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let the worker drain
-poll->remove_fd((*p).fd());
+```rust
+poll.add_proxy(make_pollable_proxy_from_typed_arc(p.clone()));
+std::thread::sleep(std::time::Duration::from_millis(50)); // let the worker drain
+poll.remove_fd(p.fd());
 ```
 
 The one method that is synchronous is `shutdown()`. It latches an atomic so a second call
@@ -4549,24 +4556,22 @@ the event wait path, and even the destructor compare `rusty::thread::current_id(
 the `thread_id_` the reactor stamped at construction, and a mismatch trips a `verify` that
 prints a stack trace and does not return.
 
-```cpp srpc-no-compile
-auto reactor = Reactor::get_reactor();
-reactor->run_loop(/*infinite=*/false, /*do_check_timeout=*/true);
+```rust
+let reactor = Reactor::get_reactor();
+reactor.run_loop(false, true); // (infinite, do_check_timeout)
 ```
 
-In the generated C++ those slots are namespace-scope `thread_local` variables, and they are
-public — which is how the fiber suite gives each test a fresh scheduler:
+The slots behind `get_reactor()` are `thread_local!` LocalKeys, public in both lanes —
+which is how the C++ fiber suite gives each test a fresh scheduler:
 
 ```cpp srpc-no-compile
-*srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-srpc::sp_reactor_th_ = rusty::None;   // drops this thread's reactor
+srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
 ```
 
-One honest caveat about how that is verified. In the canonical Rust the `thread_local`
-markers are `#[cfg_attr(any(), thread_local)]` attributes, which rustc never applies —
-under `cargo test` they are ordinary process-global statics, and `reactor/reactor.rs` says
-in its own header that direct Rust execution is unsupported. Per-thread behavior, races and
-teardown are covered by the C++ runtime battery, not by the Rust lane.
+Per-thread behavior is real in both lanes and pinned by tests in both:
+`tests/reactor_multithread_rust.rs` runs two reactors on two threads of one process
+under rustc, and the C++ runtime battery covers races and teardown natively.
 
 ### Events belong to the thread that created them
 
@@ -4644,7 +4649,7 @@ thread), though note CMake does not build that file.
 variable; `wait_for_shutdown()` blocks on the same pair. So a signal handler or a control
 thread can stop a server whose main thread is parked:
 
-```cpp srpc-no-compile
+```rust
 // control thread / signal handler
 svr.do_shutdown();
 
@@ -4657,8 +4662,8 @@ move a plain `Cell` phase field. Call them from the thread that owns the `Server
 
 ### Stackless tasks: the one designed cross-thread wake
 
-The reactor also drives stackless `rusty::Task` pollers, and those genuinely can be woken
-from another thread. The design keeps the reactor itself out of the crossing. A waker is a
+The reactor also drives stackless task pollers (the machinery behind `async fn`
+handlers), and those genuinely can be woken from another thread. The design keeps the reactor itself out of the crossing. A waker is a
 `Box<dyn Fn() + Send + Sync>` that holds only heap-allocated, thread-safe pieces: an `Arc`
 ticket and an `Arc` ingress consisting of an `accepting` flag and a mutex-guarded pending
 queue. Waking pushes the ticket onto that queue; the owning reactor drains it inside
@@ -4677,8 +4682,8 @@ that sleeps 50 µs between attempts. `unlock()` is a release store. It is one by
 `Send + Sync`, not recursive, and it has **no guard type** — you pair the calls yourself, or
 wrap it in an RAII type of your own.
 
-```cpp srpc-no-compile
-SpinLock lock;
+```rust
+let lock = SpinLock::new();
 lock.lock();
 // very short critical section: no yields, no syscalls, no allocation
 lock.unlock();
