@@ -3234,8 +3234,11 @@ canonical source for all of them is `misc/serializable.rs` (module
 1. a **sink** or **source** — where the bytes go, or come from;
 2. an **archive** — `BinaryWriteArchive` / `BinaryReadArchive`, which owns the wire
    format and nothing else;
-3. the **dispatchers** — `srpc::Serialize_::serialize` and
-   `srpc::Deserialize_::deserialize`, which pick the encoding for a value's type.
+3. the **dispatchers** — the `Serialize` / `Deserialize` traits in Rust, and the
+   `srpc::Serialize_::serialize` / `srpc::Deserialize_::deserialize` open-set
+   dispatch in C++ — which pick the encoding for a value's type. The two lanes
+   diverge more here than anywhere else in the library, and this chapter says
+   exactly where.
 
 Splitting sink from archive is what lets the same encoder write into a memory
 buffer, a file descriptor, or anything else you can express as a sink, without the
@@ -3248,19 +3251,21 @@ Four concrete sinks and sources ship:
 
 | Type | What it is |
 |------|-----------|
-| `BufferSink` | Appends to `bytes`, a `rusty::Vec<uint8_t>` it owns |
+| `BufferSink` | Appends to `bytes`, a `Vec<u8>` it owns |
 | `BufferSource` | Reads from a borrowed `(const uint8_t*, size_t)` range; `pos()`, `remaining()`, `eof()` |
 | `FdSink` | Writes to a raw fd it does **not** own |
 | `FdSource` | Reads from a raw fd it does **not** own |
 
 An archive does not take a sink directly; it takes a type-erased *proxy* built by
-one of four named free functions — there is no bare `make_source_proxy`:
+one of four named free functions — there is no bare `make_source_proxy`. The
+functions take raw pointers (they are `unsafe fn` in Rust; the borrow rules below
+are the caller's obligation in both lanes):
 
-```cpp srpc-no-compile
-srpc::SinkProxy   p1 = srpc::make_sink_proxy_buffer(&buffer_sink);
-srpc::SourceProxy p2 = srpc::make_source_proxy_buffer(&buffer_source);
-srpc::SinkProxy   p3 = srpc::make_sink_proxy_fd(&fd_sink);
-srpc::SourceProxy p4 = srpc::make_source_proxy_fd(&fd_source);
+```rust
+let p1: SinkProxy = unsafe { make_sink_proxy_buffer(&raw mut buffer_sink) };
+let p2: SourceProxy = unsafe { make_source_proxy_buffer(&raw mut buffer_source) };
+let p3: SinkProxy = unsafe { make_sink_proxy_fd(&raw mut fd_sink) };
+let p4: SourceProxy = unsafe { make_source_proxy_fd(&raw mut fd_source) };
 ```
 
 Every one of these **borrows**. The proxy holds a pointer to your sink or source;
@@ -3271,30 +3276,37 @@ built from it, and must not be moved while that archive exists. `FdSink` and
 Both archives are single-field aggregates holding their proxy, so you construct one
 by naming the proxy:
 
-```cpp srpc-no-compile
-using namespace srpc;
+```rust
+use srpc::serializable::{
+    make_sink_proxy_buffer, make_source_proxy_buffer, BinaryReadArchive,
+    BinaryWriteArchive, BufferSink, BufferSource, Deserialize, Serialize,
+};
 
-BufferSink sink;
+let mut sink = BufferSink { bytes: Vec::new() };
 {
-    BinaryWriteArchive ar(make_sink_proxy_buffer(&sink));
-    i32 answer = 42;
-    std::string name = "hello";
-    Serialize_::serialize(answer, ar);
-    Serialize_::serialize(name, ar);
-}   // archive dies here; `sink` still owns the bytes
+    let mut ar = BinaryWriteArchive {
+        sink_: unsafe { make_sink_proxy_buffer(&raw mut sink) },
+    };
+    Serialize::serialize(&42_i32, &mut ar);
+} // archive dies here; `sink` still owns the bytes
 
-auto src = BufferSource::new_(sink.bytes.data(), sink.bytes.size());
-BinaryReadArchive rd(make_source_proxy_buffer(&src));
-i32 answer_back = 0;
-std::string name_back;
-Deserialize_::deserialize(answer_back, rd);
-Deserialize_::deserialize(name_back, rd);
+let mut src = BufferSource::new(sink.bytes.as_ptr(), sink.bytes.len());
+let mut rd = BinaryReadArchive {
+    source_: unsafe { make_source_proxy_buffer(&raw mut src) },
+};
+let mut answer_back = 0i32;
+Deserialize::deserialize(&mut answer_back, &mut rd);
 // src.pos() is now the number of bytes consumed; src.eof() says whether any remain.
 ```
 
-This is exactly the shape the generated code uses: every reply decoder `rpcgen`
-emits is a `BinaryReadArchive` built by `make_source_proxy_buffer` over the
-`BufferSource` that the client or server already parked the frame body in.
+(The C++ spelling constructs the archive from the proxy expression —
+`BinaryWriteArchive ar(make_sink_proxy_buffer(&sink));` — and calls the
+dispatchers: `Serialize_::serialize(answer, ar);`.)
+
+This is exactly the shape the generated C++ code uses: every reply decoder
+`rpcgen` emits is a `BinaryReadArchive` built by `make_source_proxy_buffer` over
+the `BufferSource` that the client or server already parked the frame body in —
+and the shape the in-repo Rust round-trip test uses on the request path.
 
 The fd variants are for snapshots and log replay, where you want bytes to land in a
 file without an intermediate buffer:
@@ -3371,6 +3383,32 @@ Unordered containers serialize in iteration order, so the exact byte sequence fo
 `std::unordered_map` is not reproducible across runs. It still decodes correctly;
 just do not hash or diff the encoded bytes and expect stability.
 
+### Where the lanes diverge
+
+Serialization is the one subsystem where the Rust and C++ lanes are deliberately
+not equivalent, and the boundary is enforced by loud panics rather than silent
+lies:
+
+- **Leaves are real in both lanes.** Fixed-width integers, `f64`, `v32`/`v64` and
+  the string leaves serialize identically through the `Serialize`/`Deserialize`
+  traits under rustc and through the dispatchers in C++ — the wire bytes are the
+  same, which is what makes cross-lane RPC work.
+- **The generic dispatchers are C++-only.** `Serialize_::serialize` resolves the
+  generated modules' concrete overloads via the poison-scoped dependent call
+  described below; under rustc a trait bound there would cascade into the generic
+  container impls, which the emitter cannot lower. So the canonical dispatchers
+  stay unbounded, and their rustc terminal is a loud `unimplemented!`.
+- **Container serialization panics under rustc.** Serializing a `Vec`, map or set
+  through the dispatcher chain in the Rust lane panics with a message naming the
+  alternatives; C++ container emission is byte-for-byte untouched. Rust-lane wire
+  code writes leaves (which is all the RPC headers and the benchmark payloads
+  need).
+- **The wire sites use one facade route.** Canonical code spells wire-site calls
+  as `cpp_serializable::Serialize_::serialize(...)`, which emits the same
+  qualified `::srpc::Serialize_::serialize` call C++ always made and, under
+  rustc, dispatches through a facade trait satisfied by srpc's archives over the
+  canonical traits. One source, both lanes, no shims at the call sites.
+
 ### `v32` and `v64`
 
 `v32` and `v64` are wrapper structs from `base/basetypes.rs`, not arithmetic types.
@@ -3411,8 +3449,35 @@ do, to the protocol's own `v64` fields.
 
 ### Your own types
 
-A type becomes serializable by having a `serialize` / `deserialize` free-function
-pair in **its own namespace**. Nothing is inherited and nothing is registered:
+In Rust, implement the traits — each field forwards to its own impl:
+
+```rust
+struct Point3 {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+impl Serialize for Point3 {
+    fn serialize(&self, ar: &mut BinaryWriteArchive) {
+        Serialize::serialize(&self.x, ar);
+        Serialize::serialize(&self.y, ar);
+        Serialize::serialize(&self.z, ar);
+    }
+}
+
+impl Deserialize for Point3 {
+    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
+        Deserialize::deserialize(&mut self.x, ar);
+        Deserialize::deserialize(&mut self.y, ar);
+        Deserialize::deserialize(&mut self.z, ar);
+    }
+}
+```
+
+In C++, a type becomes serializable by having a `serialize` / `deserialize`
+free-function pair in **its own namespace** — the open-set ADL mechanism the
+rest of this section describes. Nothing is inherited and nothing is registered:
 
 ```cpp srpc-no-compile
 namespace benchmark {
