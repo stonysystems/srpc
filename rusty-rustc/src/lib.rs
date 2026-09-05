@@ -2945,6 +2945,19 @@ impl Function<dyn FnMut()> {
     }
 }
 
+impl Function<dyn FnMut(i32, *const u8, usize)> {
+    /// The AsyncReplyCallback shape: (error code, borrowed payload, size).
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: FnMut(i32, *const u8, usize) + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
 impl Function<dyn FnMut(i32)> {
     /// Erases a mutable one-argument callback.
     pub fn from_callable<C>(callback: C) -> Self

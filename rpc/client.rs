@@ -320,17 +320,17 @@ pub enum DisconnectBehavior {
 
 #[derive(Clone)]
 pub struct BufferingConfig {
-    behavior: DisconnectBehavior,
-    max_pending: usize,
-    default_ttl_ms: u32,
-    overflow: OverflowStrategy,
-    enabled: bool,
+    pub behavior: DisconnectBehavior,
+    pub max_pending: usize,
+    pub default_ttl_ms: u32,
+    pub overflow: OverflowStrategy,
+    pub enabled: bool,
 }
 
 impl Copy for BufferingConfig {}
 
 impl BufferingConfig {
-    fn new() -> BufferingConfig {
+    pub fn new() -> BufferingConfig {
         BufferingConfig {
             behavior: DisconnectBehavior::QUEUE,
             max_pending: 1000usize,
@@ -340,11 +340,11 @@ impl BufferingConfig {
         }
     }
 
-    fn defaults() -> BufferingConfig {
+    pub fn defaults() -> BufferingConfig {
         BufferingConfig::new()
     }
 
-    fn disabled() -> BufferingConfig {
+    pub fn disabled() -> BufferingConfig {
         BufferingConfig {
             behavior: DisconnectBehavior::FAIL_FAST,
             max_pending: 1000usize,
@@ -356,7 +356,7 @@ impl BufferingConfig {
 
     // clippy::wrong_self_convention -- taking self by value changes the emitted method signature; measured. See the Task-2 measurement block above.
     #[allow(clippy::wrong_self_convention)]
-    fn to_queue_config(&self) -> RequestQueueConfig {
+    pub fn to_queue_config(&self) -> RequestQueueConfig {
         RequestQueueConfig {
             max_size: self.max_pending,
             default_ttl_ms: self.default_ttl_ms,
@@ -368,47 +368,47 @@ impl BufferingConfig {
 
 #[derive(Clone)]
 pub struct KeepaliveConfig {
-    enabled: bool,
-    idle_sec: i32,
-    interval_sec: i32,
-    count: i32,
+    pub enabled: bool,
+    pub idle_sec: i32,
+    pub interval_sec: i32,
+    pub count: i32,
 }
 
 impl Copy for KeepaliveConfig {}
 
 impl KeepaliveConfig {
-    fn new() -> KeepaliveConfig {
+    pub fn new() -> KeepaliveConfig {
         KeepaliveConfig { enabled: true, idle_sec: 60i32, interval_sec: 10i32, count: 5i32 }
     }
 
-    fn aggressive() -> KeepaliveConfig {
+    pub fn aggressive() -> KeepaliveConfig {
         KeepaliveConfig { enabled: true, idle_sec: 10i32, interval_sec: 2i32, count: 3i32 }
     }
 
-    fn relaxed() -> KeepaliveConfig {
+    pub fn relaxed() -> KeepaliveConfig {
         KeepaliveConfig { enabled: true, idle_sec: 60i32, interval_sec: 10i32, count: 5i32 }
     }
 
-    fn disabled() -> KeepaliveConfig {
+    pub fn disabled() -> KeepaliveConfig {
         KeepaliveConfig { enabled: false, idle_sec: 0i32, interval_sec: 0i32, count: 0i32 }
     }
 }
 
 #[derive(Clone)]
 pub struct PoolConfig {
-    min_connections: i32,
-    max_connections: i32,
-    idle_timeout_ms: u64,
-    health_check_enabled: bool,
-    unhealthy_threshold_percent: u64,
-    min_requests_for_health: u64,
-    load_balancing: LoadBalancingStrategy,
+    pub min_connections: i32,
+    pub max_connections: i32,
+    pub idle_timeout_ms: u64,
+    pub health_check_enabled: bool,
+    pub unhealthy_threshold_percent: u64,
+    pub min_requests_for_health: u64,
+    pub load_balancing: LoadBalancingStrategy,
 }
 
 impl Copy for PoolConfig {}
 
 impl PoolConfig {
-    fn new() -> PoolConfig {
+    pub fn new() -> PoolConfig {
         PoolConfig {
             min_connections: 1i32,
             max_connections: 4i32,
@@ -420,11 +420,11 @@ impl PoolConfig {
         }
     }
 
-    fn defaults() -> PoolConfig {
+    pub fn defaults() -> PoolConfig {
         PoolConfig::new()
     }
 
-    fn aggressive() -> PoolConfig {
+    pub fn aggressive() -> PoolConfig {
         PoolConfig {
             min_connections: 2i32,
             max_connections: 8i32,
@@ -436,7 +436,7 @@ impl PoolConfig {
         }
     }
 
-    fn conservative() -> PoolConfig {
+    pub fn conservative() -> PoolConfig {
         PoolConfig {
             min_connections: 1i32,
             max_connections: 2i32,
@@ -448,7 +448,7 @@ impl PoolConfig {
         }
     }
 
-    fn no_health_check() -> PoolConfig {
+    pub fn no_health_check() -> PoolConfig {
         PoolConfig {
             min_connections: 1i32,
             max_connections: 4i32,
@@ -1121,7 +1121,7 @@ impl ClientConnection {
             (*fu).notify_ready(fu.clone());
         }
     }
-    fn close(&self) {
+    pub fn close(&self) {
         let prev_state = self.state_machine_.state();
         let was_connected: bool = self.state_machine_.is_connected();
         if was_connected {
@@ -1169,14 +1169,14 @@ impl ClientConnection {
         self.invalidate_pending_futures();
     }
     fn reconnect(&self, on_complete: OnReconnectCompleteCallbackFn) -> i32 { clientconn_reconnect(self, on_complete) }
-    fn set_buffering_config(&self, config: &BufferingConfig) {
+    pub fn set_buffering_config(&self, config: &BufferingConfig) {
         self.buffering_config_.set(*config);
         if !self.pending_queue_.empty() {
             self.pending_queue_.clear_all(CLIENT_ERR_CONNECTION_ABORTED);
         }
         self.pending_queue_.update_config(config.to_queue_config());
     }
-    fn set_heartbeat_config(&self, config: &HeartbeatConfig) {
+    pub fn set_heartbeat_config(&self, config: &HeartbeatConfig) {
         self.heartbeat_manager_.set_config(config);
         // Capture a weak self-handle by move so the escaping timeout closure
         // does not keep the connection alive (mirrors the legacy [weak_conn]
@@ -1198,9 +1198,9 @@ impl ClientConnection {
             }),
         );
     }
-    fn heartbeat_config(&self) -> HeartbeatConfig { self.heartbeat_manager_.config() }
-    fn set_circuit_breaker_config(&self, config: &CircuitBreakerConfig) { self.circuit_breaker_.set_config(*config); }
-    fn circuit_breaker_config(&self) -> CircuitBreakerConfig { self.circuit_breaker_.config() }
+    pub fn heartbeat_config(&self) -> HeartbeatConfig { self.heartbeat_manager_.config() }
+    pub fn set_circuit_breaker_config(&self, config: &CircuitBreakerConfig) { self.circuit_breaker_.set_config(*config); }
+    pub fn circuit_breaker_config(&self) -> CircuitBreakerConfig { self.circuit_breaker_.config() }
     fn enqueue_heartbeat_probe(&self) { clientconn_enqueue_heartbeat_probe(self); }
     fn allow_request_with_circuit_metrics(&self) -> bool {
         let before = self.circuit_breaker_.state();
@@ -1333,7 +1333,7 @@ impl ClientConnection {
         }
         false
     }
-    fn handle_free(&self, xid: i64) {
+    pub fn handle_free(&self, xid: i64) {
         let mut guard = self.pending_fu_.lock().unwrap();
         if guard.remove(&xid).is_some() {
             self.metrics_.record_request_dropped();
@@ -1341,12 +1341,12 @@ impl ClientConnection {
     }
     fn is_factory_bound(&self) -> bool { (*self.factory_.lock().unwrap()).is_some() }
     fn channel_reconnect_attempts_count(&self) -> u64 { self.reconnect_.channel_reconnect_attempts_.load(rusty::sync::atomic::Ordering::Acquire) }
-    fn set_reconnect_policy(&self, policy: &ReconnectPolicy) { self.reconnect_policy_.set(*policy); }
-    fn is_reconnecting(&self) -> bool { self.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) }
-    fn pending_future_count(&self) -> usize { self.pending_fu_.lock().unwrap().len() }
+    pub fn set_reconnect_policy(&self, policy: &ReconnectPolicy) { self.reconnect_policy_.set(*policy); }
+    pub fn is_reconnecting(&self) -> bool { self.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) }
+    pub fn pending_future_count(&self) -> usize { self.pending_fu_.lock().unwrap().len() }
     fn replay_pending_requests_for_test(&self) -> usize { self.replay_pending_requests() }
     fn update_pending_queue_config_for_test(&self, config: &RequestQueueConfig) { self.pending_queue_.update_config(*config); }
-    fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) { self.on_server_restart_.replace(callback); }
+    pub fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) { self.on_server_restart_.replace(callback); }
     fn check_server_instance(&self, new_id: u64) -> bool {
         let old_id = self.server_instance_id_.get();
         self.server_instance_id_.set(new_id);
@@ -1360,7 +1360,7 @@ impl ClientConnection {
         }
         false
     }
-    fn set_keepalive(&self, config: &KeepaliveConfig) { self.keepalive_config_.set(*config); }
+    pub fn set_keepalive(&self, config: &KeepaliveConfig) { self.keepalive_config_.set(*config); }
     fn on_request_dispatched(&self, bytes: usize) {
         self.metrics_.record_bytes_sent(bytes as u64);
         self.update_last_activity(clientconn_monotonic_ms_now());
@@ -1390,7 +1390,7 @@ impl ClientConnection {
     where F: FnMut(&mut BinaryWriteArchive) { clientconn_request_via_channel(self, rpc_id, attr, write_fn) }
     fn request_with_options<F>(&self, rpc_id: i32, options: &RequestOptions, attr: &FutureAttr, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) { clientconn_request_with_options(self, rpc_id, options, attr, write_fn) }
-    fn request_async<F>(&self, rpc_id: i32, write_fn: F, on_reply: AsyncReplyCallback) -> Result<(), i32>
+    pub fn request_async<F>(&self, rpc_id: i32, write_fn: F, on_reply: AsyncReplyCallback) -> Result<(), i32>
     where F: FnMut(&mut BinaryWriteArchive) { clientconn_request_async(self, rpc_id, write_fn, on_reply) }
 
     // --- trivial inline accessors ---
@@ -1398,24 +1398,24 @@ impl ClientConnection {
     fn install_self_weak_for_testing(&mut self, weak: WeakClientConnection) { self.weak_self_ = weak; }
     fn force_connected_for_testing(&mut self) { self.state_machine_.force_state(ConnectionState::CONNECTED); }
     fn set_reconnect_address_for_testing(&self, addr: LegacyStdString) { self.reconnect_address_.set(addr); }
-    fn connected(&self) -> bool { self.state_machine_.is_connected() }
-    fn connection_state(&self) -> ConnectionState { self.state_machine_.state() }
+    pub fn connected(&self) -> bool { self.state_machine_.is_connected() }
+    pub fn connection_state(&self) -> ConnectionState { self.state_machine_.state() }
     fn reconnect_policy(&self) -> ReconnectPolicy { self.reconnect_policy_.get() }
     fn buffering_config(&self) -> BufferingConfig { self.buffering_config_.get() }
-    fn pending_request_count(&self) -> usize { self.pending_queue_.size() }
-    fn clear_pending_requests(&self, error_code: i32) { self.pending_queue_.clear_all(error_code); }
-    fn server_instance_id(&self) -> u64 { self.server_instance_id_.get() }
-    fn keepalive_config(&self) -> KeepaliveConfig { self.keepalive_config_.get() }
-    fn circuit_breaker_state(&self) -> CircuitState { self.circuit_breaker_.state() }
+    pub fn pending_request_count(&self) -> usize { self.pending_queue_.size() }
+    pub fn clear_pending_requests(&self, error_code: i32) { self.pending_queue_.clear_all(error_code); }
+    pub fn server_instance_id(&self) -> u64 { self.server_instance_id_.get() }
+    pub fn keepalive_config(&self) -> KeepaliveConfig { self.keepalive_config_.get() }
+    pub fn circuit_breaker_state(&self) -> CircuitState { self.circuit_breaker_.state() }
     fn update_last_activity(&self, current_time_ms: u64) { self.last_activity_time_.set(current_time_ms); }
     fn last_activity_time(&self) -> u64 { self.last_activity_time_.get() }
-    fn is_idle(&self, idle_ms: u64, current_time_ms: u64) -> bool {
+    pub fn is_idle(&self, idle_ms: u64, current_time_ms: u64) -> bool {
         let last: u64 = self.last_activity_time_.get();
         if last == 0u64 { return false; }
         (current_time_ms - last) > idle_ms
     }
     fn validate_connection(&self) -> bool { self.state_machine_.is_connected() }
-    fn metrics(&self) -> &ConnectionMetrics { &self.metrics_ }
+    pub fn metrics(&self) -> &ConnectionMetrics { &self.metrics_ }
     fn replay_pending_requests(&self) -> usize { 0usize }
     fn apply_keepalive_options(&mut self) {}
     fn fd(&self) -> i32 { -1 }
@@ -1514,7 +1514,7 @@ impl Client {
         )
     }
 
-    fn request_async<F>(&self, rpc_id: i32, write_fn: F, on_reply: AsyncReplyCallback) -> Result<(), i32>
+    pub fn request_async<F>(&self, rpc_id: i32, write_fn: F, on_reply: AsyncReplyCallback) -> Result<(), i32>
     where F: FnMut(&mut BinaryWriteArchive) {
         let guard = self.connection_field.borrow();
         if guard.is_none() {
@@ -1566,7 +1566,7 @@ impl Client {
 
     // clippy::arc_with_non_send_sync -- no fix short of changing the payload type; the C++ Arc erases Rust auto traits. See the Task-2 measurement block above.
     #[allow(clippy::arc_with_non_send_sync)]
-    fn close(&self) {
+    pub fn close(&self) {
         let guard = self.connection_field.borrow_mut();
         if guard.is_some() {
             let conn_ref = guard.as_ref().unwrap();
@@ -1598,7 +1598,7 @@ impl Client {
         }
     }
 
-    fn handle_free(&self, xid: i64) {
+    pub fn handle_free(&self, xid: i64) {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             guard.as_ref().unwrap().handle_free(xid);
@@ -1643,7 +1643,7 @@ impl Client {
         guard.is_some()
     }
 
-    fn pending_request_count(&self) -> usize {
+    pub fn pending_request_count(&self) -> usize {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().pending_request_count();
@@ -1651,14 +1651,14 @@ impl Client {
         0usize
     }
 
-    fn clear_pending_requests(&self, error_code: i32) {
+    pub fn clear_pending_requests(&self, error_code: i32) {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             guard.as_ref().unwrap().clear_pending_requests(error_code);
         }
     }
 
-    fn is_reconnecting(&self) -> bool {
+    pub fn is_reconnecting(&self) -> bool {
         let guard = self.connection_field.borrow();
         guard.is_some() && guard.as_ref().unwrap().is_reconnecting()
     }
@@ -1673,12 +1673,12 @@ impl Client {
         Default::default()
     }
 
-    fn connected(&self) -> bool {
+    pub fn connected(&self) -> bool {
         let guard = self.connection_field.borrow();
         guard.is_some() && guard.as_ref().unwrap().connected()
     }
 
-    fn connection_state(&self) -> ConnectionState {
+    pub fn connection_state(&self) -> ConnectionState {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().connection_state();
@@ -1699,7 +1699,7 @@ impl Client {
         false
     }
 
-    fn connection(&self) -> Option<Arc<ClientConnection>> {
+    pub fn connection(&self) -> Option<Arc<ClientConnection>> {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return Some(guard.as_ref().unwrap().clone());
@@ -1707,7 +1707,7 @@ impl Client {
         None
     }
 
-    fn server_instance_id(&self) -> u64 {
+    pub fn server_instance_id(&self) -> u64 {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().server_instance_id();
@@ -1715,7 +1715,7 @@ impl Client {
         0u64
     }
 
-    fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) {
+    pub fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             guard.as_ref().unwrap().set_on_server_restart(callback);
@@ -1730,7 +1730,7 @@ impl Client {
         false
     }
 
-    fn set_reconnect_policy(&self, policy: &ReconnectPolicy) {
+    pub fn set_reconnect_policy(&self, policy: &ReconnectPolicy) {
         self.pending_reconnect_policy_field.set(*policy);
         let guard = self.connection_field.borrow();
         if guard.is_some() {
@@ -1738,14 +1738,14 @@ impl Client {
         }
     }
 
-    fn set_buffering_config(&self, config: &BufferingConfig) {
+    pub fn set_buffering_config(&self, config: &BufferingConfig) {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             guard.as_ref().unwrap().set_buffering_config(config);
         }
     }
 
-    fn set_keepalive(&self, config: &KeepaliveConfig) {
+    pub fn set_keepalive(&self, config: &KeepaliveConfig) {
         self.pending_keepalive_config_field.set(*config);
         let guard = self.connection_field.borrow();
         if guard.is_some() {
@@ -1753,7 +1753,7 @@ impl Client {
         }
     }
 
-    fn keepalive_config(&self) -> KeepaliveConfig {
+    pub fn keepalive_config(&self) -> KeepaliveConfig {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().keepalive_config();
@@ -1761,7 +1761,7 @@ impl Client {
         self.pending_keepalive_config_field.get()
     }
 
-    fn set_heartbeat(&self, config: &HeartbeatConfig) {
+    pub fn set_heartbeat(&self, config: &HeartbeatConfig) {
         self.pending_heartbeat_config_field.set(*config);
         let guard = self.connection_field.borrow();
         if guard.is_some() {
@@ -1769,7 +1769,7 @@ impl Client {
         }
     }
 
-    fn heartbeat_config(&self) -> HeartbeatConfig {
+    pub fn heartbeat_config(&self) -> HeartbeatConfig {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().heartbeat_config();
@@ -1777,7 +1777,7 @@ impl Client {
         self.pending_heartbeat_config_field.get()
     }
 
-    fn set_circuit_breaker(&self, config: &CircuitBreakerConfig) {
+    pub fn set_circuit_breaker(&self, config: &CircuitBreakerConfig) {
         self.pending_circuit_breaker_config_field.set(*config);
         let guard = self.connection_field.borrow();
         if guard.is_some() {
@@ -1785,7 +1785,7 @@ impl Client {
         }
     }
 
-    fn circuit_breaker_config(&self) -> CircuitBreakerConfig {
+    pub fn circuit_breaker_config(&self) -> CircuitBreakerConfig {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().circuit_breaker_config();
@@ -1793,7 +1793,7 @@ impl Client {
         self.pending_circuit_breaker_config_field.get()
     }
 
-    fn circuit_breaker_state(&self) -> CircuitState {
+    pub fn circuit_breaker_state(&self) -> CircuitState {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().circuit_breaker_state();
@@ -1801,7 +1801,7 @@ impl Client {
         CircuitState::CLOSED
     }
 
-    fn is_idle(&self, idle_ms: u64, current_time_ms: u64) -> bool {
+    pub fn is_idle(&self, idle_ms: u64, current_time_ms: u64) -> bool {
         let guard = self.connection_field.borrow();
         if guard.is_some() {
             return guard.as_ref().unwrap().is_idle(idle_ms, current_time_ms);
@@ -1817,29 +1817,29 @@ impl Client {
         false
     }
 
-    fn metrics(&self) -> &ConnectionMetrics { &self.empty_metrics_field }
+    pub fn metrics(&self) -> &ConnectionMetrics { &self.empty_metrics_field }
 
-    fn has_connection(&self) -> bool {
+    pub fn has_connection(&self) -> bool {
         let guard = self.connection_field.borrow();
         guard.is_some()
     }
 
-    fn add_on_connected(&self, cb: OnConnectedCallbackFn) {
+    pub fn add_on_connected(&self, cb: OnConnectedCallbackFn) {
         self.callback_manager_field.add_on_connected(cb);
     }
-    fn add_on_disconnected(&self, cb: OnConnectedCallbackFn) {
+    pub fn add_on_disconnected(&self, cb: OnConnectedCallbackFn) {
         self.callback_manager_field.add_on_disconnected(cb);
     }
-    fn add_on_error(&self, cb: OnErrorCallbackFn) {
+    pub fn add_on_error(&self, cb: OnErrorCallbackFn) {
         self.callback_manager_field.add_on_error(cb);
     }
-    fn add_on_reconnecting(&self, cb: OnConnectedCallbackFn) {
+    pub fn add_on_reconnecting(&self, cb: OnConnectedCallbackFn) {
         self.callback_manager_field.add_on_reconnecting(cb);
     }
-    fn add_on_reconnected(&self, cb: OnReconnectedCallbackFn) {
+    pub fn add_on_reconnected(&self, cb: OnReconnectedCallbackFn) {
         self.callback_manager_field.add_on_reconnected(cb);
     }
-    fn clear_connection_callbacks(&self) {
+    pub fn clear_connection_callbacks(&self) {
         self.callback_manager_field.clear_all();
     }
 }
@@ -1896,7 +1896,7 @@ impl Drop for ClientPool {
 }
 
 impl ClientPool {
-    fn new(poll_thread_worker: Option<Arc<PollThread>>, config: PoolConfig) -> ClientPool {
+    pub fn new(poll_thread_worker: Option<Arc<PollThread>>, config: PoolConfig) -> ClientPool {
         client_verify(config.min_connections > 0);
         client_verify(config.max_connections >= config.min_connections);
         let mut ptw: Option<Arc<PollThread>> = poll_thread_worker;
@@ -1911,12 +1911,12 @@ impl ClientPool {
         }
     }
 
-    fn set_pool_config(&self, config: PoolConfig) {
+    pub fn set_pool_config(&self, config: PoolConfig) {
         let mut guard = self.config_.lock().unwrap();
         (*guard) = config;
     }
 
-    fn pool_config(&self) -> PoolConfig {
+    pub fn pool_config(&self) -> PoolConfig {
         let guard = self.config_.lock().unwrap();
         *guard
     }
@@ -1925,13 +1925,13 @@ impl ClientPool {
         clientpool_is_client_healthy_with(self.pool_config(), client)
     }
 
-    fn get_healthy_client_count(&self, addr: &LegacyStdString) -> usize {
+    pub fn get_healthy_client_count(&self, addr: &LegacyStdString) -> usize {
         clientpool_get_healthy_client_count(self, addr)
     }
 
     // clippy::for_kv_map -- measured: emits `.values()` in place of the tuple-destructuring for loop. See the Task-2 measurement block above.
     #[allow(clippy::for_kv_map)]
-    fn total_client_count(&self) -> usize {
+    pub fn total_client_count(&self) -> usize {
         let guard = self.state_.lock().unwrap();
         let mut count: usize = 0;
         for (_addr, clients) in guard.cache.iter() {
@@ -1940,28 +1940,28 @@ impl ClientPool {
         count
     }
 
-    fn address_count(&self) -> usize {
+    pub fn address_count(&self) -> usize {
         let guard = self.state_.lock().unwrap();
         guard.cache.len()
     }
 
-    fn remove_unhealthy_clients(&self, addr: &LegacyStdString) -> usize {
+    pub fn remove_unhealthy_clients(&self, addr: &LegacyStdString) -> usize {
         clientpool_remove_unhealthy_clients(self, addr)
     }
 
-    fn close_idle_clients(&self, addr: &LegacyStdString, current_time_ms: u64) -> usize {
+    pub fn close_idle_clients(&self, addr: &LegacyStdString, current_time_ms: u64) -> usize {
         clientpool_close_idle_clients(self, addr, current_time_ms)
     }
 
-    fn remove_all_unhealthy(&self) -> usize {
+    pub fn remove_all_unhealthy(&self) -> usize {
         clientpool_remove_all_unhealthy(self)
     }
 
-    fn close_all_idle(&self, current_time_ms: u64) -> usize {
+    pub fn close_all_idle(&self, current_time_ms: u64) -> usize {
         clientpool_close_all_idle(self, current_time_ms)
     }
 
-    fn get_client(&self, addr: &LegacyStdString) -> Option<Arc<Client>> {
+    pub fn get_client(&self, addr: &LegacyStdString) -> Option<Arc<Client>> {
         clientpool_get_client(self, addr)
     }
 }
