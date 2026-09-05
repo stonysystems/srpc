@@ -285,8 +285,11 @@ Four non-obvious things about these tests:
   thread (`srpc_fiber.c` + the context-switch assembly, `-DREUSE_FIBER`; the out-of-repo bench serves
   rpcbench's `fiber`/`defer` modes at ~1.1M qps), and async suspension is pumped by the facade
   `PollThread::add_tick_hook` (`run_loop` every pass — what pollworker's C++ loop does natively).
-  What is NOT yet claimed: a multi-poll-thread *server* — the C fiber engine's REUSE_FIBER pool and
-  cross-thread teardown are unaudited for that; C++ battery coverage remains mandatory for teardown.
+  The C fiber engine is multi-poller-safe (audited: its only global, `g_active_fiber`, is
+  `_Thread_local`; pooling is per-reactor), and the out-of-repo bench's `serve2` mode proves two
+  servers with two poll threads, two reactors and live fibers in one process at near-linear aggregate
+  throughput. What remains unbuilt is one `Server` spreading connections across N poll threads — a
+  feature, not a safety gap; C++ battery coverage remains mandatory for teardown.
 - Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
   *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
   drop order by byte offset. A cosmetic refactor turns these red.

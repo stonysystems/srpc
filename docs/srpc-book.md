@@ -4997,9 +4997,13 @@ pump, and its result delivered through the same `on_ready` path in both lanes. T
 TLS blocker itself is gone: the reactor's nine per-thread statics migrated to Rust's
 `thread_local!`, which the transpiler now lowers to per-thread
 `rusty::LocalKey` storage — `tests/reactor_multithread_rust.rs` runs two independent
-reactors on two threads of one process, previously a deterministic crash. A
-multi-poll-thread *server* remains future work (the C fiber pool is unaudited for it),
-but the storage model no longer stands in the way.
+reactors on two threads of one process, previously a deterministic crash. The
+follow-up audit found the C fiber engine already multi-poller-safe (its one global is
+`_Thread_local`; pooling is per-reactor), and the bench's `serve2` smoke runs two
+servers — two poll threads, two reactors, live fibers — in one process at near-linear
+aggregate throughput (fiber mode: 831K + 847K qps concurrently, zero faults). What
+remains is a feature, not a safety gap: one `Server` spreading its connections across
+N poll threads the way C++ rpcbench's `-t N` does.
 
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits
