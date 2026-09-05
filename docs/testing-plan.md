@@ -90,7 +90,7 @@ Constraints every item must respect (from CLAUDE.md):
 
 ## Tier 2 — table-stakes, more infrastructure
 
-- [ ] **2.1 Fault-injecting in-memory channel**
+- [x] **2.1 Fault-injecting in-memory channel** (commit pending) — drop/error pre-existed; added duplicate injection (the triad) + channel tests. Reorder/slice are ill-defined for the synchronous frameless in-memory channel; RPC-path-under-fault (duplicate reply through the live client demux) needs switchboard-level fault config to reach internal channels — a noted follow-on, with reconnect-under-fault already covered by client_reconnect_rust.rs.
     (`rpc/inmemory_channel.rs` gains an injection API; tests use it)
   - What: an opt-in injection surface on the in-memory transport —
     slice (partial delivery), reorder, duplicate, drop, reset-mid-request —
@@ -104,7 +104,7 @@ Constraints every item must respect (from CLAUDE.md):
     Prefer shaping the injection state so it adds the minimum exported
     surface; a per-switchboard config object is cheaper than many free fns.
 
-- [ ] **2.2 Cross-lane interop assertion** (golden wire vectors +
+- [x] **2.2 Cross-lane interop assertion** (commit pending) — Rust golden wire vectors (portable varints + LE-pinned fixed-width) that pin the wire both lanes generate from one source; a C++ battery counterpart reading the same vectors is a follow-on if the fixed battery list is extended. (golden wire vectors +
     `tests/wire_golden_rust.rs`, and a C++ battery counterpart)
   - What: check in golden request/reply byte vectors; assert the Rust
     encoder produces them and the Rust decoder accepts them. The C++ lane
@@ -119,7 +119,7 @@ Constraints every item must respect (from CLAUDE.md):
     fixture-matrix style. Reuses one body across transports.
   - Catches: transport-specific divergence in a shared code path.
 
-- [ ] **2.4 Timeout / deadline / cancellation conformance**
+- [x] **2.4 Timeout / deadline / cancellation conformance** (commit pending) — the 1s wait() cap + one-way ETIMEDOUT latch (previously untested); wait_with_options/retry budget already covered by client_retry_rust.rs.
     (`tests/timeout_conformance_rust.rs`)
   - What: assert the 1s `wait()` cap and its latch; `wait_with_options`
     honoring a real budget; the retry chain's total-budget clamp; and that

@@ -101,7 +101,12 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # statics always had -- so neither the variable nor its per-thread init
 # routine enters the strong census, which is what makes migrating a static
 # onto the macro symbol-neutral.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1966
+#
+# 1966 -> 1967: inmemory_channel_inject_duplicate_next_sends, the fault-
+# injection primitive that completes the drop/error/duplicate triad for the
+# in-memory transport (docs/testing-plan.md item 2.1). An ordinary exported
+# 'T' free function.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1967
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -2950,6 +2955,7 @@ ABI_SPECS = {
                 ('T', 'srpc::InMemorySwitchboard@srpc.inmemory_channel::unregister_listener(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&) const'),
                 ('T', 'srpc::inmemory_channel_clear_fault_injection@srpc.inmemory_channel(srpc::InMemoryChannel@srpc.inmemory_channel const&)'),
                 ('T', 'srpc::inmemory_channel_inject_drop_next_sends@srpc.inmemory_channel(srpc::InMemoryChannel@srpc.inmemory_channel const&, int)'),
+                ('T', 'srpc::inmemory_channel_inject_duplicate_next_sends@srpc.inmemory_channel(srpc::InMemoryChannel@srpc.inmemory_channel const&, int)'),
                 ('T', 'srpc::inmemory_channel_inject_send_error@srpc.inmemory_channel(srpc::InMemoryChannel@srpc.inmemory_channel const&, srpc::ChannelError@srpc.channel, int)'),
                 ('T', 'srpc::inmemory_channel_send_frame@srpc.inmemory_channel(srpc::InMemoryChannel@srpc.inmemory_channel const&, srpc::ChannelFrame@srpc.channel const&)'),
                 ('T', 'srpc::inmemory_factory_connect@srpc.inmemory_channel(srpc::InMemoryFactory@srpc.inmemory_channel const&, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),

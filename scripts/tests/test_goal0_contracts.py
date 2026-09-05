@@ -86,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1966
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1967
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1966)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1967)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -120,7 +120,7 @@ class GateStaticContractTests(unittest.TestCase):
             "srpc.epoll_wrapper": (22, 25),
             "srpc.pollable_proxy": (4, 7),
             "srpc.callbacks": (27, 28),
-            "srpc.inmemory_channel": (77, 84),
+            "srpc.inmemory_channel": (78, 85),
             # Factory-only construction: FiberChannel's explicit ctor became
             # the static `FiberChannel::new_()` factory; one ctor, so one fewer
             # raw entry (20 -> 19), unique count unchanged.
@@ -200,7 +200,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1966)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1967)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -337,7 +337,7 @@ class GateContractTests(unittest.TestCase):
             "srpc.epoll_wrapper": (22, 25),
             "srpc.pollable_proxy": (4, 7),
             "srpc.callbacks": (27, 28),
-            "srpc.inmemory_channel": (77, 84),
+            "srpc.inmemory_channel": (78, 85),
             # Factory-only construction: FiberChannel's explicit ctor became
             # the static `FiberChannel::new_()` factory; one ctor, so one fewer
             # raw entry (20 -> 19), unique count unchanged.

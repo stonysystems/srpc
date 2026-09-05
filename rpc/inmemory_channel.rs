@@ -113,6 +113,8 @@ pub struct InMemoryConnectionStateInner {
     pub send_error_count_b: i32,
     pub send_error_a: ChannelError,
     pub send_error_b: ChannelError,
+    pub duplicate_next_sends_a: i32,
+    pub duplicate_next_sends_b: i32,
 }
 
 fn empty_connection_inner() -> InMemoryConnectionStateInner {
@@ -133,6 +135,8 @@ fn empty_connection_inner() -> InMemoryConnectionStateInner {
         send_error_count_b: 0_i32,
         send_error_a: channel_error_none(),
         send_error_b: channel_error_none(),
+        duplicate_next_sends_a: 0_i32,
+        duplicate_next_sends_b: 0_i32,
     }
 }
 
@@ -265,6 +269,7 @@ pub unsafe fn inmemory_channel_send_frame(
     let self_already_closed: bool;
     let peer_already_closed: bool;
     let mut drop_this_send: bool = false;
+    let mut duplicate_this_send: bool = false;
     let mut inject_error: bool = false;
     let mut injected_error: ChannelError = channel_error_none();
     {
@@ -280,6 +285,9 @@ pub unsafe fn inmemory_channel_send_frame(
                 inject_error = true;
                 injected_error = guard.send_error_a;
                 guard.send_error_count_a -= 1_i32;
+            } else if guard.duplicate_next_sends_a > 0_i32 {
+                duplicate_this_send = true;
+                guard.duplicate_next_sends_a -= 1_i32;
             }
         } else {
             self_already_closed = guard.b_closed;
@@ -292,6 +300,9 @@ pub unsafe fn inmemory_channel_send_frame(
                 inject_error = true;
                 injected_error = guard.send_error_b;
                 guard.send_error_count_b -= 1_i32;
+            } else if guard.duplicate_next_sends_b > 0_i32 {
+                duplicate_this_send = true;
+                guard.duplicate_next_sends_b -= 1_i32;
             }
         }
     }
@@ -317,6 +328,13 @@ pub unsafe fn inmemory_channel_send_frame(
     };
     if peer_on_frame.has_value() {
         (peer_on_frame.callable())(&delivered);
+        // Fault injection: re-deliver the identical frame so tests can assert
+        // the receiver's xid/slot demux is robust to a duplicated frame (a
+        // real hazard on a retrying transport). The second delivery reuses
+        // the same bytes; `delivered` still points at the live `bytes`.
+        if duplicate_this_send {
+            (peer_on_frame.callable())(&delivered);
+        }
     }
     channel_error_none()
 }
@@ -327,6 +345,19 @@ pub fn inmemory_channel_inject_drop_next_sends(channel: &InMemoryChannel, count:
         guard.drop_next_sends_a = count;
     } else {
         guard.drop_next_sends_b = count;
+    }
+}
+
+/// Fault injection: deliver each of the next `count` sends TWICE to the peer's
+/// on_frame, so a test can assert the receiver tolerates a duplicated frame
+/// (the demux/idempotency hazard on a retrying transport). Drop and send-error
+/// injection take precedence over duplication when both are armed.
+pub fn inmemory_channel_inject_duplicate_next_sends(channel: &InMemoryChannel, count: i32) {
+    let mut guard = channel.state_.inner.lock().unwrap();
+    if channel.is_a_side_ {
+        guard.duplicate_next_sends_a = count;
+    } else {
+        guard.duplicate_next_sends_b = count;
     }
 }
 
@@ -351,10 +382,12 @@ pub fn inmemory_channel_clear_fault_injection(channel: &InMemoryChannel) {
         guard.drop_next_sends_a = 0_i32;
         guard.send_error_count_a = 0_i32;
         guard.send_error_a = channel_error_none();
+        guard.duplicate_next_sends_a = 0_i32;
     } else {
         guard.drop_next_sends_b = 0_i32;
         guard.send_error_count_b = 0_i32;
         guard.send_error_b = channel_error_none();
+        guard.duplicate_next_sends_b = 0_i32;
     }
 }
 
