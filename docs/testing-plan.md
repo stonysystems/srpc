@@ -1,0 +1,176 @@
+# SRPC correctness-testing plan
+
+Status legend: `[ ]` not started · `[~]` in progress · `[x]` done (commit noted).
+
+This plan takes SRPC from broad-but-shallow coverage to the table-stakes
+correctness categories a serious RPC library is expected to have, then the
+advanced techniques that fit this framework's shape. It is ordered by ROI.
+"Full coverage" here means: every table-stakes category (Tiers 1–2) has live,
+gating tests, and the advanced categories that match SRPC's primitives
+(Tier 3) are in place.
+
+Why this exists: SRPC has near 1:1 module unit coverage (160 Rust test fns, 8
+C++ battery suites) and a genuinely strict ABI/layout oracle, but it lacks
+most of the RPC-specific correctness categories that mature libraries
+(gRPC, Thrift, Cap'n Proto, tonic) treat as table-stakes. The evidence that
+this matters is empirical: three real bugs surfaced during recent work only
+because a test happened to be written in a missing category —
+  * the SparseInt length-8 round-trip defect (missing: property-based codec
+    round-trip),
+  * the in-memory switchboard blind-unregister → permanent ConnectionRefused
+    (missing: reconnect fault injection),
+  * the chained `co_await` runtime bug (missing: async conformance).
+
+Baseline before this plan: `cargo test` reports 47 binaries / 161 tests;
+`ctest -L srpc` reports 15 tests; dual-compile oracle at 1966 symbols.
+
+Constraints every item must respect (from CLAUDE.md):
+  * A `.rs` change is simultaneously a Rust change and a C++ ABI change; run
+    the full gate before committing a canonical-source change. Test-only
+    files under `tests/` and dev-dependencies do NOT reach the transpiler,
+    so pure-test additions cannot move the ABI — but still run the gate once
+    when `Cargo.lock` changes.
+  * Tests import the library as an external consumer (`use srpc::…`); no
+    `#[path]`/`mod` into canonical sources.
+  * A test that touches a module with a C seam must define the C stubs
+    itself (no `build.rs`).
+  * Anything reached through the `rusty` facade may prove little about
+    runtime behavior; prefer canonical paths.
+
+---
+
+## Tier 1 — table-stakes, cheap, pure Rust lane (no ABI risk)
+
+- [x] **1.1 Property-based codec round-trip** (commit pending) (`tests/wire_roundtrip_proptest_rust.rs`)
+  - What: `proptest` over `SparseInt`/`v32`/`v64` and the frame header:
+    `decode(encode(x)) == x` for all inputs; "header length field ==
+    emitted payload length"; encoded length within the documented byte
+    bounds per magnitude.
+  - Catches: encoder/decoder asymmetry, off-by-one length fields, the class
+    the SparseInt length-8 defect belongs to.
+  - Note: the SparseInt length-8 defect (magnitudes ~2^48–2^55 lose the low
+    byte) is a KNOWN bug. The property test must document it — either a
+    bounded strategy that excludes the broken range with a comment pointing
+    here, or a `#[should_panic]`/expected-mismatch pin — so the property
+    suite is green and the defect stays visible. Fixing SparseInt is item
+    4.1 (its own tier, because it is a wire-format change).
+  - Dev-dep: `proptest` (added to `[dev-dependencies]`).
+
+- [x] **1.2 Framing: chunk-boundary / partial delivery** (commit pending)
+    (`tests/frame_codec_chunking_rust.rs`)
+  - What: drive `FrameStreamReader` with adversarial chunk boundaries —
+    one byte at a time, split mid-header, split mid-payload, multiple whole
+    frames in one buffer, a whole frame plus a partial next one — and assert
+    correct reassembly, `NeedMoreBytes` where expected, and no desync.
+  - Catches: the documented silent-wedge desync, partial-read parser bugs,
+    "one read = one frame" assumptions. This is SRPC's single highest-risk
+    failure mode.
+
+- [x] **1.3 Decoder robustness (proptest, in-lane)** (commit pending; cargo-fuzz deferred as optional out-of-lane) (`fuzz/` via `cargo-fuzz`, or a bounded
+    in-repo generative harness if nightly/`cargo-fuzz` is unavailable)
+  - What: feed arbitrary bytes to the frame stream reader + reply-header
+    decode path; assert bounded rejection, never a panic or non-terminating
+    loop. ASan-on catches `unsafe` framer memory bugs.
+  - Catches: decoder panics/unwraps, length-field integer overflow,
+    OOM/hang on truncated or amplification inputs.
+  - Feasibility note: `cargo-fuzz` needs a nightly toolchain; if the gate's
+    pinned stable toolchain cannot run it, fall back to a deterministic
+    seeded generative harness in `tests/` (arbitrary byte vectors from a
+    xorshift seed) that runs in the normal lane. Record which was used.
+
+- [x] **1.4 Sanitizers wired into a test run** (commit pending; ASan battery clean of memory-errors, LSan retention suppressed) (docs + a script hook)
+  - What: the `-DSRPC_SANITIZER=address|thread|undefined` configs already
+    exist but nothing runs them. Add a documented `build-asan` /
+    `build-tsan` pass over the battery, and note it in the pre-commit
+    sequence in CLAUDE.md as an optional-but-recommended gate.
+  - Catches: fd/memory/fiber leaks on teardown/cancel/error paths, races,
+    use-after-free — enforced, not asserted.
+
+---
+
+## Tier 2 — table-stakes, more infrastructure
+
+- [ ] **2.1 Fault-injecting in-memory channel**
+    (`rpc/inmemory_channel.rs` gains an injection API; tests use it)
+  - What: an opt-in injection surface on the in-memory transport —
+    slice (partial delivery), reorder, duplicate, drop, reset-mid-request —
+    gated so it is inert unless a test arms it. Then tests over reconnect,
+    xid/slot response demux, and idempotency.
+  - Catches: reconnect state-machine bugs, response↔request mismatch,
+    missing dedup — the class the switchboard blind-unregister bug belonged
+    to.
+  - ABI note: this adds canonical surface, so it is a real ratchet edit
+    (ABI_SPECS + symbol total + delta comment) — budget for the full gate.
+    Prefer shaping the injection state so it adds the minimum exported
+    surface; a per-switchboard config object is cheaper than many free fns.
+
+- [ ] **2.2 Cross-lane interop assertion** (golden wire vectors +
+    `tests/wire_golden_rust.rs`, and a C++ battery counterpart)
+  - What: check in golden request/reply byte vectors; assert the Rust
+    encoder produces them and the Rust decoder accepts them. The C++ lane
+    reads the same vectors. Turns the benchmark-only C++↔Rust wire
+    compatibility into a checked, regenerateable test. The dual-compile
+    importer is a ready-made differential seam.
+  - Catches: silent cross-lane wire divergence, version-skew regressions.
+
+- [ ] **2.3 Transport-parameterized suite** (`tests/transport_matrix_rust.rs`)
+  - What: one request/reply test body run across the in-memory and TCP
+    channels (and the fiber-channel adapter where applicable), gRPC
+    fixture-matrix style. Reuses one body across transports.
+  - Catches: transport-specific divergence in a shared code path.
+
+- [ ] **2.4 Timeout / deadline / cancellation conformance**
+    (`tests/timeout_conformance_rust.rs`)
+  - What: assert the 1s `wait()` cap and its latch; `wait_with_options`
+    honoring a real budget; the retry chain's total-budget clamp; and that
+    `handle_free`/drop unwinds a pending future cleanly. Include the
+    timeout-arithmetic overflow edge (Seastar-style) if reachable.
+  - Catches: deadline not enforced, budget mis-split, timeout arithmetic
+    overflow, pending-map leak on give-up.
+
+---
+
+## Tier 3 — advanced, high-value for this framework's primitives
+
+- [ ] **3.1 loom over the lock-free primitives** (`tests/loom_*_rust.rs`,
+    behind `--cfg loom`)
+  - What: exhaustive bounded-interleaving search over `SpinLock`, the
+    stackless wake ingress (accepting flag + mutex-guarded pending queue +
+    Arc tickets), and any reactor atomics reachable single-process.
+  - Catches: data races, lost wakeups, ordering violations invisible to
+    stress tests.
+  - Dev-dep: `loom` (test-only, behind cfg).
+
+- [ ] **3.2 Deterministic simulated time** for reproducible
+    timeout/retry/reconnect tests
+  - What: route the retry coordinator's and heartbeat's clock through a
+    swappable time source in the rustc lane (the facade already provides
+    the seam), so timeout tests advance a virtual clock instead of sleeping.
+  - Catches: makes Tier-2.4 tests fast and non-flaky; enables testing long
+    backoff chains deterministically.
+
+---
+
+## Known bugs this plan formalizes or fixes
+
+- [ ] **4.1 SparseInt length-8 round-trip defect** — `base/basetypes.rs`
+    `SparseInt::dump64` writes a `0xFE` marker + 8 payload bytes but reports
+    8 (not 9), so the archive emits 7 and the low byte decodes as zero.
+    Affects magnitudes ~2^48–2^55; `v32` unaffected. This is a wire-format
+    change (a `v64` field's bytes change), so it is NOT a free fix: it needs
+    its own commit with the wire-compat implications stated, the
+    `basetypes_rust.rs` pin updated from "documents the bug" to "documents
+    the fix", and the golden vectors (2.2) regenerated. Sequence it AFTER
+    2.2 so the golden-vector harness catches any collateral change.
+
+---
+
+## Definition of done
+
+- Every Tier 1 and Tier 2 box checked, tests gating in `cargo test` and
+  (where they have a C++ counterpart) `ctest -L srpc`.
+- Tier 3 boxes checked or explicitly deferred with a recorded reason.
+- 4.1 fixed, with the SparseInt pin flipped to assert correctness.
+- CLAUDE.md's testing section updated to describe the new categories and the
+  sanitizer pass; this document's boxes reflect reality.
+- Each item its own commit with a measured `Verified:` paragraph.

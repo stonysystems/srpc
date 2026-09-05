@@ -221,8 +221,9 @@ build-dependent, so they go behind the plain-C seam (`srpc_reactor_gettid`, `srp
 
 ## Testing
 
-**Rust lane.** 40 auto-discovered integration tests in `tests/*_rust.rs`; the rule is
-`<dir>/<module>.rs` → `tests/<module>_rust.rs`. The counts only *look* one-to-one: `frame_codec` has two
+**Rust lane.** Auto-discovered integration tests in `tests/*_rust.rs`; the base rule is
+`<dir>/<module>.rs` → `tests/<module>_rust.rs`, though the suite now also carries cross-cutting
+correctness suites that do not map to a single module (see the next paragraph). The counts only *look* one-to-one: `frame_codec` has two
 (`frame_codec_rust.rs` plus the bug-named `frame_codec_desync_rust.rs`), and
 `client_teardown_drains_queue_rust.rs`, despite its name, imports only `srpc::request_queue`.
 `rpc/client.rs` and `rpc/server.rs` share one real test, `tests/rpc_roundtrip_inmemory_rust.rs` — a full
@@ -232,6 +233,18 @@ facade `PollThread` runs the deferred close jobs now, so teardown is safe in eit
 an explicit order anyway. Beyond that one path, a green `cargo test` still
 says little about `rpc/client.rs` (3.3k lines, the second-largest module) — and the largest,
 `reactor/reactor.rs`, is untested for a different reason given below.
+
+**Correctness-category suites (docs/testing-plan.md).** Beyond the per-module tests, the suite carries
+property-based and robustness testing that uses the `proptest` dev-dependency:
+`wire_roundtrip_proptest_rust.rs` (codec round-trip: `decode(encode(x)) == x` over SparseInt v32/v64
+and the frame header — the suite that pins the known length-8 defect and would have caught it),
+`decoder_robustness_proptest_rust.rs` (arbitrary bytes through every decode entry point: no panic, no
+OOB, bounded termination — the in-lane fuzzer), and `frame_codec_chunking_rust.rs` (the framer under
+adversarial chunk boundaries — one byte at a time, split mid-header/mid-payload — guarding the
+silent-wedge desync). Sanitizer coverage is `scripts/run_sanitizer_battery.sh [address|thread|undefined]`,
+a separate build tree that runs the labelled battery under ASan/TSan/UBSan; run it for changes touching
+the reactor, fibers, channels, or the C seam (it is not wired into ctest — a sanitizer build is minutes
+and a whole extra tree).
 
 Tests import the library as an external consumer (`use srpc::<module>::…`), never via `#[path]` or `mod`.
 No canonical source has a `#[cfg(test)]` module; the workspace's only one is in `rusty-rustc/src/lib.rs`.
