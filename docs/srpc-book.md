@@ -2480,12 +2480,11 @@ Everything named here lives in `rpc/client.rs` — `srpc::client` in Rust,
 `LoadBalancingStrategy` were trimmed out of the umbrella and need
 `import srpc.request_options;` and `import srpc.load_balancer;` of their own).
 
-One lane note up front: the core path — create, connect, `request`, the
-`Future` accessors — is `pub` in Rust and shown in Rust below. The
-options/retry, pool and keepalive surfaces are currently spelled without
-`pub`, which the C++ lane still exports as public members (the historical ABI)
-but plain Rust consumers cannot reach; those sections keep their C++ spelling
-until the visibility flip lands, and say so.
+One lane note up front: everything below is `pub` in Rust and shown in Rust,
+with a single exception — the per-request options/retry family
+(`request_with_options`, `wait_with_options`, `set_options`), whose retry
+coordinator still depends on a facade thread the Rust lane does not spawn yet.
+That section keeps its C++ spelling and says so.
 
 ### Creating a client and connecting
 
@@ -2730,22 +2729,24 @@ it races with the reply unless you install it from inside the request path.
 ### Fire and forget: `request_async`
 
 When you never intend to wait, `request_async` skips the `Future` and the
-pending-future map entirely and hands the reply straight to a callback
-(C++-lane surface today, like the options path — not yet `pub` in Rust):
+pending-future map entirely and hands the reply straight to a callback:
 
-```cpp srpc-no-compile
-srpc::AsyncReplyCallback on_reply{
-    [](srpc::i32 err, const std::uint8_t* payload, std::size_t size) {
-        if (err != 0) { return; }
+```rust
+use srpc::client::AsyncReplyCallback;
+
+let on_reply = AsyncReplyCallback::from_callable(Box::new(
+    |err: i32, payload: *const u8, size: usize| {
+        if err != 0 { return; }
         // decode `size` bytes at `payload` here — they are only valid
         // for the duration of this call
-    }};
+    },
+));
 
-auto sent = client->request_async(RPC_METHOD_ID,
-    [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(arg1, m); },
-    std::move(on_reply));
+let sent = client.request_async(RPC_METHOD_ID, |ar| {
+    Serialize::serialize(&arg1, ar);
+}, on_reply);
 
-if (sent.is_err()) {
+if sent.is_err() {
     // 107 ENOTCONN, 16 EBUSY, 5 EIO
 }
 ```
@@ -2778,24 +2779,27 @@ counted by `ClientConnection::pending_future_count()`.
 ### ClientPool
 
 `Client` is one connection. `ClientPool` keeps a set of connections per
-address and picks one per call (C++-lane surface today — the pool's
-constructor and accessors are not yet `pub` in Rust):
+address and picks one per call:
 
-```cpp srpc-no-compile
-import srpc.load_balancer;   // outside the srpc.hpp umbrella
+```rust
+use srpc::client::{ClientPool, PoolConfig};
+use srpc::load_balancer::LoadBalancingStrategy;
 
-auto config = PoolConfig::defaults();
+let mut config = PoolConfig::defaults();
 config.load_balancing = LoadBalancingStrategy::ROUND_ROBIN;
 config.max_connections = 8;
 
-auto pool = ClientPool::new_(rusty::Some(poll), config);
+let pool = ClientPool::new(Some(poll), config);
 
-auto client_opt = pool.get_client("127.0.0.1:8848");   // Option<Arc<Client>>
-if (client_opt.is_some()) {
-    auto client = client_opt.unwrap();
+if let Some(client) = pool.get_client(&"127.0.0.1:8848".to_string()) {
     // use it
 }
 ```
+
+(One Rust-lane caveat inside `get_client`: its in-place reconnect attempt for a
+client in `FAILED`/`DISCONNECTED` state rides the same facade thread the retry
+path needs, so under rustc that attempt is a no-op and the pool falls through
+to its close-everything-and-rebuild path — functional, one step blunter.)
 
 The constructor is `ClientPool::new(Option<Arc<PollThread>>, PoolConfig)`
 (`ClientPool::new_` in C++) — both arguments are required, and passing `None`
@@ -2851,11 +2855,11 @@ clock themselves.
 `ClientConnection::apply_keepalive_options` is an empty function body. Treat
 the whole feature as configuration that is currently inert.
 
-```cpp srpc-no-compile
-auto keepalive = KeepaliveConfig::aggressive();   // idle 10s, interval 2s, 3 probes
-cl->set_keepalive(keepalive);                     // stored, never applied
+```rust
+let keepalive = KeepaliveConfig::aggressive(); // idle 10s, interval 2s, 3 probes
+cl.set_keepalive(&keepalive);                  // stored, never applied
 
-auto stored = cl->keepalive_config();             // reads back what you stored
+let stored = cl.keepalive_config();            // reads back what you stored
 ```
 
 The presets are `new_()` (enabled; 60 s idle, 10 s interval, 5 probes),
@@ -3697,12 +3701,13 @@ reliability machinery by value — a `ConnectionStateMachine`, a `ReconnectPolic
 all fields of that one struct — and `Client` is a thin front for whichever connection
 it currently holds.
 
-A lane note for the whole chapter: the machinery itself is canonical Rust and runs
+A lane note for the whole chapter: the machinery is canonical Rust and runs
 identically in both lanes (the circuit-breaker gate, stale-request expiry and the
-offline queue sit on every request path, Rust or C++), but the *configuration
-setters* are not yet `pub` in the Rust modules — the C++ lane exports them as
-public members regardless. The snippets below are therefore C++; a Rust consumer
-today gets the defaults. The canonical sources are `rpc/connection_state.rs`,
+offline queue sit on every request path, Rust or C++), and the configuration
+setters are `pub` in both — `tests/client_surface_rust.rs` exercises them from
+Rust. The C++ snippets below translate mechanically (`cl->set_x(cfg)` is
+`cl.set_x(&cfg)`); what does NOT yet run under rustc is anything that needs a
+background thread: auto-reconnect and the retry coordinator (chapter 8's note). The canonical sources are `rpc/connection_state.rs`,
 `rpc/reconnect_policy.rs`, `rpc/circuit_breaker.rs`, `rpc/heartbeat.rs`,
 `rpc/request_queue.rs`, `rpc/connection_metrics.rs`, `rpc/errors.rs` and the parts of
 `rpc/client.rs` that wire them together.
