@@ -6338,17 +6338,18 @@ corrupted, no wakeup crosses the thread boundary: the waiting fiber resumes only
 the next time that reactor's own loop runs, which under a poll thread is within a
 millisecond and in a hand-driven reactor is never.
 
-```cpp srpc-no-compile
-auto reactor = Reactor::get_reactor();
-auto ev = create_sp_int_event(1);          // ready when value >= 1
+```rust
+let reactor = Reactor::get_reactor();
+let ev = create_sp_int_event(1); // ready when value >= 1
 
-reactor->create_run_fiber([ev]() {
-    ev->wait();                            // or ev->wait_timeout(500 * 1000)
+let ev_in = ev.clone();
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+    ev_in.wait(); // or ev_in.wait_timeout(500 * 1000)
     // ...
-});
+})));
 
-ev->set(1);                                // same thread as the reactor
-reactor->run_loop(false, true);            // drains ready work, then returns
+ev.set(1);                     // same thread as the reactor
+reactor.run_loop(false, true); // drains ready work, then returns
 ```
 
 The event factories are named free functions — `create_sp_int_event`,
@@ -6373,11 +6374,15 @@ nobody drained.
 `infinite` flag is latched at entry and nothing ever clears it, so that call
 never returns, and it is a busy spin rather than a blocking wait.
 
-```cpp srpc-no-compile
+```rust
 // The body runs now, up to the first wait; the rest needs a drain.
-reactor->create_run_fiber([ev]() { ev->wait(); finish(); });
-ev->set(1);
-reactor->run_loop(false, true);       // finish() runs here
+let ev_in = ev.clone();
+reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+    ev_in.wait();
+    finish();
+})));
+ev.set(1);
+reactor.run_loop(false, true); // finish() runs here
 ```
 
 ### Sleep and lock the fiber way
@@ -6468,8 +6473,8 @@ starts at `Log::DEBUG` (4), which means *everything* is enabled out of the box;
 the only knob is `Log::set_level`, and there is no environment variable that
 touches it.
 
-```cpp srpc-no-compile
-Log::set_level(Log::ERROR);      // FATAL 0, ERROR 1, WARN 2, INFO 3, DEBUG 4
+```rust
+Log::set_level(Log::ERROR); // FATAL 0, ERROR 1, WARN 2, INFO 3, DEBUG 4
 ```
 
 Lines go to `std::cout`, one flush each, shaped like
@@ -6610,9 +6615,10 @@ E [<unknown>:0] ... | srpc::Server::start: channel listener failed to bind 127.0
 `AddressInUse` after a previous run is the usual TIME_WAIT story. For tests, bind
 to port `0` and ask the server which port it got:
 
-```cpp srpc-no-compile
-svr.start(reinterpret_cast<const int8_t*>("127.0.0.1:0"));
-int port = svr.get_bound_port();       // -1 if the listener is not up
+```rust
+let addr = CString::new("127.0.0.1:0").unwrap();
+unsafe { svr.start(addr.as_ptr()) };
+let port = svr.get_bound_port(); // -1 if the listener is not up
 ```
 
 ### The process aborted with "verify failed"
