@@ -242,7 +242,8 @@ beat the generated C++ server (Chapter 15 has the measured table). Its documente
 boundaries: container serialization panics loudly under rustc rather than lying
 (Chapter 10), one `Client` is not shareable across threads (use one per thread, which
 is what the benchmark drivers do anyway), and a single `Server` does not yet spread
-its connections across several poll threads.
+its connections across several poll threads. Reliability machinery — retries,
+reconnect, circuit breaker, buffering — is live in both lanes.
 
 The C++ lane is the shipped `libsrpc.a`: every generated module recompiled, linked,
 and held to a frozen symbol census by the dual-compile gate. A change to a `.rs` file
