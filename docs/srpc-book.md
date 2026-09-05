@@ -4994,8 +4994,12 @@ pump (what pollworker's C++ loop does natively), and the two
 `tests/stackless_wake_*_rust.rs` binaries pin the full protocol — a future that wakes
 during its own first poll is parked by the canonical spawn, its ticket drained by the
 pump, and its result delivered through the same `on_ready` path in both lanes. The
-genuinely multi-threaded reactor (several poll threads sharing fibers and timers)
-remains the one TLS-blocked configuration.
+TLS blocker itself is gone: the reactor's nine per-thread statics migrated to Rust's
+`thread_local!`, which the transpiler now lowers to per-thread
+`rusty::LocalKey` storage — `tests/reactor_multithread_rust.rs` runs two independent
+reactors on two threads of one process, previously a deterministic crash. A
+multi-poll-thread *server* remains future work (the C fiber pool is unaudited for it),
+but the storage model no longer stands in the way.
 
 The rest of this chapter is the map of where the cost sits, read off the code: which
 dispatch decision spawns a stack, which client entry point allocates what, which limits

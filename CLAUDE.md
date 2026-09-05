@@ -125,7 +125,8 @@ clippy warning breaks the C++ build. A green source gate says nothing about ABI.
 
 **`#[cfg_attr(any(), …)]` is the emitter's directive language, and rustc never sees it.** `any()` is
 always false, so these 37 attributes are invisible to `cargo build`, `cargo test` and clippy while being
-the only way to state a C++ contract Rust cannot: `thread_local` (9, all in `reactor/reactor.rs`),
+the only way to state a C++ contract Rust cannot: `thread_local` (0 — the reactor's nine migrated to real `thread_local!`, which the transpiler lowers
+to `inline thread_local rusty::LocalKey<T>`; the marker spelling is retired),
 `cpp_namespace(::janus)` (9 — the Quorum surface, which must live in *global* `::janus`; `srpc::janus::QuorumEvent`
 mangles differently and is not a substitute), `cpp_noexcept` (4), `cpp_no_fieldwise_ctor` (3),
 `cpp_no_auto_traits` (3), `cpp_abi` (3), `cpp_trait_member_dispatch` (2), `cpp_default_argument` (2),
@@ -141,9 +142,8 @@ derive is hidden behind `not(any())`.)
 `DisconnectBehavior_QUEUE()`, retypes `clientpool_select`, changes a method signature, or deletes
 `FutureAttr::default_()`. And of the 68 `explicit_auto_deref` sites, 42 change emitted C++ — that family's
 suggestions are `MachineApplicable`, so `clippy --fix` applies them without ever seeing the consequence.
-**Never run `clippy --fix` over `base/ misc/ rpc/ reactor/`.** The module-level `#![allow(static_mut_refs)]`
-at the top of `reactor/reactor.rs` (15 findings, all in that file) is the same kind of pin: where rustc
-offers a fix at all, it does not compile.
+**Never run `clippy --fix` over `base/ misc/ rpc/ reactor/`.** (The module-level `#![allow(static_mut_refs)]` pin in
+`reactor/reactor.rs` is retired: the statics it covered migrated to `thread_local!`.)
 
 **`src/lib.rs` is generated — never hand-edit it.** It carries a sha256 of `rust-modules.toml` in its
 header, so touching the manifest without `extract_srpc_rust.py --write` fails the gate. Never add any
@@ -277,18 +277,16 @@ Four non-obvious things about these tests:
   `RustcAdlSerialize`/`RustcAdlDeserialize` bound, satisfied by srpc's blanket impls on its archives over
   the canonical traits. Container serialization panics wholesale under rustc; C++ container emission is
   byte-for-byte untouched.
-- **`reactor/reactor.rs` runs under rustc only single-threaded** — its header's old "not executable"
-  claim is half true. The nine `#[cfg_attr(any(), thread_local)]` statics are plain process-global
-  `static mut` under rustc, so any *multi-threaded* reactor use races (measured: 7 failures/600 runs
-  from parallel tests). But with all dispatch on one poll thread — the rustc lane's actual topology —
-  the fiber path works end to end: `Reactor::get_reactor()` constructs on demand,
-  `fiber_create_run_impl` spawns real fibers through the linked C engine (`srpc_fiber.c` + the
-  context-switch assembly, `-DREUSE_FIBER`), and the out-of-repo bench serves rpcbench's `fiber` and
-  `defer` modes at ~1.1M qps this way. Async suspension works too: a consumer registers the facade
-  `PollThread::add_tick_hook` reactor pump (`run_loop` every pass — what pollworker's C++ loop does
-  natively), and the two `stackless_wake_*_rust.rs` tests pin the wake protocol; they are separate
-  test binaries because the process-global reactor binds to whichever thread constructs it first.
-  TLS, cross-thread and teardown behavior remain covered only by the C++ battery.
+- **`reactor/reactor.rs` is genuinely per-thread under rustc now.** The nine thread-local statics
+  are spelled with Rust's `thread_local!` (the transpiler lowers each to
+  `inline thread_local rusty::LocalKey<T>`; access goes through the closure-only `.with()`), so each
+  thread constructs its own reactor — `tests/reactor_multithread_rust.rs` pins two threads running
+  independent suspend→wake→pump cycles in one process. The fiber path works end to end on a poll
+  thread (`srpc_fiber.c` + the context-switch assembly, `-DREUSE_FIBER`; the out-of-repo bench serves
+  rpcbench's `fiber`/`defer` modes at ~1.1M qps), and async suspension is pumped by the facade
+  `PollThread::add_tick_hook` (`run_loop` every pass — what pollworker's C++ loop does natively).
+  What is NOT yet claimed: a multi-poll-thread *server* — the C fiber engine's REUSE_FIBER pool and
+  cross-thread teardown are unaudited for that; C++ battery coverage remains mandatory for teardown.
 - Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
   *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
   drop order by byte offset. A cosmetic refactor turns these red.
