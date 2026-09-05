@@ -197,3 +197,85 @@ Beyond that, the harder tier is `FrameStreamReader` itself (buffer/cursor
 invariants, the raw-pointer `append` and `consume_frame` compaction) — valuable
 but it needs Verus models for the cursor and `unsafe` pointer reasoning, so it is
 a project rather than a leaf.
+
+## Verus proof target list, and the tooling walls each hits
+
+Grounded in what Verus can discharge in this repo: pure/definitional properties
+of the actual shipped functions (contracts in the canonical source behind
+`#[cfg(verus)]`, bit-vector theorems in `verify/src/*_proofs.rs`). Concurrent /
+stateful properties (deliver-once, the pending-future map, the reactor) are out
+of scope — they need ghost/tokenized state Verus cannot carry in canonical
+sources, and would prove a model rather than the code.
+
+The list below was worked through end to end. Every concrete new target hit a
+distinct, reproducible wall — recorded here so the boundary is a map, not a
+guess. **Watch for false greens:** the `verify/` crate `#[path]`-links the real
+sources and runs *only* `cargo verus verify`; it never invokes the rusty-cpp
+transpiler. A target can therefore verify green in `verify/` and still be
+un-shippable because adding its `#[cfg(verus)]` content breaks the whole-crate
+transpile (see the errors wall below). A target is only real once
+`cmake --build` still produces the 1967-symbol archive with the contract in
+place.
+
+Toolchain note: `verify/Cargo.toml` pins `vstd = "=0.0.0-2026-08-23-0033"` to
+match the developer's Verus dist. Bump both together (a `vstd` newer than the
+`verus` binary panics compiling vstd) — do not downgrade the pin to match a
+locally-mirrored older dist. The walls below were reproduced by running the
+pinned transpiler directly, which is dist-independent; the 10-verified baseline
+(internal_protocol + stat) was measured against a local Verus `0.2026.08.09`.
+
+### The provable envelope (occupied)
+
+In this toolchain the in-source-provable surface is **free functions over
+primitives, in a module that exports no derive-macro'd types.** That envelope is
+already fully occupied and green:
+
+- `rpc/internal_protocol.rs` (+ `verify/src/internal_protocol_proofs.rs`) — the
+  response-header codec: `response_payload_size` is in the 31-bit range, and
+  `encode_response_size` → `response_payload_size`/`response_has_extended_header`
+  round-trips size and flag for every non-negative payload. Bit-vector proofs.
+- `misc/stat.rs` — the running accumulator's `requires`/`ensures`.
+
+Total: **10 verified, 0 errors.** No new in-source target below could be added
+without hitting a wall, so this count is the current ceiling.
+
+### Targets and their walls
+
+- **errors classification** (`get_error_category`, `is_connection_error`,
+  `is_timeout_error` in `rpc/errors.rs`) — the most attractive leaf: pure
+  integer-range predicates, and a real bug class (edit one range, forget the
+  matching branch) that `errors_rust.rs` only samples by example. It verifies
+  green in `verify/` (disjointness + predicate/categorizer consistency via
+  `#[verifier::external_type_specification]` wrappers over the enums). **But it
+  cannot ship:** the moment *any* `#[cfg(verus)]` item (even just
+  `use vstd::prelude::*;`) appears in `errors.rs`, the transpiler pulls the
+  module into its C++-contract closure preflight, which then rejects the module's
+  own `#[allow(non_camel_case_types)]` + `#[derive(...)]` enums —
+  *"cpp_default_argument cannot prove that item attribute `allow
+  (non_camel_case_types)` is free of macro-generated bindings in module
+  `errors`"* — and the whole-crate transpile fails (exit 1, no output). This is
+  why internal_protocol and stat are the only two annotated modules: they export
+  **no enums and no derives**. Moving errors' enums out to clear the preflight
+  would break the ABI table and the flat-import contract, so the target is
+  blocked short of a transpiler fix.
+- **T1–T4 SparseInt** (`base/basetypes.rs`): `val_size(v) ∈ 1..=9`;
+  `val_size(v) != 8` (the machine-checked statement of the length-8 fix, the
+  0xFE rung now retired); `buf_size(b) ∈ 1..=9`; and the prize,
+  `load64(dump64(v)) == v` for all `i64`. **Blocked:** `val_size`/`buf_size`/
+  `dump64` are *associated* (impl) functions, and the `verus_spec(r => ensures …)`
+  return-binding macro emits an unqualified self-call, which fails to resolve on
+  a method (`E0425 cannot find function`). Only free functions work today.
+  Restructuring the codec into free functions would churn the ABI. The length-8
+  fix is meanwhile guarded by the round-trip property test
+  (`wire_roundtrip_proptest_rust.rs`).
+- **T5–T6 frame_codec** (`rpc/frame_codec.rs`): the write→peek header round trip
+  and the `Complete ⇒ 0 <= payload_size <= kMaxFramePayloadSize` bound that would
+  make the reader's `as usize` casts provably safe. **Blocked:** the header
+  marshalling goes through `i32::from_ne_bytes`/`to_ne_bytes`, which vstd does not
+  support (*"…to_ne_bytes is not supported"*); it would need a trusted
+  `assume_specification` axiom, which defeats the point of proving that layer.
+
+Net: the self-paced pass added no new shippable proof — the provable envelope
+was already saturated by internal_protocol and stat. The value delivered is this
+map plus the false-green caveat, so the next attempt starts from the walls rather
+than rediscovering them.
