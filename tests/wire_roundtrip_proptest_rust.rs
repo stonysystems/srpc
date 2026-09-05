@@ -9,12 +9,12 @@
 //   * the 4-byte frame header -- native-endian size word with the bit-31
 //     extended-header flag.
 //
-// The SparseInt length-8 defect is KNOWN (base/basetypes.rs SparseInt::dump64
-// reports 8 bytes at length 8 but the value needs 9 to round-trip): magnitudes
-// in +/-[2^48-ish, 2^55-ish] lose their low byte.  The v64 property below
-// excludes that band and documents it, and a separate test pins the defect
-// explicitly so the property suite stays green while the bug stays visible.
-// The fix is item 4.1 of the plan (a wire-format change, its own commit).
+// The historical SparseInt length-8 defect (dump64 reporting 8 while writing
+// 9, dropping the low byte of any value in +/-[2^48, 2^55)) is FIXED as of
+// plan item 4.1: the broken 8-byte (0xFE) rung is retired on the write side
+// and those values now use the correct 9-byte (0xFF) encoding. The v64
+// property below therefore covers the FULL i64 range, and the test that used
+// to pin the defect now asserts the whole band round-trips.
 
 use proptest::prelude::*;
 
@@ -47,10 +47,6 @@ pub extern "C" fn srpc_sleep_us(_microseconds: u64) {}
 // The upper bound of the SparseInt 7-byte range (inclusive): values with a
 // magnitude at or below this round-trip through the <=7-byte path unharmed.
 const SPARSE_7BYTE_MAX: i64 = 281_474_976_710_655;
-// The upper bound of the (defective) 8-byte range.  Magnitudes strictly above
-// SPARSE_7BYTE_MAX and at or below this select the 8-byte encoding, which does
-// not round-trip; magnitudes above this use the 9-byte path and are fine.
-const SPARSE_8BYTE_MAX: i64 = 36_028_797_018_963_967;
 
 // Archive-realistic round trip: BinaryWriteArchive writes exactly the REPORTED
 // byte count (`Serialize for v32/v64` in misc/serializable.rs calls
@@ -92,18 +88,18 @@ proptest! {
         prop_assert_eq!(n, SparseInt::val_size(val as i64), "reported length matches val_size");
     }
 
-    // v64 round-trips everywhere EXCEPT the documented 8-byte defect band.
+    // v64 round-trips across the FULL i64 range now that the length-8 rung is
+    // retired (item 4.1). The former defect band +/-[2^48, 2^55) is included.
     #[test]
-    fn v64_sparse_round_trips_outside_the_length8_defect(val in any::<i64>()) {
-        let mag = val.unsigned_abs();
-        let in_defect_band = mag > (SPARSE_7BYTE_MAX as u64)
-            && mag <= (SPARSE_8BYTE_MAX as u64);
-        prop_assume!(!in_defect_band); // item 4.1 fixes this band
-
+    fn v64_sparse_round_trips_for_every_i64(val in any::<i64>()) {
         let (back, n) = sparse_roundtrip_64(val);
-        prop_assert_eq!(back, val, "v64 must round-trip outside the defect band");
+        prop_assert_eq!(back, val, "v64 must round-trip for every i64");
         prop_assert!((1..=9).contains(&n), "v64 encodes in 1..=9 bytes, got {}", n);
         prop_assert_eq!(n, SparseInt::val_size(val), "reported length matches val_size");
+        // The retired 8-byte rung means values past the 7-byte range use 9.
+        if val.unsigned_abs() > (SPARSE_7BYTE_MAX as u64) {
+            prop_assert_eq!(n, 9, "past the 7-byte range, encoding is 9 bytes (0xFF)");
+        }
     }
 
     // The frame header round-trips every legal payload size and flag.
@@ -148,20 +144,19 @@ proptest! {
     }
 }
 
-// The length-8 defect, pinned explicitly so the property suite above can
-// exclude it while it stays visible and regression-guarded. When item 4.1
-// fixes SparseInt::dump64, flip this to assert a correct round-trip and drop
-// the exclusion in v64_sparse_round_trips_outside_the_length8_defect.
+// The former length-8 defect band now round-trips (item 4.1). This pins the
+// fix at the exact historical example that used to lose its low byte, and at
+// both band boundaries, so a regression back to the 0xFE rung is caught.
 #[test]
-fn sparse_length8_defect_is_still_present() {
-    // A value squarely inside the 8-byte band (the historical example).
-    let broken: i64 = 36_028_797_018_963_967;
-    let (back, _n) = sparse_roundtrip_64(broken);
-    assert_ne!(
-        back, broken,
-        "if this now round-trips, SparseInt::dump64 was fixed -- update plan item 4.1 \
-         and flip this test plus the property exclusion"
-    );
-    // The historical decoded value: low byte lost.
-    assert_eq!(back, 36_028_797_018_963_712, "defect drops the low byte to zero");
+fn former_length8_band_now_round_trips() {
+    for v in [
+        36_028_797_018_963_967_i64,          // top of the old 0xFE band (used to -> ...712)
+        -36_028_797_018_963_967_i64,
+        281_474_976_710_656_i64,             // first value past the 7-byte range
+        (1_i64 << 50) | 0xAB,                // low byte significant, squarely in-band
+    ] {
+        let (back, n) = sparse_roundtrip_64(v);
+        assert_eq!(back, v, "band value {v} must round-trip after the fix");
+        assert_eq!(n, 9, "band values now use the 9-byte (0xFF) encoding");
+    }
 }

@@ -20,9 +20,9 @@ fn expected_sparse(value: i64) -> (usize, [u8; 9]) {
         6
     } else if (-281_474_976_710_656..=281_474_976_710_655).contains(&value) {
         7
-    } else if (-36_028_797_018_963_968..=36_028_797_018_963_967).contains(&value) {
-        8
     } else {
+        // The 8-byte (0xFE) rung is retired (docs/testing-plan.md 4.1);
+        // everything past the 7-byte range uses the 9-byte (0xFF) encoding.
         9
     };
     let mut out = [0u8; 9];
@@ -35,7 +35,7 @@ fn expected_sparse(value: i64) -> (usize, [u8; 9]) {
         out[0] &= 0xff >> size;
         out[0] |= prefix;
     } else {
-        out[0] = if size == 8 { 0xfe } else { 0xff };
+        out[0] = 0xff;
         out[1..].copy_from_slice(&(value as u64).to_be_bytes());
     }
     (size, out)
@@ -88,22 +88,10 @@ fn sparse_facade_matches_independent_wire_oracle() {
         let mut actual = [0xa5; 10];
         let actual_size = unsafe { SparseInt::dump64(value, actual.as_mut_ptr()) };
         assert_eq!(actual_size, expected_size, "value {value}");
-        let written = if expected_size == 8 { 9 } else { expected_size };
-        assert_eq!(&actual[..written], &expected[..written], "value {value}");
-        assert_eq!(actual[written], 0xa5, "value {value}");
+        assert_eq!(&actual[..expected_size], &expected[..expected_size], "value {value}");
+        assert_eq!(actual[expected_size], 0xa5, "value {value}");
         assert_eq!(SparseInt::buf_size(actual[0]), expected_size);
         assert_eq!(unsafe { SparseInt::load64(actual.as_ptr()) }, value);
-
-        if expected_size == 8 {
-            let mut persisted = [0u8; 9];
-            persisted[..expected_size].copy_from_slice(&actual[..expected_size]);
-            let expected_truncated = (value as u64 & !0xff) as i64;
-            assert_eq!(
-                unsafe { SparseInt::load64(persisted.as_ptr()) },
-                expected_truncated,
-                "length-eight archive persistence must retain the legacy lost low byte"
-            );
-        }
 
         if let Ok(value32) = i32::try_from(value) {
             let mut actual32 = [0xa5; 6];

@@ -2302,23 +2302,31 @@ client caches the first id it sees and, when a later reply carries a different o
 logs `"Server restart detected"` and fires the `on_server_restart` callback. A
 zero cached id means "not yet known", so the first reply never triggers it.
 
-#### One sharp edge in the v64 encoding
+#### The v64 encoding: a former length-8 defect, now fixed
 
-The sparse-integer format has a legacy defect at exactly one length. When
-`val_size(v) == 8`, `dump64` writes a `0xFE` marker plus eight payload bytes but
-*reports* eight, so the archive emits only the marker and seven payload bytes; the
-decoder then reconstructs the value from its own zero-filled scratch and the low
-byte comes back as zero. Framing is unaffected — writer and reader agree on eight
-bytes, so the cursor stays in sync — but the value does not round-trip.
-`tests/basetypes_rust.rs` pins this exactly:
-`36_028_797_018_963_967` decodes as `36_028_797_018_963_712`.
+The sparse-integer format historically had a defect at exactly one length. The
+`0xFE` marker claimed an eight-byte total (marker + seven payload) but `dump64`
+emitted all eight payload bytes and reported eight, so the persisted frame kept
+the always-zero high byte and dropped the significant low byte: any `|v|` in
+roughly `[2^48, 2^55)` lost its low byte (`36_028_797_018_963_967` decoded as
+`36_028_797_018_963_712`). Framing stayed in sync — both sides agreed on eight
+bytes — but the value did not round-trip.
 
-It affects `|v|` roughly between 2^48 and 2^55. An xid would need 2^48 requests on
-one connection to get there. A `server_instance_id` is effectively random over 63
-bits, so it lands in that band about 0.4% of the time — but the mangling is
-deterministic, so restart detection still compares like with like and keeps working.
-No production consequence has been observed; know about it before you put a large
-`v64` on the wire yourself.
+This is now fixed: the broken `0xFE` rung is retired on the write side
+(`val_size` folds that band into the nine-byte `0xFF` encoding, which every peer
+already decodes correctly), so those values now round-trip. `dump64` never emits
+`0xFE`; `load64` still *reads* it so historical data decodes as it always did.
+The change is effectively compatibility-safe: a new sender's `0xFF` frame is
+decodable by any old receiver, and old `0xFE` data reads unchanged — only the
+encoding of band values moves from eight (lossy) to nine (correct) bytes.
+`tests/basetypes_rust.rs`, `wire_roundtrip_proptest_rust.rs` and
+`serializable_rust.rs` pin the corrected round trip.
+
+The practical reach was always small: an xid would need 2^48 requests on one
+connection to enter the band; a `server_instance_id` landed there ~0.4% of the
+time but was deterministically mangled, so restart detection kept working. The
+only real exposure was a user-declared `v64` field carrying a band value, which
+the fix now handles correctly.
 
 ### Request/response flow
 
@@ -3442,20 +3450,20 @@ first. Small magnitudes are cheap:
 | ±2^34 | 5 — a `v32` never needs more than this |
 | ±2^41 | 6 |
 | ±2^48 | 7 |
-| ±2^55 | 8 |
 | anything larger | 9 |
 
 Use a varint when values are usually small and occasionally large. Use fixed `i32`
 / `i64` when they are uniformly distributed — a random 64-bit value costs 9 bytes
 as a `v64` and 8 as an `i64`.
 
-One caveat, and it is a real defect rather than a quirk: at exactly length eight,
-`SparseInt::dump64` writes a `0xFE` marker plus eight payload bytes but *reports*
-eight, so the archive emits only seven of them; the decoder rebuilds the value from
-its own zero-filled scratch and the low byte comes back zero. Framing stays in sync
-— both sides agree the field is eight bytes — but the value does not round-trip.
-`tests/basetypes_rust.rs` pins it: `36_028_797_018_963_967` decodes as
-`36_028_797_018_963_712`. It affects magnitudes between roughly 2^48 and 2^55.
+One historical caveat, now fixed (the former length-8 defect): the `0xFE`
+eight-byte rung used to drop the low byte of any value in roughly `[2^48, 2^55)`
+(`36_028_797_018_963_967` decoded as `36_028_797_018_963_712`). The rung is
+retired on the write side — those values now use the nine-byte `0xFF` encoding
+and round-trip — while the decoder still reads `0xFE` for historical data.
+Chapter 7 has the full account; `tests/basetypes_rust.rs`,
+`wire_roundtrip_proptest_rust.rs` and `serializable_rust.rs` pin the corrected
+behavior.
 `v32` is unaffected at every length. Chapter 7 covers what this does, and does not
 do, to the protocol's own `v64` fields.
 

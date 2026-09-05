@@ -188,30 +188,32 @@ fn sparse_int_boundaries_and_deterministic_wire_corpus() {
         wire_digest = hash_i64_wire_record(wire_digest, value);
         wire_digest = hash_i32_wire_record(wire_digest, value as i32);
     }
-    // Legacy-carrier-derived FNV-1a digest over the reported length and every
-    // byte actually written (including byte nine in the length-eight case).
-    assert_eq!(wire_digest, 0x6d2d_df1e_fe2a_b0b6);
+    // FNV-1a digest over the reported length and every byte written. Updated
+    // for the length-8 fix (item 4.1): values past the 7-byte range now report
+    // 9 and carry the 0xFF marker instead of the old lossy 0xFE/8.
+    assert_eq!(wire_digest, 0xbbe9_520e_79d2_1a9c);
 
-    // Preserve the archive-visible legacy length-eight quirk exactly: the
-    // encoder writes marker + eight payload bytes but reports eight. A caller
-    // that persists only the reported count drops the low payload byte; the
-    // matching decoder reads a zero-filled ninth byte.
-    unsafe fn archive_length_eight_round_trip(value: i64) -> i64 {
+    // The former length-eight quirk is fixed (item 4.1): values past the
+    // seven-byte range now report nine and carry the 0xFF marker, so a caller
+    // that persists exactly the reported count round-trips losslessly. (The
+    // decoder still reads the historical 0xFE form for old data; nothing
+    // writes it any more.)
+    unsafe fn archive_round_trip(value: i64) -> (i64, usize, u8) {
         let mut encoded = [0u8; 9];
         let reported = unsafe { SparseInt::dump64(value, encoded.as_mut_ptr()) };
-        assert_eq!(reported, 8);
-        assert_eq!(encoded[0], 0xfe);
+        let marker = encoded[0];
         let mut persisted = [0u8; 9];
         persisted[..reported].copy_from_slice(&encoded[..reported]);
-        unsafe { SparseInt::load64(persisted.as_ptr()) }
+        (unsafe { SparseInt::load64(persisted.as_ptr()) }, reported, marker)
     }
+    // The exact value that used to decode as ...712 now round-trips.
     assert_eq!(
-        unsafe { archive_length_eight_round_trip(36_028_797_018_963_967) },
-        36_028_797_018_963_712
+        unsafe { archive_round_trip(36_028_797_018_963_967) },
+        (36_028_797_018_963_967, 9, 0xff)
     );
     assert_eq!(
-        unsafe { archive_length_eight_round_trip(-36_028_797_018_963_967) },
-        -36_028_797_018_963_968
+        unsafe { archive_round_trip(-36_028_797_018_963_967) },
+        (-36_028_797_018_963_967, 9, 0xff)
     );
 }
 

@@ -9162,21 +9162,21 @@ int main() {
                 hash_sparse_byte(sparse_wire_digest, encoded32[byte]);
         }
     }
-    if (sparse_wire_digest != UINT64_C(0x6d2ddf1efe2ab0b6)) {
+    if (sparse_wire_digest != UINT64_C(0xbbe9520e79d21a9c)) {
         return 156;
     }
-    for (const auto [value, truncated] : std::array{
-             std::pair{INT64_C(36028797018963967),
-                       INT64_C(36028797018963712)},
-             std::pair{INT64_C(-36028797018963967),
-                       INT64_C(-36028797018963968)},
+    // The former length-8 (0xFE) rung is retired (docs/testing-plan.md 4.1):
+    // these values now round-trip losslessly via the 9-byte (0xFF) encoding.
+    for (const auto value : std::array{
+             INT64_C(36028797018963967),
+             INT64_C(-36028797018963967),
          }) {
         std::array<std::uint8_t, 9> encoded{};
         const auto reported = srpc::SparseInt::dump64(value, encoded.data());
         std::array<std::uint8_t, 9> persisted{};
         std::copy_n(encoded.begin(), reported, persisted.begin());
-        if (reported != 8 || encoded[0] != 0xfe ||
-            srpc::SparseInt::load64(persisted.data()) != truncated) {
+        if (reported != 9 || encoded[0] != 0xff ||
+            srpc::SparseInt::load64(persisted.data()) != value) {
             return 145;
         }
     }

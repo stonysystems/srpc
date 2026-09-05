@@ -155,7 +155,7 @@ Rust or second timing boundary.
 
 Basetypes retains the public primitive and `AtomicI64`/`Ordering` aliases,
 SparseInt's legacy wire representation, the `v32`/`v64`, `Counter`, `Time`,
-and `Timer` layouts, and its exact archive-visible length-eight quirk. The four
+and `Timer` layouts. (The former archive-visible length-eight quirk was FIXED -- see docs/testing-plan.md 4.1; the 0xFE rung is retired on the write side.) The four
 raw-pointer SparseInt codecs are explicit unsafe Rust APIs with caller storage
 contracts. Timing alone crosses the terminal `srpc_timing.h` C boundary.
 

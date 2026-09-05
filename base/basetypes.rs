@@ -93,7 +93,9 @@ impl SparseInt {
     /// # Safety
     ///
     /// `buf` must point to writable storage for nine bytes. This includes the
-    /// legacy length-eight encoding, which reports eight but writes nine bytes.
+    /// nine-byte (0xFF) encoding for magnitudes past the seven-byte range. The
+    /// historical eight-byte (0xFE) rung, which lost the low byte, is retired
+    /// on the write side; the decoder still reads 0xFE for historical data.
     #[allow(unsafe_code)]
     pub unsafe fn dump64(val: i64, buf: *mut u8) -> usize {
         let u = val as u64;
@@ -133,10 +135,8 @@ impl SparseInt {
                 *buf.add((1 + j) as usize) = ((u >> (8 * ((7 - j) as u32))) & 0xFF) as u8;
                 j += 1;
             }
-            if n == 8 {
-                *buf.add(0) = 0xFE;
-                return 8;
-            }
+            // n is always 9 here now (the 0xFE rung is retired in val_size);
+            // the loop above wrote all eight payload bytes into buf[1..9].
             *buf.add(0) = 0xFF;
         }
         9
@@ -237,9 +237,13 @@ impl SparseInt {
             6
         } else if (-281_474_976_710_656..=281_474_976_710_655).contains(&val) {
             7
-        } else if (-36_028_797_018_963_968..=36_028_797_018_963_967).contains(&val) {
-            8
         } else {
+            // The historical 8-byte (0xFE) rung is retired (docs/testing-plan.md
+            // 4.1): it budgeted 7 payload bytes but the encoder emitted 8,
+            // silently dropping the low byte of any value in +-[2^48, 2^55).
+            // Everything past the 7-byte range now uses the correct 9-byte
+            // (0xFF) encoding, which every peer already decodes. The decoder
+            // still READS 0xFE for historical data (buf_size/load64 unchanged).
             9
         }
     }

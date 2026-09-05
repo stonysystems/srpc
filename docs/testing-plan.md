@@ -177,23 +177,18 @@ Constraints every item must respect (from CLAUDE.md):
 
 ## Known bugs this plan formalizes or fixes
 
-- [x] **4.1 SparseInt length-8 quirk — RECLASSIFIED: deliberately preserved,
-    guarded not fixed.** Investigation (dump64's own doc: "the *historical*
-    sparse-integer wire format"; RUST_CANARY.md: "its exact archive-visible
-    length-eight quirk"; basetypes_rust.rs: "Preserve the archive-visible
-    legacy length-eight quirk exactly") shows this is not a port bug but a
-    faithful reproduction of the historical C++ carrier's wire format.
-    `SparseInt::dump64` at length 8 reports 8 while writing 9, so a v64 in
-    ~±[2^48,2^55) loses its low byte through the archive — and that is the
-    ON-WIRE format deployed peers and persisted data use. "Fixing" it would
-    BREAK wire-compat for that band, so it must NOT be changed without an
-    explicit wire-compat policy decision (the near-certain answer being "keep
-    the quirk"). The correctness outcome the plan actually wanted is
-    achieved: the quirk is now formalized and regression-guarded by the
-    property suite (1.1, which excludes the band and pins the exact defective
-    decode) and would surface in the golden vectors (2.2) if it ever drifted.
-    No code change; this box is done by guarding, with the fix deliberately
-    NOT taken.
+- [x] **4.1 SparseInt length-8 defect — FIXED (Option 2).** Root-caused: the
+    `0xFE` eight-byte rung budgeted 7 payload bytes but the encoder emitted 8
+    MSB-first and reported 8, so the persisted frame kept the always-zero high
+    byte and dropped the significant low byte for any `|v|` in `[2^48, 2^55)`
+    (traced to the 2018 genesis C++). Fixed by retiring the `0xFE` rung on the
+    write side: `val_size` folds that band into the nine-byte `0xFF` encoding
+    (which every peer already decodes), so those values round-trip; `load64`
+    still reads `0xFE` for historical data. Effectively compat-safe (new `0xFF`
+    frames decode on old peers; old `0xFE` data reads unchanged; only band
+    values move 8->9 bytes). The property/oracle/basetypes pins and the
+    embedded dual-compile importer assertion were flipped from documenting the
+    loss to asserting the round trip.
 
 ---
 
