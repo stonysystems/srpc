@@ -106,7 +106,7 @@ pub type PollThread = cpp::ReactorPollThread;
 pub type WeakClientConnection = Weak<ClientConnection>;
 pub type FutureResult = Result<Arc<Future>, i32>;
 pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize)>;
-pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool)>;
+pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool) + Send>;
 pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64)>;
 pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
 pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &LegacyStdString) + Send + Sync>;
@@ -461,7 +461,7 @@ impl PoolConfig {
     }
 }
 
-pub type FutureCallback = LegacyCallbackWrapper<rusty::Function<dyn Fn(Arc<Future>)>>;
+pub type FutureCallback = LegacyCallbackWrapper<rusty::Function<dyn Fn(Arc<Future>) + Send + Sync>>;
 
 pub struct FutureAttr {
     callback: FutureCallback,
@@ -515,6 +515,19 @@ pub struct Future {
     timeout_type_: Cell<TimeoutType>,
     retry_count_: Cell<u16>,
 }
+
+// The retry coordinator and the reply path touch a Future from threads other
+// than the waiter's.  Every cross-thread read is ordered by the
+// `state_`/`ready_cond_` handshake: writers fill the Cell fields and the
+// reply buffer BEFORE notify_ready takes the mutex and broadcasts, and the
+// waiter reads them only after its wait returns under that same mutex -- the
+// exact protocol the C++ carrier has always relied on for these plain
+// (non-atomic) members.  The Cells are never written concurrently by two
+// threads: the coordinator owns them until it notifies, the waiter after.
+#[allow(unsafe_code)]
+unsafe impl Send for Future {}
+#[allow(unsafe_code)]
+unsafe impl Sync for Future {}
 
 impl Future {
     fn new(xid: i64, attr: FutureAttr) -> Future {
@@ -576,7 +589,7 @@ impl Future {
         }
     }
 
-    fn wait_with_options(&self) -> bool {
+    pub fn wait_with_options(&self) -> bool {
         let opts = self.get_options();
         if opts.timeout_ms == 0u64 {
             self.wait();
@@ -624,11 +637,11 @@ impl Future {
         self.options_.get()
     }
 
-    fn set_options(&self, opts: &RequestOptions) {
+    pub fn set_options(&self, opts: &RequestOptions) {
         self.options_.set(*opts)
     }
 
-    fn get_timeout_type(&self) -> TimeoutType {
+    pub fn get_timeout_type(&self) -> TimeoutType {
         self.timeout_type_.get()
     }
 
@@ -636,7 +649,7 @@ impl Future {
         self.timeout_type_.set(type_)
     }
 
-    fn get_retry_count(&self) -> u16 {
+    pub fn get_retry_count(&self) -> u16 {
         self.retry_count_.get()
     }
 
@@ -1168,7 +1181,7 @@ impl ClientConnection {
         }
         self.invalidate_pending_futures();
     }
-    fn reconnect(&self, on_complete: OnReconnectCompleteCallbackFn) -> i32 { clientconn_reconnect(self, on_complete) }
+    pub fn reconnect(&self, on_complete: OnReconnectCompleteCallbackFn) -> i32 { clientconn_reconnect(self, on_complete) }
     pub fn set_buffering_config(&self, config: &BufferingConfig) {
         self.buffering_config_.set(*config);
         if !self.pending_queue_.empty() {
@@ -1388,7 +1401,7 @@ impl ClientConnection {
     // --- generic request trio ---
     fn request<F>(&self, rpc_id: i32, attr: &FutureAttr, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) { clientconn_request_via_channel(self, rpc_id, attr, write_fn) }
-    fn request_with_options<F>(&self, rpc_id: i32, options: &RequestOptions, attr: &FutureAttr, write_fn: F) -> FutureResult
+    pub fn request_with_options<F>(&self, rpc_id: i32, options: &RequestOptions, attr: &FutureAttr, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) { clientconn_request_with_options(self, rpc_id, options, attr, write_fn) }
     pub fn request_async<F>(&self, rpc_id: i32, write_fn: F, on_reply: AsyncReplyCallback) -> Result<(), i32>
     where F: FnMut(&mut BinaryWriteArchive) { clientconn_request_async(self, rpc_id, write_fn, on_reply) }
@@ -1499,7 +1512,7 @@ impl Client {
         guard.as_ref().unwrap().request(rpc_id, attr, write_fn)
     }
 
-    fn request_with_options<F>(&self, rpc_id: i32, options: &RequestOptions, write_fn: F) -> FutureResult
+    pub fn request_with_options<F>(&self, rpc_id: i32, options: &RequestOptions, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) {
         let guard = self.connection_field.borrow();
         if guard.is_none() {
@@ -1619,7 +1632,7 @@ impl Client {
         }
     }
 
-    fn reconnect(&self, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
+    pub fn reconnect(&self, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
         let guard = self.connection_field.borrow();
         if guard.is_none() {
             if !on_complete.is_empty() {
@@ -1686,7 +1699,7 @@ impl Client {
         ConnectionState::NEW
     }
 
-    fn try_reconnect_if_needed(&self) -> bool {
+    pub fn try_reconnect_if_needed(&self) -> bool {
         let state: ConnectionState = self.connection_state();
         if (state as i32) == (ConnectionState::CONNECTED as i32) {
             return true;

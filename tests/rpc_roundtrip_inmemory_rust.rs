@@ -127,6 +127,20 @@ extern "C" fn srpc_reactor_reusing_fiber() -> i32 {
     0
 }
 
+// Real spawn instantiates the reconnect/retry bodies, which reach the timing
+// and jitter kernels; supply them for real (sleep) and deterministically (rand).
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "C" fn srpc_sleep_us(microseconds: u64) {
+    std::thread::sleep(std::time::Duration::from_micros(microseconds));
+}
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "C" fn srpc_rand_raw() -> i32 {
+    4 // deterministic jitter for tests
+}
+
 macro_rules! never_runs {
     ($($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)+) => {$(
         #[allow(unsafe_code)]

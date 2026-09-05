@@ -454,8 +454,33 @@ impl InMemoryListener {
             // Keep the cross-object lock acquisition after dropping the
             // listener guard. The direct map operation also avoids taking a
             // reference to a mapped local through an Arc-dispatched method.
+            //
+            // Identity-checked removal: a server restarted on the same
+            // address registers a NEW listener before this (possibly
+            // deferred, poll-thread-job) close of the OLD one runs. Removing
+            // blindly by address would unregister the survivor and every
+            // later dial would get ConnectionRefused forever -- the exact
+            // race tests/client_retry_rust.rs's revival test hits. Only
+            // remove the entry if it still points at this listener (or is
+            // already dead).
             let mut switchboard_guard = self.switchboard_.listeners_.lock().unwrap();
-            switchboard_guard.remove(&address_to_unregister);
+            // clippy::ptr_eq -- MEASURED: the suggested `std::ptr::eq(..)`
+            // emits verbatim into the C++ lane, where no such function
+            // exists; the raw `==` lowers to a plain pointer comparison that
+            // compiles in both lanes.
+            #[allow(clippy::ptr_eq)]
+            let stored_is_self_or_dead = match switchboard_guard.get(&address_to_unregister) {
+                Some(stored) => match stored.upgrade() {
+                    Some(current) => {
+                        Arc::as_ptr(&current) == (self as *const InMemoryListener)
+                    }
+                    None => true,
+                },
+                None => false,
+            };
+            if stored_is_self_or_dead {
+                switchboard_guard.remove(&address_to_unregister);
+            }
         }
     }
 

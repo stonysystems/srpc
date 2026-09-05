@@ -121,15 +121,15 @@ pub mod port {
 /// functions, so this model is the single-callable form, and every canonical
 /// caller spells that form.
 ///
-/// The model type-checks the body and drops it rather than running it, and it
-/// deliberately does NOT require `Send`: the runtime's shared state is reached
-/// through `rusty::Cell`/`RefCell` handles that are `!Sync` in the rustc model
-/// but are the production C++ types the reactor already shares across its own
-/// threads.  Demanding `Send` here would reject the canonical client's
-/// connection bodies without describing anything true about the emitted C++.
+/// `spawn` is REAL: it runs the body on a std thread, which is what makes the
+/// retry coordinator and auto-reconnect live under rustc.  It requires `Send`
+/// -- unlike the retired drop-the-body model, which could not, because the
+/// canonical bodies captured `Future`'s Cell fields.  Those captures are
+/// genuinely `Send` now: `Future` carries the same documented
+/// notify-before-read `unsafe impl Send/Sync` contract `ClientConnection`
+/// always had, and the callback aliases carry `Send` bounds, so the bound
+/// here describes something true instead of rejecting the client's bodies.
 pub mod thread {
-    use ::std::marker::PhantomData;
-
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[repr(transparent)]
     pub struct ThreadId(pub u64);
@@ -140,18 +140,25 @@ pub mod thread {
         }
     }
 
-    /// Model of the runtime's spawned-thread handle.
+    /// The runtime's spawned-thread handle: a real `std::thread::JoinHandle`.
     ///
     /// Generic in the body's result so `JoinHandle<()>` -- the payload of the
     /// reactor's `PollJoinSlot` -- names the same type production `spawn`
-    /// deduces for a void body.  `PhantomData<fn() -> T>` keeps the handle
-    /// unconditionally `Send + Sync`, which `PollThread`'s own
-    /// `assert_send_sync` requires.
-    pub struct JoinHandle<T>(PhantomData<fn() -> T>);
+    /// deduces for a void body.  Dropping the handle detaches, exactly like
+    /// the C++ runtime's; `join()` blocks and swallows a panicked body's
+    /// payload (the C++ thread would have terminated the process instead,
+    /// which the battery covers).
+    pub struct JoinHandle<T>(Option<::std::thread::JoinHandle<T>>);
 
     impl<T> JoinHandle<T> {
-        pub fn join(self) {}
-        pub fn detach(self) {}
+        pub fn join(mut self) {
+            if let Some(handle) = self.0.take() {
+                let _ = handle.join();
+            }
+        }
+        pub fn detach(mut self) {
+            self.0.take();
+        }
     }
 
     pub fn current_id() -> ThreadId {
@@ -170,10 +177,10 @@ pub mod thread {
     /// Production C++ resolves this to the runtime's thread spawn.
     pub fn spawn<F, R>(body: F) -> JoinHandle<R>
     where
-        F: FnOnce() -> R + 'static,
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
     {
-        drop(body);
-        JoinHandle(PhantomData)
+        JoinHandle(Some(::std::thread::spawn(body)))
     }
 }
 
@@ -2937,6 +2944,33 @@ impl Function<dyn FnMut()> {
     pub fn from_callable<C>(callback: C) -> Self
     where
         C: FnMut() + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl Function<dyn FnMut(bool) + Send> {
+    /// The reconnect-completion shape: Send because it crosses onto the
+    /// reconnect thread.
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: FnMut(bool) + Send + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl<A: 'static> Function<dyn Fn(A) + Send + Sync> {
+    /// Shared-callback shape with thread bounds (the FutureAttr callback).
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: Fn(A) + Send + Sync + 'static,
     {
         Self {
             inner: Some(Box::new(callback)),
