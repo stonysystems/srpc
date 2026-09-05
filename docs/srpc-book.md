@@ -666,14 +666,14 @@ inside a nested call, inside a library you did not write — and resume later on
 that same stack. That is what lets a handler that *looks* like ordinary blocking
 code make a nested RPC call without blocking its thread.
 
-There is a second, stackless lane as well: `rusty::Task`, a C++20 coroutine type
-polled by the same reactor, which the IDL's `async` attribute targets. It gets
-its own section at the end of this chapter.
+There is a second, stackless lane as well: `async fn` handlers, which are ordinary
+Rust futures under rustc and `rusty::Task` C++20 coroutines in the generated lane,
+polled by the same reactor. It gets its own section at the end of this chapter.
 
-Everything here lives in namespace `srpc`. The `Fiber` class and the `Reactor`
-come from module `srpc.reactor`; the `this_fiber` helpers come from
-`srpc.fiber`. Both are re-exported through the umbrella header, so
-`#include "srpc.hpp"` is enough to reach either.
+The `Fiber` type and the `Reactor` live in `reactor/reactor.rs` (module
+`srpc::reactor` / `srpc.reactor`); the `this_fiber` helpers live in
+`reactor/fiber.rs` (`srpc::fiber` / `srpc.fiber`). In C++ both are re-exported
+through the umbrella header, so `#include "srpc.hpp"` is enough to reach either.
 
 ### Why fibers instead of threads
 
@@ -702,58 +702,64 @@ Fibers belonging to the same reactor **never run simultaneously**. Control
 passes from one to another only at an explicit suspension point, so state that
 lives entirely inside one reactor thread needs no synchronization:
 
-```cpp srpc-no-compile
+```rust
 // Safe as long as every toucher runs on this reactor's fibers.
-class Counter {
-    int value = 0;
-public:
-    void increment() { value++; }
-    int get() const { return value; }
-};
+struct Counter {
+    value: Cell<i32>, // interior mutability, no lock: fibers never preempt
+}
+
+impl Counter {
+    fn increment(&self) {
+        self.value.set(self.value.get() + 1);
+    }
+}
 ```
 
-The scoping matters. The reactor is thread-local, so a server with a pool of
-poll threads has *several* reactors, each with its own fiber set. State shared
+The scoping matters. The reactor is per-thread (`thread_local!`), so a process
+with several poll threads has *several* reactors, each with its own fiber set. State shared
 across poll threads is shared across threads in the ordinary sense and still
 needs a mutex or an atomic. The fiber discipline buys you freedom from locks
 inside a thread, not across the process.
 
 ### The fiber API
 
-`Fiber::create_run` takes any callable and returns `rusty::Rc<Fiber>`. The
-`this_fiber` namespace holds the operations that address whichever fiber is
+`Fiber::create_run` takes any callable and returns `Rc<Fiber>`. The
+`this_fiber` module holds the operations that address whichever fiber is
 currently running:
 
-```cpp srpc-no-compile
-#include "srpc.hpp"
-using namespace srpc;
+```rust
+use srpc::fiber::this_fiber;
+use srpc::reactor::{Fiber, Reactor};
 
-auto reactor = Reactor::get_reactor();
+let reactor = Reactor::get_reactor();
 
-auto fiber = Fiber::create_run([]() {
-    uint64_t id = this_fiber::get_id();     // this fiber's id; ids start at 0, so
-                                            // `id != 0` is NOT a fiber-context test
-    (void)id;
+let fiber = Fiber::create_run(|| {
+    let id = this_fiber::get_id(); // ids start at 0, so `id != 0` is
+                                   // NOT a fiber-context test
+    let _ = id;
 
-    this_fiber::yield();                    // give up the CPU, stay runnable
-    this_fiber::sleep_ms(100);              // park on a timeout event
+    this_fiber::r#yield();      // give up the CPU, stay runnable
+    this_fiber::sleep_ms(100);  // park on a timeout event
 
-    assert(this_fiber::in_fiber_context());
+    assert!(this_fiber::in_fiber_context());
 });
 ```
+
+(`yield` is a Rust keyword, hence the `r#yield` spelling; the C++ lane spells it
+`this_fiber::yield()`.)
 
 The complete surface of `srpc.fiber` is small enough to list:
 
 | Call | Returns | Behaviour |
 |---|---|---|
-| `this_fiber::get_id()` | `uint64_t` | the running fiber's id, or `0` outside fiber context |
-| `this_fiber::current()` | `rusty::Option<rusty::Rc<Fiber>>` | `None` outside fiber context |
+| `this_fiber::get_id()` | `u64` | the running fiber's id, or `0` outside fiber context |
+| `this_fiber::current()` | `Option<Rc<Fiber>>` | `None` outside fiber context |
 | `this_fiber::in_fiber_context()` | `bool` | whether a fiber is installed on this thread |
-| `this_fiber::yield()` | `void` | suspends the fiber; a **no-op** outside fiber context |
-| `this_fiber::sleep_us(u64)` | `void` | parks on a timeout event |
-| `this_fiber::sleep_ms(u64)` | `void` | `sleep_us(ms * 1000)` |
-| `this_fiber::sleep_s(u64)` | `void` | `sleep_us(s * 1000000)` |
-| `this_fiber::sleep_until_us(u64)` | `void` | absolute monotonic deadline; a past deadline returns immediately |
+| `this_fiber::r#yield()` | `()` | suspends the fiber; a **no-op** outside fiber context |
+| `this_fiber::sleep_us(u64)` | `()` | parks on a timeout event |
+| `this_fiber::sleep_ms(u64)` | `()` | `sleep_us(ms * 1000)` |
+| `this_fiber::sleep_s(u64)` | `()` | `sleep_us(s * 1000000)` |
+| `this_fiber::sleep_until_us(u64)` | `()` | absolute monotonic deadline; a past deadline returns immediately |
 
 Two of these are traps in the same place. `yield()` outside a fiber quietly does
 nothing, but a **sleep of non-zero duration outside a fiber aborts the process**:
@@ -763,17 +769,17 @@ before creating an event at all, and `sleep_until_us` with a deadline already
 past, which does the same. Anything else must run on a fiber.
 
 The fiber object itself also exposes `yield_()`, `continue_()`, `finished()` and
-the static `Fiber::current_fiber()` and `Fiber::sleep(us)`. `this_fiber::yield()`
+the associated `Fiber::current_fiber()` and `Fiber::sleep(us)`. `this_fiber::r#yield()`
 is the polite spelling of
 
-```cpp srpc-no-compile
-Fiber::current_fiber().unwrap()->yield_();
+```rust
+Fiber::current_fiber().unwrap().yield_();
 ```
 
-with the difference that `this_fiber::yield()` tolerates being called outside a
+with the difference that `this_fiber::r#yield()` tolerates being called outside a
 fiber, where `unwrap()` on a `None` would not.
 
-Ids come from a counter that is thread-local in the generated C++, so ids are
+Ids come from a per-thread counter (`thread_local!`), so ids are
 unique **per reactor thread**, not process-wide, and a recycled fiber is stamped
 with a fresh id when it is handed out again. Do not use an id as a global key.
 The counter also starts at **zero** and returns its pre-increment value, so the
@@ -788,20 +794,21 @@ takes or recycles a fiber, installs it as the running fiber, registers it with
 the reactor, and *runs the body on the spot*, right up to the first suspension
 point. Only then does it make a single non-blocking reactor pass and return.
 
-```cpp srpc-no-compile
-int step = 0;
-auto reactor = Reactor::get_reactor();
+```rust
+let step = Rc::new(Cell::new(0));
+let reactor = Reactor::get_reactor();
 
-auto fiber = Fiber::create_run([&step]() {
-    step = 1;
-    this_fiber::yield();
-    step = 2;
+let step_in = step.clone();
+let fiber = Fiber::create_run(move || {
+    step_in.set(1);
+    this_fiber::r#yield();
+    step_in.set(2);
 });
 
-assert(step == 1);              // already true — the body ran inside create_run
+assert_eq!(step.get(), 1);      // already true — the body ran inside create_run
 
-reactor->continue_fiber(fiber); // resume it explicitly
-assert(step == 2);
+reactor.continue_fiber(&fiber); // resume it explicitly
+assert_eq!(step.get(), 2);
 ```
 
 Because the current fiber is saved and restored around that call, `create_run`
@@ -851,21 +858,22 @@ A fiber that has suspended and is never continued simply never resumes. Its
 stack is not unwound, so destructors for its locals never run and any resource
 it was holding is not released:
 
-```cpp srpc-no-compile
-int step = 0;
+```rust
+let step = Rc::new(Cell::new(0));
 {
-    auto fiber = Fiber::create_run([&step]() {
-        step = 1;
-        this_fiber::yield();
-        step = 2;               // never reached if nobody continues the fiber
+    let step_in = step.clone();
+    let _fiber = Fiber::create_run(move || {
+        step_in.set(1);
+        this_fiber::r#yield();
+        step_in.set(2);        // never reached if nobody continues the fiber
     });
-    assert(step == 1);
-}   // dropping the handle does NOT unwind the fiber
+    assert_eq!(step.get(), 1);
+} // dropping the handle does NOT unwind the fiber
 
-assert(step == 1);
+assert_eq!(step.get(), 1);
 ```
 
-Dropping your `rusty::Rc<Fiber>` does not even destroy the fiber: the reactor's
+Dropping your `Rc<Fiber>` does not even destroy the fiber: the reactor's
 `fibers_` registry holds its own reference until the fiber finishes and is
 recycled. The mapping stays alive until the reactor itself is destroyed, which
 is exactly the shape of leak the built `fiber_test.cc` suite documents in its
@@ -959,30 +967,56 @@ because they are C preprocessor facts: `srpc_reactor_gettid()` returns
 `REUSE_FIBER` or `REUSE_CORO`. Both are deliberately *not* Rust constants, which
 would freeze one architecture and one build configuration into portable source.
 
-### The other lane: stackless `rusty::Task`
+### The other lane: `async fn` and stackless tasks
 
-The reactor drives stackless C++20 coroutines as well. `Reactor::run_loop` calls
+The reactor drives stackless tasks as well. `Reactor::run_loop` calls
 `process_stackless_tasks()` on every pass, alongside the event queues, so both
 lanes make progress on the same thread.
 
-A task is spawned with
+An async handler is a canonical `async fn`. Under rustc it is an ordinary Rust
+future; the transpiler lowers the same source to a C++ coroutine returning
+`rusty::Task<T>` (`.await` becomes `co_await`, `return` becomes `co_return`).
+The first canonical pair lives in `base/misc.rs` and is exercised by both
+lanes' test batteries:
 
-```cpp srpc-no-compile
-srpc::reactor_spawn_stackless_task_with_result(
-    *srpc::Reactor::get_reactor(),
-    std::move(task),                    // rusty::Task<T>
-    [](auto value) { /* completion */ });
+```rust
+pub async fn async_double(x: i64) -> i64 {
+    x * 2
+}
+
+pub async fn async_double_twice(x: i64) -> i64 {
+    let once = async_double(x).await;
+    async_double(once).await
+}
 ```
 
-which polls the task once inline — if it completes immediately the callback runs
-right there and nothing is registered — and otherwise parks it in the reactor's
-poller table with a `rusty::Waker` that re-queues it. Spawning must happen on
-the reactor's own thread; a spawn refused during reactor teardown destroys the
-task and its callback rather than pretending to succeed, so a waiter fails
-instead of hanging.
+A task is spawned through the same canonical call in both lanes:
 
-This is the machinery behind the IDL's `async` attribute. An `async` method's
-handler signature is
+```rust
+use srpc::reactor::{reactor_spawn_stackless_task_with_result, Reactor};
+
+let reactor = Reactor::get_reactor();
+let task = rusty::Task::from_future(async_double(21)); // rustc: wrap the future
+reactor_spawn_stackless_task_with_result(&reactor, task, |value| {
+    // completion: runs inline if the task was ready on its first poll
+    assert_eq!(value, 42);
+});
+```
+
+(In C++ the `from_future` wrapper is unnecessary — calling the coroutine already
+yields a `rusty::Task` — so the generated async wrappers pass the handler's
+return value straight in.) The spawn polls the task once inline; if it completes
+immediately the callback runs right there and nothing is registered. Otherwise
+the task is parked with a stable `Waker` binding, and the reactor re-polls it
+when the waker fires — `run_loop` drains the wake queue every pass, which
+pollworker's C++ loop does natively and the Rust lane's poll thread does through
+its registered `run_loop` tick hook. Spawning must happen on the reactor's own
+thread; a spawn refused during reactor teardown destroys the task and its
+callback rather than pretending to succeed, so a waiter fails instead of
+hanging.
+
+This is the machinery behind the IDL's `async` attribute in the C++ lane. An
+`async` method's generated handler signature is
 
 ```cpp srpc-no-compile
 virtual rusty::Task<rusty::Result<RpcMethodResponse, srpc::i32>>
@@ -1004,11 +1038,13 @@ BenchmarkService::async_nop(const RpcAsyncNopRequest& req) {
 
 Two consequences follow from "entered inline on the poll thread". First, an
 `async` handler must not block *before* its first suspension point, exactly like
-a `fast` handler. Second, srpc ships no ready-made awaitable for its own events:
-`co_await`ing anything means writing an awaiter that reaches
-`rusty::current_context()` and copies the `Waker` out of it, then wakes that
-copy when the result is ready. Copy the waker; never alias the reactor's
-`Context`, which may be retired the moment the task completes.
+a `fast` handler. Second, srpc ships no ready-made awaitable for its own events.
+Under rustc any Rust future composes with `.await` as usual (the wake routes
+through the task's parked binding). In hand-written C++, `co_await`ing anything
+means writing an awaiter that reaches `rusty::current_context()` and copies the
+`Waker` out of it, then wakes that copy when the result is ready. Copy the
+waker; never alias the reactor's `Context`, which may be retired the moment the
+task completes.
 
 Choose the stackful lane when the code reads better as straight-line blocking
 logic, or when the thing you need to suspend inside is a call you do not
