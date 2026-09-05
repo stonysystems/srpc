@@ -1661,7 +1661,7 @@ Do not treat the layer as portable. It includes `<sys/epoll.h>` directly and cal
 Both sets live in `reactor/epoll_wrapper.rs` as plain `i32` constants inside
 namespace-shaped modules:
 
-```cpp srpc-no-compile
+```rust
 PollMode::READ       // 0x1  — interest in readability
 PollMode::WRITE      // 0x2  — interest in writability
 PollMode::NO_CHANGE  // -1   — handle_write()'s "leave my interest alone"
@@ -1680,20 +1680,19 @@ vocabularies and the code never mixes them.
 `Epoll` is a move-only RAII owner of the poll descriptor. Its constructor allocates
 eagerly — `epoll_create(10)`, whose size hint Linux has ignored since 2.6.8 but
 still requires to be positive — and aborts through `verify` if the call fails. Note
-the capitalized method names; they are the historical C++ spelling and the Rust keeps
-them verbatim:
+the capitalized method names; they are the historical C++ spelling, kept verbatim:
 
-```cpp srpc-no-compile
-class Epoll {
-    Epoll();                                            // allocates the poll fd
-    int32_t fd() const;                                 // the poll fd itself
+```rust
+impl Epoll {
+    pub fn new() -> Epoll;                 // allocates the poll fd
+    pub fn fd(&self) -> i32;               // the poll fd itself
 
-    int32_t Add(int32_t fd, int32_t poll_mode);         // register
-    int32_t Remove(int32_t fd);                         // unregister
-    int32_t Update(int32_t fd, int32_t new_mode, int32_t old_mode);
+    pub fn Add(&mut self, fd: i32, poll_mode: i32) -> i32;   // register
+    pub fn Remove(&mut self, fd: i32) -> i32;                // unregister
+    pub fn Update(&mut self, fd: i32, new_mode: i32, old_mode: i32) -> i32;
 
-    template <class F> void Wait(F on_ready);           // on_ready(int fd, int ready_events)
-};
+    pub fn Wait<F: FnMut(i32, i32)>(&mut self, on_ready: F); // (fd, ready_bits)
+}
 ```
 
 `Wait` is one poll pass, not a loop: a fixed 100-entry event array and a **1 ms**
@@ -1834,15 +1833,15 @@ is the `TcpConnection` underneath the channel proxy.
 channel, the join handle for the worker thread, and two atomics for shutdown
 bookkeeping. It never touches the epoll set directly — every mutator is a message.
 
-```cpp srpc-no-compile
-rusty::Arc<PollThread> pt = PollThread::create();
+```rust
+let pt: Arc<PollThread> = PollThread::create();
 
-pt->add_proxy(std::move(proxy));   // register a Box<dyn PollableBase>
-pt->remove_fd(fd);                 // unregister, do NOT close
-pt->request_close(fd);             // unregister, close() through the proxy, drop it
-pt->update_mode(fd, PollMode::READ | PollMode::WRITE);
-pt->add(job);                      // rusty::Arc<Job>
-pt->shutdown();                    // stop the loop and join
+pt.add_proxy(proxy);      // register a Box<dyn PollableBase>
+pt.remove_fd(fd);         // unregister, do NOT close
+pt.request_close(fd);     // unregister, close() through the proxy, drop it
+pt.update_mode(fd, PollMode::READ | PollMode::WRITE);
+pt.add(job);              // Arc<dyn Job>
+pt.shutdown();            // stop the loop and join
 ```
 
 `create()` spawns the worker thread, which publishes its own thread id back into the
@@ -1868,26 +1867,27 @@ handle going out of scope is a clean shutdown.
 
 The worker runs on the spawned thread and is the sole owner of everything mutable:
 
-```cpp srpc-no-compile
-class PollThreadWorker {
-    Receiver<PollCommand>             receiver_;         // commands from other threads
-    Epoll                             poll_;             // the epoll fd
-    HashMap<int32_t, PollableProxy>   fd_to_pollable_;   // registered proxies, by fd
-    HashMap<int32_t, int32_t>         mode_;             // current interest set, by fd
-    HashSet<int32_t>                  pending_remove_;   // deferred unregistrations
-    std::set<rusty::Arc<Job>>         jobs_;             // pending jobs
-    bool                              stop_;
-};
+```rust
+pub struct PollThreadWorker {
+    pub receiver_: PollCmdReceiver,      // commands from other threads
+    pub poll_: Epoll,                    // the epoll fd
+    pub fd_to_pollable_: FdPollableMap,  // registered proxies, by fd
+    pub mode_: FdModeMap,                // current interest set, by fd
+    pub pending_remove_: FdSet,          // deferred unregistrations
+    pub jobs_: JobSet,                   // pending jobs
+    pub stop_: bool,
+}
 ```
 
 While the worker is running it publishes a raw pointer to itself into
 `g_current_poll_worker` so fibers on the same thread can ask
 `pollworker_is_on_poll_thread()`. That predicate is what the TCP send path uses to
 decide between a direct flag and a channel message — see below. Like the reactor's
-other per-thread statics, `g_current_poll_worker` carries a
-`#[cfg_attr(any(), thread_local)]` marker: it is genuinely thread-local in the
-generated C++, and a plain process-global `static mut` when the file is checked by
-rustc, where the predicate is stubbed to `false` anyway.
+other per-thread statics, `g_current_poll_worker` is a `thread_local!` slot
+(`Cell<*mut PollThreadWorker>`), per-thread in both lanes. Note that the Rust lane's
+runtime uses the facade's own poll thread rather than this canonical worker, so under
+rustc the slot stays null and the predicate reports `false` — the send path then takes
+the command-channel route, which is correct there.
 
 One pass of `poll_loop` does, in order:
 
@@ -1972,13 +1972,16 @@ in order with respect to the commands already queued. The trait and its one
 implementation live in `base/misc.rs` (module `srpc.misc`), not in the reactor —
 `reactor.rs` imports them and owns only the scheduling. The trait is three methods:
 
-```cpp srpc-no-compile
-class Job {
-    virtual bool Ready() = 0;   // may this run now?
-    virtual void Work() = 0;    // do it
-    virtual bool Done() = 0;    // declared, but nothing in srpc calls it
-};
+```rust
+pub unsafe trait Job: Send + Sync {
+    fn Ready(&mut self) -> bool; // may this run now?
+    fn Work(&mut self);          // do it
+    fn Done(&mut self) -> bool;  // declared, but nothing in srpc calls it
+}
 ```
+
+(The trait is `unsafe` because the worker takes exclusive mutable dispatch over a job
+held by `Arc`; in C++ it is an ordinary abstract class with virtuals.)
 
 The worker's scheduling rule is simple and has one surprise in it. On each of the
 three job passes it takes the whole set, and for every job asks `Ready()`. A job that
@@ -1990,8 +1993,8 @@ The only implementation shipped is `OneTimeJob`, which matches that rule exactly
 starts `Ready()`, and `Work()` clears ready, invokes the callback, and sets done.
 There is no `FrequentJob` — a job that should repeat has to re-add itself.
 
-The set is `std::set<rusty::Arc<Job>>` in C++ and is identity-keyed, so `RemoveJob`
-must be handed the same `Arc` that was added.
+The set is identity-keyed (`std::set<rusty::Arc<Job>>` in the C++ lane), so
+`RemoveJob` must be handed the same `Arc` that was added.
 
 Both in-tree uses are deferred teardown or spawn, never a repeating timer. `Server`'s destructor schedules
 the channel-mode listener close as a `OneTimeJob` so it is ordered behind commands
