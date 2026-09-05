@@ -2468,32 +2468,41 @@ pending-reply table, the circuit breaker, the metrics counters. You never
 construct one directly; you reach it through `Client::connection()` when you
 want something `Client` does not forward.
 
-Everything named here lives in `srpc.client`, which `srpc.hpp` already imports.
-`RequestOptions` and `LoadBalancingStrategy` do not: those were trimmed out of
-the umbrella and need `import srpc.request_options;` and
-`import srpc.load_balancer;` of their own.
+Everything named here lives in `rpc/client.rs` — `srpc::client` in Rust,
+`srpc.client` in C++ (which `srpc.hpp` already imports; `RequestOptions` and
+`LoadBalancingStrategy` were trimmed out of the umbrella and need
+`import srpc.request_options;` and `import srpc.load_balancer;` of their own).
+
+One lane note up front: the core path — create, connect, `request`, the
+`Future` accessors — is `pub` in Rust and shown in Rust below. The
+options/retry, pool and keepalive surfaces are currently spelled without
+`pub`, which the C++ lane still exports as public members (the historical ABI)
+but plain Rust consumers cannot reach; those sections keep their C++ spelling
+until the visibility flip lands, and say so.
 
 ### Creating a client and connecting
 
-```cpp srpc-no-compile
-auto poll = PollThread::create();        // rusty::Arc<PollThread>
-auto cl   = Client::create(poll);        // rusty::Arc<Client>
+```rust
+use std::ffi::CString;
 
-const char* addr = "127.0.0.1:8848";
-if (cl->connect(reinterpret_cast<const int8_t*>(addr), true) != 0) {
+let poll = PollThread::create();      // Arc<PollThread>
+let cl = Client::create(poll);        // Arc<Client>
+
+let addr = CString::new("127.0.0.1:8848").unwrap();
+if cl.connect(addr.as_ptr(), true) != 0 {
     // connect failed
 }
 
 // ... issue requests ...
 
-cl->close();
-poll->shutdown();
+cl.close();
 ```
 
-Two details trip up every first call site. `connect` takes `const int8_t*`, not
-`const char*`, so the `reinterpret_cast` is mandatory. And it takes a second
-argument — a `bool` marking this end as the client side of the connection. Pass
-`true`.
+Two details trip up every first call site. `connect` takes a raw NUL-terminated
+pointer (`*const i8` — the historical C++ signature, `const int8_t*` there, where
+a `reinterpret_cast` from `const char*` is mandatory), so in Rust you go through
+`CString` and keep it alive across the call. And it takes a second argument — a
+`bool` marking this end as the client side of the connection. Pass `true`.
 
 `connect` returns 0 on success and an errno-shaped `int32_t` otherwise: 111
 `ECONNREFUSED` when the peer refuses, 22 `EINVAL` for an address the channel
@@ -2507,44 +2516,48 @@ the dial succeeds, so a failed retry leaves whatever connection you already had
 in place. Dropping a connection aborts any reconnect in flight and fails every
 future still waiting on it.
 
-`Client` is handed out as a `rusty::Arc<Client>` and its destructor calls
+`Client` is handed out as an `Arc<Client>` and its drop calls
 `close()`, so an explicit `close()` is a courtesy rather than a requirement. It
 is a useful courtesy: closing the client before you shut down the poll thread
-keeps teardown ordered.
+keeps teardown ordered. (The close itself is a poll-thread job whose captured
+`Arc` keeps the connection alive until the poll thread runs it — that ordering
+is what makes teardown safe against in-flight dispatch.)
 
 The accessors worth knowing are `connected()`, `connection_state()` (a
 `ConnectionState`; see chapter 11), `server_instance_id()`, and `connection()`,
-which returns `rusty::Option<rusty::Arc<ClientConnection>>`. Skip `host()` —
+which returns `Option<Arc<ClientConnection>>`. Skip `host()` —
 the field behind it is never assigned, so it always returns an empty string.
 
 ### Issuing a request
 
 There is exactly one request entry point, and it takes three arguments:
 
-```cpp srpc-compile-client
-auto fu_result = client->request(RPC_METHOD_ID, FutureAttr(),
-    [&](BinaryWriteArchive& m) {
-        srpc::Serialize_::serialize(arg1, m);
-        srpc::Serialize_::serialize(arg2, m);
-    });
+```rust
+use srpc::client::{deserialize_from, FutureAttr};
+use srpc::serializable::Serialize;
 
-if (fu_result.is_ok()) {
-    auto fu = fu_result.unwrap();
-    fu->wait();
-    if (fu->get_error_code() == 0) {
-        i32 result = 0;
-        srpc::deserialize_from(fu->get_reply(), result);
+let fu_result = client.request(RPC_METHOD_ID, &FutureAttr::default(), |ar| {
+    Serialize::serialize(&arg1, ar);
+    Serialize::serialize(&arg2, ar);
+});
+
+if let Ok(fu) = fu_result {
+    fu.wait();
+    if fu.get_error_code() == 0 {
+        let mut result = 0i32;
+        deserialize_from(fu.get_reply(), &mut result);
     }
 }
 ```
 
 The three-argument `request(rpc_id, attr, write_fn)` is the only form. The
-overload set was deliberately collapsed to it — the code generator emits this
-shape even for methods with no arguments, passing an empty lambda — because the
-canonical Rust the client is generated from has no method overloading.
+overload set was deliberately collapsed to it — the C++ code generator emits
+this shape even for methods with no arguments, passing an empty closure —
+because Rust has no method overloading. (The C++ spelling is the same call
+with a lambda: `client->request(RPC_METHOD_ID, FutureAttr(), [&](BinaryWriteArchive& m) { ... })`.)
 
-`FutureResult` is `rusty::Result<rusty::Arc<Future>, srpc::i32>`, so the call
-can fail before a single byte goes out. The error side is again errno-shaped:
+`FutureResult` is `Result<Arc<Future>, i32>` (`rusty::Result<rusty::Arc<Future>, srpc::i32>`
+in C++), so the call can fail before a single byte goes out. The error side is again errno-shaped:
 107 `ENOTCONN` if the client was never connected or the channel is already
 closed, 16 `EBUSY` if the circuit breaker is open, 5 `EIO` if the channel
 refuses the frame, and 11 `EAGAIN` if the request was offered to the
@@ -2559,9 +2572,9 @@ the future is filed in a per-connection map under it, and
 you no longer care about a request, `client->handle_free(xid)` drops the map
 entry so a late reply is discarded instead of parked forever.
 
-Serialization goes through `srpc::Serialize_::serialize` over a
-`BinaryWriteArchive`. There is no `Marshal` and no `operator<<`; chapter 10 has
-the details.
+Serialization goes through the `Serialize` trait over a `BinaryWriteArchive`
+(the C++ spelling is `srpc::Serialize_::serialize`). There is no `Marshal` and
+no `operator<<`; chapter 10 has the details.
 
 ### The one-second wall
 
@@ -2605,7 +2618,10 @@ answer will look like a network failure to a client using `request` +
 ### Timeouts and retries
 
 `request_with_options(rpc_id, options, write_fn)` swaps the `FutureAttr` for a
-`RequestOptions` and gives you a real timeout budget plus optional retries:
+`RequestOptions` and gives you a real timeout budget plus optional retries.
+(C++-lane surface today: `request_with_options`, `wait_with_options`,
+`set_options` and friends are not yet `pub` in the Rust module, so the snippets
+in this section are C++.)
 
 ```cpp srpc-compile-client
 auto opts = RequestOptions::defaults();
@@ -2682,7 +2698,7 @@ is a standalone deduplication utility not wired into the request path.
 ### Being notified instead of waiting
 
 Passing a populated `FutureAttr` gives you a callback instead of a wait. The
-callback receives the `rusty::Arc<Future>` itself, and it fires from
+callback receives the `Arc<Future>` itself, and it fires from
 `notify_ready` — that is, on whichever thread delivered the reply, which for
 TCP is the poll thread. Do not block in it.
 
@@ -2707,7 +2723,8 @@ it races with the reply unless you install it from inside the request path.
 ### Fire and forget: `request_async`
 
 When you never intend to wait, `request_async` skips the `Future` and the
-pending-future map entirely and hands the reply straight to a callback:
+pending-future map entirely and hands the reply straight to a callback
+(C++-lane surface today, like the options path — not yet `pub` in Rust):
 
 ```cpp srpc-no-compile
 srpc::AsyncReplyCallback on_reply{
@@ -2754,7 +2771,8 @@ counted by `ClientConnection::pending_future_count()`.
 ### ClientPool
 
 `Client` is one connection. `ClientPool` keeps a set of connections per
-address and picks one per call:
+address and picks one per call (C++-lane surface today — the pool's
+constructor and accessors are not yet `pub` in Rust):
 
 ```cpp srpc-no-compile
 import srpc.load_balancer;   // outside the srpc.hpp umbrella
@@ -2772,9 +2790,9 @@ if (client_opt.is_some()) {
 }
 ```
 
-The constructor is `ClientPool::new_(rusty::Option<rusty::Arc<PollThread>>,
-PoolConfig)` — both arguments are required, and passing `rusty::None` makes the
-pool create a poll thread of its own. Either way the destructor closes every
+The constructor is `ClientPool::new(Option<Arc<PollThread>>, PoolConfig)`
+(`ClientPool::new_` in C++) — both arguments are required, and passing `None`
+makes the pool create a poll thread of its own. Either way the destructor closes every
 pooled client and then calls `shutdown()` on whichever poll thread it holds —
 including one you passed in, so never share a poll thread between a
 `ClientPool` and anything that has to outlive it. There is no
@@ -2857,16 +2875,21 @@ delivering payloads — belongs to the channel layer (`rpc/tcp_channel.rs`,
 arrives and stops where a reply frame is handed back to the channel.
 
 The whole module is written for a single dispatch thread — the poll thread you hand
-to `Server::new_`. That is not a performance note; it is the contract that makes the
+to `Server::new`. That is not a performance note; it is the contract that makes the
 service table sound, and the last section of this chapter spells out what it costs
 you.
 
 ### Service Implementation
 
-The normal way to implement a service is to inherit from the class the generator
+In Rust, a service implements the `Service` trait directly — `__reg_to__` and
+`__dispatch__`, exactly the shape shown in Chapter 1 and in the raw-service
+section below; there is no Rust code generator yet, so that dispatch-level
+surface *is* the Rust service API.
+
+In the C++ lane, the normal way is to inherit from the class the generator
 produced for your `.rpc` file and override the typed handlers. For a service
-declared `abstract` in the IDL, every handler is pure, so the compiler will not let
-you forget one:
+declared `abstract` in the IDL, every handler is pure, so the compiler will not
+let you forget one:
 
 ```cpp srpc-no-compile
 #include "demo.h"
@@ -2924,44 +2947,53 @@ and then park the service in the pending list until `start()`.
 ### The Service Interface
 
 Under the typed layer, a service is just two methods: `__reg_to__` claims RPC ids and
-`__dispatch__` routes one request. The generated class writes both for you. Writing
-them yourself — by inheriting `srpc::Service`, which is where those two are virtual —
-is how you get at the undecoded request, and it is the shape a `raw` IDL method hands
-your handler anyway:
+`__dispatch__` routes one request. The generated C++ class writes both for you.
+Implementing the `Service` trait yourself is how you get at the undecoded request —
+it is the whole Rust service API today, and the shape a `raw` IDL method hands a C++
+handler anyway:
 
-```cpp srpc-compile-server
-class MyRawService : public Service {
-public:
-    enum : i32 { RPC_DO_WORK = 0x1001 };
+```rust
+const RPC_DO_WORK: i32 = 0x1001;
 
-    int __reg_to__(Server& svr, size_t svc_index) override {
-        return svr.reg_rpc(RPC_DO_WORK, svc_index);
+struct MyRawService;
+
+impl Service for MyRawService {
+    fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32 {
+        server.reg_rpc(RPC_DO_WORK, svc_index)
     }
 
-    void __dispatch__(i32 rpc_id, rusty::Box<Request> req,
-                      WeakServerConnection weak_sconn) override {
-        if (rpc_id != RPC_DO_WORK) {
+    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, weak_sconn: WeakServerConnection) {
+        if rpc_id != RPC_DO_WORK {
             return;
         }
         // The read cursor is already past the xid and the rpc_id — the server
-        // consumed those through an archive over this same `req->src`.
-        srpc::i32 arg = 0;
-        srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
-        srpc::Deserialize_::deserialize(arg, __req_ar__);
-        srpc::i32 result = compute(arg);
-
-        auto sconn_opt = weak_sconn.upgrade();
-        if (sconn_opt.is_some()) {
-            auto sconn = sconn_opt.unwrap();
-            const_cast<ServerConnection&>(*sconn).reply(*req, 0, [&](BinaryWriteArchive& out) {
-                srpc::Serialize_::serialize(result, out);
-            });
+        // consumed those through an archive over this same `req.src`.
+        let mut arg = 0i32;
+        {
+            let mut ar = BinaryReadArchive {
+                source_: unsafe {
+                    srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+                },
+            };
+            Deserialize::deserialize(&mut arg, &mut ar);
         }
-        // `req` is a Box — dropping it releases the request and its pending-request
-        // guard.
+        let result = compute(arg);
+
+        if let Some(sconn) = weak_sconn.upgrade() {
+            let writer: ServerReplyFn = Box::new(move |out: &mut BinaryWriteArchive| {
+                Serialize::serialize(&result, out);
+            });
+            sconn.reply(&req, 0, writer);
+        }
+        // `req` is a Box — dropping it releases the request and its
+        // pending-request guard.
     }
-};
+}
 ```
+
+The same class in the C++ lane inherits `srpc::Service` and overrides the two
+virtuals, with `srpc::Deserialize_::deserialize` / `srpc::Serialize_::serialize`
+as the archive calls; Chapter 20 shows it in full.
 
 The connection handle is *weak* on purpose: by the time a handler finishes, the peer
 may be gone. `upgrade()` returns an `Option`; if it is empty the reply is simply
@@ -2988,24 +3020,26 @@ quietly, so if a method mysteriously answers `ENOENT`, look here first.
 
 ### Server Lifecycle
 
-```cpp srpc-compile-server
-auto poll_thread = PollThread::create();
-auto server = Server::new_(rusty::Some(poll_thread.clone()));
+```rust
+let poll_thread = PollThread::create();
+let mut server = Server::new(Some(poll_thread.clone()));
 
-server.reg_service(rusty::make_box<MyService>());
+server.reg_service(Box::new(MyService));
 
 // Start listening. TCP is installed automatically.
-if (server.start(reinterpret_cast<const int8_t*>("0.0.0.0:8100")) != 0) {
+let addr = CString::new("0.0.0.0:8100").unwrap();
+if unsafe { server.start(addr.as_ptr()) } != 0 {
     return;
 }
 
 // Blocks until someone calls graceful_shutdown() or do_shutdown().
 server.wait_for_shutdown();
-
-poll_thread->shutdown();
 ```
 
-`start()` takes `const int8_t*` — hence the `reinterpret_cast` — and returns 0 or -1.
+(The C++ spelling is `Server::new_(rusty::Some(poll_thread.clone()))` and
+`server.start(reinterpret_cast<const int8_t*>("0.0.0.0:8100"))`.)
+
+`start()` takes a raw NUL-terminated address pointer and returns 0 or -1.
 It does four things, in this order: it drains the pending registrations into an
 immutable `RpcServiceContext`, auto-installs a `TcpFactory` on your poll thread if you
 have not bound a channel factory yourself, makes a listener and wires its `on_accept`
@@ -3061,19 +3095,11 @@ RUNNING -> STOP_ACCEPTING -> DRAINING -> CLOSING -> STOPPED
    in `wait_for_shutdown()`.
 5. **STOPPED**.
 
-```cpp srpc-compile-server
-auto poll_thread = PollThread::create();
-auto server = Server::new_(rusty::Some(poll_thread.clone()));
-server.reg_service(rusty::make_box<MyService>());
-if (server.start(reinterpret_cast<const int8_t*>("0.0.0.0:8100")) != 0) {
-    return;
-}
-
-server.add_shutdown_hook([]() { /* flush state, close files, ... */ });
+```rust
+server.add_shutdown_hook(/* flush state, close files, ... */);
 
 // Stop accepting, wait up to 30s for in-flight requests, run hooks, wake waiters.
 server.graceful_shutdown(30000);
-poll_thread->shutdown();
 ```
 
 `phase()` reads the current phase and `shutdown_phase_to_string()` names it for a log
@@ -3129,10 +3155,11 @@ reply call.
 
 ### Replying
 
-`ServerConnection::reply(const Request&, i32 error_code, ServerReplyFn)` is the whole
-reply API. The writer is a `rusty::Function<void(BinaryWriteArchive&)>`; pass a
-default-constructed `srpc::ServerReplyFn{}` for a header-only reply, which is what the
-generated code does on the error path.
+`ServerConnection::reply(&Request, i32 error_code, ServerReplyFn)` is the whole
+reply API. The writer is a boxed `FnMut(&mut BinaryWriteArchive)` (in C++, a
+`rusty::Function<void(BinaryWriteArchive&)>`; pass a default-constructed
+`srpc::ServerReplyFn{}` there for a header-only reply, which is what the
+generated code does on the error path).
 
 `DeferredReply` is the handle for answering later. It owns the request, a weak
 connection handle, the writer that closes over your response struct, and a cleanup
