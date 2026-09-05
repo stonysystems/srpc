@@ -41,6 +41,8 @@ Chapter 14 goes into the memory-safety machinery that comes with it.
 
 ## Table of Contents
 
+**Part I — the framework, in its source language (Rust)**
+
 1. [Introduction](#1-introduction)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Fibers (Stackful)](#3-fibers-stackful)
@@ -52,13 +54,18 @@ Chapter 14 goes into the memory-safety machinery that comes with it.
 9. [RPC Server](#9-rpc-server)
 10. [Serialization](#10-serialization)
 11. [Reliability Features](#11-reliability-features)
-12. [Service Definition and Code Generation](#12-service-definition-and-code-generation)
 13. [Threading and Synchronization](#13-threading-and-synchronization)
-14. [Memory Safety (RustyCpp)](#14-memory-safety-rustycpp)
 15. [Performance Tuning](#15-performance-tuning)
-16. [API Reference](#16-api-reference)
 17. [Pitfalls and Best Practices](#17-pitfalls-and-best-practices)
 18. [Troubleshooting](#18-troubleshooting)
+
+**Part II — the generated C++ lane**
+
+12. [Service Definition and Code Generation](#12-service-definition-and-code-generation-c-lane)
+14. [Memory Safety (RustyCpp)](#14-memory-safety-rustycpp-c-lane)
+16. [API Reference](#16-api-reference-c-lane)
+19. [The C++ Lane: One Source, Two Compilers](#19-the-c-lane-one-source-two-compilers)
+20. [Consuming SRPC from C++](#20-consuming-srpc-from-c)
 
 ---
 
@@ -4080,11 +4087,15 @@ There is no RPC-specific exception class. SRPC reports failures as values.
 
 ---
 
-## 12. Service Definition and Code Generation
+## 12. Service Definition and Code Generation (C++ lane)
 
-You do not write SRPC's wire code by hand. You describe a service in a small `.rpc`
-file, run a Python generator over it, and get back a single C++ header containing a
-typed server base class and a typed client proxy. This chapter is about that file, that
+This chapter belongs to Part II: the `.rpc` generator emits C++ (and a Python stub),
+and its typed classes wrap the dispatch-level `Service` trait that Chapter 9 shows a
+Rust service implementing directly — there is no Rust code generator yet.
+
+You do not write the C++ lane's wire code by hand. You describe a service in a small
+`.rpc` file, run a Python generator over it, and get back a single C++ header
+containing a typed server base class and a typed client proxy. This chapter is about that file, that
 generator, and exactly what comes out the other end.
 
 The fullest worked example in the tree is `tests/benchmark_service.rpc` together with
@@ -4746,7 +4757,7 @@ suites actually use (`std::atomic`, `std::this_thread::sleep_for`).
 
 ---
 
-## 14. Memory Safety (RustyCpp)
+## 14. Memory Safety (RustyCpp, C++ lane)
 
 SRPC's memory-safety story is not a set of C++ comments that a tool reads back. It is the
 build. All 37 production modules are **canonical Rust** files living at their historical
@@ -5383,7 +5394,16 @@ build the harness, and measure on the machine you care about.
 
 ---
 
-## 16. API Reference
+## 16. API Reference (C++ lane)
+
+This chapter is the **C++ lane's** reference: the public surface of the generated
+`srpc.*` modules, in declaration form only. It belongs to Part II with Chapters 12,
+14, 19 and 20. For the Rust lane there is deliberately no twin of this chapter — the
+canonical sources under `base/ misc/ reactor/ rpc/` *are* the Rust reference
+(`cargo doc` renders them), the Rust spelling of every name drops the C++ manglings
+(`Server::new`, not `new_`; std `Arc`/`Option`/`Vec`, not the `rusty::` ports), and
+the `pub` subset reachable from Rust today is narrower than the C++ export list, as
+the lane notes in Chapters 8, 9 and 11 record per surface.
 
 Everything here is the public C++ surface generated from the canonical Rust in
 `base/ misc/ reactor/ rpc/`, in declaration form only. When this chapter and a `.rs` file
@@ -6698,11 +6718,168 @@ once you link srpc: the `-w` in that same list comes along.
 Three caveats about the tests themselves. Filter with `-L srpc`: the vendored
 rusty-cpp subdirectory registers about 69 tests whose binaries are not in `ALL`,
 so a bare `ctest` reports them as "Not Run" and exits non-zero. `ctest -L srpc`
-selects the 14 this project owns, of which 8 are the runtime battery — and if the
-googletest submodule is missing, CMake only warns and registers 5, so a green run
+selects the 15 this project owns, of which 8 are the runtime battery — and if the
+googletest submodule is missing, CMake only warns and registers 6, so a green run
 is not proof the battery ran. And of the 76 `.cc` files in `tests/`, CMake builds
 exactly 9; the rest are not compiled
 by anything and several no longer build at all. Do not use them as a reference
 for current API.
+
+---
+
+## 19. The C++ Lane: One Source, Two Compilers
+
+Everything before Part II described the framework in its source language. This
+chapter describes how the same sources become the shipped C++ library, and what
+holds the two artifacts equivalent. It is a reader's guide to machinery that
+Chapter 2 introduced and `CLAUDE.md` operationalizes; nothing here is needed to
+*use* either lane.
+
+### The translation
+
+The pinned `rusty-cpp` transpiler reads the whole crate in one invocation and
+emits one C++23 module interface unit per canonical file: `rpc/client.rs`
+becomes `srpc.client.cppm`, exporting `namespace srpc` declarations whose
+spellings are the historical C++ API. The mapping is source-to-source and
+deliberately conservative:
+
+- Types map through the `rusty` runtime: `Vec<T>` to `rusty::Vec<T>`, `Arc` /
+  `Rc` / `Box` / `Option` / `Result` to their `rusty::` ports, closures to
+  `rusty::Function` or lambdas at the call site.
+- `async fn f(..) -> T` becomes a C++ coroutine returning `rusty::Task<T>`;
+  `.await` becomes `co_await`, `return` becomes `co_return` (Chapter 3).
+- `thread_local!` becomes `inline thread_local rusty::LocalKey<T>`, with the
+  closure-only `.with()` accessor lowering through the ordinary method-call
+  path (Chapter 4).
+- Rust names that collide with C++ keywords are mangled predictably:
+  `Server::new` emits as `new_`, `this_fiber::r#yield` as `yield()`.
+
+Some contracts C++ needs cannot be said in Rust, and they are spelled as inert
+`#[cfg_attr(any(), ...)]` attributes — invisible to rustc (`any()` is false),
+directive to the emitter. The census as of this writing: `cpp_namespace(::janus)`
+on the quorum surface (Chapter 5), `cpp_noexcept`, `cpp_abi`, and a dozen
+smaller families; `CLAUDE.md` keeps the authoritative list. The mirror form
+`#[cfg_attr(not(any()), derive(...))]` is the opposite tool: derives rustc
+applies that the emitter must not see, which is how a C++ `operator==` can be
+deliberately withheld while the Rust side keeps `PartialEq`.
+
+A handful of hand-written files remain, all seam: `reactor/epoll_platform_linux.cc`
+(the one maintained C++ TU, carrying the inline-Rust DSL), eight plain-C syscall
+kernels shared byte-for-byte by both lanes, the two fiber context-switch assembly
+files, and the umbrella/shim headers Chapter 2 lists. Finding a `.hpp` beside a
+`.rs` never means a second implementation.
+
+### What the gates hold
+
+There is no CI; the gates are the safety net, and they run inside every C++
+build.
+
+The **source gate** (`srpc_goal0_source_gate`) runs the DSL census, the
+extraction check (`src/lib.rs` must match `rust-modules.toml`), both Python
+contract suites, the facade-shadow check, and the whole Cargo test suite with
+warnings denied — so a new clippy warning breaks the C++ build by design.
+
+The **dual-compile gate** (`srpc_goal0_dual_compile`) is the ABI oracle. It
+recompiles every generated module into its own object, links one importer
+program twice — once over the fresh objects placed ahead of `libsrpc.a`, once
+over the archive alone — runs both, and compares per-module `nm` strong-symbol
+sets against a frozen census (`scripts/check_srpc_crate_mode.py`). Every change
+to the constants is a reviewed, commented delta. The practical consequence for a
+contributor is the one Chapter 2 stated: a green `cargo test` proves nothing
+about the C++ lane, and a real fix normally touches the `.rs`, its test, and the
+oracle's tables in one commit.
+
+Byte digests of the generated C++ are advisory only; symbol sets, import lists
+and the zero-hand-slot requirement are not. The transpiler refuses to emit
+anything it cannot lower faithfully — an exotic construct is a gate failure, not
+a silent degradation.
+
+### The facade, from the C++ side
+
+`rusty-rustc/` — the crate Rust code names as `rusty` — never reaches C++ at
+all: the transpiler omits it by package identity and resolves the same paths
+against the real `rusty` runtime headers instead. That is the trick that lets
+one source name `rusty::Task` or `cpp::srpc::reactor` and mean the Rust facade
+under rustc and the C++ runtime in the generated lane.
+`scripts/check_facade_shadow.py` polices the boundary: a facade item may not
+share a name with a canonical implementation unless it is on the measured
+allowlist, so the facade cannot silently mock what the library actually ships.
+
+---
+
+## 20. Consuming SRPC from C++
+
+The C++ consumer's view, end to end, using the generated typed layer from
+Chapter 12. This is the material the rest of the book defers here; the API
+reference for everything named is Chapter 16.
+
+### The service
+
+Given the IDL from Chapter 1 —
+
+```
+namespace demo
+
+abstract service Demo {
+    sum(i32 a, i32 b, i32 c | i32 result);
+};
+```
+
+— the generator produces `DemoService` (with `RpcSumRequest` / `RpcSumResponse`
+as members) and `DemoProxy`. You subclass and override:
+
+```cpp srpc-no-compile
+#include "demo.h"
+
+class MyDemoService : public demo::DemoService {
+public:
+    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
+        RpcSumResponse resp{};
+        resp.result = req.a + req.b + req.c;
+        return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
+    }
+};
+```
+
+Return `::Ok(resp)` and the generated wrapper serializes and replies with error
+code 0; return `::Err(code)` and it replies with your code and an empty body.
+Register with `server.reg_service_typed(rusty::make_box<MyDemoService>());` —
+the typed entry point exists because a generated service class has no base
+class (Chapter 9 has the shim details).
+
+### The client
+
+Wrap a connected `Client` in the proxy and call methods; every method also has
+an `async_<method>` form returning a typed future:
+
+```cpp srpc-no-compile
+demo::DemoProxy proxy(const_cast<srpc::Client*>(client.get()));
+
+demo::DemoProxy::RpcSumRequest req;
+req.a = 1; req.b = 2; req.c = 3;
+
+auto result = proxy.sum(req);              // rusty::Result<RpcSumResponse, srpc::i32>
+if (result.is_ok()) {
+    printf("%d\n", result.unwrap().result);
+}
+
+auto fu = proxy.async_sum(req);            // typed future; same 1s wait cap as Chapter 8
+```
+
+### Build wiring
+
+A consumer includes `srpc.hpp` (plus explicit `import srpc.<module>;` for the
+trimmed modules Chapter 2 lists), builds with the same toolchain settings srpc
+itself uses — Clang 22+ with libc++, `-std=gnu++23`, and `-march=native`, which
+is a module-compatibility requirement, not an optimization — and links
+`libsrpc.a` together with the rusty runtime archives. There is no `install()`
+target: consumption is `add_subdirectory` inside your own CMake, or replicating
+the compile of `tests/rpcbench.cc` by hand, which the repository's benchmark
+procedure documents.
+
+Interoperability needs no ceremony: the wire format is identical in both lanes,
+so this C++ client drives a Rust-lane server (and the reverse) exactly as it
+drives a C++ one — Chapter 15's cross-lane matrix is measured precisely that
+way, with one unmodified C++ `rpcbench` binary against both servers.
 
 ---
