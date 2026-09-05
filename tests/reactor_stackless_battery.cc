@@ -177,8 +177,8 @@ protected:
     void TearDown() override {
         // Drop the thread-local reactor between tests so each one gets a fresh
         // owner thread_id_, registry entry and slot space.
-        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        srpc::sp_reactor_th_ = rusty::None;
+        srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+        srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
     }
 };
 
@@ -406,8 +406,8 @@ TEST_F(StacklessBatteryTest, stackless_reactor_destruction_races_retained_waker)
     });
 
     // Destroy the reactor underneath the spinning waker.
-    *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-    srpc::sp_reactor_th_ = rusty::None;
+    srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+    srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     stop.store(true, std::memory_order_release);
@@ -444,8 +444,8 @@ TEST_F(StacklessBatteryTest, stackless_pollthread_shutdown_races_waker) {
             (*reactor).process_stackless_tasks();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        srpc::sp_reactor_th_ = rusty::None;
+        srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+        srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
     });
 
     while (!spawned.load(std::memory_order_acquire)) {
@@ -508,8 +508,8 @@ TEST_F(StacklessBatteryTest, stackless_direct_and_nonpollthread_reactors) {
         });
         disk_foreign.join();
 
-        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        srpc::sp_reactor_th_ = rusty::None;
+        srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+        srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
     });
     plain.join();
 
@@ -704,8 +704,8 @@ TEST_F(StacklessBatteryTest, stackless_client_hang_regression) {
         EXPECT_FALSE(a_errored.load(std::memory_order_acquire))
             << "variant (a): a normal completion reported an error";
 
-        *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-        srpc::sp_reactor_th_ = rusty::None;
+        srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+        srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
     }
 
     // ---- variant (b): teardown between admission and wake -> ERROR, not hang
@@ -739,8 +739,8 @@ TEST_F(StacklessBatteryTest, stackless_client_hang_regression) {
                 copy.wake();
             }
 
-            *srpc::sp_running_fiber_th_.borrow_mut() = rusty::None;
-            srpc::sp_reactor_th_ = rusty::None;  // ~Reactor runs here
+            srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
+            srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });  // ~Reactor runs here
 
             a.join();
         }

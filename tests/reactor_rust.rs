@@ -58,13 +58,15 @@ fn historical_export_surface_is_rust_visible() {
     let _spawn_with_result: SpawnWithResultFn =
         reactor_spawn_stackless_task_with_result::<(), fn(())>;
 
-    let _: *const _ = &raw const sp_reactor_th_;
-    let _: *const _ = &raw const sp_disk_reactor_th_;
-    let _: *const _ = &raw const sp_running_fiber_th_;
-    let _: *const _ = &raw const g_fiber_global_id;
-    let _: *const _ = &raw const reactor_clients_th_;
-    let _: *const _ = &raw const reactor_prune_hwm_th_;
-    let _: *const _ = &raw const g_current_poll_worker;
+    // The seven per-thread statics are LocalKeys now; visibility is proven
+    // by reading each through its closure-only accessor.
+    sp_reactor_th_.with(|slot| assert!(slot.borrow().is_none()));
+    sp_disk_reactor_th_.with(|slot| assert!(slot.borrow().is_none()));
+    sp_running_fiber_th_.with(|slot| assert!(slot.borrow().is_none()));
+    g_fiber_global_id.with(|id| assert_eq!(id.get(), 0));
+    reactor_clients_th_.with(|clients| assert!(clients.borrow().is_empty()));
+    reactor_prune_hwm_th_.with(|hwm| assert_eq!(hwm.get(), 64));
+    g_current_poll_worker.with(|worker| assert!(worker.get().is_null()));
 
     let dangling: QuorumDanglingVec = vec![rusty::StdPair::new(7u16, 11i64)];
     assert_eq!(dangling[0].first, 7u16);
@@ -79,7 +81,7 @@ fn stackless_wakers_use_owner_ingress_and_stable_bindings() {
     for required in [
         "struct StacklessWakeIngress",
         "struct StacklessWakeBinding",
-        "static mut OWNERS: *mut Vec<StacklessWakeOwner>",
+        "static OWNERS: Cell<*mut Vec<StacklessWakeOwner>>",
         "stackless_wake_release_empty_storage::<WakeDomain>",
         "stackless_wake_take_pending::<()>",
         "stackless_wake_shutdown_begin::<()>",
@@ -293,4 +295,14 @@ fn incumbent_concrete_layouts_are_pinned() {
     check!(QuorumEventWrapper, 8, 8);
 
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+// The LocalKey migration made the running-fiber slot's drop chain reachable
+// from this binary (reading the statics through `.with` instantiates it), so
+// the linker now demands the fiber-destroy kernel. House pattern: supply a
+// loud stub -- nothing in this text-pin binary ever runs a fiber.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "C" fn srpc_fiber_destroy(_f: *mut core::ffi::c_void) {
+    unreachable!("srpc_fiber_destroy must not run: reactor_rust never creates fibers")
 }

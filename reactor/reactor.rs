@@ -4,12 +4,15 @@
 //! view is `#[path = "../reactor/reactor.rs"] pub mod reactor;` in the
 //! generated `src/lib.rs`, which points straight back at this source of truth.
 //!
-//! Direct Rust execution of this module is intentionally unsupported for now.
-//! The inert `cfg_attr(any(), thread_local)` markers below preserve the
-//! generated-C++ `thread_local` contract, but rustc sees ordinary mutable
-//! globals.  Cargo therefore supplies parsing, type, auto-trait, and facade
-//! checks only; native generated-C++ TLS and multithread runtime tests remain
-//! mandatory promotion gates.
+//! Per-thread state is spelled with Rust's `thread_local!` macro, which is
+//! real in BOTH lanes: rustc gets the std macro (per-thread by construction),
+//! and the transpiler lowers each declaration to a C++
+//! `inline thread_local rusty::LocalKey<T>` whose closure-only `.with()`
+//! accessor the access sites already use.  This retired the old
+//! `#[cfg_attr(any(), thread_local)]` + `static mut` model, under which the
+//! same statics were silently process-global under rustc and any
+//! multi-threaded use raced.  Native generated-C++ race, teardown, layout,
+//! and symbol gates remain mandatory.
 //!
 //! Stackless wakeups use a private owner-thread ingress.  Wakers retain only
 //! thread-safe heap tickets/queues; the Reactor pointer never crosses threads,
@@ -26,17 +29,6 @@
     unused_imports,
     unused_mut,
 )]
-// The `static mut` thread-locals above are this file's rustc-side MODEL of the
-// generated C++ `thread_local` namespace variables (module header, paragraph 2).
-// Under that model every read is a shared reference to a `static mut`, so
-// `static_mut_refs` fires once per access — 15 times — for a hazard the real
-// lowering does not have: each C++ object is per-thread, so no two threads ever
-// alias one. The lint cannot be fixed per site: `thread_local!` changes the
-// generated storage, and dropping `mut` (rustc's own suggestion for the
-// `RefCell` one) does not compile, because a non-`mut` static requires `Sync`
-// and `RefCell<Option<Rc<Fiber>>>` is not. Native generated-C++ TLS, race and
-// teardown gates remain mandatory and are what actually check this.
-#![allow(static_mut_refs)]
 
 use rusty::cpp_inherit;
 use std::cell::{Cell, RefCell, RefMut};
@@ -166,19 +158,16 @@ where
     }
 }
 
-#[cfg_attr(any(), thread_local)]
-pub static mut sp_reactor_th_: Option<Rc<Reactor>> = Option::<Rc<Reactor>>::None;
-#[cfg_attr(any(), thread_local)]
-pub static mut sp_disk_reactor_th_: Option<Rc<Reactor>> = Option::<Rc<Reactor>>::None;
-// MEASURED, not assumed: rustc's own `static_mut_refs` suggestion here —
-// "this type already provides interior mutability, so its binding doesn't
-// need to be declared as mutable" — DOES NOT COMPILE. A non-`mut` static
-// requires `Sync`, and `RefCell<Option<Rc<Fiber>>>` is neither. `static mut`
-// is how rustc models a C++ namespace-scope `thread_local` in this facade
-// (see the module header); the real per-thread storage comes from the
-// marker above. See the crate-level `static_mut_refs` allow below.
-#[cfg_attr(any(), thread_local)]
-pub static mut sp_running_fiber_th_: RefCell<Option<Rc<Fiber>>> = RefCell::new(Option::<Rc<Fiber>>::None);
+thread_local! {
+    pub static sp_reactor_th_: RefCell<Option<Rc<Reactor>>> =
+        const { RefCell::new(Option::<Rc<Reactor>>::None) };
+    pub static sp_disk_reactor_th_: RefCell<Option<Rc<Reactor>>> =
+        const { RefCell::new(Option::<Rc<Reactor>>::None) };
+}
+thread_local! {
+    pub static sp_running_fiber_th_: RefCell<Option<Rc<Fiber>>> =
+        const { RefCell::new(Option::<Rc<Fiber>>::None) };
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(i32)]
@@ -828,15 +817,16 @@ pub enum FiberStatus {
     RECYCLED = 6,
 }
 
-#[cfg_attr(any(), thread_local)]
-pub static mut g_fiber_global_id: u64 = 0;
+thread_local! {
+    pub static g_fiber_global_id: Cell<u64> = const { Cell::new(0) };
+}
 
 fn fiber_next_global_id() -> u64 {
-    unsafe {
-        let r = g_fiber_global_id;
-        g_fiber_global_id = r + 1u64;
+    g_fiber_global_id.with(|id| {
+        let r = id.get();
+        id.set(r + 1u64);
         r
-    }
+    })
 }
 
 #[repr(C)]
@@ -1059,9 +1049,10 @@ fn stackless_wake_owners_slot<WakeDomain>() -> *mut *mut Vec<StacklessWakeOwner>
     // Vec would be constructed after the namespace TLS Reactor Rc and hence
     // destroyed before that Reactor at thread exit, invalidating every stable
     // Context binding before Reactor::drop could destroy its Tasks.
-    #[cfg_attr(any(), thread_local)]
-    static mut OWNERS: *mut Vec<StacklessWakeOwner> = core::ptr::null_mut();
-    &raw mut OWNERS
+    thread_local! {
+        static OWNERS: Cell<*mut Vec<StacklessWakeOwner>> = const { Cell::new(core::ptr::null_mut()) };
+    }
+    OWNERS.with(|slot| slot.as_ptr())
 }
 
 fn stackless_wake_owners_existing_ptr<WakeDomain>() -> *mut Vec<StacklessWakeOwner> {
@@ -1381,11 +1372,11 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
     stackless_wake_release_empty_storage::<WakeDomain>(owners_ptr);
 }
 
-#[cfg_attr(any(), thread_local)]
-pub static mut reactor_clients_th_: rusty::HashMap<String, Vec<PollableProxy>> = rusty::HashMap::<String, Vec<PollableProxy>>::new();
-
-#[cfg_attr(any(), thread_local)]
-pub static mut reactor_prune_hwm_th_: usize = 64usize;
+thread_local! {
+    pub static reactor_clients_th_: RefCell<rusty::HashMap<String, Vec<PollableProxy>>> =
+        RefCell::new(rusty::HashMap::<String, Vec<PollableProxy>>::new());
+    pub static reactor_prune_hwm_th_: Cell<usize> = const { Cell::new(64usize) };
+}
 
 #[repr(C)]
 pub struct Reactor {
@@ -1559,35 +1550,32 @@ impl Reactor {
 
     pub fn prune_finished_events(&self) {
         let mut guard = self.all_events_.borrow_mut();
-        if guard.len() < unsafe { reactor_prune_hwm_th_ } {
+        if guard.len() < reactor_prune_hwm_th_.with(|hwm| hwm.get()) {
             return;
         }
         guard.retain(move |e: &Arc<dyn EventPollable>| -> bool {
             Arc::strong_count(e) > 1usize || !(*e).prunable()
         });
-        unsafe { reactor_prune_hwm_th_ = guard.len() * 2usize + 64usize };
+        reactor_prune_hwm_th_.with(|hwm| hwm.set(guard.len() * 2usize + 64usize));
     }
     pub fn create_run_fiber(&self, func: rusty::Function<dyn FnMut()>) -> Rc<Fiber> {
         reactor_create_run_fiber_impl(self, func)
     }
     pub fn continue_fiber(&self, fiber: &Rc<Fiber>) {
         // Save current running fiber for nesting support.
-        let mut old_fiber: Option<Rc<Fiber>> = None;
-        {
-            let guard = unsafe { sp_running_fiber_th_.borrow() };
-            if (*guard).is_some() {
-                old_fiber = Some((*guard).as_ref().unwrap().clone());
-            }
-        }
-        {
-            let mut guard = unsafe { sp_running_fiber_th_.borrow_mut() };
-            *guard = Some(fiber.clone());
-        }
-        {
-            let guard = unsafe { sp_running_fiber_th_.borrow() };
+        // `(*…)` is load-bearing for the C++ lane: without it the emitter
+        // clones the Ref guard itself (a deleted constructor) instead of
+        // auto-dereffing to the Option the way rustc does.
+        let old_fiber: Option<Rc<Fiber>> =
+            sp_running_fiber_th_.with(|slot| (*slot.borrow()).clone());
+        sp_running_fiber_th_.with(|slot| {
+            *slot.borrow_mut() = Some(fiber.clone());
+        });
+        sp_running_fiber_th_.with(|slot| {
+            let guard = slot.borrow();
             let running: &Rc<Fiber> = (*guard).as_ref().unwrap();
             reactor_verify(!running.finished());
-        }
+        });
         self.n_active_fibers_.set(self.n_active_fibers_.get() + 1i64);
         if fiber.status_.get() == FiberStatus::INIT {
             fiber.run();
@@ -1597,17 +1585,25 @@ impl Reactor {
             fiber.continue_();
         }
         {
-            let guard = unsafe { sp_running_fiber_th_.borrow() };
-            let running: &Rc<Fiber> = (*guard).as_ref().unwrap();
-            if running.finished() {
-                let mut fiber_ref = running.clone();
+            // The finished check happens under the borrow; recycle() runs
+            // after it is released, so a recycle path that re-enters the
+            // running-fiber slot can never double-borrow.
+            let finished_fiber: Option<Rc<Fiber>> = sp_running_fiber_th_.with(|slot| {
+                let guard = slot.borrow();
+                let running: &Rc<Fiber> = (*guard).as_ref().unwrap();
+                if running.finished() {
+                    Some(running.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(mut fiber_ref) = finished_fiber {
                 self.recycle(&mut fiber_ref);
             }
         }
-        {
-            let mut guard = unsafe { sp_running_fiber_th_.borrow_mut() };
-            *guard = old_fiber;
-        }
+        sp_running_fiber_th_.with(|slot| {
+            *slot.borrow_mut() = old_fiber;
+        });
     }
 
     pub fn display_waiting_ev(&self) {
@@ -2016,8 +2012,10 @@ pub enum PollCommand {
     Shutdown,
 }
 
-#[cfg_attr(any(), thread_local)]
-pub static mut g_current_poll_worker: *mut PollThreadWorker = core::ptr::null_mut();
+thread_local! {
+    pub static g_current_poll_worker: Cell<*mut PollThreadWorker> =
+        const { Cell::new(core::ptr::null_mut()) };
+}
 
 #[repr(C)]
 pub struct PollThreadWorker {
@@ -2048,7 +2046,7 @@ impl PollThreadWorker {
 }
 
 pub fn pollworker_is_on_poll_thread() -> bool {
-    unsafe { !g_current_poll_worker.is_null() }
+    g_current_poll_worker.with(|worker| !worker.get().is_null())
 }
 
 fn u64_to_thread_id(bits: u64) -> rusty::thread::ThreadId {
@@ -2416,14 +2414,14 @@ impl QuorumEventWrapper {
 }
 
 fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
-    reactor_verify(unsafe { sp_reactor_th_.is_some() });
+    reactor_verify(sp_reactor_th_.with(|slot| slot.borrow().is_some()));
     // `.clone()` binds a *value* Rc (not a reference).  The field access is
     // spelled without an explicit `(*…)`: Rust auto-derefs the Rc, and the
     // emitter lowers the bare receiver to a direct `(*reactor_th).thread_id_`,
     // so it reaches through the Rc either way.  (Spelling the deref in Rust
     // instead lowers to the generic `deref_if_pointer_like(reactor_th)` —
     // equivalent, and what this file used to emit.)
-    let reactor_th = unsafe { sp_reactor_th_.as_ref().unwrap().clone() };
+    let reactor_th = sp_reactor_th_.with(|slot| slot.borrow().as_ref().unwrap().clone());
     reactor_verify(reactor_th.thread_id_.get() == rusty::thread::current_id());
     if ev.core_status().get() == EventStatus::DONE {
         return; // second use of the event
@@ -2929,16 +2927,19 @@ fn stackless_profile_report_periodic() {
     if !stackless_profile_enabled() {
         return;
     }
-    #[cfg_attr(any(), thread_local)] static mut last_report_us: u64 = 0;
+    thread_local! {
+        static last_report_us: Cell<u64> = const { Cell::new(0) };
+    }
     let now_us: u64 = Time::now(true);
-    if unsafe { last_report_us } == 0u64 {
-        unsafe { last_report_us = now_us };
+    let last = last_report_us.with(|stamp| stamp.get());
+    if last == 0u64 {
+        last_report_us.with(|stamp| stamp.set(now_us));
         return;
     }
-    if now_us - unsafe { last_report_us } < 1000000u64 {
+    if now_us - last < 1000000u64 {
         return;
     }
-    unsafe { last_report_us = now_us };
+    last_report_us.with(|stamp| stamp.set(now_us));
 
     let reg_calls: u64 = g_stackless_profile.reg_calls.load(rusty::sync::atomic::Ordering::Relaxed);
     let reg_scans: u64 = g_stackless_profile.reg_scan_steps.load(rusty::sync::atomic::Ordering::Relaxed);
@@ -3000,8 +3001,8 @@ fn stackless_profile_note_register(scanned: usize, reuse: bool, slots_now: usize
 }
 
 fn fiber_current_fiber() -> Option<Rc<Fiber>> {
-    let guard = unsafe { sp_running_fiber_th_.borrow() };
-    Some((*guard).as_ref()?.clone())
+    // Explicit deref: see continue_fiber's old_fiber note.
+    sp_running_fiber_th_.with(|slot| (*slot.borrow()).clone())
 }
 
 // `pub` restores the incumbent carrier's visibility. In the hand-written
@@ -3043,45 +3044,46 @@ fn reactor_log_create(disk: bool) {
 }
 
 fn reactor_tls_get() -> Rc<Reactor> {
-    unsafe {
-        if sp_reactor_th_.is_none() {
+    sp_reactor_th_.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
             reactor_log_create(false);
             let r = reactor_make();
             r.thread_id_.set(rusty::thread::current_id());
-            sp_reactor_th_ = Some(r);
+            *guard = Some(r);
         }
-        sp_reactor_th_.as_ref().unwrap().clone()
-    }
+        guard.as_ref().unwrap().clone()
+    })
 }
 
 fn reactor_tls_get_disk() -> Rc<Reactor> {
-    unsafe {
-        if sp_disk_reactor_th_.is_none() {
+    sp_disk_reactor_th_.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
             reactor_log_create(true);
             let r = reactor_make();
             r.thread_id_.set(rusty::thread::current_id());
-            sp_disk_reactor_th_ = Some(r);
+            *guard = Some(r);
         }
-        sp_disk_reactor_th_.as_ref().unwrap().clone()
-    }
+        guard.as_ref().unwrap().clone()
+    })
 }
 
 fn reactor_tls_save_running() -> Option<Rc<Fiber>> {
-    let guard = unsafe { sp_running_fiber_th_.borrow() };
-    if (*guard).is_some() {
-        return Some((*guard).as_ref().unwrap().clone());
-    }
-    None
+    // Explicit deref: see continue_fiber's old_fiber note.
+    sp_running_fiber_th_.with(|slot| (*slot.borrow()).clone())
 }
 
 fn reactor_tls_restore_running(old_fiber: Option<Rc<Fiber>>) {
-    let mut guard = unsafe { sp_running_fiber_th_.borrow_mut() };
-    *guard = old_fiber;
+    sp_running_fiber_th_.with(|slot| {
+        *slot.borrow_mut() = old_fiber;
+    });
 }
 
 fn reactor_tls_set_running(fiber: &Rc<Fiber>) {
-    let mut guard = unsafe { sp_running_fiber_th_.borrow_mut() };
-    *guard = Some(fiber.clone());
+    sp_running_fiber_th_.with(|slot| {
+        *slot.borrow_mut() = Some(fiber.clone());
+    });
 }
 
 fn reactor_get_or_create_fiber_impl(self_: &Reactor, func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
@@ -3597,9 +3599,9 @@ fn pollthread_create() -> Arc<PollThread> {
         // reach the worker while the borrow_mut guard is held.
         let worker: Rc<RefCell<PollThreadWorker>> = PollThreadWorker::create(receiver);
         let mut guard: RefMut<PollThreadWorker> = worker.borrow_mut();
-        unsafe { g_current_poll_worker = &raw mut *guard };
+        g_current_poll_worker.with(|worker| worker.set(&raw mut *guard));
         guard.poll_loop();
-        unsafe { g_current_poll_worker = core::ptr::null_mut() };
+        g_current_poll_worker.with(|worker| worker.set(core::ptr::null_mut()));
     });
     {
         let mut slot = arc.join_handle_.lock().unwrap();

@@ -95,12 +95,13 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # emitted as C++ coroutines returning rusty::Task<int64_t> -- and each is an
 # ordinary strong 'T' function symbol.
 #
-# 1965 -> 1968: the thread_local! pilot. The emitted
-# `thread_local rusty::LocalKey<...> TL_BUMP_COUNTER` contributes the TLS
-# variable itself ('B', module linkage) plus its per-thread initialization
-# routine ('T'), and thread_slot_bump() is an ordinary exported 'T'; the
-# thread-local *wrapper* routine is weak and not counted.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1968
+# 1965 -> 1966: the thread_local! pilot's accessor, thread_slot_bump(), an
+# ordinary exported 'T'. The TL_BUMP_COUNTER LocalKey itself emits `inline
+# thread_local` -- the same weak linkage the marker-attributed reactor
+# statics always had -- so neither the variable nor its per-thread init
+# routine enters the strong census, which is what makes migrating a static
+# onto the macro symbol-neutral.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1966
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -2708,9 +2709,7 @@ ABI_SPECS = {
                 ("R", "typeinfo name for srpc::OneTimeJob@srpc.misc"),
                 ("T", "srpc::async_double@srpc.misc(long)"),
                 ("T", "srpc::async_double_twice@srpc.misc(long)"),
-                ("B", "srpc::TL_BUMP_COUNTER@srpc.misc"),
                 ("T", "srpc::thread_slot_bump@srpc.misc()"),
-                ("T", "thread-local initialization routine for srpc::TL_BUMP_COUNTER@srpc.misc"),
                 *(
                     ("T", symbol)
                     for symbol in {
