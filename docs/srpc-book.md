@@ -64,73 +64,105 @@ Chapter 14 goes into the memory-safety machinery that comes with it.
 
 ## 1. Introduction
 
-SRPC is a Simple RPC framework for C++23. It has two halves, and it helps to think
-about them separately.
+SRPC is a Simple RPC framework **written in Rust** that ships as two artifacts from one
+set of sources: a native Rust library you build with plain `cargo`, and a generated
+C++23 named-module library produced by the pinned `rusty-cpp` transpiler. The 37
+production modules are one set of `.rs` files; rustc compiles them directly, and the
+transpiler emits an `srpc.<name>.cppm` C++ module from each. When this book says
+"`rpc/client.rs`" it means both the Rust module `srpc::client` and the C++ module
+`srpc.client` — they are the same file.
 
-The first is a **code generator**. You write an interface in a small `.rpc` file, run
-`simplerpcgen.rpcgen` over it, and get a C++ header containing a service base class with
-one typed virtual per method, a matching client proxy, and a request/response struct
-pair per method. You never write serialization code and you never touch a method id.
+This book describes the framework in its source language. Part II (Chapters 19-20,
+plus the code-generation and memory-safety chapters) covers the C++ lane: how the
+translation works, what it guarantees, and how a C++ program consumes the result.
 
-The second is the **runtime** those generated stubs sit on: an epoll reactor driving one
-or more poll threads, stackful fibers so a handler may block, a framed binary transport
+The framework has two halves, and it helps to think about them separately.
+
+The first is a **code generator** for the C++ lane. You write an interface in a small
+`.rpc` file, run `simplerpcgen.rpcgen` over it, and get a C++ header containing a typed
+service base class, a client proxy, and request/response structs per method. (There is
+no Rust code generator yet; a Rust service implements the dispatch-level `Service` trait
+directly, shown below.)
+
+The second is the **runtime**: an epoll reactor driving poll threads, stackful fibers so
+a handler may block, stackless tasks for `async fn` handlers, a framed binary transport
 over TCP (or an in-process switchboard for tests), futures, and a layer of reliability
 machinery — reconnect policy, circuit breaker, request timeouts and retries, a
 connection pool.
 
-Everything lives in namespace `srpc::`. The one alias shipped is `namespace base = srpc;`.
+In Rust everything lives in the `srpc` crate, one module per source file. In C++
+everything lives in namespace `srpc::`, one named module per source file.
 
 ### The shape of a service
 
-An interface definition is short. Inputs and outputs are separated by `|`, and integers
-must carry an explicit width:
+A Rust service implements the `Service` trait: `__reg_to__` registers each RPC id with
+a dispatch mode, and `__dispatch__` decodes the request and replies. This is the
+dispatch-level surface the C++ generator's typed wrappers sit on, used directly. The
+shape below is the in-repo round-trip test (`tests/rpc_roundtrip_inmemory_rust.rs`),
+which echoes a doubled integer:
 
-```
-namespace demo
+```rust
+use srpc::serializable::{BinaryReadArchive, BinaryWriteArchive, Deserialize, Serialize};
+use srpc::server::{Request, Server, ServerReplyFn, Service, WeakServerConnection};
 
-abstract service Demo {
-    sum(i32 a, i32 b, i32 c | i32 result);
-};
-```
+const ECHO_DOUBLE_RPC_ID: i32 = 0x00E0_0042;
 
-The generator turns that into `DemoService` — with `RpcSumRequest` and `RpcSumResponse`
-as *members* of the class — and `DemoProxy`, which re-exports both structs. You supply
-the body:
+struct EchoDoubleService;
 
-```cpp srpc-no-compile
-class MyDemoService : public demo::DemoService {
-public:
-    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
-        RpcSumResponse resp{};
-        resp.result = req.a + req.b + req.c;
-        return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
+impl Service for EchoDoubleService {
+    fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32 {
+        // Fast registration: dispatch inline on the delivering thread.
+        // reg_rpc instead spawns a stackful fiber per request.
+        server.reg_fast_rpc(ECHO_DOUBLE_RPC_ID, svc_index)
     }
-};
-```
 
-A handler returns `Ok(resp)` with the response filled in, or `Err(code)` with an
-`errno`-style integer of your choosing. There are no out-parameters: among the handler
-shapes, only `defer` writes through a reference, and only a `raw` method's *proxy* keeps
-the old pointer-out-parameter calling convention.
-
-The caller side is the mirror image. Wrap a connected `Client` in the generated proxy
-and call the method:
-
-```cpp srpc-no-compile
-demo::DemoProxy proxy(const_cast<srpc::Client*>(client.get()));
-
-demo::DemoProxy::RpcSumRequest req;
-req.a = 1; req.b = 2; req.c = 3;
-
-auto result = proxy.sum(req);              // rusty::Result<RpcSumResponse, srpc::i32>
-if (result.is_ok()) {
-    printf("%d\n", result.unwrap().result);
+    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
+        let mut value = 0i64;
+        {
+            let mut ar = BinaryReadArchive {
+                source_: unsafe {
+                    srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+                },
+            };
+            Deserialize::deserialize(&mut value, &mut ar);
+        }
+        let sconn = sconn.upgrade().expect("connection alive during dispatch");
+        let writer: ServerReplyFn = Box::new(move |ar: &mut BinaryWriteArchive| {
+            Serialize::serialize(&(value * 2), ar);
+        });
+        sconn.reply(&req, 0, writer);
+    }
 }
 ```
 
-Every method also gets an `async_` form; for everything but `raw` it returns a typed
-future. Chapter 12 covers the IDL and the generator in full; Chapters 8 and 9 cover the
-client and server.
+A handler replies with error code `0` and a writer closure that serializes the payload,
+or a nonzero `errno`-style code of its choosing. Handlers registered with `reg_rpc` run
+on their own stackful fiber and may block; `reg_fast_rpc` handlers run inline on the
+poll thread and must not.
+
+The caller side is the mirror image. Connect a `Client` and issue a request with a
+writer for the arguments; the returned `Future` resolves with the reply:
+
+```rust
+use srpc::client::{deserialize_from, Client, FutureAttr};
+
+let fu = client
+    .request(ECHO_DOUBLE_RPC_ID, &FutureAttr::default(), |ar| {
+        Serialize::serialize(&21_i64, ar);
+    })
+    .expect("request accepted");
+fu.wait();
+assert_eq!(fu.get_error_code(), 0);
+
+let mut doubled = 0i64;
+deserialize_from(fu.get_reply(), &mut doubled);
+assert_eq!(doubled, 42);
+```
+
+The C++ lane wraps exactly this machinery in generated, typed classes — a
+`rusty::Result`-returning virtual per method and a proxy whose `sum(req)` hides the
+id, the writer and the future. Chapter 12 covers the IDL and generator; Chapter 20
+shows the C++ consumption end to end.
 
 ### Why a custom framework?
 
@@ -142,98 +174,98 @@ stack than negotiate with it.
 
 Four things follow from that.
 
-**It is small enough to read.** The entire library is 37 modules in one archive: no
-protobuf, no HTTP/2, no external RPC runtime, no dependency you did not build. The
-request path — generated proxy, `Client::request`, the connection, the channel, the poll
-thread, the server's dispatch, the reply — runs through four files you can walk end to
-end in an afternoon, and instrument anywhere along it.
+**It is small enough to read.** The entire library is 37 modules in one crate: no
+protobuf, no HTTP/2, no external RPC runtime, no tokio — the concurrency runtime is part
+of the library and about as large as it needs to be. The request path — proxy or raw
+request call, `Client::request`, the connection, the channel, the poll thread, the
+server's dispatch, the reply — runs through four files you can walk end to end in an
+afternoon, and instrument anywhere along it.
 
 **The wire format is minimal.** A 4-byte frame header, then `v64 xid`, `i32 rpc_id`, then
 the arguments; replies carry `v64 xid`, `v32 error_code`, `v64 server_instance_id`, then
 the payload. No metadata map, no content negotiation, no compression handshake. The
 header is **native-endian**, which is a deliberate trade: it is free to write and read on
 both ends, and it only works between machines that agree on byte order. Chapter 7 has the
-details.
+details. The two lanes are wire-identical by construction — a C++ client drives a Rust
+server (and vice versa) with no shims, which is also how the cross-lane benchmarks in
+Chapter 15 are run.
 
-**Handlers are allowed to block.** By default a request runs in its own stackful fiber,
-so a handler can make a nested RPC call, wait on an event, or sleep, without stalling the
-poll thread it arrived on. Frameworks built purely on callbacks or stackless coroutines
-make that pattern awkward; here it is the default. When you do not want a fiber, the IDL
-lets you say so per method — `fast` runs inline on the poll thread, `defer` hands you a
-reply handle to use whenever the answer is ready, `async` runs as a stackless
-`rusty::Task`, and `raw` hands you the undecoded request. Chapter 12 works through all
-six, the explicit `fiber` attribute included; Chapter 9 covers what the server does
-around your handler.
+**Handlers are allowed to block.** A `reg_rpc` handler runs in its own stackful fiber,
+so it can make a nested RPC call, wait on an event, or sleep, without stalling the poll
+thread it arrived on. Frameworks built purely on callbacks or stackless coroutines make
+that pattern awkward; here it is a registration choice. When you do not want a fiber:
+`fast` runs inline on the poll thread, `defer` hands you a reply handle to use whenever
+the answer is ready, and `async` handlers are `async fn`s — ordinary Rust futures under
+rustc, C++ coroutines in the generated lane — driven by the reactor's stackless task
+machinery. Chapter 12 works through the dispatch modes; Chapter 9 covers what the server
+does around your handler.
 
-**It is meant to be modified.** The generator is about a thousand lines of readable
-Python in `pylib/`, not a plugin API. Adding a dispatch mode, changing the header layout, or
-instrumenting the scheduler are all normal-sized edits rather than upstream negotiations.
+**It is meant to be modified.** The C++ generator is about a thousand lines of readable
+Python in `pylib/`, not a plugin API. Adding a dispatch mode, changing the header layout,
+or instrumenting the scheduler are all normal-sized edits rather than upstream
+negotiations.
 
 What you give up is real, and worth stating plainly: there is no TLS, no authentication,
-no streaming, no cross-language client beyond a generated Python stub, and no wire
-compatibility guarantee across generator runs — method ids are random integers kept
+no streaming, no cross-language client beyond the generated C++ and Python stubs, and no
+wire compatibility guarantee across generator runs — method ids are random integers kept
 stable only by scraping them back out of the header the generator is about to overwrite.
 
 ### Key features
 
 | Feature | Description |
 |---------|-------------|
-| **Typed code generation** | `.rpc` IDL to a typed service base class, a client proxy, and per-method request/response structs |
+| **One source, two artifacts** | 37 canonical Rust modules; `cargo` builds the Rust library, the pinned rusty-cpp transpiler generates the C++23 module library, and an ABI gate holds them equivalent |
+| **Typed code generation (C++)** | `.rpc` IDL to a typed service base class, a client proxy, and per-method request/response structs |
 | **Stackful fibers** | 1 MiB mmap'd stacks with a guard page, switched by hand-written x86_64 / aarch64 assembly |
-| **Stackless tasks** | `rusty::Task` coroutines for `async` handlers, driven by the same reactor |
-| **Reactor** | epoll-based poll threads, timers, and event primitives (int, timeout, wait-any, wait-all, quorum) |
+| **`async fn` handlers** | canonical `async fn`s: Rust futures under rustc, `rusty::Task` C++ coroutines in the generated lane, one source |
+| **Reactor** | epoll-based poll threads, timers, and event primitives (int, timeout, wait-any, wait-all, quorum); per-thread via `thread_local!` |
 | **Pluggable transport** | framed TCP, or an in-process switchboard with fault injection for tests |
-| **Binary serialization** | `srpc::Serialize_` / `Deserialize_` over `BinaryWriteArchive` / `BinaryReadArchive` |
+| **Binary serialization** | `Serialize`/`Deserialize` traits over `BinaryWriteArchive` / `BinaryReadArchive` |
 | **Reliability** | reconnect policy, circuit breaker, per-request timeouts and retries, connection pooling |
-| **Generated from Rust** | all 37 production modules are canonical Rust, gated against the shipped archive's ABI |
 | **Machine-checked contracts** | Verus specifications on `misc/stat.rs` and `rpc/internal_protocol.rs` |
 
-### The unusual part: the sources are Rust
+### The two lanes
 
-SRPC is a C++ library whose production modules are not hand-written C++. All 37 of them
-are Rust files living at their historical C++ paths in `base/`, `misc/`, `reactor/` and
-`rpc/`, and a pinned `rusty-cpp` transpiler generates an `srpc.<name>.cppm` C++23 module
-from each. Two toolchains read the same bytes: rustc, through a generated crate index at
-`src/lib.rs`, and rusty-cpp, in one whole-crate invocation.
+The Rust lane is the fast inner loop: `cargo test --locked --workspace --all-targets`
+compiles the canonical sources directly, links no C++ anywhere, and runs in seconds. It
+is also a complete runtime: the real epoll poll thread, real TCP transport, fibers
+through the same C context-switch engine the C++ lane uses, and `async fn` handlers —
+the whole four-mode dispatch matrix serves wire-compatible RPC at rates that meet or
+beat the generated C++ server (Chapter 15 has the measured table). Its documented
+boundaries: container serialization panics loudly under rustc rather than lying
+(Chapter 10), one `Client` is not shareable across threads (use one per thread, which
+is what the benchmark drivers do anyway), and a single `Server` does not yet spread
+its connections across several poll threads.
 
-The hand-written non-Rust that remains is seam rather than logic —
-`reactor/epoll_platform_linux.cc` for the Linux epoll layer, eight plain-C syscall
-kernels, the two fiber context-switch assembly files, and a handful of C++ headers
-including the `srpc.hpp` umbrella.
+The C++ lane is the shipped `libsrpc.a`: every generated module recompiled, linked,
+and held to a frozen symbol census by the dual-compile gate. A change to a `.rs` file
+is simultaneously a Rust change and a C++ ABI change, and the build enforces that; a
+green `cargo test` proves nothing about whether the C++ still builds or kept its ABI.
+Because the source of truth is Rust, functional contracts can also be machine-checked
+in place: two modules carry Verus specifications behind `#[cfg(verus)]` — the
+response-header codec round-trip in `rpc/internal_protocol.rs`, and a first-sample
+invariant in `misc/stat.rs` that pins a bug which actually shipped.
+`docs/verification.md` is the standing reference for that lane, and it is honest about
+how narrow it is.
 
-Two consequences matter to you as a reader. First, a change to a `.rs` file is
-simultaneously a Rust change and a C++ ABI change, and the build enforces that: a gate
-recompiles every generated module, links an importer program against both the fresh
-objects and the shipped archive, and compares `nm` symbol sets. Second, because the
-source of truth is Rust, functional contracts can be machine-checked in place. Two
-modules carry Verus specifications behind `#[cfg(verus)]` — the response-header codec
-round-trip in `rpc/internal_protocol.rs`, and a first-sample invariant in `misc/stat.rs`
-that pins a bug which actually shipped. `docs/verification.md` is the standing reference
-for that lane, and it is honest about how narrow it is.
-
-Chapter 14 returns to this in detail.
+Chapters 14 and 19 return to all of this in detail.
 
 ### Performance
 
-SRPC ships no throughput or latency numbers, because nothing in this repository produces,
-records, or corroborates any.
-
-What the tree does ship is three benchmark drivers you can run yourself:
-`tests/rpcbench.cc`, a full client/server load generator with `fast`, `fiber`, `defer`,
-`async` and `fast_vec` modes and knobs for payload size, epoll instances, client threads
-and worker threads; `tests/bench_future.cc`; and `tests/bench_marshal.cc`, which measures
-the archive serialization paths in isolation and reports ns/op and ops/sec. CMake builds
-none of them — there is no benchmark target — so wiring one up and running it on your own
-hardware is the only number worth quoting.
+Chapter 15 carries measured numbers for both lanes — same wire, same benchmark client,
+same minutes — and the raw trials behind them. Reproduce them before trusting them on
+your hardware; the drivers are `tests/rpcbench.cc` for the C++ lane and an out-of-repo
+cargo crate for the Rust lane, and CMake deliberately builds no benchmark target.
 
 What can be said without measuring is where the costs sit structurally. A `fast` handler
 runs inline on the poll thread with no fiber at all, which makes it the cheapest option
 and also means it must never block: if it does, every connection on that thread stalls. A
-default handler costs one fiber per request — a 1 MiB mmap'd stack (`kDefaultStackBytes`
+`reg_rpc` handler costs one fiber per request — a 1 MiB mmap'd stack (`kDefaultStackBytes`
 in `reactor/reactor.rs`) plus a guard page, and a context switch in and out — in exchange
-for being allowed to block. `defer` also takes a fiber but decouples the reply from the
-handler's return. `async` is entered inline on the poll thread and then resumed as a
-stackless coroutine, so it has the same don't-block rule up to its first suspension point.
+for being allowed to block; with the `REUSE_FIBER` pool the mmap is amortized away, and
+without it fiber dispatch is roughly an order of magnitude slower. `defer` also takes a
+fiber but decouples the reply from the handler's return. `async` is entered inline on the
+poll thread, so it has the same don't-block rule up to its first suspension point.
 
 Two facts will shape your first measurements more than anything on that list. The
 blocking `Future::wait()` is hard-capped at **one second** and then latches `ETIMEDOUT`
@@ -242,9 +274,10 @@ a timeout. Escaping it takes the whole recipe: go through `request_with_options`
 `set_options` on the future it hands back (the coordinator future is deliberately
 created with `timeout_ms = 0`), and then wait with `wait_with_options()` — the only
 waiter that reads those options. Plain `wait()` ignores them and re-imposes the
-one-second cap. And `-march=native` is mandatory: it is a module-compatibility
-requirement rather than a tuning knob, which incidentally means a build tree cannot be
-copied to a machine with a different CPU. Chapter 15 covers tuning properly.
+one-second cap. And in the C++ lane `-march=native` is mandatory: it is a
+module-compatibility requirement rather than a tuning knob, which incidentally means a
+build tree cannot be copied to a machine with a different CPU. Chapter 15 covers tuning
+properly.
 
 ### Rough edges
 
@@ -271,12 +304,14 @@ the macOS branches were removed, leaving `reactor/epoll_platform_linux.cc` as th
 platform implementation unit. Fiber context-switch assembly exists for x86_64 and
 aarch64.
 
-Building the C++ needs **Clang 22 or newer with libc++**, CMake 3.30+, Ninja, Cargo (with
-clippy), and Python 3.11+. The Rust-only lane — `cargo test --locked --workspace
---all-targets` — needs none of the C++ toolchain and is the fast inner loop. There is no
-`install()` and no CMake package config, so downstream consumption is `add_subdirectory`
-and repeating srpc's toolchain settings by hand; and there is no CI, so the pre-commit
-sequence in `CLAUDE.md` is the entire safety net.
+The Rust lane needs a current stable Rust toolchain and nothing else:
+`cargo test --locked --workspace --all-targets` is the fast inner loop, and a consumer
+crate additionally compiles the eight plain-C kernels (a dozen lines of `cc` in a
+`build.rs`). Building the C++ lane needs **Clang 22 or newer with libc++**, CMake 3.30+,
+Ninja, Cargo (with clippy), and Python 3.11+. There is no `install()` and no CMake
+package config, so downstream C++ consumption is `add_subdirectory` and repeating srpc's
+toolchain settings by hand; and there is no CI, so the pre-commit sequence in `CLAUDE.md`
+is the entire safety net.
 
 One thing this book cannot do is compile itself against a fully checked-out tree; the
 `third-party/` submodules are not required to be present to read it. Snippets tagged
@@ -317,8 +352,9 @@ target recompiles every generated module on its own, links one importer program 
 once over those fresh objects placed ahead of `libsrpc.a`, once against `libsrpc.a` alone
 — runs both, and compares per-module `nm` strong-symbol sets. The archive must carry
 exactly what the freshly generated objects carry, plus the symbols of the one platform
-implementation unit. Today those constants are 1961 provider symbols and 5 platform
-symbols, frozen in `scripts/check_srpc_crate_mode.py`.
+implementation unit. Today those constants are 1966 provider symbols and 5 platform
+symbols, frozen in `scripts/check_srpc_crate_mode.py`; every change to them is a
+reviewed, commented delta in that file's history.
 
 Hand-written non-Rust does survive, but only as *seam*, never as logic:
 
@@ -410,8 +446,11 @@ use cpp::srpc::reactor as cpp_reactor;
 models the *C++ module boundary*, which is how the reactor is actually reached in the
 shipped library, and routing through it keeps the Rust view honest about where the
 boundary sits. `rusty` here is the `rusty-rustc` facade crate in this workspace;
-rusty-cpp omits it from generated C++ by package identity, which is why a Rust test that
-only reaches through this facade proves very little about runtime behavior.
+rusty-cpp omits it from generated C++ by package identity. The facade is no longer a
+mock layer: its `PollThread` is a real epoll loop, which is what lets the canonical TCP
+transport, fibers and async tasks run as plain Rust — though a handful of allowlisted
+facade items still deliberately diverge (`scripts/check_facade_shadow.py` is the
+authoritative list).
 
 Nine of the 37 modules sit outside the internal dependency graph entirely: they carry no
 `use crate::` line of their own, and no other module names them. `rpc/idempotency.rs` and
@@ -454,10 +493,11 @@ no trace in any log.
 Concurrency underneath is both stackful and stackless. Fibers are mmap'd stacks (1 MiB
 default plus a guard page) switched by the two `.S` files, and the field order of
 `srpc_fiber_ctx` in `reactor/srpc_fiber.h` *is* the ABI contract with that assembly. The
-`Reactor` is thread-local in the generated C++; under rustc those
-`#[cfg_attr(any(), thread_local)]` markers are inert and the statics are ordinary process
-globals, which is why `reactor/reactor.rs` is not meant to be exercised as plain Rust. The
-same reactor also drives stackless `rusty::Task` pollers.
+`Reactor` is genuinely per-thread in both lanes: its statics are spelled with Rust's
+`thread_local!`, which rustc compiles natively and the transpiler lowers to C++
+`thread_local rusty::LocalKey` storage, so each poll thread constructs and owns its own
+reactor. The same reactor also drives the stackless task machinery behind `async fn`
+handlers.
 
 ### Directory structure
 
@@ -550,7 +590,7 @@ srpc/
                               lang_python.py, misc.py, rpcgen.g (stale grammar)
     yapps/                    parser runtime only, no compiler
 
-  tests/                    37 tests/*_rust.rs, 76 .cc files (8 are built),
+  tests/                    41 tests/*_rust.rs, 76 .cc files (9 are built),
                             plus the benchmark_service IDL example
   scripts/                  the gates: extract_srpc_rust.py,
                             check_srpc_crate_mode.py, srpc_dsl_check.sh,
