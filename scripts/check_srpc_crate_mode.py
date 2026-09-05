@@ -727,7 +727,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.callback_wrapper": "b645833262c8cf8fd4ea2306f50d6ddf018610fe85cb8bcb5b3b195dc0503341",
     "srpc.internal_protocol": "6d6c3107651d323ba54bbf2a40b8cbe454e7d7caff86e4b7b064e5f517d75eb4",
     "srpc.stat": "6bb3860679d151d047c65c7392d6126dc7e2d03c07589e97683cccb5383a9962",
-    "srpc.errors": "89a1d07ee64721fb2a0de981028c617f0c1a14f6bdd9aec72d6ae8f88f2b16ac",
+    "srpc.errors": "58b1120a5215368942cbd88fc71ad6f8633651f0441c62fb92dec887d39906f6",
     "srpc.connection_metrics": "a1cb3a899b81d01faaacd9f4d75e2582d1017b120b499fce6b30f631db2f7c1b",
     "srpc.completion_tracker": "299a98e7155a0e31836e8f9b4dca13adaeb1ac89f03ff9d0a4fb07bc2378f74e",
     "srpc.rand": "0a62c12d6787e03503b6a0222fd530ed077c6e87eb392d4eab32b0e6c055fd27",

@@ -9,6 +9,10 @@
 #[path = "../../misc/stat.rs"]
 mod stat;
 
+#[allow(dead_code, unused_imports, non_camel_case_types)]
+#[path = "../../rpc/errors.rs"]
+mod errors;
+
 #[allow(dead_code, unused_imports, non_upper_case_globals)]
 #[path = "../../rpc/internal_protocol.rs"]
 mod internal_protocol;
@@ -17,5 +21,6 @@ mod internal_protocol;
 // here, not in the srpc crate, so it can use in-body bit-vector proof code that
 // the C++ transpiler does not carry.
 mod internal_protocol_proofs;
+mod errors_proofs;
 
 fn main() {}

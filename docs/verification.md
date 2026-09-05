@@ -207,57 +207,69 @@ stateful properties (deliver-once, the pending-future map, the reactor) are out
 of scope — they need ghost/tokenized state Verus cannot carry in canonical
 sources, and would prove a model rather than the code.
 
-The list below was worked through end to end. Every concrete new target hit a
-distinct, reproducible wall — recorded here so the boundary is a map, not a
-guess. **Watch for false greens:** the `verify/` crate `#[path]`-links the real
-sources and runs *only* `cargo verus verify`; it never invokes the rusty-cpp
-transpiler. A target can therefore verify green in `verify/` and still be
-un-shippable because adding its `#[cfg(verus)]` content breaks the whole-crate
-transpile (see the errors wall below). A target is only real once
-`cmake --build` still produces the 1967-symbol archive with the contract in
-place.
+The list below was worked through end to end. One target (errors) was blocked by
+a transpiler bug that has since been root-caused and fixed; the other two remain
+blocked by distinct Verus-tooling walls. All are recorded here so the boundary is
+a map, not a guess.
+
+**Watch for false greens:** the `verify/` crate `#[path]`-links the real sources
+and runs *only* `cargo verus verify`; it never invokes the rusty-cpp transpiler.
+A target can therefore verify green in `verify/` and still be un-shippable because
+adding its `#[cfg(verus)]` content breaks the whole-crate transpile — which is
+exactly how the errors bug below hid until the full `cmake --build` ran. A target
+is only real once `cmake --build` still produces the 1967-symbol archive with the
+contract in place.
 
 Toolchain note: `verify/Cargo.toml` pins `vstd = "=0.0.0-2026-08-23-0033"` to
 match the developer's Verus dist. Bump both together (a `vstd` newer than the
 `verus` binary panics compiling vstd) — do not downgrade the pin to match a
-locally-mirrored older dist. The walls below were reproduced by running the
-pinned transpiler directly, which is dist-independent; the 10-verified baseline
-(internal_protocol + stat) was measured against a local Verus `0.2026.08.09`.
+locally-mirrored older dist. The errors verification (15 verified total) was
+measured against a local Verus `0.2026.08.09`; its logic is dist-independent.
 
-### The provable envelope (occupied)
+### The provable surface (green)
 
-In this toolchain the in-source-provable surface is **free functions over
-primitives, in a module that exports no derive-macro'd types.** That envelope is
-already fully occupied and green:
+Modules carrying `#[cfg(verus)]` contracts today, all proven:
 
 - `rpc/internal_protocol.rs` (+ `verify/src/internal_protocol_proofs.rs`) — the
   response-header codec: `response_payload_size` is in the 31-bit range, and
   `encode_response_size` → `response_payload_size`/`response_has_extended_header`
   round-trips size and flag for every non-negative payload. Bit-vector proofs.
 - `misc/stat.rs` — the running accumulator's `requires`/`ensures`.
+- `rpc/errors.rs` (+ `verify/src/errors_proofs.rs`) — the error-classification
+  predicates (see the first target below). Added once the transpiler bug that
+  blocked it was fixed.
 
-Total: **10 verified, 0 errors.** No new in-source target below could be added
-without hitting a wall, so this count is the current ceiling.
+Total: **15 verified, 0 errors.**
+
+Until the errors fix, only modules exporting **no enums and no derives** could
+host contracts — not a Verus limit but a transpiler-audit bug (below). With it
+fixed, any leaf module can carry `#[cfg(verus)]` contracts; the remaining walls
+are Verus-tooling limits on specific *shapes* (associated fns, `from_ne_bytes`).
 
 ### Targets and their walls
 
 - **errors classification** (`get_error_category`, `is_connection_error`,
-  `is_timeout_error` in `rpc/errors.rs`) — the most attractive leaf: pure
-  integer-range predicates, and a real bug class (edit one range, forget the
-  matching branch) that `errors_rust.rs` only samples by example. It verifies
-  green in `verify/` (disjointness + predicate/categorizer consistency via
-  `#[verifier::external_type_specification]` wrappers over the enums). **But it
-  cannot ship:** the moment *any* `#[cfg(verus)]` item (even just
-  `use vstd::prelude::*;`) appears in `errors.rs`, the transpiler pulls the
-  module into its C++-contract closure preflight, which then rejects the module's
-  own `#[allow(non_camel_case_types)]` + `#[derive(...)]` enums —
-  *"cpp_default_argument cannot prove that item attribute `allow
-  (non_camel_case_types)` is free of macro-generated bindings in module
-  `errors`"* — and the whole-crate transpile fails (exit 1, no output). This is
-  why internal_protocol and stat are the only two annotated modules: they export
-  **no enums and no derives**. Moving errors' enums out to clear the preflight
-  would break the ABI table and the flat-import contract, so the target is
-  blocked short of a transpiler fix.
+  `is_timeout_error` in `rpc/errors.rs`) — **DONE.** Pure integer-range
+  predicates, and a real bug class (edit one range, forget the matching branch)
+  that `errors_rust.rs` only samples by example. `errors_proofs.rs` proves
+  disjointness of the connection/timeout classes and predicate/categorizer
+  consistency, via `#[verifier::external_type_specification]` wrappers over the
+  enums.
+
+  This was blocked, and the block was a *transpiler* bug, not a Verus one. The
+  moment any `#[cfg(verus)]` item (even a bare `use vstd::prelude::*;`) appeared
+  in `errors.rs`, the whole-crate transpile aborted with *"cpp_default_argument
+  cannot prove that item attribute `allow(non_camel_case_types)` is free of
+  macro-generated bindings in module `errors`"*. Root cause: the default-argument
+  audit's `collect_signature_type_model` built its glob-import model **without
+  evaluating cfg**, so the verification-only `vstd` glob was counted as a live
+  glob and marked the module macro-tainted — which then blocked the audit of the
+  module's own real `#[derive(...)]` enums. That is why, before the fix,
+  internal_protocol and stat (no enums, no derives) were the only annotatable
+  modules. Fixed in rusty-cpp by skipping definitely-false-cfg items in the model
+  builder, mirroring the guard the attribute-audit loop already had (pin bumped
+  `5b61f96` → `358b351c`). The generated `.cppm` is unchanged and the ABI stays
+  at 1967 — the verus content still lowers to nothing.
 - **T1–T4 SparseInt** (`base/basetypes.rs`): `val_size(v) ∈ 1..=9`;
   `val_size(v) != 8` (the machine-checked statement of the length-8 fix, the
   0xFE rung now retired); `buf_size(b) ∈ 1..=9`; and the prize,
@@ -275,7 +287,8 @@ without hitting a wall, so this count is the current ceiling.
   support (*"…to_ne_bytes is not supported"*); it would need a trusted
   `assume_specification` axiom, which defeats the point of proving that layer.
 
-Net: the self-paced pass added no new shippable proof — the provable envelope
-was already saturated by internal_protocol and stat. The value delivered is this
-map plus the false-green caveat, so the next attempt starts from the walls rather
-than rediscovering them.
+Net: the self-paced pass added one new shippable proof (errors, 10 → 15 verified)
+by fixing the transpiler audit bug it uncovered, and mapped the two remaining
+walls (associated-fn `verus_spec`, unsupported `from_ne_bytes`) as genuine
+Verus-tooling limits rather than transpiler artifacts. The next attempt starts
+from those two walls.
