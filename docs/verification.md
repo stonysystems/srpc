@@ -13,8 +13,8 @@ how to run it, what is proven today, and how to prove the next thing.
 ```sh
 # with a Verus dist (ships both `cargo-verus` and `verus`) on PATH, or:
 VERUS_HOME=/path/to/verus-x86-linux scripts/verify_srpc.sh
-# => vstd  2043 verified, 0 errors
-#    srpc  11 verified, 0 errors
+# => vstd  2045 verified, 0 errors
+#    srpc  17 verified, 0 errors
 ```
 
 ## The route: `cargo verus verify` over an excluded `verify/` harness
@@ -222,11 +222,13 @@ exactly how the errors bug below hid until the full `cmake --build` ran. A targe
 is only real once `cmake --build` still produces the 1967-symbol archive with the
 contract in place.
 
-Toolchain note: `verify/Cargo.toml` pins `vstd = "=0.0.0-2026-08-23-0033"` to
-match the developer's Verus dist. Bump both together (a `vstd` newer than the
-`verus` binary panics compiling vstd) — do not downgrade the pin to match a
-locally-mirrored older dist. The errors verification (15 verified total) was
-measured against a local Verus `0.2026.08.09`; its logic is dist-independent.
+Toolchain note: `verify/Cargo.toml` pins `vstd = "=0.0.0-2026-08-30-0159"`, the
+latest stable Verus release (`0.2026.08.30`, rustc toolchain 1.97.1). Bump the
+`vstd` pin and the Verus dist together (a `vstd` newer than the `verus` binary
+panics compiling vstd), and prefer a stable release over the `rolling`
+prereleases. The full lane reports **17 verified, 0 errors** on this dist; the
+proofs' logic is dist-independent (the walls below were confirmed unchanged from
+08-09 through the 09-06 rolling build).
 
 ### The provable surface (green)
 
