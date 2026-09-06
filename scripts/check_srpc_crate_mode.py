@@ -115,7 +115,14 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # statement of the length-8 wire fix) requires it live in a free function that
 # the methods delegate to. Both are ordinary exported 'T' free functions; the
 # methods keep their symbols, so this is +2, not a rename. See docs/verification.md.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1969
+#
+# 1969 -> 1971: sparseint_dump64 / sparseint_load64, the slice-based sparse-int
+# codec extracted from SparseInt::dump64/load64 (which now delegate) so the byte
+# logic is a Verus-reasonable free function over std::span rather than a raw
+# pointer -- the groundwork for the T4 round-trip proof, and a safety win (the
+# writes/reads are bounds-checked). The methods keep their raw-pointer symbols,
+# so this is +2, not a rename. See docs/verification.md.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1971
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -732,7 +739,7 @@ EXPECTED_IMPORTS = {
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
-    "srpc.basetypes": "1c6ffa2e55423fc2f6480876062948d19e9371a84009dd5ba1685f4a59d001b4",
+    "srpc.basetypes": "06c52df0f87b51342945a762652ce41aeefba7762128198b91a1e314b3c07384",
     "srpc.callback_wrapper": "b645833262c8cf8fd4ea2306f50d6ddf018610fe85cb8bcb5b3b195dc0503341",
     "srpc.internal_protocol": "6d6c3107651d323ba54bbf2a40b8cbe454e7d7caff86e4b7b064e5f517d75eb4",
     "srpc.stat": "6bb3860679d151d047c65c7392d6126dc7e2d03c07589e97683cccb5383a9962",
@@ -1726,6 +1733,8 @@ ABI_SPECS = {
                 "static size_t val_size(int64_t val);",
                 "export size_t sparseint_val_size(int64_t val);",
                 "export size_t sparseint_buf_size(uint8_t byte0);",
+                "export size_t sparseint_dump64(int64_t val, std::span<uint8_t> buf);",
+                "export int64_t sparseint_load64(std::span<const uint8_t> buf);",
                 "export struct v32",
                 "int32_t val_field;",
                 "static v32 new_(int32_t v);",
@@ -1796,6 +1805,21 @@ ABI_SPECS = {
                 # 1967 -> 1969 delta note above EXPECTED_TOTAL_PROVIDER_SYMBOLS.
                 ("T", "srpc::sparseint_val_size@srpc.basetypes(long)"),
                 ("T", "srpc::sparseint_buf_size@srpc.basetypes(unsigned char)"),
+                # Slice-based sparse-int codec, extracted from
+                # SparseInt::dump64/load64 (which delegate) so the byte logic is
+                # a Verus-reasonable free function over `std::span` rather than a
+                # raw pointer. See the 1969 -> 1971 delta note above
+                # EXPECTED_TOTAL_PROVIDER_SYMBOLS and docs/verification.md (T4).
+                (
+                    "T",
+                    "srpc::sparseint_dump64@srpc.basetypes(long, "
+                    "std::__1::span<unsigned char, 18446744073709551615ul>)",
+                ),
+                (
+                    "T",
+                    "srpc::sparseint_load64@srpc.basetypes("
+                    "std::__1::span<unsigned char const, 18446744073709551615ul>)",
+                ),
             }
         ),
     ),

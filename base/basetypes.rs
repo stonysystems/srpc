@@ -86,6 +86,87 @@ pub fn sparseint_buf_size(byte0: u8) -> usize {
     }
 }
 
+// Encode `val` into `buf` in the sparse-int wire format; returns the byte count
+// (== sparseint_val_size(val)). Slice-based free-function form of
+// SparseInt::dump64 -- the raw-pointer method delegates here. Taking `&mut [u8]`
+// (rather than `*mut u8`) makes the writes bounds-checked, so a mis-sized buffer
+// is a panic rather than out-of-bounds memory, and lets Verus reason about the
+// byte writes (T4, docs/testing-plan.md). `buf` must hold at least 9 bytes.
+pub fn sparseint_dump64(val: i64, buf: &mut [u8]) -> usize {
+    let u = val as u64;
+    let n = sparseint_val_size(val) as i32;
+    if n <= 7 {
+        let mut j = 0i32;
+        while j < n {
+            buf[j as usize] = ((u >> (8 * ((n - 1 - j) as u32))) & 0xFF) as u8;
+            j += 1;
+        }
+        if n == 1 {
+            buf[0] &= 0x7F;
+        } else if n == 2 {
+            buf[0] &= 0x3F;
+            buf[0] |= 0x80;
+        } else if n == 3 {
+            buf[0] &= 0x1F;
+            buf[0] |= 0xC0;
+        } else if n == 4 {
+            buf[0] &= 0x0F;
+            buf[0] |= 0xE0;
+        } else if n == 5 {
+            buf[0] &= 0x07;
+            buf[0] |= 0xF0;
+        } else if n == 6 {
+            buf[0] &= 0x03;
+            buf[0] |= 0xF8;
+        } else {
+            buf[0] &= 0x01;
+            buf[0] |= 0xFC;
+        }
+        return n as usize;
+    }
+    let mut j = 0i32;
+    while j < 8 {
+        buf[(1 + j) as usize] = ((u >> (8 * ((7 - j) as u32))) & 0xFF) as u8;
+        j += 1;
+    }
+    // n is always 9 here (the 0xFE rung is retired in sparseint_val_size).
+    buf[0] = 0xFF;
+    9
+}
+
+// Decode a sparse-int value from `buf`. Slice-based free-function form of
+// SparseInt::load64 -- the raw-pointer method delegates here. `buf` must hold at
+// least 9 bytes (the reader inspects up to buf[8] for the 8/9-byte leaders).
+pub fn sparseint_load64(buf: &[u8]) -> i64 {
+    let bsize = sparseint_buf_size(buf[0]) as i32;
+    let mut u = 0u64;
+    if bsize < 8 {
+        let mut i = 0i32;
+        while i < bsize - 1 {
+            u |= (buf[(bsize - 1 - i) as usize] as u64) << (8 * (i as u32));
+            i += 1;
+        }
+        let mut top = buf[0];
+        top &= (0xFF >> bsize) as u8;
+        if ((top >> (7 - bsize)) & 1) == 1 {
+            top |= ((0xFF << (7 - bsize)) & 0xFF) as u8;
+            let mut k = bsize;
+            while k < 8 {
+                u |= 0xFFu64 << (8 * (k as u32));
+                k += 1;
+            }
+        }
+        u |= (top as u64) << (8 * ((bsize - 1) as u32));
+        return u as i64;
+    }
+    let mut i = 0i32;
+    while i < 8 {
+        u |= (buf[(8 - i) as usize] as u64) << (8 * (i as u32));
+        i += 1;
+    }
+    u as i64
+}
+
 pub struct SparseInt {}
 
 impl SparseInt {
@@ -147,48 +228,11 @@ impl SparseInt {
     /// on the write side; the decoder still reads 0xFE for historical data.
     #[allow(unsafe_code)]
     pub unsafe fn dump64(val: i64, buf: *mut u8) -> usize {
-        let u = val as u64;
-        let n = SparseInt::val_size(val) as i32;
-        unsafe {
-            if n <= 7 {
-                let mut j = 0i32;
-                while j < n {
-                    *buf.add(j as usize) = ((u >> (8 * ((n - 1 - j) as u32))) & 0xFF) as u8;
-                    j += 1;
-                }
-                if n == 1 {
-                    *buf.add(0) &= 0x7F;
-                } else if n == 2 {
-                    *buf.add(0) &= 0x3F;
-                    *buf.add(0) |= 0x80;
-                } else if n == 3 {
-                    *buf.add(0) &= 0x1F;
-                    *buf.add(0) |= 0xC0;
-                } else if n == 4 {
-                    *buf.add(0) &= 0x0F;
-                    *buf.add(0) |= 0xE0;
-                } else if n == 5 {
-                    *buf.add(0) &= 0x07;
-                    *buf.add(0) |= 0xF0;
-                } else if n == 6 {
-                    *buf.add(0) &= 0x03;
-                    *buf.add(0) |= 0xF8;
-                } else {
-                    *buf.add(0) &= 0x01;
-                    *buf.add(0) |= 0xFC;
-                }
-                return n as usize;
-            }
-            let mut j = 0i32;
-            while j < 8 {
-                *buf.add((1 + j) as usize) = ((u >> (8 * ((7 - j) as u32))) & 0xFF) as u8;
-                j += 1;
-            }
-            // n is always 9 here now (the 0xFE rung is retired in val_size);
-            // the loop above wrote all eight payload bytes into buf[1..9].
-            *buf.add(0) = 0xFF;
-        }
-        9
+        // SAFETY: the historical contract is that `buf` points to writable
+        // storage for at least nine bytes (the maximum encoding). Wrap it as a
+        // 9-byte slice and delegate to the proven, bounds-checked free function.
+        let out = unsafe { core::slice::from_raw_parts_mut(buf, 9) };
+        sparseint_dump64(val, out)
     }
 
     /// Decodes an i32 from the historical sparse-integer wire format.
@@ -240,35 +284,11 @@ impl SparseInt {
     /// marker plus eight payload bytes even though `0xFE` reports length eight.
     #[allow(unsafe_code)]
     pub unsafe fn load64(buf: *const u8) -> i64 {
-        unsafe {
-            let bsize = SparseInt::buf_size(*buf.add(0)) as i32;
-            let mut u = 0u64;
-            if bsize < 8 {
-                let mut i = 0i32;
-                while i < bsize - 1 {
-                    u |= (*buf.add((bsize - 1 - i) as usize) as u64) << (8 * (i as u32));
-                    i += 1;
-                }
-                let mut top = *buf.add(0);
-                top &= (0xFF >> bsize) as u8;
-                if ((top >> (7 - bsize)) & 1) == 1 {
-                    top |= ((0xFF << (7 - bsize)) & 0xFF) as u8;
-                    let mut k = bsize;
-                    while k < 8 {
-                        u |= 0xFFu64 << (8 * (k as u32));
-                        k += 1;
-                    }
-                }
-                u |= (top as u64) << (8 * ((bsize - 1) as u32));
-                return u as i64;
-            }
-            let mut i = 0i32;
-            while i < 8 {
-                u |= (*buf.add((8 - i) as usize) as u64) << (8 * (i as u32));
-                i += 1;
-            }
-            u as i64
-        }
+        // SAFETY: `buf` points to at least nine readable bytes (the reader
+        // inspects up to buf[8]). Wrap as a 9-byte slice and delegate to the
+        // proven, bounds-checked free function.
+        let src = unsafe { core::slice::from_raw_parts(buf, 9) };
+        sparseint_load64(src)
     }
 
     pub fn val_size(val: i64) -> usize {
