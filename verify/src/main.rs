@@ -10,6 +10,10 @@
 mod stat;
 
 #[allow(dead_code, unused_imports, non_camel_case_types)]
+#[path = "../../base/basetypes.rs"]
+mod basetypes;
+
+#[allow(dead_code, unused_imports, non_camel_case_types)]
 #[path = "../../rpc/errors.rs"]
 mod errors;
 
@@ -22,5 +26,13 @@ mod internal_protocol;
 // the C++ transpiler does not carry.
 mod internal_protocol_proofs;
 mod errors_proofs;
+
+#[allow(unsafe_code)]
+mod _stubs {
+    #[unsafe(no_mangle)] pub extern "C" fn srpc_clock_monotonic_us() -> u64 { 0 }
+    #[unsafe(no_mangle)] pub extern "C" fn srpc_clock_realtime_coarse_us() -> u64 { 0 }
+    #[unsafe(no_mangle)] pub extern "C" fn srpc_gettimeofday_us() -> u64 { 0 }
+    #[unsafe(no_mangle)] pub extern "C" fn srpc_sleep_us(_us: u64) {}
+}
 
 fn main() {}

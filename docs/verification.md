@@ -68,9 +68,11 @@ supported path, so it is what `scripts/verify_srpc.sh` uses.
 
 ## What is proven today
 
-Two modules carry in-place, machine-checked contracts. `scripts/verify_srpc.sh`
-reports `11 verified, 0 errors` for the srpc crate (plus vstd's own `2043
-verified`, which are the standard library's proofs, not srpc's).
+Four modules carry in-place, machine-checked contracts (`misc/stat.rs`,
+`rpc/internal_protocol.rs`, `rpc/errors.rs`, `base/basetypes.rs`).
+`scripts/verify_srpc.sh` reports `17 verified, 0 errors` for the srpc crate (plus
+vstd's own proofs, which are the standard library's, not srpc's). See "The
+provable surface" below for the per-module breakdown.
 
 ### `misc/stat.rs` — `AvgStat::sample` first-sample seeding
 
@@ -238,8 +240,12 @@ Modules carrying `#[cfg(verus)]` contracts today, all proven:
 - `rpc/errors.rs` (+ `verify/src/errors_proofs.rs`) — the error-classification
   predicates (see the first target below). Added once the transpiler bug that
   blocked it was fixed.
+- `base/basetypes.rs` — the sparse-int length bounds `sparseint_val_size(v) ∈
+  1..=9 ∧ ≠ 8` and `sparseint_buf_size(b) ∈ 1..=9` (T1–T3). The `≠ 8` is the
+  machine-checked statement of the length-8 wire fix. See the SparseInt target
+  below for the free-function extraction this required.
 
-Total: **15 verified, 0 errors.**
+Total: **17 verified, 0 errors.**
 
 Until the errors fix, only modules exporting **no enums and no derives** could
 host contracts — not a Verus limit but a transpiler-audit bug (below). With it
@@ -270,25 +276,42 @@ are Verus-tooling limits on specific *shapes* (associated fns, `from_ne_bytes`).
   builder, mirroring the guard the attribute-audit loop already had (pin bumped
   `5b61f96` → `358b351c`). The generated `.cppm` is unchanged and the ABI stays
   at 1967 — the verus content still lowers to nothing.
-- **T1–T4 SparseInt** (`base/basetypes.rs`): `val_size(v) ∈ 1..=9`;
-  `val_size(v) != 8` (the machine-checked statement of the length-8 fix, the
-  0xFE rung now retired); `buf_size(b) ∈ 1..=9`; and the prize,
-  `load64(dump64(v)) == v` for all `i64`. **Blocked:** `val_size`/`buf_size`/
-  `dump64` are *associated* (impl) functions, and the `verus_spec(r => ensures …)`
-  return-binding macro emits an unqualified self-call, which fails to resolve on
-  a method (`E0425 cannot find function`). Only free functions work today.
-  Restructuring the codec into free functions would churn the ABI. The length-8
-  fix is meanwhile guarded by the round-trip property test
+- **T1–T3 SparseInt bounds** (`base/basetypes.rs`) — **DONE.**
+  `sparseint_val_size(v) ∈ 1..=9 ∧ ≠ 8` and `sparseint_buf_size(b) ∈ 1..=9`. The
+  `≠ 8` is the length-8 wire fix machine-checked (negative control: returning 8
+  fails the postcondition). **The wall was real and required a source change to
+  clear.** `SparseInt::val_size`/`buf_size` are *associated* (impl) functions,
+  and the `verus_spec(r => ensures …)` return-binding macro emits an unqualified
+  self-call (`#receiver_token#fn_ident(#args)` with an empty receiver →
+  `E0425 cannot find function`), confirmed in the 08-30 macro source
+  (`builtin_macros/src/syntax.rs:1107`) and unfixed through the 09-06 rolling
+  build. Since no Verus version fixes it, the length logic was **extracted into
+  free functions** `sparseint_val_size`/`sparseint_buf_size` (which the macro
+  handles), with the methods delegating — so the proven code is the shipped code.
+  Cost: +2 provider symbols (ABI `1967 → 1969`, an ordinary ratchet edit). The
+  bodies are the original logic verbatim; Verus discharges the bound over the
+  inclusive-range `.contains()` checks directly.
+- **T4 SparseInt round trip** `load64(dump64(v)) == v` — still **blocked.**
+  `dump64`/`load64` are `unsafe` associated fns over raw pointers; proving them
+  needs Verus pointer machinery (`PointsTo`) the code does not use, on top of the
+  same associated-fn macro wall. Guarded meanwhile by the round-trip property test
   (`wire_roundtrip_proptest_rust.rs`).
-- **T5–T6 frame_codec** (`rpc/frame_codec.rs`): the write→peek header round trip
-  and the `Complete ⇒ 0 <= payload_size <= kMaxFramePayloadSize` bound that would
-  make the reader's `as usize` casts provably safe. **Blocked:** the header
-  marshalling goes through `i32::from_ne_bytes`/`to_ne_bytes`, which vstd does not
-  support (*"…to_ne_bytes is not supported"*); it would need a trusted
-  `assume_specification` axiom, which defeats the point of proving that layer.
+- **T5–T6 frame_codec** (`rpc/frame_codec.rs`) — still **blocked**, and the
+  documented workaround does not actually work. The write→peek round trip and the
+  `Complete ⇒ 0 ≤ payload_size ≤ kMaxFramePayloadSize` bound both die on the
+  `i32::from_ne_bytes`/`to_ne_bytes` calls in the bodies: vstd does not spec them,
+  and `assume_specification` **cannot** axiomatize them either — the array length
+  in the signature is an anonymous const (`[u8; {impl#2}::from_ne_bytes::
+  {constant#0}]`) that no literal `[u8; 4]` matches ("signature must match
+  exactly"), confirmed on 08-09, 08-30 and 09-06. Notably T6's proof *logic* is
+  trivial (two guards ⟹ the bound, pure control flow), but Verus refuses to
+  process the body at all because of that one unsupported call, and the canonical
+  body can't be restructured without changing the native-endian wire contract.
 
-Net: the self-paced pass added one new shippable proof (errors, 10 → 15 verified)
-by fixing the transpiler audit bug it uncovered, and mapped the two remaining
-walls (associated-fn `verus_spec`, unsupported `from_ne_bytes`) as genuine
-Verus-tooling limits rather than transpiler artifacts. The next attempt starts
+Net: the self-paced pass shipped three new proofs (errors, then SparseInt T1–T3,
+10 → 17 verified), which required fixing one transpiler bug (the derive-enum
+audit) and one source restructure (free-function extraction for the associated-fn
+macro wall). It also settled the version question: no available Verus (through
+the 09-06 rolling build) fixes the associated-fn macro or adds `from_ne_bytes`
+support, so T4/T5/T6 wait on upstream Verus, not on us. The next attempt starts
 from those two walls.

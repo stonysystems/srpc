@@ -19,29 +19,78 @@ pub type i32 = ::core::primitive::i32;
 #[allow(non_camel_case_types)]
 pub type i64 = ::core::primitive::i64;
 
+// Verus specs (behind #[cfg(verus)], invisible to rustc and rusty-cpp) pin the
+// sparse-int length functions. They are FREE functions because the verus_spec
+// return-binding macro mis-handles associated (impl) functions; SparseInt's
+// methods delegate to them, so the shipped length logic is what is proven. See
+// docs/verification.md.
+#[cfg(verus)]
+use vstd::prelude::*;
+
+// The encoder's byte length for `val`. Extracted from SparseInt::val_size so it
+// can carry a Verus contract; the method delegates. The body is the original
+// inclusive-range logic verbatim (Verus discharges the bound over `.contains()`).
+#[cfg_attr(verus, verus_spec(r =>
+    ensures 1usize <= r <= 9usize && r != 8usize,
+))]
+pub fn sparseint_val_size(val: i64) -> usize {
+    if (-64..=63).contains(&val) {
+        1
+    } else if (-8192..=8191).contains(&val) {
+        2
+    } else if (-1_048_576..=1_048_575).contains(&val) {
+        3
+    } else if (-134_217_728..=134_217_727).contains(&val) {
+        4
+    } else if (-17_179_869_184..=17_179_869_183).contains(&val) {
+        5
+    } else if (-2_199_023_255_552..=2_199_023_255_551).contains(&val) {
+        6
+    } else if (-281_474_976_710_656..=281_474_976_710_655).contains(&val) {
+        7
+    } else {
+        // The historical 8-byte (0xFE) rung is retired (docs/testing-plan.md
+        // 4.1): it budgeted 7 payload bytes but the encoder emitted 8, silently
+        // dropping the low byte of any value in +-[2^48, 2^55). Everything past
+        // the 7-byte range now uses the correct 9-byte (0xFF) encoding. The
+        // `r != 8` postcondition is the machine-checked statement of that fix.
+        9
+    }
+}
+
+// The decoder's byte length from a leading byte. Extracted from
+// SparseInt::buf_size for the same reason. Unlike the encoder this CAN return 8:
+// the decoder still reads the historical 0xFE (length-8) leader for old data.
+#[cfg_attr(verus, verus_spec(r =>
+    ensures 1usize <= r <= 9usize,
+))]
+pub fn sparseint_buf_size(byte0: u8) -> usize {
+    if (byte0 & 0x80) == 0 {
+        1
+    } else if (byte0 & 0xC0) == 0x80 {
+        2
+    } else if (byte0 & 0xE0) == 0xC0 {
+        3
+    } else if (byte0 & 0xF0) == 0xE0 {
+        4
+    } else if (byte0 & 0xF8) == 0xF0 {
+        5
+    } else if (byte0 & 0xFC) == 0xF8 {
+        6
+    } else if (byte0 & 0xFE) == 0xFC {
+        7
+    } else if byte0 == 0xFE {
+        8
+    } else {
+        9
+    }
+}
+
 pub struct SparseInt {}
 
 impl SparseInt {
     pub fn buf_size(byte0: u8) -> usize {
-        if (byte0 & 0x80) == 0 {
-            1
-        } else if (byte0 & 0xC0) == 0x80 {
-            2
-        } else if (byte0 & 0xE0) == 0xC0 {
-            3
-        } else if (byte0 & 0xF0) == 0xE0 {
-            4
-        } else if (byte0 & 0xF8) == 0xF0 {
-            5
-        } else if (byte0 & 0xFC) == 0xF8 {
-            6
-        } else if (byte0 & 0xFE) == 0xFC {
-            7
-        } else if byte0 == 0xFE {
-            8
-        } else {
-            9
-        }
+        sparseint_buf_size(byte0)
     }
 
     /// Encodes `val` into the historical sparse-integer wire format.
@@ -223,29 +272,7 @@ impl SparseInt {
     }
 
     pub fn val_size(val: i64) -> usize {
-        if (-64..=63).contains(&val) {
-            1
-        } else if (-8192..=8191).contains(&val) {
-            2
-        } else if (-1_048_576..=1_048_575).contains(&val) {
-            3
-        } else if (-134_217_728..=134_217_727).contains(&val) {
-            4
-        } else if (-17_179_869_184..=17_179_869_183).contains(&val) {
-            5
-        } else if (-2_199_023_255_552..=2_199_023_255_551).contains(&val) {
-            6
-        } else if (-281_474_976_710_656..=281_474_976_710_655).contains(&val) {
-            7
-        } else {
-            // The historical 8-byte (0xFE) rung is retired (docs/testing-plan.md
-            // 4.1): it budgeted 7 payload bytes but the encoder emitted 8,
-            // silently dropping the low byte of any value in +-[2^48, 2^55).
-            // Everything past the 7-byte range now uses the correct 9-byte
-            // (0xFF) encoding, which every peer already decodes. The decoder
-            // still READS 0xFE for historical data (buf_size/load64 unchanged).
-            9
-        }
+        sparseint_val_size(val)
     }
 }
 

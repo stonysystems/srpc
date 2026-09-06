@@ -106,7 +106,16 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # injection primitive that completes the drop/error/duplicate triad for the
 # in-memory transport (docs/testing-plan.md item 2.1). An ordinary exported
 # 'T' free function.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1967
+#
+# 1967 -> 1969: sparseint_val_size / sparseint_buf_size, two free functions in
+# srpc.basetypes holding the sparse-int length logic that SparseInt::val_size /
+# buf_size used to inline. Extracted so they can carry Verus contracts -- the
+# verus_spec return-binding macro cannot spec an associated (impl) function, so
+# proving the SHIPPED length logic (incl. the machine-checked `val_size != 8`
+# statement of the length-8 wire fix) requires it live in a free function that
+# the methods delegate to. Both are ordinary exported 'T' free functions; the
+# methods keep their symbols, so this is +2, not a rename. See docs/verification.md.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1969
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -723,7 +732,7 @@ EXPECTED_IMPORTS = {
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
-    "srpc.basetypes": "712d949cee2025b9e2441a13cdadd6ec2ebb3396a9561ec4a5aadc536b19cf7d",
+    "srpc.basetypes": "1c6ffa2e55423fc2f6480876062948d19e9371a84009dd5ba1685f4a59d001b4",
     "srpc.callback_wrapper": "b645833262c8cf8fd4ea2306f50d6ddf018610fe85cb8bcb5b3b195dc0503341",
     "srpc.internal_protocol": "6d6c3107651d323ba54bbf2a40b8cbe454e7d7caff86e4b7b064e5f517d75eb4",
     "srpc.stat": "6bb3860679d151d047c65c7392d6126dc7e2d03c07589e97683cccb5383a9962",
@@ -1715,6 +1724,8 @@ ABI_SPECS = {
                 "static int32_t load32(const uint8_t* buf);",
                 "static int64_t load64(const uint8_t* buf);",
                 "static size_t val_size(int64_t val);",
+                "export size_t sparseint_val_size(int64_t val);",
+                "export size_t sparseint_buf_size(uint8_t byte0);",
                 "export struct v32",
                 "int32_t val_field;",
                 "static v32 new_(int32_t v);",
@@ -1778,6 +1789,13 @@ ABI_SPECS = {
                 ("T", "srpc::Timer@srpc.basetypes::stop()"),
                 ("T", "srpc::Timer@srpc.basetypes::reset()"),
                 ("T", "srpc::Timer@srpc.basetypes::elapsed() const"),
+                # Free-function sparse-int length helpers, extracted from
+                # SparseInt::val_size/buf_size so they can carry Verus contracts
+                # (the verus_spec macro cannot spec an associated fn). The
+                # methods delegate; these are the proven shipped logic. See the
+                # 1967 -> 1969 delta note above EXPECTED_TOTAL_PROVIDER_SYMBOLS.
+                ("T", "srpc::sparseint_val_size@srpc.basetypes(long)"),
+                ("T", "srpc::sparseint_buf_size@srpc.basetypes(unsigned char)"),
             }
         ),
     ),
