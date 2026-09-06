@@ -26,6 +26,7 @@ mod internal_protocol;
 // the C++ transpiler does not carry.
 mod internal_protocol_proofs;
 mod errors_proofs;
+mod basetypes_proofs;
 
 #[allow(unsafe_code)]
 mod _stubs {

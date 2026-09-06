@@ -739,7 +739,7 @@ EXPECTED_IMPORTS = {
 }
 
 EXPECTED_GENERATED_MODULE_SHA256 = {
-    "srpc.basetypes": "06c52df0f87b51342945a762652ce41aeefba7762128198b91a1e314b3c07384",
+    "srpc.basetypes": "2c21d1094d927ee17e658f250f126cf174c385ba187cf9073027e025da815714",
     "srpc.callback_wrapper": "b645833262c8cf8fd4ea2306f50d6ddf018610fe85cb8bcb5b3b195dc0503341",
     "srpc.internal_protocol": "6d6c3107651d323ba54bbf2a40b8cbe454e7d7caff86e4b7b064e5f517d75eb4",
     "srpc.stat": "6bb3860679d151d047c65c7392d6126dc7e2d03c07589e97683cccb5383a9962",

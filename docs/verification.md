@@ -14,7 +14,7 @@ how to run it, what is proven today, and how to prove the next thing.
 # with a Verus dist (ships both `cargo-verus` and `verus`) on PATH, or:
 VERUS_HOME=/path/to/verus-x86-linux scripts/verify_srpc.sh
 # => vstd  2045 verified, 0 errors
-#    srpc  17 verified, 0 errors
+#    srpc  44 verified, 0 errors
 ```
 
 ## The route: `cargo verus verify` over an excluded `verify/` harness
@@ -70,7 +70,7 @@ supported path, so it is what `scripts/verify_srpc.sh` uses.
 
 Four modules carry in-place, machine-checked contracts (`misc/stat.rs`,
 `rpc/internal_protocol.rs`, `rpc/errors.rs`, `base/basetypes.rs`).
-`scripts/verify_srpc.sh` reports `17 verified, 0 errors` for the srpc crate (plus
+`scripts/verify_srpc.sh` reports `44 verified, 0 errors` for the srpc crate (plus
 vstd's own proofs, which are the standard library's, not srpc's). See "The
 provable surface" below for the per-module breakdown.
 
@@ -226,7 +226,7 @@ Toolchain note: `verify/Cargo.toml` pins `vstd = "=0.0.0-2026-08-30-0159"`, the
 latest stable Verus release (`0.2026.08.30`, rustc toolchain 1.97.1). Bump the
 `vstd` pin and the Verus dist together (a `vstd` newer than the `verus` binary
 panics compiling vstd), and prefer a stable release over the `rolling`
-prereleases. The full lane reports **17 verified, 0 errors** on this dist; the
+prereleases. The full lane reports **44 verified, 0 errors** on this dist; the
 proofs' logic is dist-independent (the walls below were confirmed unchanged from
 08-09 through the 09-06 rolling build).
 
@@ -243,11 +243,13 @@ Modules carrying `#[cfg(verus)]` contracts today, all proven:
   predicates (see the first target below). Added once the transpiler bug that
   blocked it was fixed.
 - `base/basetypes.rs` — the sparse-int length bounds `sparseint_val_size(v) ∈
-  1..=9 ∧ ≠ 8` and `sparseint_buf_size(b) ∈ 1..=9` (T1–T3). The `≠ 8` is the
-  machine-checked statement of the length-8 wire fix. See the SparseInt target
-  below for the free-function extraction this required.
+  1..=9 ∧ ≠ 8` and `sparseint_buf_size(b) ∈ 1..=9` (T1–T3), **and the full
+  encode/decode round trip `load64(dump64(v)) == v` for every `i64`, all eight
+  length classes (T4)** — see the SparseInt targets below. The `≠ 8` and the
+  round trip are the length-8 wire fix machine-checked. Proofs in
+  `verify/src/basetypes_proofs.rs`.
 
-Total: **17 verified, 0 errors.**
+Total: **44 verified, 0 errors.**
 
 Until the errors fix, only modules exporting **no enums and no derives** could
 host contracts — not a Verus limit but a transpiler-audit bug (below). With it
@@ -293,11 +295,22 @@ are Verus-tooling limits on specific *shapes* (associated fns, `from_ne_bytes`).
   Cost: +2 provider symbols (ABI `1967 → 1969`, an ordinary ratchet edit). The
   bodies are the original logic verbatim; Verus discharges the bound over the
   inclusive-range `.contains()` checks directly.
-- **T4 SparseInt round trip** `load64(dump64(v)) == v` — still **blocked.**
-  `dump64`/`load64` are `unsafe` associated fns over raw pointers; proving them
-  needs Verus pointer machinery (`PointsTo`) the code does not use, on top of the
-  same associated-fn macro wall. Guarded meanwhile by the round-trip property test
-  (`wire_roundtrip_proptest_rust.rs`).
+- **T4 SparseInt round trip** `load64(dump64(v)) == v` for every `i64` — **DONE.**
+  Eight theorems in `verify/src/basetypes_proofs.rs`, one per length class, each
+  encoding a value with the real `sparseint_dump64` and decoding with the real
+  `sparseint_load64` and proving the result equals the original (bit-vector, incl.
+  sign extension). Negative control: perturbing a marker mask in the body fails a
+  postcondition. Getting here needed three source changes, each behind
+  `#[cfg(verus)]`-transparent restructuring: (a) **slices** — `dump64`/`load64`
+  reshaped from raw pointers to `&mut [u8]`/`&[u8]` (Verus reasons about a slice's
+  `Seq` view, not raw-pointer memory; also a safety win — bounds-checked); (b)
+  **free functions** — `sparseint_dump64`/`load64`, since the `verus_spec` macro
+  cannot spec associated fns (the methods delegate); (c) **unrolled, functional**
+  bodies — canonical code cannot carry loop invariants (a `verus!` block the
+  transpiler rejects), so the loops became straight-line per-length branches, each
+  a single expression that matches its definitional contract without an in-body
+  `bit_vector` hint. The composing round-trip theorems live in the proofs file
+  where `bit_vector` is allowed. ABI cost: +2 provider symbols (1969 → 1971).
 - **T5–T6 frame_codec** (`rpc/frame_codec.rs`) — still **blocked**, and the
   documented workaround does not actually work. The write→peek round trip and the
   `Complete ⇒ 0 ≤ payload_size ≤ kMaxFramePayloadSize` bound both die on the
@@ -310,10 +323,12 @@ are Verus-tooling limits on specific *shapes* (associated fns, `from_ne_bytes`).
   process the body at all because of that one unsupported call, and the canonical
   body can't be restructured without changing the native-endian wire contract.
 
-Net: the self-paced pass shipped three new proofs (errors, then SparseInt T1–T3,
-10 → 17 verified), which required fixing one transpiler bug (the derive-enum
-audit) and one source restructure (free-function extraction for the associated-fn
-macro wall). It also settled the version question: no available Verus (through
-the 09-06 rolling build) fixes the associated-fn macro or adds `from_ne_bytes`
-support, so T4/T5/T6 wait on upstream Verus, not on us. The next attempt starts
-from those two walls.
+Net: the self-paced pass shipped errors, SparseInt T1–T3, and the SparseInt T4
+round trip (10 → 44 verified), which took one transpiler-bug fix (the derive-enum
+audit) and a sequence of `#[cfg(verus)]`-transparent restructurings of the codec
+(free-function extraction, slices, unrolled functional bodies). The version
+question is settled: no available Verus (through the 09-06 rolling build) fixes
+the associated-fn `verus_spec` macro or adds `from_ne_bytes` support — T4 was
+reached by working around the former in the source, and T5/T6 remain blocked on
+the latter (a vstd gap), which no source change here can clear. The next attempt
+starts from the `from_ne_bytes` wall.
