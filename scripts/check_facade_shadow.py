@@ -55,7 +55,12 @@ ALLOWED_SHADOWS = {
         "`misc/rand.rs` carries `cpp_abi` markers, making it an adapted sibling "
         "declaration. A `crate::rand::RandomGenerator::rand` reference fails the crate "
         "preflight -- `cpp_abi crate preflight found a sibling-file reference` -- and the "
-        "whole-crate transpile aborts before emitting any module."
+        "whole-crate transpile aborts before emitting any module. RE-VERIFIED: the rewire "
+        "compiles clean under rustc (0 errors) and still fails the transpile with exactly "
+        "that error. BLAST RADIUS: the facade stub returns `min`, and `client_rand` feeds "
+        "three ClientPool selection sites in rpc/client.rs, so under rustc ClientPool "
+        "always selects index 0 -- pool-selection tests in the Rust lane prove nothing "
+        "about distribution."
     ),
     "reactor::Fiber": (
         "`use crate::reactor::Fiber;` makes `Fiber` a flat-sibling leaf name crate-wide, "
@@ -77,7 +82,11 @@ ALLOWED_SHADOWS = {
         "`Arc<rusty::ReactorIntEvent>` in `FiberChannel::pending_recv_event_`, so `set` "
         "and `wait` can only move with the factory. Canonical `IntEvent::wait` forwards "
         "to `event_wait_impl`, which asserts a live per-thread reactor AND a current "
-        "fiber -- neither of which the Rust lane has."
+        "fiber. HALF-CORRECTED: the Rust lane DOES now have a live per-thread reactor "
+        "(`reactor_tls_get()` lazily creates one per thread); what it still lacks in "
+        "ordinary tests is a CURRENT FIBER, installed only via the facade's "
+        "`with_test_fiber` hook. A rewire also hits type mismatches at the "
+        "`pending_recv_event_` field in rpc/fiber_channel.rs."
     ),
     "reactor::create_sp_int_event": (
         "Canonical returns `Arc<crate::reactor::IntEvent>` against the facade's "
@@ -86,12 +95,17 @@ ALLOWED_SHADOWS = {
         "unavailable under rustc."
     ),
     "reactor::create_sp_box_event": (
-        "Canonical routes through `Reactor::get_reactor()`. Under rustc the nine "
-        "`#[cfg_attr(any(), thread_local)]` statics in reactor/reactor.rs are ordinary "
-        "process-global `static mut`, so tests sharing one non-atomic `Rc<Reactor>` race: "
-        "measured 7 failures / 600 runs of tests/future_rust.rs at the default thread "
-        "count, 3 of them SIGABRT. Green at --test-threads=1, which is why a single run "
-        "looks fine."
+        "Canonical `create_sp_box_event<T: Clone + Default + 'static>` routes through "
+        "`Reactor::get_reactor()`. NOTE: the original reason here -- process-global "
+        "`static mut` reactors racing across test threads -- is RETIRED and no longer "
+        "applies: reactor/reactor.rs now uses real `thread_local!`, and "
+        "`reactor_tls_get()` lazily builds a per-thread reactor "
+        "(tests/reactor_multithread_rust.rs pins this). The exception still stands for a "
+        "DIFFERENT, measured reason: canonical `BoxEvent<T>`'s set/get/wait/wait_timeout "
+        "require `T: Clone + Default`, while `FiberPromise<T>` / `FiberFuture<T>` in "
+        "reactor/future.rs are unbounded and hold the event in a `#[repr(C)]` field. "
+        "Rewiring raises 10 rustc errors and would force those bounds onto public "
+        "generic types across the crate."
     ),
     "reactor::fiber_sleep": (
         "Canonical `fiber_sleep` is not a no-op: it builds a timeout event and calls "

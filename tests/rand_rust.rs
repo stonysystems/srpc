@@ -174,3 +174,30 @@ fn weighted_selection_preserves_boundaries_empty_sentinel_and_draw_counts() {
     assert_eq!(RandomGenerator::weighted_select(&positive_boundary), 0);
     assert_eq!(draws(), 1);
 }
+
+// Regression guard for the rustc-lane facade draw.
+//
+// `rusty::srpc::rand::RandomGenerator::rand` used to `return min`. That was not
+// harmless: `client_rand` feeds three ClientPool selection sites in
+// rpc/client.rs, so the Rust lane always selected index 0 and any distribution
+// test over a pool proved nothing. It cannot forward to the canonical generator
+// (misc/rand.rs carries `cpp_abi` markers, so a sibling reference aborts the
+// transpile -- see ALLOWED_SHADOWS), so the facade owns a real generator and
+// this test pins that it is not a constant again.
+#[test]
+#[allow(unsafe_code)]
+fn facade_rand_is_not_constant_and_stays_in_range() {
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..200 {
+        let v = unsafe { rusty::srpc::rand::RandomGenerator::rand(0, 9) };
+        assert!((0..=9).contains(&v), "draw {v} outside the inclusive range [0, 9]");
+        seen.insert(v);
+    }
+    assert!(
+        seen.len() > 1,
+        "facade rand returned a constant ({seen:?}) -- the `return min` stub is back"
+    );
+
+    // Degenerate range must still work (canonical asserts max >= min).
+    assert_eq!(unsafe { rusty::srpc::rand::RandomGenerator::rand(7, 7) }, 7);
+}

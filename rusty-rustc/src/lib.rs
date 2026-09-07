@@ -1710,14 +1710,44 @@ pub mod srpc {
     pub mod rand {
         pub struct RandomGenerator;
 
+        // A REAL rustc-lane draw. This used to `return min`, which was not a
+        // harmless stub: `client_rand` feeds three ClientPool selection sites in
+        // rpc/client.rs, so the Rust lane always selected index 0 and any
+        // distribution test over a pool proved nothing.
+        //
+        // It cannot simply forward to canonical `crate::rand::RandomGenerator`
+        // -- misc/rand.rs carries `cpp_abi` markers, so a sibling reference
+        // aborts the whole-crate transpile (see ALLOWED_SHADOWS). So the facade
+        // owns a small self-contained generator instead: no FFI, hence no
+        // `srpc_rand_raw` stub needed in tests. Semantics mirror canonical
+        // `misc/rand.rs::rand` -- an inclusive draw over [min, max].
+        ::std::thread_local! {
+            static RAND_STATE: ::std::cell::Cell<u64> =
+                const { ::std::cell::Cell::new(0x9E37_79B9_7F4A_7C15) };
+        }
+
+        fn next_u32() -> u32 {
+            RAND_STATE.with(|slot| {
+                // xorshift64
+                let mut x = slot.get();
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                slot.set(x);
+                (x >> 32) as u32
+            })
+        }
+
         impl RandomGenerator {
             /// # Safety
             ///
             /// Records the foreign named-module boundary; the production
             /// generator is a pure integer draw with no preconditions.
             #[allow(unsafe_code)]
-            pub unsafe fn rand(min: i32, _max: i32) -> i32 {
-                min
+            pub unsafe fn rand(min: i32, max: i32) -> i32 {
+                assert!(max >= min);
+                let width = (max as i64) - (min as i64) + 1;
+                (((next_u32() as i64) % width) + (min as i64)) as i32
             }
         }
     }
