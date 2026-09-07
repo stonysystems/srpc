@@ -783,7 +783,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     # Re-authored with the clippy-gate work (measured ABI-neutral: same 324 raw /
     # 301 unique demangled strong symbols, same 29-row layout).  Digest drift is
     # advisory; this keeps the advisory list honest rather than permanently noisy.
-    "srpc.reactor": "c183ebd7170f0c1604a4401d6e5db75c78b6cd2707e4683a59fea1d3933f2681",
+    "srpc.reactor": "c3262e5aceb6ee5dee2d6a801908f557451c8aa5b058a9e62ebb4f35cbc044a1",
     "srpc.server": "3e5de5e8ecd419ed950fc4c7d58c7a9299d132869ee46cf7dd2fda18cda8e8d3",
     "srpc.client": "ad2e478e56e6d9c6d5d48568f059deabeb18f6bb540a760170726948c4b7972f",
 }

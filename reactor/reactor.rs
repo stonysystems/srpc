@@ -1397,6 +1397,15 @@ pub struct Reactor {
     pub n_active_fibers_: Cell<i64>,
     pub n_active_fibers_2_: Cell<i64>,
     pub n_idle_fibers_: Cell<i64>,
+    // --- srpc's async runtime (the stackless task executor) -----------------
+    // These three fields ARE the executor's state: a task table, a free list,
+    // and a ready queue.  `run_loop` drains the ready queue via
+    // `process_stackless_tasks()` each pass; waking a task pushes its index
+    // back onto it.  The rustc-lane half (`Task`/`Waker`/`Context` and the
+    // `std::task::Waker` bridge) lives in rusty-rustc, and `PollThread` drives
+    // the whole thing through `add_tick_hook`.  It is small, single-threaded
+    // per reactor and cooperative -- by design, because every piece has to have
+    // a C++20 coroutine counterpart.  See docs/async-runtime.md.
     pub stackless_tasks_: RefCell<Vec<StacklessTaskEntry>>,
     pub free_stackless_task_slots_: RefCell<Vec<usize>>,
     pub ready_stackless_tasks_: RefCell<VecDeque<usize>>,
@@ -1883,6 +1892,9 @@ impl Drop for Reactor {
     }
 }
 
+// Entry point of srpc's async runtime: register `task` in the executor's table
+// and return its slot index.  See docs/async-runtime.md for how a canonical
+// `async fn` gets from rustc's Future state machine to this table.
 pub fn reactor_spawn_stackless_task_with_result<T: 'static, OnReady>(self_: &Reactor, mut task: rusty::Task<T>, mut on_ready: OnReady)
 where
     OnReady: FnMut(T) + 'static,
