@@ -70,12 +70,19 @@ ALLOWED_SHADOWS = {
         "leaf`. Adding the import anywhere is enough to break an unrelated file."
     ),
     "reactor::PollThread": (
-        "Retargeting the alias to `crate::reactor::PollThread` stops the emitter writing "
-        "direct method calls; it emits `__rusty_alias_PollThread_*` free functions "
-        "instead, and the alias table is crate-global, so unrelated receivers are "
-        "rewritten too -- an ordinary `pending_fu_` `HashMap::remove(xid)` in "
-        "rpc/client.rs becomes `__rusty_alias_PollThread_remove(guard, xid)`, whose "
-        "declaration takes `void*`. Silent miscompilation, not a build error."
+        "The original reason here -- a crate-global alias table rewriting unrelated "
+        "receivers, so `pending_fu_.remove(xid)` became "
+        "`__rusty_alias_PollThread_remove(guard, xid)` taking `void*`, a SILENT "
+        "MISCOMPILATION -- NO LONGER REPRODUCES. Re-probed: retargeting the alias in "
+        "rpc/client.rs transpiles cleanly (38 files, 0 errors) and the emitted "
+        "srpc.client.cppm contains zero `__rusty_alias_PollThread_*` symbols; the "
+        "transpiler now guards this (see its codegen regression test for "
+        "`__rusty_alias_Root_split_off`). The exception still stands for a DEEPER "
+        "reason: the facade `PollThread` IS the rustc lane's runtime -- a real epoll "
+        "loop -- and canonical modules are written against its surface, passing it into "
+        "facade APIs (rusty-rustc/src/lib.rs:1794, :2120, :2132). Retargeting all three "
+        "aliases (client/server/tcp_channel) yields 6 type mismatches at that boundary. "
+        "Closing this means REPLACING the Rust lane's runtime, not fixing an alias."
     ),
     "reactor::IntEvent": (
         "Coupled to `create_sp_int_event`: the value is stored as "
