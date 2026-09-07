@@ -903,6 +903,49 @@ else()
         "`git submodule update --init --recursive`.")
 endif()
 
+# The battery programs and `rpcbench` are this build's pure module *consumers*.
+# CMake 4.4 cannot collate their dyndep: their link closure contains both
+# `srpc` (whose module reference map resolves `std` to
+# @cmake_cxx_std@synth_0) and the plain rusty/port targets (which resolve
+# `std` to @synth_1).  That is a hard "Disagreement of the location of the
+# 'std' module" error, and neither side of the divergence may be
+# flattened: srpc's flags produce the gated production ABI, and the ports'
+# flags are rusty-cpp's, in a different repository.  So the consumers opt
+# out of the scanner and are handed the exact module map srpc itself was
+# built against; see scripts/emit_module_map.py.
+#
+# NOTE (still true after BENCH_CXXFLAGS gained -march=native): the split is
+# NOT caused by -march.  Both sides carry it now, and CMake 4.4.0 still
+# synthesises two std variants, because the rest of the settings signature
+# differs.  Measured from the generated build.ninja:
+#     synth_0 (srpc):  ... -w -Wreturn-type -MD -MP -DRUSTYCPP_DISABLE_ARC_LOG
+#                          -DREUSE_FIBER -O2 -g -fno-omit-frame-pointer -march=native
+#     synth_1 (ports): ... -O3 -DNDEBUG -march=native
+# srpc -> @cmake_cxx_std@synth_0 and rusty/vec_port -> @synth_1 both before
+# and after the flag change, so this workaround stays necessary.  (Under
+# the pinned CMake 4.3.4 there is a single __cmake_cxx_std_23 target and no
+# synth split at all; the modmap is then simply redundant, not wrong.)
+#
+# This sits OUTSIDE the GoogleTest guard below: it depends only on `srpc` and
+# the emitter script, and `rpcbench` consumes it without linking gtest.
+set(SRPC_BATTERY_MODMAP
+    ${CMAKE_CURRENT_BINARY_DIR}/goal0-battery-modules.modmap)
+add_custom_command(
+    OUTPUT ${SRPC_BATTERY_MODMAP}
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
+        --build-dir "${CMAKE_BINARY_DIR}"
+        --modules-json
+            "${CMAKE_BINARY_DIR}/CMakeFiles/srpc.dir/CXXModules.json"
+        --output "${SRPC_BATTERY_MODMAP}"
+    DEPENDS
+        srpc
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
+    COMMENT "Collecting the srpc module map for the Goal-0 module consumers"
+    VERBATIM
+)
+add_custom_target(srpc_battery_modmap DEPENDS ${SRPC_BATTERY_MODMAP})
+
 if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     # GoogleTest is compiled from its own sources rather than through its
     # CMakeLists so it inherits this project's exact Clang/libc++ ABI.  A
@@ -978,46 +1021,6 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     )
     set(SRPC_BATTERY_SRC_test_rpc_docs_symbols  tests/rpc_docs_symbols_test.cc)
 
-    # The battery programs are this build's first pure module *consumers*.
-    # CMake 4.4 cannot collate their dyndep: their link closure contains both
-    # `srpc` (whose module reference map resolves `std` to
-    # @cmake_cxx_std@synth_0) and the plain rusty/port targets (which resolve
-    # `std` to @synth_1).  That is a hard "Disagreement of the location of the
-    # 'std' module" error, and neither side of the divergence may be
-    # flattened: srpc's flags produce the gated production ABI, and the ports'
-    # flags are rusty-cpp's, in a different repository.  So the battery opts
-    # out of the scanner and is handed the exact module map srpc itself was
-    # built against; see scripts/emit_module_map.py.
-    #
-    # NOTE (still true after BENCH_CXXFLAGS gained -march=native): the split is
-    # NOT caused by -march.  Both sides carry it now, and CMake 4.4.0 still
-    # synthesises two std variants, because the rest of the settings signature
-    # differs.  Measured from the generated build.ninja:
-    #     synth_0 (srpc):  ... -w -Wreturn-type -MD -MP -DRUSTYCPP_DISABLE_ARC_LOG
-    #                          -DREUSE_FIBER -O2 -g -fno-omit-frame-pointer -march=native
-    #     synth_1 (ports): ... -O3 -DNDEBUG -march=native
-    # srpc -> @cmake_cxx_std@synth_0 and rusty/vec_port -> @synth_1 both before
-    # and after the flag change, so this workaround stays necessary.  (Under
-    # the pinned CMake 4.3.4 there is a single __cmake_cxx_std_23 target and no
-    # synth split at all; the modmap is then simply redundant, not wrong.)
-    set(SRPC_BATTERY_MODMAP
-        ${CMAKE_CURRENT_BINARY_DIR}/goal0-battery-modules.modmap)
-    add_custom_command(
-        OUTPUT ${SRPC_BATTERY_MODMAP}
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
-            --build-dir "${CMAKE_BINARY_DIR}"
-            --modules-json
-                "${CMAKE_BINARY_DIR}/CMakeFiles/srpc.dir/CXXModules.json"
-            --output "${SRPC_BATTERY_MODMAP}"
-        DEPENDS
-            srpc
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
-        COMMENT "Collecting the srpc module map for the Goal-0 runtime battery"
-        VERBATIM
-    )
-    add_custom_target(srpc_battery_modmap DEPENDS ${SRPC_BATTERY_MODMAP})
-
     foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY SRPC_DOCS_BATTERY)
         set(_battery_source
             ${CMAKE_CURRENT_SOURCE_DIR}/${SRPC_BATTERY_SRC_${_battery_target}})
@@ -1071,6 +1074,62 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         COMMENT "Goal-0 runtime test battery (incumbent reactor)"
     )
 endif()
+
+# ---------------------------------------------------------------------------
+# rpcbench -- the throughput benchmark.
+#
+# The sources have been tracked since the `rrr` era, but nothing built them:
+# the recipe lived outside the repository, so every measured qps number was
+# unreproducible by anyone but its author.  This target is that recipe.
+#
+# EXCLUDE_FROM_ALL on purpose.  A benchmark is not a correctness gate, and the
+# C++ lane is already minutes cold; `ALL` stays the two gate targets.  Build it
+# explicitly:
+#     cmake --build build --target rpcbench
+#     scripts/run_rpcbench.sh build/rpcbench <tag>
+#
+# It is deliberately NOT registered with ctest: throughput is not pass/fail,
+# and it binds a real TCP port.
+# ---------------------------------------------------------------------------
+set(SRPC_RPCBENCH_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/rpcbench.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_service.cc)
+
+# tests/benchmark_service.h is GENERATED by pylib/simplerpcgen and opens with
+# the monorepo-relative `#include "srpc/srpc.hpp"`.  That include cannot be
+# edited here -- regenerating the header would silently restore it, and
+# regenerating is already hazardous (RPC ids are stabilised by scraping the
+# previous header).  So give it a directory in which `srpc/` *is* this source
+# tree, and leave the generated file untouched.
+set(SRPC_BENCH_INCLUDE_SHIM ${CMAKE_CURRENT_BINARY_DIR}/bench-include)
+file(MAKE_DIRECTORY ${SRPC_BENCH_INCLUDE_SHIM})
+if(NOT EXISTS ${SRPC_BENCH_INCLUDE_SHIM}/srpc)
+    file(CREATE_LINK
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${SRPC_BENCH_INCLUDE_SHIM}/srpc
+        SYMBOLIC)
+endif()
+
+add_executable(rpcbench EXCLUDE_FROM_ALL ${SRPC_RPCBENCH_SRC})
+# Same reasoning as the battery: the modmap already names every BMI including
+# `std`, so CMake must not synthesise a second, conflicting one.
+set_target_properties(rpcbench PROPERTIES
+    CXX_SCAN_FOR_MODULES OFF
+    CXX_MODULE_STD OFF)
+target_include_directories(rpcbench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    ${SRPC_BENCH_INCLUDE_SHIM}
+)
+# Source scope, not target scope -- see the battery's note above: a
+# target-level `@response` joins the compile-settings signature and CMake
+# then feeds it into a synthesised std compile that runs before the file
+# exists.
+set_source_files_properties(${SRPC_RPCBENCH_SRC} PROPERTIES
+    COMPILE_OPTIONS "@${SRPC_BATTERY_MODMAP}"
+    OBJECT_DEPENDS "${SRPC_BATTERY_MODMAP}")
+target_link_libraries(rpcbench PRIVATE srpc pthread)
+add_dependencies(rpcbench srpc_battery_modmap)
 
 # Every test registered below carries the label `srpc`, because
 # add_subdirectory(third-party/rusty-cpp) also registers ~69 tests of its own
