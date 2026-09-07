@@ -21,12 +21,17 @@ mod errors;
 #[path = "../../rpc/internal_protocol.rs"]
 mod internal_protocol;
 
+#[allow(dead_code, unused_imports, non_upper_case_globals)]
+#[path = "../../rpc/frame_codec.rs"]
+mod frame_codec;
+
 // Verify-only proofs about the real internal_protocol functions above. Lives
 // here, not in the srpc crate, so it can use in-body bit-vector proof code that
 // the C++ transpiler does not carry.
 mod internal_protocol_proofs;
 mod errors_proofs;
 mod basetypes_proofs;
+mod frame_codec_proofs;
 
 #[allow(unsafe_code)]
 mod _stubs {

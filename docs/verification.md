@@ -14,7 +14,7 @@ how to run it, what is proven today, and how to prove the next thing.
 # with a Verus dist (ships both `cargo-verus` and `verus`) on PATH, or:
 VERUS_HOME=/path/to/verus-x86-linux scripts/verify_srpc.sh
 # => vstd  2045 verified, 0 errors
-#    srpc  44 verified, 0 errors
+#    srpc  51 verified, 0 errors
 ```
 
 ## The route: `cargo verus verify` over an excluded `verify/` harness
@@ -68,9 +68,9 @@ supported path, so it is what `scripts/verify_srpc.sh` uses.
 
 ## What is proven today
 
-Four modules carry in-place, machine-checked contracts (`misc/stat.rs`,
-`rpc/internal_protocol.rs`, `rpc/errors.rs`, `base/basetypes.rs`).
-`scripts/verify_srpc.sh` reports `44 verified, 0 errors` for the srpc crate (plus
+Five modules carry in-place, machine-checked contracts (`misc/stat.rs`,
+`rpc/internal_protocol.rs`, `rpc/errors.rs`, `base/basetypes.rs`, `rpc/frame_codec.rs`).
+`scripts/verify_srpc.sh` reports `51 verified, 0 errors` for the srpc crate (plus
 vstd's own proofs, which are the standard library's, not srpc's). See "The
 provable surface" below for the per-module breakdown.
 
@@ -128,7 +128,7 @@ module exposes; the proofs that consume them live in verify/.
 | Commit | Bug | Under proof? |
 | --- | --- | --- |
 | `0e51bce` | `AvgStat` seeded `max_`/`min_` from zero-init fields, so an all-positive stream left `min_` stuck at 0 and an all-negative stream left `max_` stuck at 0 — neither the true extremum. | ✅ guarded by the `sample` contract |
-| `b8be721` | `frame_codec` did not bound the frame size, so a desynchronised stream (short write, mid-frame reconnect, upstream bug) was read as a garbage-length header and the connection wedged silently instead of erroring. | ⚠️ fixed by hand; the assumption it leans on (`response_payload_size` is never negative) is now proven — see `internal_protocol` above. The `peek_header` size *bound* itself is not yet proven. |
+| `b8be721` | `frame_codec` did not bound the frame size, so a desynchronised stream (short write, mid-frame reconnect, upstream bug) was read as a garbage-length header and the connection wedged silently instead of erroring. | ⚠️ fixed by hand; the assumption it leans on (`response_payload_size` is never negative) is now proven — see `internal_protocol` above. The `peek_header` size *bound* itself is now proven too (T6). |
 | `e376fd6` | The client did not drain its disconnect buffer on teardown. | ❌ fixed by hand |
 
 The `0e51bce` bug is instructive: it had been pinned as *correct* in six
@@ -209,10 +209,10 @@ stateful properties (deliver-once, the pending-future map, the reactor) are out
 of scope — they need ghost/tokenized state Verus cannot carry in canonical
 sources, and would prove a model rather than the code.
 
-The list below was worked through end to end. One target (errors) was blocked by
-a transpiler bug that has since been root-caused and fixed; the other two remain
-blocked by distinct Verus-tooling walls. All are recorded here so the boundary is
-a map, not a guess.
+The list below was worked through end to end and **every target on it is now
+proven**. Each was initially blocked by a distinct wall; the walls and how each
+was cleared are recorded here, because the workaround -- not the contract -- is
+the reusable part.
 
 **Watch for false greens:** the `verify/` crate `#[path]`-links the real sources
 and runs *only* `cargo verus verify`; it never invokes the rusty-cpp transpiler.
@@ -226,7 +226,7 @@ Toolchain note: `verify/Cargo.toml` pins `vstd = "=0.0.0-2026-08-30-0159"`, the
 latest stable Verus release (`0.2026.08.30`, rustc toolchain 1.97.1). Bump the
 `vstd` pin and the Verus dist together (a `vstd` newer than the `verus` binary
 panics compiling vstd), and prefer a stable release over the `rolling`
-prereleases. The full lane reports **44 verified, 0 errors** on this dist; the
+prereleases. The full lane reports **51 verified, 0 errors** on this dist; the
 proofs' logic is dist-independent (the walls below were confirmed unchanged from
 08-09 through the 09-06 rolling build).
 
@@ -248,13 +248,19 @@ Modules carrying `#[cfg(verus)]` contracts today, all proven:
   length classes (T4)** — see the SparseInt targets below. The `≠ 8` and the
   round trip are the length-8 wire fix machine-checked. Proofs in
   `verify/src/basetypes_proofs.rs`.
+- `rpc/frame_codec.rs` (+ `verify/src/frame_codec_proofs.rs`) — the frame header:
+  the peek bound (T6) and the write->peek round trip (T5). See the frame_codec
+  target below, including the one trusted axiom T5 rests on.
 
-Total: **44 verified, 0 errors.**
+Total: **51 verified, 0 errors.**
 
-Until the errors fix, only modules exporting **no enums and no derives** could
-host contracts — not a Verus limit but a transpiler-audit bug (below). With it
-fixed, any leaf module can carry `#[cfg(verus)]` contracts; the remaining walls
-are Verus-tooling limits on specific *shapes* (associated fns, `from_ne_bytes`).
+Two transpiler-audit bugs had to be fixed to get here, both the same class: a
+check auditing `#[cfg(verus)]` items that are absent from the transpiled program.
+Before the first, only modules exporting **no enums and no derives** could host
+contracts; before the second, only modules that **import nothing from a sibling**
+could. With both fixed, any leaf module can carry `#[cfg(verus)]` contracts. The
+remaining Verus-tooling limits (associated fns, `from_ne_bytes`) are real but
+were worked around in the source -- see each target below.
 
 ### Targets and their walls
 
@@ -311,24 +317,49 @@ are Verus-tooling limits on specific *shapes* (associated fns, `from_ne_bytes`).
   a single expression that matches its definitional contract without an in-body
   `bit_vector` hint. The composing round-trip theorems live in the proofs file
   where `bit_vector` is allowed. ABI cost: +2 provider symbols (1969 → 1971).
-- **T5–T6 frame_codec** (`rpc/frame_codec.rs`) — still **blocked**, and the
-  documented workaround does not actually work. The write→peek round trip and the
-  `Complete ⇒ 0 ≤ payload_size ≤ kMaxFramePayloadSize` bound both die on the
-  `i32::from_ne_bytes`/`to_ne_bytes` calls in the bodies: vstd does not spec them,
-  and `assume_specification` **cannot** axiomatize them either — the array length
-  in the signature is an anonymous const (`[u8; {impl#2}::from_ne_bytes::
-  {constant#0}]`) that no literal `[u8; 4]` matches ("signature must match
-  exactly"), confirmed on 08-09, 08-30 and 09-06. Notably T6's proof *logic* is
-  trivial (two guards ⟹ the bound, pure control flow), but Verus refuses to
-  process the body at all because of that one unsupported call, and the canonical
-  body can't be restructured without changing the native-endian wire contract.
+- **T5–T6 frame_codec** (`rpc/frame_codec.rs`) — **DONE**, by moving the
+  unsupported call behind a trusted boundary rather than waiting on vstd. Verus
+  still cannot process `i32::from_ne_bytes`/`to_ne_bytes` (vstd does not specify
+  them, and `assume_specification` cannot match their const-generic array
+  signature — confirmed on 08-09, 08-30 and 09-06). The workaround is the shape
+  vstd's own bytes.rs uses: isolate each std byte call in a tiny
+  `#[verus_verify(external_body)]` helper (`header_word_from_bytes`,
+  `store_header_word`), so the rest of the codec verifies normally.
 
-Net: the self-paced pass shipped errors, SparseInt T1–T3, and the SparseInt T4
-round trip (10 → 44 verified), which took one transpiler-bug fix (the derive-enum
-audit) and a sequence of `#[cfg(verus)]`-transparent restructurings of the codec
-(free-function extraction, slices, unrolled functional bodies). The version
-question is settled: no available Verus (through the 09-06 rolling build) fixes
-the associated-fn `verus_spec` macro or adds `from_ne_bytes` support — T4 was
-reached by working around the former in the source, and T5/T6 remain blocked on
-the latter (a vstd gap), which no source change here can clear. The next attempt
-starts from the `from_ne_bytes` wall.
+  **T6 (the peek bound)** `Complete ⇒ 0 ≤ payload_size ≤ kMaxFramePayloadSize` —
+  the reason the reader's `as usize` casts are safe. It costs **no semantic
+  trust**: the read helper deliberately carries NO `ensures`, so nothing is
+  assumed about what the leader bytes decode to; the bound comes from the
+  function's two range guards alone. Negative control: delete the upper guard and
+  the postcondition fails.
+
+  **T5 (write→peek round trip)** recovers both the size and the flag for every
+  in-range size and either flag. Its bit-packing half was already proven in
+  `internal_protocol_proofs`; what T5 adds is the 4-byte marshalling, and *that*
+  rests on **one trusted, target-conditional axiom**: the helpers' `ensures`
+  state the little-endian decomposition, which is what native-endian marshalling
+  is on the little-endian targets srpc supports — the same assumption
+  `tests/wire_golden_rust.rs` already encodes in its byte vectors. It could not be
+  stated as the endian-agnostic `from(to(x)) == x`, because that needs one exec
+  helper called inside the other's spec, which Verus disallows. Negative control:
+  store `encoded + 1` and the postcondition fails.
+
+  Landing this needed a second transpiler fix (pin `358b351c` → `2abea1dc`):
+  frame_codec is the first specced module that also **imports from a sibling**,
+  so two more `cpp_abi` `use`-visitors audited the `#[cfg(verus)]` vstd glob that
+  is not in the transpiled program at all. Both now apply the cfg-absent guard the
+  file already used elsewhere. ABI `1971 → 1973`: the two helpers are
+  module-internal (emitted without `export`) but still land as strong symbols in
+  the object, so they are ordinary ratchet rows.
+
+Net: the self-paced pass shipped every target on the list — errors, SparseInt
+T1–T3, the SparseInt T4 round trip, and frame_codec T5/T6 (10 → 51 verified). It
+took two transpiler fixes (both the same bug class: a check auditing
+`#[cfg(verus)]` items that are absent from the transpiled program) and a sequence
+of `#[cfg(verus)]`-transparent restructurings (free-function extraction, slices,
+unrolled functional bodies, and `external_body` isolation of unsupported std
+calls). The version question is settled: no available Verus (through the 09-06
+rolling build) fixes the associated-fn `verus_spec` macro or adds `from_ne_bytes`
+support — both were worked around in the source instead. The only trusted claim
+in the whole lane is T5's little-endian marshalling axiom; everything else is
+proven.

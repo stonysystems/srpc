@@ -122,7 +122,14 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # pointer -- the groundwork for the T4 round-trip proof, and a safety win (the
 # writes/reads are bounds-checked). The methods keep their raw-pointer symbols,
 # so this is +2, not a rename. See docs/verification.md.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1971
+#
+# 1971 -> 1973: header_word_from_bytes / store_header_word in srpc.frame_codec,
+# the two helpers isolating i32::from_ne_bytes / to_ne_bytes so the rest of the
+# frame codec can be verified (Verus cannot process those std calls; see
+# docs/verification.md T5/T6). They are module-internal -- emitted without
+# `export` -- but still land as strong 'T' symbols in the object, so they are
+# ordinary ratchet rows. peek/write keep their own symbols: this is +2.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1973
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 deliberate additions over the frozen incumbent oracle.
@@ -755,7 +762,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.request_queue": "1e6a70e795647ba28b75fffbac57000566f51072bf9bd3d16c76d689caf8923d",
     "srpc.load_balancer": "8e19a04224e7f760bcaf72838e69fe4e56b2329d07a1c6438a634cde2a6ad062",
     "srpc.utils": "492005cf6e7153ebb69e551eaf782eaaab3cbad925ef3ce8631977ab4409e5fd",
-    "srpc.frame_codec": "84db9800b41406f78fdcc1071103650f1d950af7a17cfad2fe2059390bad03eb",
+    "srpc.frame_codec": "c9aa6cc4c1cf243e5c7fa87f8d0a6a9e7f4cd2d8d80ae6ef0260574ddf03f8b3",
     "srpc.serializable": "8759dc392050eebfebecd4d0a7d7649ab5877a6521bebbbe6dbf9f5649496599",
     "srpc.serializable_envelope": "10e741356898a59ead60f6f3b69f4c007f18f037d897f4fcacfd009168813f52",
     "srpc.future": "f2dfa65121cb1d8d5423eeb9ab546c82502d7851370086cdd6764e10e485aabb",
@@ -1602,6 +1609,8 @@ ABI_SPECS = {
                 "export std::string_view frame_decode_status_to_string(FrameDecodeStatus status);",
                 "export bool frame_codec_write_header(std::span<uint8_t> out_buf, int32_t payload_size, bool extended_header_flag);",
                 "export FrameDecodeStatus frame_codec_peek_header(std::span<const uint8_t> buf, FrameHeader& out_header);",
+                "int32_t header_word_from_bytes(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3);",
+                "void store_header_word(std::span<uint8_t> out_buf, int32_t w);",
                 "export FrameCursor make_frame_cursor();",
                 "export bool frame_codec_encode_into(FrameBytes& out, const uint8_t* payload, int32_t payload_size, bool extended_header_flag);",
                 "export void fsr_append(FrameStreamReader& reader, const uint8_t* data, size_t size);",
@@ -1645,6 +1654,17 @@ ABI_SPECS = {
                 (
                     "T",
                     "srpc::frame_codec_peek_header@srpc.frame_codec(std::__1::span<unsigned char const, 18446744073709551615ul>, srpc::FrameHeader@srpc.frame_codec&)",
+                ),
+                # Trusted byte-marshalling helpers isolating the std calls Verus
+                # cannot process (T5/T6, docs/verification.md). Module-internal
+                # (emitted without `export`), but still strong symbols.
+                (
+                    "T",
+                    "srpc::header_word_from_bytes@srpc.frame_codec(unsigned char, unsigned char, unsigned char, unsigned char)",
+                ),
+                (
+                    "T",
+                    "srpc::store_header_word@srpc.frame_codec(std::__1::span<unsigned char, 18446744073709551615ul>, int)",
                 ),
                 (
                     "T",
