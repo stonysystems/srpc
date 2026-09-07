@@ -28,7 +28,8 @@ from pathlib import Path
 
 # `SRPC_REPO` lets the gate be exercised from outside the tree; scripts/ is the norm.
 REPO = Path(os.environ.get("SRPC_REPO", Path(__file__).resolve().parent.parent))
-FACADE = REPO / "rusty-rustc" / "src" / "lib.rs"
+FACADE_SRC = REPO / "rusty-rustc" / "src"
+FACADE = FACADE_SRC / "lib.rs"
 CANONICAL_DIRS = ("base", "misc", "rpc", "reactor")
 
 # Facade items that legitimately share a name with a canonical item.
@@ -189,8 +190,35 @@ def canonical_path(module):
     return None
 
 
+def facade_text() -> str:
+    """Every facade source file, concatenated.
+
+    Deliberately NOT just lib.rs.  The facade may be split into modules for
+    legibility, and this gate must follow it there -- scanning one file would
+    silently stop policing whatever moved out, which is exactly the class of rot
+    this gate exists to prevent.
+
+    The scan below understands the inline `pub mod srpc { .. }` form.  If the
+    srpc block is ever moved to a file-based module (`pub mod srpc;`), this
+    parser would find nothing and pass vacuously, so that shape is rejected
+    loudly instead.
+    """
+    parts = []
+    for path in sorted(FACADE_SRC.rglob("*.rs")):
+        body = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*pub mod srpc\s*;", body, re.MULTILINE):
+            raise SystemExit(
+                f"{path}: `pub mod srpc;` is a file-based module, but this gate "
+                "only parses the inline `pub mod srpc {{ .. }}` form -- it would "
+                "pass vacuously. Teach facade_text()/facade_modules() to follow "
+                "file modules before splitting the srpc block."
+            )
+        parts.append(body)
+    return "\n".join(parts)
+
+
 def main():
-    text = FACADE.read_text(encoding="utf-8")
+    text = facade_text()
     violations = []
     stale = set(ALLOWED_SHADOWS)
     checked = 0
