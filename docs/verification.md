@@ -352,6 +352,18 @@ were worked around in the source -- see each target below.
   module-internal (emitted without `export`) but still land as strong symbols in
   the object, so they are ordinary ratchet rows.
 
+  **Measured cost.** A Rust-lane microbenchmark (20M iterations, 4 runs each,
+  `68dfaf1` vs `c213501`) puts `frame_codec_write_header` at ~2.89 ns/op before
+  and ~3.24 ns/op after -- a real, reproducible **+12%** (the before-runs cluster
+  within ±0.02 ns, so it is not noise). It is NOT extra work: the rustc-visible
+  diff is only the two helpers, whose bodies are the identical statements
+  write_header previously had inline, and neither `#[inline]` nor
+  `#[inline(always)]` moves the number -- consistent with an instruction-layout
+  artifact rather than added instructions. In absolute terms it is ~0.35 ns per
+  *frame* (not per byte): at ~1.1M qps that is under 0.1% of one core, so it was
+  deliberately not chased -- restructuring proven code for it would cost more than
+  it returns. The C++ lane, which is what ships, is unmeasured.
+
 Net: the self-paced pass shipped every target on the list — errors, SparseInt
 T1–T3, the SparseInt T4 round trip, and frame_codec T5/T6 (10 → 51 verified). It
 took two transpiler fixes (both the same bug class: a check auditing
