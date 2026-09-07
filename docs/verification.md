@@ -354,8 +354,8 @@ were worked around in the source -- see each target below.
 
   **Measured cost.** A Rust-lane microbenchmark (20M iterations, 4 runs each,
   `68dfaf1` vs `c213501`) puts `frame_codec_write_header` at ~2.89 ns/op before
-  and ~3.24 ns/op after -- a real, reproducible **+12%** (the before-runs cluster
-  within ±0.02 ns, so it is not noise). It is NOT extra work: the rustc-visible
+  and ~3.24 ns/op after -- **+12%** (the before-runs clustered within ±0.02 ns,
+  so it was not noise at the time it was taken). It is NOT extra work: the rustc-visible
   diff is only the two helpers, whose bodies are the identical statements
   write_header previously had inline, and neither `#[inline]` nor
   `#[inline(always)]` moves the number -- consistent with an instruction-layout
@@ -363,6 +363,17 @@ were worked around in the source -- see each target below.
   *frame* (not per byte): at ~1.1M qps that is under 0.1% of one core, so it was
   deliberately not chased -- restructuring proven code for it would cost more than
   it returns. The C++ lane, which is what ships, is unmeasured.
+
+  **Caveat: this number is not currently re-runnable.** The harness that produced
+  it was a throwaway that was never committed, so nobody -- including its author --
+  can re-take the measurement or check it. Treat the +12% as a historical
+  observation, not a live figure. The C++ throughput benchmark has since been
+  wired in properly (`cmake --build build --target rpcbench`, then
+  `scripts/run_rpcbench.sh`); the equivalent for these Rust-lane micro numbers
+  would be a committed `benches/` target, which does not exist yet. Adding one is
+  not free: the source gate runs `cargo test --workspace --all-targets`, which
+  compiles bench targets too, so a bench must be warning-clean under
+  `RUSTFLAGS=-Dwarnings`.
 
 Net: the self-paced pass shipped every target on the list — errors, SparseInt
 T1–T3, the SparseInt T4 round trip, and frame_codec T5/T6 (10 → 51 verified). It

@@ -77,13 +77,28 @@ suites are `RUN_SERIAL` with `TIMEOUT 600` because they drive real epoll threads
 one to answer a Rust-only question; always budget for one before committing a canonical `.rs` change.
 
 ```sh
-ctest --test-dir build -L runtime_battery --output-on-failure   # the 8 battery binaries
+ctest --test-dir build -L runtime_battery --output-on-failure   # the 9 battery binaries
 ctest --test-dir build -R '^test_fiber$' --output-on-failure    # one suite (name = CMake TARGET name)
 ./build/test_fiber --gtest_filter='FiberTest.SleepUsZero'       # one gtest case
 ```
 
-Seven of the eight battery binaries are gtest; `test_reactor_minimal` is a plain program with no gtest,
+Eight of the nine battery binaries are gtest; `test_reactor_minimal` is a plain program with no gtest,
 so `--gtest_filter` does nothing to it.
+
+**Benchmark.** `rpcbench` is `EXCLUDE_FROM_ALL` — a benchmark is not a correctness gate, and it is not
+registered with ctest (throughput is not pass/fail, and it binds a real TCP port). Build and run it
+explicitly; the harness starts a fresh server per trial and prints one `avg_qps` line each:
+
+```sh
+cmake --build build --parallel 4 --target rpcbench
+scripts/run_rpcbench.sh build/rpcbench before-my-change   # 4 modes x 3 trials
+```
+
+Modes are `fast|fiber|defer|async|fast_vec` and exercise different dispatch paths (inline / stackful
+fiber / deferred reply / stackless task / vector payload), so a change can move one and not the others.
+`fast_vec` needs `-v` and is omitted by default as a different workload. Read the *spread* across trials,
+not the best number: on a shared machine an effect smaller than the trial-to-trial range is not an effect.
+Override with `RPCBENCH_N` (seconds), `RPCBENCH_B` (packet bytes), `RPCBENCH_TRIALS`, `RPCBENCH_MODES`.
 
 **Individual gates** (all also run inside `srpc_goal0_source_gate`). Only the two Python suites run
 standalone — the other two exec the *built* transpiler at
@@ -295,33 +310,40 @@ Four non-obvious things about these tests:
   `inline thread_local rusty::LocalKey<T>`; access goes through the closure-only `.with()`), so each
   thread constructs its own reactor — `tests/reactor_multithread_rust.rs` pins two threads running
   independent suspend→wake→pump cycles in one process. The fiber path works end to end on a poll
-  thread (`srpc_fiber.c` + the context-switch assembly, `-DREUSE_FIBER`; the out-of-repo bench serves
-  rpcbench's `fiber`/`defer` modes at ~1.1M qps), and async suspension is pumped by the facade
+  thread (`srpc_fiber.c` + the context-switch assembly, `-DREUSE_FIBER`; `rpcbench`'s `fiber`/`defer`
+  modes reach ~1.1M qps — reproduce with `cmake --build build --target rpcbench` then
+  `scripts/run_rpcbench.sh build/rpcbench <tag>`), and async suspension is pumped by the facade
   `PollThread::add_tick_hook` (`run_loop` every pass — what pollworker's C++ loop does natively).
   The C fiber engine is multi-poller-safe (audited: its only global, `g_active_fiber`, is
-  `_Thread_local`; pooling is per-reactor), and the out-of-repo bench's `serve2` mode proves two
-  servers with two poll threads, two reactors and live fibers in one process at near-linear aggregate
-  throughput. What remains unbuilt is one `Server` spreading connections across N poll threads — a
-  feature, not a safety gap; C++ battery coverage remains mandatory for teardown.
+  `_Thread_local`; pooling is per-reactor). **An earlier claim here that a `serve2` mode proved two
+  servers with two poll threads at near-linear aggregate throughput is NOT reproducible: no such mode
+  exists in `tests/rpcbench.cc`, whose modes are `fast|fiber|defer|async|fast_vec`.** It was measured
+  with an uncommitted local edit, so treat multi-poller aggregate throughput as unmeasured until
+  someone adds the mode. What remains unbuilt is one `Server` spreading connections across N poll
+  threads — a feature, not a safety gap; C++ battery coverage remains mandatory for teardown.
 - Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
   *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
   drop order by byte offset. A cosmetic refactor turns these red.
 
-**C++ lane (narrow).** `tests/` holds 76 `.cc` files but CMake builds exactly **9**, named in explicit
-`set()` lists — there is no glob for test sources, so adding a `.cc` to `tests/` does nothing. Three of the
-eight have target names differing from their file names (`tests/fiber_test.cc` → `test_fiber`). The other 68
-are dead: nothing compiles them, so nothing proves they still build. Five reference the Mako monorepo
-directly (`deptran/…` in `rpc_log_storage_test.cc`, `rpc_marshallable_proxy_test.cc`,
-`rpc_rocksdb_log_storage_test.cc`, `testharness.cc`; `mako/…` in `test_mako_core_minimal.cc`), and 17 more
-pull `tests/benchmark_service.h`, whose `#include "srpc/srpc.hpp"` is monorepo-relative and does not resolve
-here. The rest include the same headers the built suites do — assume nothing without trying.
+**C++ lane (narrow).** `tests/` holds 77 `.cc` files but CMake names exactly **12** of them, in explicit
+`set()` lists — there is no glob for test sources, so adding a `.cc` to `tests/` does nothing. Those 12 build
+11 targets: the 9 battery binaries, `test_rpc_docs_symbols`, and `rpcbench` (which takes two sources).
+Three battery targets have names differing from their file names (`tests/fiber_test.cc` → `test_fiber`).
+The other 65 are dead: nothing compiles them, so nothing proves they still build. Five reference the Mako
+monorepo directly (`deptran/…` in `rpc_log_storage_test.cc`, `rpc_marshallable_proxy_test.cc`,
+`rpc_rocksdb_log_storage_test.cc`, `testharness.cc`; `mako/…` in `test_mako_core_minimal.cc`), and 15 more
+pull `tests/benchmark_service.h`, whose `#include "srpc/srpc.hpp"` is monorepo-relative. That include is
+*not* an unsolved problem any more — the `rpcbench` target resolves it with a configure-time symlink
+(`build/bench-include/srpc` → the source tree) rather than by editing the generated header, so reviving one
+of those 15 is now mostly a matter of copying `rpcbench`'s include-directory list. The rest include the same
+headers the built suites do — assume nothing without trying.
 
 **Always run `ctest -L srpc`, never a bare `ctest`.** `add_subdirectory(third-party/rusty-cpp)` also
 registers ~69 tests of its own whose executables are *not* in `ALL`, so a bare `ctest --test-dir build`
 reports 83 tests, marks those 69 "Not Run" and exits 8 — a failure that says nothing about SRPC. Every
 test this project owns carries the `srpc` label.
 
-`ctest -L srpc` selects 16: the 8 battery binaries (also labelled `runtime_battery`),
+`ctest -L srpc` selects 16: the 9 battery binaries (also labelled `runtime_battery`),
 `test_rpc_docs_symbols` (also `docs`), `srpc_goal0_standalone_structure`, `srpc_goal0_cargo`,
 `srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`, `srpc_facade_shadow` and
 `srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole Cargo suite. If the googletest
