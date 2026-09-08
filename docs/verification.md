@@ -352,28 +352,36 @@ were worked around in the source -- see each target below.
   module-internal (emitted without `export`) but still land as strong symbols in
   the object, so they are ordinary ratchet rows.
 
-  **Measured cost.** A Rust-lane microbenchmark (20M iterations, 4 runs each,
-  `68dfaf1` vs `c213501`) puts `frame_codec_write_header` at ~2.89 ns/op before
-  and ~3.24 ns/op after -- **+12%** (the before-runs clustered within ±0.02 ns,
-  so it was not noise at the time it was taken). It is NOT extra work: the rustc-visible
-  diff is only the two helpers, whose bodies are the identical statements
-  write_header previously had inline, and neither `#[inline]` nor
-  `#[inline(always)]` moves the number -- consistent with an instruction-layout
-  artifact rather than added instructions. In absolute terms it is ~0.35 ns per
-  *frame* (not per byte): at ~1.1M qps that is under 0.1% of one core, so it was
-  deliberately not chased -- restructuring proven code for it would cost more than
-  it returns. The C++ lane, which is what ships, is unmeasured.
+  **Measured cost: none that reproduces.** An earlier revision of this document
+  reported a **+12%** regression on `frame_codec_write_header` (~2.89 -> ~3.24
+  ns/op, 20M iterations x 4 runs, `68dfaf1` vs `c213501`), and reasoned at length
+  about instruction layout to explain it. That number came from a throwaway
+  harness that was never committed, and it does not survive contact with one that
+  is.
 
-  **Caveat: this number is not currently re-runnable.** The harness that produced
-  it was a throwaway that was never committed, so nobody -- including its author --
-  can re-take the measurement or check it. Treat the +12% as a historical
-  observation, not a live figure. The C++ throughput benchmark has since been
-  wired in properly (`cmake --build build --target rpcbench`, then
-  `scripts/run_rpcbench.sh`); the equivalent for these Rust-lane micro numbers
-  would be a committed `benches/` target, which does not exist yet. Adding one is
-  not free: the source gate runs `cargo test --workspace --all-targets`, which
-  compiles bench targets too, so a bench must be warning-clean under
-  `RUSTFLAGS=-Dwarnings`.
+  Re-measured with `bench/` -- the same two commits, the same machine, the same
+  sitting, built alternately so thermal drift lands on both sides, with
+  `black_box` on every operand and `opt-level=3 / lto / codegen-units=1` pinned
+  in the profile:
+
+      68dfaf1 (before)    min 2.606, 2.625 ns/op
+      c213501 (after)     min 2.580, 2.603 ns/op
+      run-to-run spread   0.082 - 0.118 ns
+
+  The "after" side is marginally *faster*, by roughly a quarter of the noise
+  floor. There is no regression, and the instruction-layout account the old
+  paragraph offered was rationalising an artifact. The likeliest cause of the
+  original figure is a loop the optimiser was free to treat differently between
+  the two versions -- but that harness is gone, so it stays labelled a guess.
+
+  The lesson is the one worth keeping: an uncommitted benchmark is not evidence,
+  and a number nobody can re-take will be believed anyway, including by the
+  person who took it. Reproduce this one with
+  `scripts/run_microbench.sh --compare 68dfaf1 c213501`.
+
+  The C++ lane, which is what ships, remains unmeasured at this resolution, and
+  rpcbench cannot close that gap: a sub-nanosecond leaf effect is ~0.05% of a
+  request at the qps it reports, far under its trial spread.
 
 Net: the self-paced pass shipped every target on the list — errors, SparseInt
 T1–T3, the SparseInt T4 round trip, and frame_codec T5/T6 (10 → 51 verified). It

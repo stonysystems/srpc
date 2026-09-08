@@ -100,6 +100,23 @@ fiber / deferred reply / stackless task / vector payload), so a change can move 
 not the best number: on a shared machine an effect smaller than the trial-to-trial range is not an effect.
 Override with `RPCBENCH_N` (seconds), `RPCBENCH_B` (packet bytes), `RPCBENCH_TRIALS`, `RPCBENCH_MODES`.
 
+`bench/` is the *other* benchmark, and it answers a different question: nanosecond-resolution timing of
+the hot leaf codecs (`frame_codec_write_header`, `sparseint_dump64`/`load64` per length class). rpcbench
+cannot see effects at that scale — a sub-ns leaf change is ~0.05% of a request, far under its trial
+spread — so neither substitutes for the other. Like `verify/`, `bench/` is **workspace-excluded**, so
+`cargo test --workspace --all-targets` never compiles it and it adds nothing to the source gate:
+
+```sh
+scripts/run_microbench.sh                          # current tree
+scripts/run_microbench.sh --compare <refA> <refB>  # A/B, alternating, same sitting
+```
+
+The compare mode is the one that answers questions: it builds each ref in a detached worktree, copies
+*today's* `bench/` into both so the harness is held constant, and interleaves the runs. Absolute ns/op is
+machine- and thermal-dependent; only the back-to-back delta means anything. A cautionary tale lives in
+`docs/verification.md`: a "+12% regression" sat in that file for a while on the strength of an
+uncommitted harness, and vanished the moment a committed one re-took it.
+
 **Individual gates** (all also run inside `srpc_goal0_source_gate`). Only the two Python suites run
 standalone — the other two exec the *built* transpiler at
 `third-party/rusty-cpp/target/release/rusty-cpp-transpiler` and fail closed without it

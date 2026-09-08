@@ -8,7 +8,11 @@ publish = false
 members = ["rusty-cpp-markers", "rusty-rustc"]
 # verify/ is the Verus harness; it pulls vstd and must never enter the
 # production build or the rusty-cpp transpile, so keep it out of the workspace.
-exclude = ["verify"]
+# bench/ is the microbenchmark harness, excluded for the same reason in the
+# other direction: the source gate runs `cargo test --workspace --all-targets`
+# under -Dwarnings, and a benchmark must not add compile time or lint surface
+# to a correctness gate.
+exclude = ["verify", "bench"]
 resolver = "2"
 
 [lib]
