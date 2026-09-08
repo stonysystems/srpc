@@ -42,7 +42,7 @@ safety net, and the `Verified:` paragraph the commit convention demands is copie
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets  # -> passed/failed counts
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release             # -> configure exit code
 cmake --build build --parallel 4                                    # -> build exit code (ALL pulls in both gates)
-ctest --test-dir build -L srpc --output-on-failure                  # -> must say 16 tests, not 6
+ctest --test-dir build -L srpc --output-on-failure                  # -> must say 17 tests, not 7
 ```
 
 Submodules must be initialized before anything CMake- or transpiler-related
@@ -287,10 +287,16 @@ Four non-obvious things about these tests:
   seam must define the stubs itself (`#[unsafe(no_mangle)] pub extern "C" fn srpc_clock_monotonic_us…`);
   ~12 test files already do. Otherwise it fails to *link*.
 - **A test that reaches through the `cpp::`/`rusty` facade may prove nothing.** `rusty-rustc/src/lib.rs` is a
-  2.4k-line hand-written facade that rusty-cpp omits from generated C++ by package identity — so it is
-  allowed to lie, and still does where it must: `fiber_sleep` only records the duration and
-  `RandomGenerator::rand(min, max)` returns `min`. Its `with_test_fiber` / `take_test_sleep_calls` hooks
-  are what such tests are actually for. It is no longer all mock, though: `PollThread` is a REAL epoll
+  ~3k-line hand-written facade that rusty-cpp omits from generated C++ by package identity — so it is
+  allowed to stand in for the C++ runtime, and still does where it must: `fiber_sleep` only records the
+  duration. What it may no longer do is stand in *silently*: a body of `{}` or `0` still answers, so a
+  caller gets a plausible wrong result and every Rust-lane test over that path proves nothing. That shape
+  has cost two real bugs — `RandomGenerator::rand` returned `min` (so `ClientPool` always selected index 0;
+  fixed, it is a real LCG now) and an inert `Serialize_` pair serialized nothing while the loud stub's own
+  error message recommended it (deleted). `scripts/check_facade_stubs.py` now gates this: a facade function
+  that cannot do the real thing must refuse loudly, and the six bodies where a constant *is* the truth (a
+  Rust `Arc` is never null) are listed in its `ALLOWED_STUBS` with reasons. Its `with_test_fiber` /
+  `take_test_sleep_calls` hooks are what such tests are actually for. It is no longer all mock: `PollThread` is a REAL epoll
   loop (edge-triggered, 1 ms tick, command queue, job queue -- a faithful port of
   `pollworker_poll_loop`'s semantics minus reactor coupling and fibers), which is what lets the canonical
   TCP transport run under rustc. Reaching a *new* C++ runtime API from a canonical module means writing
@@ -360,11 +366,11 @@ registers ~69 tests of its own whose executables are *not* in `ALL`, so a bare `
 reports 83 tests, marks those 69 "Not Run" and exits 8 — a failure that says nothing about SRPC. Every
 test this project owns carries the `srpc` label.
 
-`ctest -L srpc` selects 16: the 9 battery binaries (also labelled `runtime_battery`),
+`ctest -L srpc` selects 17: the 9 battery binaries (also labelled `runtime_battery`),
 `test_rpc_docs_symbols` (also `docs`), `srpc_goal0_standalone_structure`, `srpc_goal0_cargo`,
-`srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`, `srpc_facade_shadow` and
+`srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`, `srpc_facade_shadow`, `srpc_facade_stubs` and
 `srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole Cargo suite. If the googletest
-submodule is missing, CMake only *warns* and silently registers 6 instead of 15 — a green run is not
+submodule is missing, CMake only *warns* and silently registers 7 instead of 17 — a green run is not
 proof the battery ran.
 
 **Verus lane.** `verify/` is a workspace-excluded crate that `#[path]`-links the real sources and runs

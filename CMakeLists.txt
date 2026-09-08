@@ -666,6 +666,9 @@ add_custom_target(srpc_goal0_source_gate
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
     COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_stubs.py"
+    COMMAND
         "${CMAKE_COMMAND}"
         -E env
         "RUSTFLAGS=-Dwarnings"
@@ -1189,6 +1192,19 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
     )
     set_tests_properties(srpc_facade_shadow PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    # The shadow gate's companion: that one asks whether a facade item shadows a
+    # canonical implementation, this one asks whether a facade item LIES -- a
+    # body of `{}` or `0` that answers plausibly instead of refusing loudly.
+    # Two such bodies have already cost real bugs (RandomGenerator::rand, and
+    # the inert Serialize_ pair).  Same zero dependencies.
+    add_test(
+        NAME srpc_facade_stubs
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_stubs.py"
+    )
+    set_tests_properties(srpc_facade_stubs PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
     add_test(

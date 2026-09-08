@@ -68,7 +68,16 @@ ALLOWED_SHADOWS = {
         "which then rejects the PRE-EXISTING, unmodified `pub type Fiber = "
         "cpp::ReactorFiber;` in rpc/client.rs: `cpp_import_namespace crate preflight "
         "rejects a namespace-emitted type alias whose name collides with a flat sibling "
-        "leaf`. Adding the import anywhere is enough to break an unrelated file."
+        "leaf`. Adding the import anywhere is enough to break an unrelated file. "
+        "BLAST RADIUS: because that alias stands, `Fiber::create_run_impl` in "
+        "rpc/client.rs resolves to the FACADE fiber, not the canonical one. It used to "
+        "return `None`, so `ClientConnection::bind_channel` spawned no recv-loop fiber "
+        "under rustc and `run_recv_loop()` never ran -- silently, since the result is "
+        "discarded. That is now a loud panic in the facade, and the path is dead in any "
+        "case (`bind_channel` has no callers; the live binders are "
+        "`bind_channel_direct` and `bind_channel_via_poll_thread`). Anything routed "
+        "back through `bind_channel` needs the canonical "
+        "`crate::reactor::fiber_create_run_impl` instead."
     ),
     "reactor::PollThread": (
         "The original reason here -- a crate-global alias table rewriting unrelated "

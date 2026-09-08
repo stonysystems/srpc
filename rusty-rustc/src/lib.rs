@@ -455,8 +455,22 @@ impl ReactorFiber {
 
     /// Model of the `srpc::Fiber::create_run_impl` static. Production C++
     /// resolves it to the reactor carrier's own definition, which heap-
-    /// allocates the task and schedules it; the model runs nothing so a
-    /// direct-rustc check never starts a fiber.
+    /// allocates the task and schedules it.
+    ///
+    /// This used to `return None` -- "the model runs nothing so a direct-rustc
+    /// check never starts a fiber". That is a silent answer to a request that
+    /// cannot be honoured, and it had a live consumer: `rpc/client.rs` aliases
+    /// `pub type Fiber = cpp::ReactorFiber` (forced by the `reactor::Fiber`
+    /// entry in check_facade_shadow.py's ALLOWED_SHADOWS), so
+    /// `ClientConnection::bind_channel` reached THIS function to spawn its
+    /// recv-loop fiber. Under rustc the closure never ran, `run_recv_loop()`
+    /// never started, and the discarded `None` left no trace. The path is dead
+    /// today only because `bind_channel` currently has no callers -- the live
+    /// binders are `bind_channel_direct` and `bind_channel_via_poll_thread`.
+    ///
+    /// So it panics instead. Anyone who wires that path up under rustc now
+    /// finds out immediately, and is pointed at the real fiber entry: canonical
+    /// `crate::reactor::fiber_create_run_impl` does schedule on a live reactor.
     ///
     /// # Safety
     ///
@@ -467,7 +481,13 @@ impl ReactorFiber {
     where
         F: FnMut() + 'static,
     {
-        None
+        panic!(
+            "rusty::ReactorFiber::create_run_impl has no rustc body: it models the \
+             C++ reactor carrier's fiber scheduler. Returning None here would \
+             silently drop the closure -- the caller's fiber would simply never \
+             run. Schedule through canonical crate::reactor::fiber_create_run_impl \
+             on a live reactor instead"
+        )
     }
 }
 
@@ -1344,26 +1364,53 @@ pub mod rusty {
         crate::SerializableRegistryFactory::from_callable(callback)
     }
 
+    // The three `srpc_payload_*` models below stand in for structural C++
+    // payload methods that only exist in C++. They have no callers anywhere --
+    // not in canonical Rust, not in tests, and not in rust-type-map.toml or
+    // cpp-module-index.toml -- so they are kept as declarations of the foreign
+    // contract, not deleted.
+    //
+    // Their bodies were `{}` and `0`. That is the shape this facade has been
+    // bitten by twice (see `RandomGenerator::rand` and the deleted
+    // `SerializableSerializeDispatch`): an unused silent stub is harmless right
+    // up until someone routes through it, at which point it answers, wrongly,
+    // without a sound. They refuse loudly instead, which costs nothing while
+    // they stay unused and is exactly what is wanted the moment they do not.
+
     /// # Safety
     ///
     /// `T` must implement the structural C++ payload save contract for the
     /// supplied archive and may not retain the archive reference.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_payload_save<T, Archive>(_value: &T, _archive: &mut Archive) {}
+    pub unsafe fn srpc_payload_save<T, Archive>(_value: &T, _archive: &mut Archive) {
+        unimplemented!(
+            "srpc_payload_save models a C++-only structural payload contract and \
+             has no Rust body; writing nothing here would silently drop the payload"
+        )
+    }
 
     /// # Safety
     ///
     /// `T` must implement the structural C++ payload load contract for the
     /// supplied archive and may not retain the archive reference.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_payload_load<T, Archive>(_value: &mut T, _archive: &mut Archive) {}
+    pub unsafe fn srpc_payload_load<T, Archive>(_value: &mut T, _archive: &mut Archive) {
+        unimplemented!(
+            "srpc_payload_load models a C++-only structural payload contract and \
+             has no Rust body; reading nothing here would leave the value untouched \
+             and report success"
+        )
+    }
 
     /// # Safety
     ///
     /// `T` must provide the structural C++ `kind() const` payload method.
     #[allow(unsafe_code)]
     pub unsafe fn srpc_payload_kind<T>(_value: &T) -> i32 {
-        0
+        unimplemented!(
+            "srpc_payload_kind models a C++-only structural payload method and has \
+             no Rust body; 0 is a real kind value, not an absence"
+        )
     }
 
     /// # Safety
