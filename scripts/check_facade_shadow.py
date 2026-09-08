@@ -163,15 +163,62 @@ def block_at(text, open_brace_index):
     raise SystemExit(f"{FACADE}: unbalanced braces from offset {open_brace_index}")
 
 
-def facade_modules(text):
-    # The facade's foreign-module surface is everything under `pub mod srpc`.
-    m = re.search(r"^pub[ \t]+mod[ \t]+srpc[ \t]*\{", text, re.M)
-    if not m:
-        raise SystemExit(f"{FACADE}: no `pub mod srpc` block found")
-    body = block_at(text, m.end() - 1)
+def resolve_module(name, decl_text, decl_dir):
+    """`(body, child_dir)` for `pub mod <name>` declared in `decl_text`.
+
+    Follows BOTH Rust spellings: the inline `pub mod name { .. }`, and the
+    file-based `pub mod name;` whose body lives in `<decl_dir>/name.rs` or
+    `<decl_dir>/name/mod.rs`.
+
+    `decl_dir` is the directory holding the file-based children of the file that
+    `decl_text` came from -- `src/` for a declaration in `src/lib.rs`, and
+    `src/srpc/` for one in `src/srpc.rs`.  Rust puts the children of both
+    `foo.rs` and `foo/mod.rs` in `foo/`, so the returned `child_dir` is simply
+    `decl_dir / name` either way.
+
+    Returns `(None, None)` when `name` is not declared in this text.
+    """
+    escaped = re.escape(name)
+    inline = re.search(rf"^[ \t]*pub[ \t]+mod[ \t]+{escaped}[ \t]*\{{", decl_text, re.M)
+    if inline:
+        return block_at(decl_text, inline.end() - 1), decl_dir / name
+    filed = re.search(rf"^[ \t]*pub[ \t]+mod[ \t]+{escaped}[ \t]*;", decl_text, re.M)
+    if filed:
+        for candidate in (decl_dir / f"{name}.rs", decl_dir / name / "mod.rs"):
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8"), decl_dir / name
+        raise SystemExit(
+            f"`pub mod {name};` is declared but has no body file: neither "
+            f"{(decl_dir / (name + '.rs'))} nor {(decl_dir / name / 'mod.rs')} exists"
+        )
+    return None, None
+
+
+def facade_modules():
+    """Every module under the facade's `srpc` foreign-module surface.
+
+    Walks the module tree by PATH rather than concatenating every file.  That
+    matters because the surface may be split across files for legibility, and a
+    parser that only understood the inline form would find nothing and pass
+    VACUOUSLY -- silently ceasing to police whatever moved out, which is exactly
+    the rot this gate exists to prevent.  Both spellings are followed, at the
+    `srpc` block itself and at each module inside it.
+    """
+    body, child_dir = resolve_module("srpc", FACADE.read_text(encoding="utf-8"), FACADE_SRC)
+    if body is None:
+        raise SystemExit(
+            f"{FACADE}: no `pub mod srpc` found, inline or file-based. The "
+            "facade's foreign-module surface is everything under that block; "
+            "without it this gate would pass vacuously."
+        )
+
     out = {}
-    for sub in re.finditer(r"^[ \t]*pub[ \t]+mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\{", body, re.M):
-        out[sub.group(1)] = block_at(body, sub.end() - 1)
+    for sub in re.finditer(
+        r"^[ \t]*pub[ \t]+mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*[;{]", body, re.M
+    ):
+        sub_body, _ = resolve_module(sub.group(1), body, child_dir)
+        if sub_body is not None:
+            out[sub.group(1)] = sub_body
     return out
 
 
@@ -199,40 +246,12 @@ def canonical_path(module):
     return None
 
 
-def facade_text() -> str:
-    """Every facade source file, concatenated.
-
-    Deliberately NOT just lib.rs.  The facade may be split into modules for
-    legibility, and this gate must follow it there -- scanning one file would
-    silently stop policing whatever moved out, which is exactly the class of rot
-    this gate exists to prevent.
-
-    The scan below understands the inline `pub mod srpc { .. }` form.  If the
-    srpc block is ever moved to a file-based module (`pub mod srpc;`), this
-    parser would find nothing and pass vacuously, so that shape is rejected
-    loudly instead.
-    """
-    parts = []
-    for path in sorted(FACADE_SRC.rglob("*.rs")):
-        body = path.read_text(encoding="utf-8")
-        if re.search(r"^\s*pub mod srpc\s*;", body, re.MULTILINE):
-            raise SystemExit(
-                f"{path}: `pub mod srpc;` is a file-based module, but this gate "
-                "only parses the inline `pub mod srpc {{ .. }}` form -- it would "
-                "pass vacuously. Teach facade_text()/facade_modules() to follow "
-                "file modules before splitting the srpc block."
-            )
-        parts.append(body)
-    return "\n".join(parts)
-
-
 def main():
-    text = facade_text()
     violations = []
     stale = set(ALLOWED_SHADOWS)
     checked = 0
 
-    for module, body in sorted(facade_modules(text).items()):
+    for module, body in sorted(facade_modules().items()):
         path = canonical_path(module)
         if path is None:
             continue  # no canonical module of that name; nothing can be shadowed

@@ -286,8 +286,10 @@ Four non-obvious things about these tests:
 - **There is no `build.rs`, so the plain-C kernels are never linked.** A test touching a module with a C
   seam must define the stubs itself (`#[unsafe(no_mangle)] pub extern "C" fn srpc_clock_monotonic_us…`);
   ~12 test files already do. Otherwise it fails to *link*.
-- **A test that reaches through the `cpp::`/`rusty` facade may prove nothing.** `rusty-rustc/src/lib.rs` is a
-  ~3k-line hand-written facade that rusty-cpp omits from generated C++ by package identity — so it is
+- **A test that reaches through the `cpp::`/`rusty` facade may prove nothing.** `rusty-rustc/src/` is a
+  ~3.2k-line hand-written facade in three files — `lib.rs` (2.3k, the `rusty::` runtime surface),
+  `srpc.rs` (757, the `cpp::srpc::*` foreign-module surface canonical code imports) and `task.rs` (149,
+  the stackless-task half of the async runtime) — that rusty-cpp omits from generated C++ by package identity — so it is
   allowed to stand in for the C++ runtime, and still does where it must: `fiber_sleep` only records the
   duration. What it may no longer do is stand in *silently*: a body of `{}` or `0` still answers, so a
   caller gets a plausible wrong result and every Rust-lane test over that path proves nothing. That shape
@@ -304,7 +306,10 @@ Four non-obvious things about these tests:
 
   What it may no longer do is *shadow* a canonical implementation. `scripts/check_facade_shadow.py` (in the
   source gate and in `ctest -L srpc`) fails if a facade item shares a name with a canonical one, unless it
-  is listed in that script's `ALLOWED_SHADOWS` with a reason. The ten entries there are the real
+  is listed in that script's `ALLOWED_SHADOWS` with a reason. It resolves the module tree by **path**
+  (`resolve_module`), following both `pub mod name { … }` and `pub mod name;` → `<dir>/name.rs`, which is
+  what lets the `srpc` surface live in its own file; an earlier text-concatenating version could only
+  parse the inline form and fail-closed rather than pass vacuously over a file module. The ten entries there are the real
   boundary of the Rust lane, each one measured against the pinned transpiler rather than reasoned about:
   `debugging::verify` is generic, and the flat-import contract requires a route-(a) leaf to be a
   non-generic free function; `rand::RandomGenerator` carries `cpp_abi` markers that make it an adapted
