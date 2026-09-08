@@ -667,22 +667,19 @@ impl SerializableV64 {
     }
 }
 
-/// Rustc-only dispatch facade for the generated C++ `Serialize_` overload
-/// namespace. The production type map restores that exact namespace spelling;
-/// the Rust body is intentionally inert because canonical unit tests exercise
-/// concrete leaf implementations directly.
-pub struct SerializableSerializeDispatch;
-
-impl SerializableSerializeDispatch {
-    pub fn serialize<T: ?Sized, Archive>(_value: &T, _archive: &mut Archive) {}
-}
-
-/// Read-side counterpart of `SerializableSerializeDispatch`.
-pub struct SerializableDeserializeDispatch;
-
-impl SerializableDeserializeDispatch {
-    pub fn deserialize<T, Archive>(_value: &mut T, _archive: &mut Archive) {}
-}
+// `SerializableSerializeDispatch` / `SerializableDeserializeDispatch` used to
+// live here: a pair of `Serialize_`-spelled structs whose Rust bodies were `{}`
+// -- "intentionally inert", on the theory that Rust-lane tests only exercise
+// concrete leaves. They were superseded by `srpc::serializable::Serialize_`
+// below, which carries the real `RustcAdlSerialize` bound and is registered as
+// a foreign symbol in cpp-module-index.toml, and they were left behind with
+// zero live callers.
+//
+// Leaving them was worse than not writing them. The empty bodies still ANSWERED:
+// a caller who reached them serialized nothing at all, silently -- the exact
+// failure the loud `srpc_adl_serialize` below exists to prevent -- and both that
+// panic's message and a comment in misc/serializable.rs still named them as the
+// recommended Rust-lane entry point. Deleted, with their rust-type-map.toml rows.
 
 /// Rustc-only model of the move-only zero-argument registry factory. The
 /// production type map restores `rusty::Function<SerializableProxy()>`.
@@ -1278,7 +1275,7 @@ pub mod rusty {
              body: it is the C++ open-set ADL path, and bounding it would cascade \
              into the generic container impls the emitter cannot lower. Rust-lane \
              callers serialize leaves through \
-             rusty::SerializableSerializeDispatch::serialize or the Serialize \
+             rusty::srpc::serializable::Serialize_::serialize or the Serialize \
              trait; container serialization is C++-only"
         )
     }
@@ -1298,7 +1295,7 @@ pub mod rusty {
              Rust body: it is the C++ open-set ADL path, and bounding it would \
              cascade into the generic container impls the emitter cannot lower. \
              Rust-lane callers deserialize leaves through \
-             rusty::SerializableDeserializeDispatch::deserialize or the \
+             rusty::srpc::serializable::Deserialize_::deserialize or the \
              Deserialize trait; container deserialization is C++-only"
         )
     }

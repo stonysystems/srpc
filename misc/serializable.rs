@@ -265,10 +265,13 @@ impl SourceBase for *mut FdSource {
 // the chain and of every container element site must stay byte-identical
 // because the elements resolve through the QUALIFIED `Serialize_::serialize`
 // overload set, which poison-scoped ADL cannot see.  The bounded Rust-lane
-// entry is `rusty::SerializableSerializeDispatch::serialize` instead, whose
-// bound is the facade trait these two impls satisfy.  Measured: each impl
-// emits only an uninstantiated, empty-bodied member template that no C++
-// code calls.
+// entry is `rusty::srpc::serializable::Serialize_::serialize` instead, whose
+// `RustcAdlSerialize` bound is the facade trait these two impls satisfy.
+// (This used to name `rusty::SerializableSerializeDispatch::serialize`, a
+// superseded stub whose body was `{}` -- following that advice serialized
+// nothing, silently. It has been deleted; see the note at its old site in
+// rusty-rustc/src/lib.rs.)  Measured: each impl emits only an uninstantiated,
+// empty-bodied member template that no C++ code calls.
 #[allow(unsafe_code)]
 impl<T: Serialize + ?Sized> cpp::RustcAdlSerialize<T> for BinaryWriteArchive {
     unsafe fn rustc_adl_serialize(&mut self, value: &T) {
