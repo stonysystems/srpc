@@ -412,7 +412,7 @@ fn ordered_collections_preserve_order_uniqueness_and_replacement() {
 
 #[test]
 fn unordered_collections_round_trip_and_remove_duplicate_keys() {
-    let mut map = rusty::HashMap::new();
+    let mut map = std::collections::HashMap::new();
     map.insert(3i32, 30i32);
     map.insert(1, 10);
     map.insert(3, 99);
@@ -430,7 +430,7 @@ fn unordered_collections_round_trip_and_remove_duplicate_keys() {
     pairs.sort();
     assert_eq!(pairs, [(1, 10), (3, 30)]);
 
-    let mut set = rusty::HashSet::new();
+    let mut set = std::collections::HashSet::new();
     let mut standard_set = rusty::SerializableStdUnorderedSet::default();
     for value in [3i32, 1, 3] {
         set.insert(value);

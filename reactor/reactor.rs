@@ -1369,8 +1369,8 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
 }
 
 thread_local! {
-    pub static reactor_clients_th_: RefCell<rusty::HashMap<String, Vec<PollableProxy>>> =
-        RefCell::new(rusty::HashMap::<String, Vec<PollableProxy>>::new());
+    pub static reactor_clients_th_: RefCell<HashMap<String, Vec<PollableProxy>>> =
+        RefCell::new(HashMap::<String, Vec<PollableProxy>>::new());
     pub static reactor_prune_hwm_th_: Cell<usize> = const { Cell::new(64usize) };
 }
 

@@ -607,10 +607,12 @@ impl<K: Serialize, V: Serialize> Serialize for rusty::BTreeMap<K, V> {
 }
 
 // The two hashbrown write bodies, same explicit-iterator shape as the
-// B-tree pair above. HashSet has no const begin()/end() of its own, so
-// it walks the underlying HashMap field: `self.map.iter()` lowers to
-// `rusty::iter(self_.map)`, whose next() yields
-// Option<tuple<const T&, const monostate&>> — hence the `kv.0`.
+// B-tree pair above. Both target the std spelling: the transpiler lowers
+// `std::collections::HashSet`/`HashMap` to the same `rusty::HashSet`/
+// `rusty::HashMap` the facade names did, so the emitted overloads are
+// unchanged. Under rustc `HashSet::iter()` yields `&T` directly (the
+// facade walk over its `.map` field yielded a `(&T, &())` pair, which is
+// what the old `kv.0` selected).
 //
 // WARNING (unchanged by this conversion): ANY hashbrown enumeration
 // (iter()/begin()/drain()) routes through the `rusty::iter(table)`
@@ -621,23 +623,23 @@ impl<K: Serialize, V: Serialize> Serialize for rusty::BTreeMap<K, V> {
 // crash-free and is what the RustyHashSetPrimitives /
 // RustyHashMapPrimitives tests exercise. If that ever changes, the
 // encoder needs a mangler-safe enumeration path (or a fixed toolchain).
-impl<T: Serialize> Serialize for rusty::HashSet<T> {
+impl<T: Serialize> Serialize for std::collections::HashSet<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
-        let mut it = self.map.iter();
+        let mut it = self.iter();
         loop {
             let e = it.next();
             if e.is_none() {
                 break;
             }
-            let kv = e.unwrap();
-            Serialize_::serialize(kv.0, ar);
+            let elem = e.unwrap();
+            Serialize_::serialize(elem, ar);
         }
     }
 }
 
-impl<K: Serialize, V: Serialize> Serialize for rusty::HashMap<K, V> {
+impl<K: Serialize, V: Serialize> Serialize for std::collections::HashMap<K, V> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -977,7 +979,7 @@ impl<T: Default + Deserialize + Ord> Deserialize for rusty::SerializableStdSet<T
     }
 }
 
-impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for rusty::HashSet<T> {
+impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for std::collections::HashSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1045,7 +1047,7 @@ impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for r
     }
 }
 
-impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> Deserialize for rusty::HashMap<K, V> {
+impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> Deserialize for std::collections::HashMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1274,6 +1276,11 @@ impl SerializableRegistry {
 }
 
 struct SerializableRegistryMap {
+    // Facade-spelled on purpose: `rusty::HashMap::new()` is a `const fn`,
+    // which is what lets `registry()` const-initialise its `static`. std's
+    // `new()` is not const, and the const route std offers (`with_hasher`)
+    // drags a hasher parameter into the emitted C++ type (measured: 132
+    // emitted lines move). Everything non-static in this crate spells std.
     map: rusty::HashMap<i32, SerializableRegistryFactory>,
 }
 

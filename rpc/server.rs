@@ -25,7 +25,7 @@ use std::sync::{Arc, Weak as ArcWeak};
 // standard-library ones: the retired carrier's C++ surface is
 // `rusty::HashMap` / `rusty::HashSet` and the checked type map keeps that
 // exact spelling.
-use rusty::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::basetypes::Time;
 use crate::channel::{
@@ -1311,8 +1311,12 @@ pub fn request_fill_body(req: &mut Request, bytes: &[u8]) {
 /// definition. Linkage widens from `static` (internal) to inline/module,
 /// which is benign — this is the non-exported `namespace srpc` and
 /// server.cpp is the module's only TU.
-static g_rpc_id_missing: std::sync::Mutex<HashSet<i32>> =
-    std::sync::Mutex::<HashSet<i32>>::new(HashSet::<i32>::new());
+//
+// Facade-spelled `rusty::HashSet` on purpose: its `const fn new()` is what
+// lets this be a const-initialised `static`; std's `new()` is not const. It
+// lowers to the same `rusty::HashSet` the std spelling does.
+static g_rpc_id_missing: std::sync::Mutex<rusty::HashSet<i32>> =
+    std::sync::Mutex::<rusty::HashSet<i32>>::new(rusty::HashSet::<i32>::new());
 
 pub fn sconn_dispatch_in_fiber(
     ctx: Arc<RpcServiceContext>,
