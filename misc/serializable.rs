@@ -1281,8 +1281,8 @@ struct SerializableRegistryMap {
 // template: the generated lazy function-local registry then has linkonce
 // linkage instead of adding a new externally strong provider symbol.
 #[allow(clippy::extra_unused_type_parameters)]
-fn registry<T>() -> &'static rusty::Mutex<SerializableRegistryMap> {
-    static R: rusty::Mutex<SerializableRegistryMap> = rusty::Mutex::new(SerializableRegistryMap {
+fn registry<T>() -> &'static std::sync::Mutex<SerializableRegistryMap> {
+    static R: std::sync::Mutex<SerializableRegistryMap> = std::sync::Mutex::new(SerializableRegistryMap {
         map: rusty::HashMap::new(),
     });
     &R

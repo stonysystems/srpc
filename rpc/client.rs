@@ -553,7 +553,7 @@ impl Future {
             return;
         }
         let guard = self.state_.lock().unwrap();
-        // rusty::Condvar is @safe; wait WHILE not-ready and not-timed-out.
+        // std::sync::Condvar is @safe; wait WHILE not-ready and not-timed-out.
         let _reacquired = self.ready_cond_.wait_while(guard, |s| !s.ready && !s.timed_out).unwrap();
     }
 
@@ -736,16 +736,16 @@ pub struct ClientConnection {
     // Box constructs the move-disabled C++ FiberChannel in its final slot;
     // Arc then shares that slot with suspended receivers and replacement.
     #[allow(clippy::redundant_allocation)]
-    fiber_channel_: rusty::Mutex<Option<Arc<Box<FiberChannel>>>>,
-    direct_channel_: rusty::Mutex<Option<Arc<ChannelConnectionProxy>>>,
+    fiber_channel_: std::sync::Mutex<Option<Arc<Box<FiberChannel>>>>,
+    direct_channel_: std::sync::Mutex<Option<Arc<ChannelConnectionProxy>>>,
     closing_: AtomicBool,
     channel_mode_: ClientCloneCell<bool>,
     factory_: Mutex<Option<Arc<Mutex<ChannelFactoryProxy>>>>,
     xid_counter_: Counter,
-    pending_fu_: rusty::Mutex<HashMap<i64, Arc<Future>>>,
+    pending_fu_: std::sync::Mutex<HashMap<i64, Arc<Future>>>,
     queued_fu_: Arc<Mutex<HashMap<i64, Arc<Future>>>>,
     replaying_: Arc<AtomicBool>,
-    pending_cb_slots_: rusty::Mutex<Vec<Option<AsyncReplyCallback>>>,
+    pending_cb_slots_: std::sync::Mutex<Vec<Option<AsyncReplyCallback>>>,
     // This private state machine never installs StateChangeCallback. Lifecycle
     // changes its stored state directly; CallbackManager notifications run
     // after release instead of calling callback-capable transition methods.
@@ -808,16 +808,16 @@ impl ClientConnection {
         ClientConnection {
             poll_thread_worker_: poll_thread_worker,
             lifecycle_: Mutex::new(ClientBindingState { generation: 0, active: false }),
-            fiber_channel_: rusty::Mutex::<Option<Arc<Box<FiberChannel>>>>::new(None),
-            direct_channel_: rusty::Mutex::<Option<Arc<ChannelConnectionProxy>>>::new(None),
+            fiber_channel_: std::sync::Mutex::<Option<Arc<Box<FiberChannel>>>>::new(None),
+            direct_channel_: std::sync::Mutex::<Option<Arc<ChannelConnectionProxy>>>::new(None),
             closing_: AtomicBool::new(false),
             channel_mode_: ClientCloneCell::<bool>::new(false),
             factory_: Mutex::new(None),
             xid_counter_: Counter::new(0i64),
-            pending_fu_: rusty::Mutex::<HashMap<i64, Arc<Future>>>::new(HashMap::<i64, Arc<Future>>::new()),
+            pending_fu_: std::sync::Mutex::<HashMap<i64, Arc<Future>>>::new(HashMap::<i64, Arc<Future>>::new()),
             queued_fu_: Arc::new(Mutex::new(HashMap::new())),
             replaying_: Arc::new(AtomicBool::new(false)),
-            pending_cb_slots_: rusty::Mutex::<Vec<Option<AsyncReplyCallback>>>::new(make_prefilled_cb_slots()),
+            pending_cb_slots_: std::sync::Mutex::<Vec<Option<AsyncReplyCallback>>>::new(make_prefilled_cb_slots()),
             state_machine_: ConnectionStateMachine::new(),
             reconnect_policy_: ClientCloneCell::<ReconnectPolicy>::new(ReconnectPolicy::new()),
             reconnect_: ReconnectState {
@@ -1575,7 +1575,7 @@ pub struct Client {
     pending_circuit_breaker_config_field: Cell<CircuitBreakerConfig>,
     pending_reconnect_policy_field: Cell<ReconnectPolicy>,
     callback_manager_field: Arc<CallbackManager>,
-    pending_factory_field: rusty::Mutex<Option<ChannelFactoryProxy>>,
+    pending_factory_field: std::sync::Mutex<Option<ChannelFactoryProxy>>,
     // The Client retains the same counters as its connection so references
     // remain valid through close and reconnect, including callback reentry.
     metrics_field: Arc<ConnectionMetrics>,
@@ -1601,7 +1601,7 @@ impl Client {
             pending_circuit_breaker_config_field: Cell::<CircuitBreakerConfig>::new(CircuitBreakerConfig::disabled()),
             pending_reconnect_policy_field: Cell::<ReconnectPolicy>::new(ReconnectPolicy::conservative()),
             callback_manager_field: Arc::<CallbackManager>::new(CallbackManager::new()),
-            pending_factory_field: rusty::Mutex::<Option<ChannelFactoryProxy>>::new(None),
+            pending_factory_field: std::sync::Mutex::<Option<ChannelFactoryProxy>>::new(None),
             metrics_field: Arc::new(ConnectionMetrics::new()),
         }
     }
@@ -1971,8 +1971,8 @@ impl PoolState {
 // re-reading there would invert the order against `get_client`.
 pub struct ClientPool {
     poll_thread_worker_: Option<Arc<PollThread>>,
-    state_: rusty::Mutex<PoolState>,
-    config_: rusty::Mutex<PoolConfig>,
+    state_: std::sync::Mutex<PoolState>,
+    config_: std::sync::Mutex<PoolConfig>,
 }
 
 impl Drop for ClientPool {
@@ -2005,8 +2005,8 @@ impl ClientPool {
         }
         ClientPool {
             poll_thread_worker_: ptw,
-            state_: rusty::Mutex::<PoolState>::new(PoolState::new()),
-            config_: rusty::Mutex::<PoolConfig>::new(config),
+            state_: std::sync::Mutex::<PoolState>::new(PoolState::new()),
+            config_: std::sync::Mutex::<PoolConfig>::new(config),
         }
     }
 

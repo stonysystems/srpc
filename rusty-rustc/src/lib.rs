@@ -456,21 +456,6 @@ impl<T: ?Sized> StdArcGetMutExt<T> for ::std::sync::Arc<T> {
     }
 }
 
-/// Minimal rustc-only model of the runtime mutex.  Production C++ keeps using
-/// `rusty::Mutex`; this wrapper exists only so canonical sources can be checked
-/// by rustc, including const initialization of process-wide registries.
-pub struct Mutex<T>(::std::sync::Mutex<T>);
-
-impl<T> Mutex<T> {
-    pub const fn new(value: T) -> Self {
-        Self(::std::sync::Mutex::new(value))
-    }
-
-    pub fn lock(&self) -> ::std::sync::LockResult<::std::sync::MutexGuard<'_, T>> {
-        self.0.lock()
-    }
-}
-
 // Runtime collection names retain distinct C++ type mappings. Their Rust
 // storage delegates to standard collections, including key replacement,
 // ordering and duplicate elimination.
@@ -500,14 +485,6 @@ impl<K, V> HashMap<K, V> {
 
 impl<K: Eq + ::std::hash::Hash, V> HashMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) { self.values.insert(key, value); }
-    pub fn insert_callable<C, R>(&mut self, key: K, callback: C)
-    where
-        C: Fn() -> R + 'static,
-        R: 'static,
-        V: FromCallable0<C, R>,
-    {
-        self.values.insert(key, <V as FromCallable0<C, R>>::from_callable(callback));
-    }
     pub fn get(&self, key: &K) -> Option<&V> { self.values.get(key) }
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> { self.values.get_mut(key) }
     pub fn contains_key(&self, key: &K) -> bool { self.values.contains_key(key) }
@@ -761,17 +738,6 @@ pub mod rusty {
         pub use ::std::io::Error;
     }
 
-    pub mod ptr {
-        /// # Safety
-        ///
-        /// `pointer.add(offset)` must remain within the same allocation or one
-        /// byte past it.
-        #[allow(unsafe_code)]
-        pub unsafe fn add<T>(pointer: *const T, offset: usize) -> *const T {
-            unsafe { pointer.add(offset) }
-        }
-    }
-
     pub mod net {
         pub use crate::{
             RustcIoError as Error, RustcSocketAddrV4 as SocketAddrV4,
@@ -954,19 +920,6 @@ impl<T: ?Sized> RustyHandleIsValid for ::std::sync::Arc<T> {
     }
 }
 
-/// `rusty::Box<T>::get()` — the raw pointee pointer the runtime handle
-/// exposes. A Rust `Box` is never null, so this is an ordinary reborrow.
-pub trait RustyBoxGet<T: ?Sized> {
-    fn get(&self) -> *mut T;
-}
-
-impl<T: ?Sized> RustyBoxGet<T> for Box<T> {
-    fn get(&self) -> *mut T {
-        let borrowed: &T = self;
-        borrowed as *const T as *mut T
-    }
-}
-
 pub trait RustyFunctionIsEmpty {
     fn is_empty(&self) -> bool;
 }
@@ -974,30 +927,6 @@ pub trait RustyFunctionIsEmpty {
 impl<T: ?Sized> RustyFunctionIsEmpty for Box<T> {
     fn is_empty(&self) -> bool {
         false
-    }
-}
-
-/// Rustc-only model of the runtime condition variable. Production C++ keeps
-/// using `rusty::Condvar`; this wrapper exists only so canonical sources can
-/// be checked by rustc.
-pub struct Condvar(::std::sync::Condvar);
-
-impl Condvar {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self(::std::sync::Condvar::new())
-    }
-
-    pub fn notify_all(&self) {
-        self.0.notify_all();
-    }
-
-    pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(
-        &self,
-        guard: ::std::sync::MutexGuard<'a, T>,
-        condition: F,
-    ) -> ::std::sync::LockResult<::std::sync::MutexGuard<'a, T>> {
-        self.0.wait_while(guard, condition)
     }
 }
 
@@ -1389,24 +1318,6 @@ impl<A: 'static, B: 'static> Function<dyn Fn(A, B)> {
     }
 }
 
-/// Conversion used by the serializable registry's rustc-only HashMap facade.
-pub trait FromCallable0<C, R> {
-    fn from_callable(callback: C) -> Self;
-}
-
-impl<C, R> FromCallable0<C, R> for Function<dyn Fn() -> R>
-where
-    C: Fn() -> R + 'static,
-    R: 'static,
-{
-    fn from_callable(callback: C) -> Self {
-        Self {
-            inner: Some(Box::new(callback)),
-            runtime_layout_padding: [0; 32],
-        }
-    }
-}
-
 impl<R: 'static> Function<dyn FnMut() -> R + Send> {
     pub fn from_callable<C>(callback: C) -> Self
     where
@@ -1428,16 +1339,6 @@ impl<R: 'static> Function<dyn Fn() -> R + Send> {
             inner: Some(Box::new(callback)),
             runtime_layout_padding: [0; 32],
         }
-    }
-}
-
-impl<R: 'static> Function<dyn Fn() -> R> {
-    /// Erases a const-callable zero-argument callback with a return value.
-    pub fn from_callable<C>(callback: C) -> Self
-    where
-        C: Fn() -> R + 'static,
-    {
-        <Self as FromCallable0<C, R>>::from_callable(callback)
     }
 }
 

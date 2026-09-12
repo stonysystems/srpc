@@ -95,15 +95,15 @@ pub struct TcpConnection {
     fd_: UnsafeCell<Option<Arc<LegacyOwnedFd>>>,
     peer_address_: LegacyStdString,
     outbound_high_water_: usize,
-    outbound_: rusty::Mutex<TcpOutBuf>,
+    outbound_: std::sync::Mutex<TcpOutBuf>,
     inbound_: RefCell<FrameStreamReader>,
     closed_: AtomicBool,
     on_closed_fired_: AtomicBool,
     pending_write_update_: AtomicBool,
     poll_thread_: Option<Arc<PollThread>>,
-    on_frame_: rusty::Mutex<OnFrameCallback>,
-    on_closed_: rusty::Mutex<OnClosedCallback>,
-    on_error_: rusty::Mutex<OnErrorCallback>,
+    on_frame_: std::sync::Mutex<OnFrameCallback>,
+    on_closed_: std::sync::Mutex<OnClosedCallback>,
+    on_error_: std::sync::Mutex<OnErrorCallback>,
 }
 
 // SAFETY: all state reachable through shared references is either immutable
@@ -134,15 +134,15 @@ impl TcpConnection {
             fd_: UnsafeCell::new(Some(Arc::new(unsafe { LegacyOwnedFd::from_raw_fd(fd) }))),
             peer_address_: peer_address,
             outbound_high_water_: kTcpConnectionOutboundHighWaterDefault,
-            outbound_: rusty::Mutex::<TcpOutBuf>::new(Default::default()),
+            outbound_: std::sync::Mutex::<TcpOutBuf>::new(Default::default()),
             inbound_: RefCell::new(FrameStreamReader::new()),
             closed_: AtomicBool::new(false),
             on_closed_fired_: AtomicBool::new(false),
             pending_write_update_: AtomicBool::new(false),
             poll_thread_: None,
-            on_frame_: rusty::Mutex::<OnFrameCallback>::new(Default::default()),
-            on_closed_: rusty::Mutex::<OnClosedCallback>::new(Default::default()),
-            on_error_: rusty::Mutex::<OnErrorCallback>::new(Default::default()),
+            on_frame_: std::sync::Mutex::<OnFrameCallback>::new(Default::default()),
+            on_closed_: std::sync::Mutex::<OnClosedCallback>::new(Default::default()),
+            on_error_: std::sync::Mutex::<OnErrorCallback>::new(Default::default()),
         }
     }
 
@@ -435,8 +435,8 @@ pub struct TcpListener {
     // on upgrading this weak pointer: the channel shim owns the listener Arc
     // and registers it immediately after a successful bind.
     self_weak_: Option<ArcWeak<TcpListener>>,
-    on_accept_: rusty::Mutex<OnAcceptCallback>,
-    on_error_: rusty::Mutex<OnErrorCallback>,
+    on_accept_: std::sync::Mutex<OnAcceptCallback>,
+    on_error_: std::sync::Mutex<OnErrorCallback>,
 }
 
 // SAFETY: `listener_` and `bound_address_` are only accessed while holding
@@ -455,8 +455,8 @@ impl TcpListener {
             accept_callback_thread_: AtomicU32::new(0),
             poll_thread_: None,
             self_weak_: None,
-            on_accept_: rusty::Mutex::<OnAcceptCallback>::new(Default::default()),
-            on_error_: rusty::Mutex::<OnErrorCallback>::new(Default::default()),
+            on_accept_: std::sync::Mutex::<OnAcceptCallback>::new(Default::default()),
+            on_error_: std::sync::Mutex::<OnErrorCallback>::new(Default::default()),
         }
     }
 

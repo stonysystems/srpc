@@ -57,7 +57,7 @@ pub type FdPollableMap = HashMap<i32, PollableProxy>;
 pub type FdModeMap = HashMap<i32, i32>;
 pub type FdSet = HashSet<i32>;
 pub type JobSet = rusty::ReactorJobSet<Arc<dyn Job>>;
-pub type PollJoinSlot = rusty::Mutex<Option<rusty::thread::JoinHandle<()>>>;
+pub type PollJoinSlot = std::sync::Mutex<Option<rusty::thread::JoinHandle<()>>>;
 // The historical callback ABI is Vec<std::pair<u16, i64>>, not a Rust tuple.
 // Use the checked facade that maps exactly to std::pair in generated C++.
 pub type QuorumDanglingVec = Vec<rusty::StdPair<u16, i64>>;
@@ -922,7 +922,7 @@ struct StacklessWakeTicket {
 
 struct StacklessWakeIngress {
     accepting: rusty::sync::atomic::AtomicBool,
-    pending: rusty::Mutex<VecDeque<Arc<StacklessWakeTicket>>>,
+    pending: std::sync::Mutex<VecDeque<Arc<StacklessWakeTicket>>>,
 }
 
 struct StacklessWakeBinding {
@@ -1135,7 +1135,7 @@ fn stackless_wake_ingress<WakeDomain>(reactor: &Reactor) -> Arc<StacklessWakeIng
 
     let ingress = Arc::new(StacklessWakeIngress {
         accepting: rusty::sync::atomic::AtomicBool::new(true),
-        pending: rusty::Mutex::new(VecDeque::<Arc<StacklessWakeTicket>>::new()),
+        pending: std::sync::Mutex::new(VecDeque::<Arc<StacklessWakeTicket>>::new()),
     });
     let owner = StacklessWakeOwner {
         reactor_key: key,

@@ -296,7 +296,7 @@ pub struct ServerConnection {
     pub ctx_: Arc<RpcServiceContext>,
     pub status_: AtomicI32,
     pub weak_self_: WeakServerConnection,
-    pub channel_proxy_: rusty::Mutex<Option<Arc<ChannelConnectionProxy>>>,
+    pub channel_proxy_: std::sync::Mutex<Option<Arc<ChannelConnectionProxy>>>,
     pub channel_mode_: AtomicBool,
     pub count: i32,
 }
@@ -307,7 +307,7 @@ impl ServerConnection {
             ctx_: ctx,
             status_: AtomicI32::new(ServerConnStatus::CONNECTED as i32),
             weak_self_: Default::default(),
-            channel_proxy_: rusty::Mutex::<Option<Arc<ChannelConnectionProxy>>>::new(None),
+            channel_proxy_: std::sync::Mutex::<Option<Arc<ChannelConnectionProxy>>>::new(None),
             channel_mode_: AtomicBool::new(false),
             count: 0i32,
         }
@@ -574,18 +574,18 @@ pub fn server_now_nanos() -> u64 {
 
 /// Block until `do_shutdown()` flips the flag.
 //
-// MEASURED ABI PIN, not style. `clippy::borrowed_box` wants `&rusty::Condvar`
+// MEASURED ABI PIN, not style. `clippy::borrowed_box` wants `&std::sync::Condvar`
 // here. The incumbent carrier's generated C++ (rpc/server.cpp at c6c55ba,
 // line 1173) exports exactly
-//     void server_wait_for_shutdown_impl(const rusty::Mutex<ShutdownState>&,
-//                                        const rusty::Box<rusty::Condvar>&)
-// and taking the lint regenerates that declaration as `const rusty::Condvar&`
+//     void server_wait_for_shutdown_impl(const std::sync::Mutex<ShutdownState>&,
+//                                        const rusty::Box<std::sync::Condvar>&)
+// and taking the lint regenerates that declaration as `const std::sync::Condvar&`
 // -- a different mangled symbol, i.e. one incumbent symbol removed and one
 // added. The `&Box<..>` spelling is the ABI.
 #[allow(clippy::borrowed_box)]
 pub fn server_wait_for_shutdown_impl(
-    state: &rusty::Mutex<ShutdownState>,
-    cond: &Box<rusty::Condvar>,
+    state: &std::sync::Mutex<ShutdownState>,
+    cond: &Box<std::sync::Condvar>,
 ) {
     let entering: LegacyStdString = "Server::wait_for_shutdown".to_string();
     // SAFETY: the file pointer is null.
@@ -664,7 +664,7 @@ pub fn server_drain_impl(
 
 /// NOTE: hooks run WHILE the mutex is held. That is the pre-existing
 /// behaviour and is preserved deliberately.
-pub fn server_run_shutdown_hooks(hooks: &rusty::Mutex<Vec<ShutdownHook>>) {
+pub fn server_run_shutdown_hooks(hooks: &std::sync::Mutex<Vec<ShutdownHook>>) {
     let message: LegacyStdString =
         "Server::graceful_shutdown: transitioning to CLOSING, executing hooks".to_string();
     // SAFETY: the file pointer is null.
@@ -766,10 +766,10 @@ pub struct Server {
     pending_fast_rpc_ids_field: HashSet<i32>,
     ctx_field: Option<Arc<RpcServiceContext>>,
     poll_thread_field: Option<Arc<PollThread>>,
-    shutdown_state_field: rusty::Mutex<ShutdownState>,
-    shutdown_cond_field: Box<rusty::Condvar>,
+    shutdown_state_field: std::sync::Mutex<ShutdownState>,
+    shutdown_cond_field: Box<std::sync::Condvar>,
     shutdown_phase_field: Cell<ShutdownPhase>,
-    shutdown_hooks_field: rusty::Mutex<Vec<ShutdownHook>>,
+    shutdown_hooks_field: std::sync::Mutex<Vec<ShutdownHook>>,
     pending_requests_field: Arc<ServerPendingRequestsAtomic>,
     drop_heartbeat_replies_field: Arc<ServerDropHeartbeatRepliesAtomic>,
     instance_id_field: u64,
@@ -782,7 +782,7 @@ pub struct Server {
     // `closed` marker makes it CORRECT too: an accept that loses the
     // race against ~Server must close the connection instead of parking
     // it in an orphaned vector nobody will ever close.
-    channel_sconns_field: Arc<rusty::Mutex<ChannelSconns>>,
+    channel_sconns_field: Arc<std::sync::Mutex<ChannelSconns>>,
 }
 
 impl Drop for Server {
@@ -833,18 +833,18 @@ impl Server {
             pending_fast_rpc_ids_field: HashSet::<i32>::new(),
             ctx_field: None,
             poll_thread_field: server_resolve_poll_thread(poll_thread_worker),
-            shutdown_state_field: rusty::Mutex::<ShutdownState>::new(ShutdownState {
+            shutdown_state_field: std::sync::Mutex::<ShutdownState>::new(ShutdownState {
                 shutdown: false,
             }),
-            shutdown_cond_field: Box::new(rusty::Condvar::new()),
+            shutdown_cond_field: Box::new(std::sync::Condvar::new()),
             shutdown_phase_field: Cell::new(ShutdownPhase::RUNNING),
-            shutdown_hooks_field: rusty::Mutex::<Vec<ShutdownHook>>::new(Vec::<ShutdownHook>::new()),
+            shutdown_hooks_field: std::sync::Mutex::<Vec<ShutdownHook>>::new(Vec::<ShutdownHook>::new()),
             pending_requests_field: Arc::new(ServerPendingRequestsAtomic::new(0i32)),
             drop_heartbeat_replies_field: Arc::new(ServerDropHeartbeatRepliesAtomic::new(false)),
             instance_id_field: server_generate_instance_id(),
             channel_factory_field: None,
             channel_listener_field: None,
-            channel_sconns_field: Arc::new(rusty::Mutex::<ChannelSconns>::new(ChannelSconns {
+            channel_sconns_field: Arc::new(std::sync::Mutex::<ChannelSconns>::new(ChannelSconns {
                 closed: false,
                 conns: Vec::<Arc<ServerConnection>>::new(),
             })),
@@ -1051,7 +1051,7 @@ impl Server {
             }
             let mut listener: ChannelListenerProxy = listener_opt.unwrap();
 
-            let sconns_arc: Arc<rusty::Mutex<ChannelSconns>> = self.channel_sconns_field.clone();
+            let sconns_arc: Arc<std::sync::Mutex<ChannelSconns>> = self.channel_sconns_field.clone();
             let ctx_arc: Arc<RpcServiceContext> = self.ctx_field.as_ref().unwrap().clone();
 
             {
@@ -1311,8 +1311,8 @@ pub fn request_fill_body(req: &mut Request, bytes: &[u8]) {
 /// definition. Linkage widens from `static` (internal) to inline/module,
 /// which is benign — this is the non-exported `namespace srpc` and
 /// server.cpp is the module's only TU.
-static g_rpc_id_missing: rusty::Mutex<HashSet<i32>> =
-    rusty::Mutex::<HashSet<i32>>::new(HashSet::<i32>::new());
+static g_rpc_id_missing: std::sync::Mutex<HashSet<i32>> =
+    std::sync::Mutex::<HashSet<i32>>::new(HashSet::<i32>::new());
 
 pub fn sconn_dispatch_in_fiber(
     ctx: Arc<RpcServiceContext>,
