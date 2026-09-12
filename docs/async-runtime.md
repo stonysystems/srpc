@@ -5,10 +5,11 @@ srpc has an async runtime. It is not Tokio, not async-std, and not any crate:
 executor is hand-written and lives in two halves that mirror each other across
 the language boundary.
 
-This document exists because the component had no name. Its pieces are dissolved
-into two large files (`reactor/reactor.rs` is 3,745 lines; `rusty-rustc/src/lib.rs`
-is ~3,100), and nothing announced "this is the async runtime" — so the design was
-effectively undiscoverable without reading both end to end.
+This document exists because the component had no name. Its canonical half is
+dissolved into one large file (`reactor/reactor.rs`, 3,765 lines) and its facade
+half into `rusty-rustc/src/task.rs` (154 lines, re-exported from the 1,524-line
+`rusty-rustc/src/lib.rs`), and nothing announced "this is the async runtime" — so
+the design was effectively undiscoverable without reading both end to end.
 
 ## Why it is hand-written
 
@@ -27,7 +28,7 @@ to be filled; it is the constraint expressing itself.
 
 ### Canonical half — `reactor/reactor.rs`
 
-The executor proper. Roughly 200 of the file's 3,745 lines:
+The executor proper — a small, scattered fraction of the file's 3,765 lines:
 
 | Piece | Where |
 | --- | --- |
@@ -35,17 +36,20 @@ The executor proper. Roughly 200 of the file's 3,745 lines:
 | Ready queue | `ready_stackless_tasks_: RefCell<VecDeque<usize>>` |
 | Poll pass | `run_loop(..)` calls `process_stackless_tasks()` every iteration |
 | Wake → re-poll | waking pushes the task's index onto the ready queue |
-| Spawn | `reactor_spawn_stackless_task_with_result` registers a `StacklessTaskEntry` and returns its index |
+| Spawn | `reactor_spawn_stackless_task_with_result(&Reactor, rusty::Task<T>, on_ready: FnMut(T))` registers a `StacklessTaskEntry`; it returns `()` and delivers the result through the callback |
 | Accounting | `stackless_wake_*` routing, cancel counters, profile counters |
 
 Public surface is deliberately small: `StacklessTaskEntry`,
 `StacklessCancelReport`, `stackless_cancel_report`,
 `reactor_spawn_stackless_task_with_result`.
 
-### Facade half — `rusty-rustc/src/lib.rs`
+### Facade half — `rusty-rustc/src/task.rs`
 
 The rustc-lane types, shaped to match the C++ coroutine types they stand in for:
-`Task<T>`, `Waker`, `Context`, `Poll`, and `PollThread`.
+`Task<T>`, `Waker`, `Context` and `Poll`. They live in `rusty-rustc/src/task.rs` and
+are re-exported by `rusty-rustc/src/lib.rs` (`mod task; pub use task::{Context, Poll,
+Task, Waker};`). `PollThread` is *not* among them any more — it is canonical Rust in
+`reactor/reactor.rs`, alongside its `PollThreadWorker`.
 
 The interesting part is `Task::from_future`. Under rustc an `async fn` is an
 ordinary Rust `Future`, so the facade bridges the two waker worlds: it wraps
@@ -55,19 +59,30 @@ srpc's own `Waker` in a `FacadeWake` implementing `std::task::Wake`, builds a re
 `Poll`. Waking flows the other way — `FacadeWake::wake_by_ref` calls srpc's
 `Waker::wake`, which enqueues the task index for the next pass.
 
-`PollThread` is a real epoll loop (edge-triggered, 1 ms tick, command queue, job
-queue) and it is what *drives* the executor: it calls `Reactor::run_loop` through
-`add_tick_hook` on every pass — the same thing pollworker's C++ loop does
-natively.
+### What drives it — `pollworker_poll_loop`
+
+The poll thread is what *drives* the executor, and it now does so directly, with no
+hook registry in between. `PollThread` spawns a `PollThreadWorker` whose
+`pollworker_poll_loop` (in `reactor/reactor.rs`) is a real epoll loop — edge-triggered,
+a 1 ms `epoll_wait` timeout from `epoll_wait_impl` in `reactor/epoll_wrapper.rs`, a
+command queue and a job queue. Once per pass, after dispatching readiness, draining
+commands and processing deferred removals, it does
+`let reactor = Reactor::get_reactor(); (*reactor).run_loop(false, true);` — an
+unconditional call in the loop body, the same thing pollworker's C++ loop does natively.
+
+There is no `add_tick_hook`. Nothing in the tree defines or calls it; an earlier design
+registered the reactor pass as a tick callback on the facade `PollThread`, and that
+spelling survives only in prose. `grep -rn add_tick_hook` is the check.
 
 ## How one `async fn` actually runs
 
 1. `async fn` compiles to a normal Rust `Future` state machine (rustc does this).
 2. It is handed to `Task::from_future`, which boxes and pins it.
-3. `reactor_spawn_stackless_task_with_result` registers the task and hands back an
-   index.
-4. `PollThread`'s tick hook calls `run_loop`, which drains the ready queue and
-   polls each task through the waker bridge.
+3. `reactor_spawn_stackless_task_with_result` registers the task in the table and
+   keeps the `on_ready` callback that will receive its value.
+4. `pollworker_poll_loop` calls `run_loop` once per epoll pass; `run_loop` calls
+   `process_stackless_tasks()`, which drains the ready queue and polls each task
+   through the waker bridge.
 5. When the future's waker fires, the task's index is enqueued and it is polled
    again on the next pass.
 

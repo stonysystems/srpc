@@ -527,7 +527,7 @@ that links it — runs the whole Rust suite and `clippy -D warnings` first, so a
 warning breaks the C++ build.
 
 `third-party/googletest` is only needed for the test battery; without it CMake warns
-and builds fewer tests. Of the 76 C++ test files in `tests/`, the build compiles 9; the
+and builds fewer tests. Of the 82 C++ test files in `tests/`, CMake names 20 by hand; the
 rest are not currently wired into CMake.
 
 Sanitizers are a whole-configuration switch, so give them their own build directory:
@@ -545,31 +545,36 @@ are canonical **Rust** files living at their historical C++ paths in `base/`, `m
 `reactor/` and `rpc/`, and the pinned rusty-cpp transpiler generates a `srpc.<name>.cppm`
 C++23 module from each. Two toolchains read the exact same bytes: rustc, through the
 generated crate index `src/lib.rs`, and rusty-cpp, through a single whole-crate
-invocation. Hand-written non-Rust does remain, but only as seam:
-`reactor/epoll_platform_linux.cc` — the one C++ implementation unit, supplying the Linux
-epoll layer — plus eight plain-C syscall kernels (`*/srpc_*.c`) and the two fiber
-context-switch assembly files.
+invocation. Hand-written non-Rust does remain, but only as seam: nine plain-C syscall
+kernels (`*/srpc_*.c`) and the two fiber context-switch assembly files, listed together
+in `scripts/native-kernel-sources.txt`. There is no longer any hand-written C++
+implementation unit — epoll policy is canonical Rust in `reactor/epoll_wrapper.rs`, and
+the syscalls it needs sit behind `reactor/srpc_epoll.c` / `reactor/srpc_epoll.h` like
+every other kernel.
 
 That is what `srpc_goal0_dual_compile` checks. It recompiles every generated module on
 its own, links one importer program twice — once with those fresh objects placed ahead
 of `libsrpc.a`, once against `libsrpc.a` alone — runs both, and then compares `nm`
 symbol sets per module: the
-archive must carry exactly what the freshly compiled objects carry, plus the five
-symbols of that one platform implementation unit. So a change to a `.rs` file is
-simultaneously a Rust change and a C++ ABI change.
+archive must carry exactly what the freshly compiled objects carry. With the platform
+implementation unit gone, that check no longer allows any extra hand-written symbols.
+So a change to a `.rs` file is simultaneously a Rust change and a C++ ABI change.
 
-Two modules also carry machine-checked contracts. `misc/stat.rs` and
-`rpc/internal_protocol.rs` have Verus specifications written inline, behind
-`#[cfg(verus)]`, and verified against the real sources rather than a copy:
+Five modules also carry machine-checked contracts. `base/basetypes.rs`, `misc/stat.rs`,
+`rpc/errors.rs`, `rpc/frame_codec.rs` and `rpc/internal_protocol.rs` have Verus
+specifications written inline, behind `#[cfg(verus)]`, and verified against the real
+sources rather than a copy:
 
 ```sh
 VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh
 ```
 
-`docs/verification.md` explains the scope, which is deliberately narrow — the
+`docs/verification.md` explains the scope, which is still deliberately narrow — the
 response-header codec round-trip in `rpc/internal_protocol.rs`, and a first-sample
 invariant that pins a bug that actually shipped. Lifting the round trip up into
-`rpc/frame_codec.rs` is listed there as the next property, not a proven one.
+`rpc/frame_codec.rs` is no longer a to-do: that module now carries its own contracts for
+the header word, the write bound and the peek bound. Run the script and read its output
+rather than trusting a count quoted in prose.
 
 ## What changed since simple-rpc
 
@@ -594,34 +599,40 @@ The IDL is nearly unchanged. The generated C++ is not.
 
 Worth knowing before you rely on them:
 
-- `Client::metrics()` always returns zeros. Read metrics off the connection instead —
-  and add `import srpc.connection_metrics;`, which is also outside the umbrella:
+- `Client::metrics()` is live, not a stub: `Client::connect` hands its own
+  `Arc<ConnectionMetrics>` down to the connection, so the client and the connection share
+  one set of counters across close and reconnect. Naming the type still needs
+  `import srpc.connection_metrics;`, which is commented out of the `srpc.hpp` umbrella:
 
   ```cpp
   auto conn = cl->connection();
   if (conn.is_some()) { printf("%lu\n", conn.unwrap()->metrics().requests_sent()); }
   ```
 
-  The `LEAST_CONNECTIONS` and `LEAST_LATENCY` pool strategies read the same stub, so
-  they do not currently differentiate, and `ClientPool` health checks read it too — a
-  connected client is always judged healthy and nothing is ever evicted.
-- Buffered requests are parked with a TTL and expired, not replayed after reconnect.
+  The `LEAST_CONNECTIONS` and `LEAST_LATENCY` pool strategies read those same counters
+  (`in_flight_requests()` and `avg_latency_us()`/`requests_completed()` in
+  `clientpool_select`), so they do differentiate.
+- Buffered requests are parked with a TTL and expired, *and* replayed: a successful
+  reconnect calls `clientconn_replay_pending_for_binding` once the binding generation
+  still matches, so a request queued while offline is resent rather than dropped.
 - The heartbeat protocol is implemented end to end, but nothing currently ticks the
   client-side timer.
-- `set_keepalive()` stores its configuration but does not yet push it to the socket.
 
 ## Going deeper
 
-`docs/srpc-book.md` is the reference behind this tutorial: eighteen chapters taking the
-same machinery apart layer by layer — the fiber context switch, the reactor and its
-event system, the wire format, the client and server state machines, serialization, the
-code generator, and the reliability features. `docs/verification.md` covers the Verus
-lane.
+`docs/srpc-book.md` is the reference behind this tutorial: twenty numbered chapters
+taking the same machinery apart layer by layer — the fiber context switch, the reactor
+and its event system, the wire format, the client and server state machines,
+serialization, the code generator, the reliability features, and finally the two-compiler
+lane itself. `docs/verification.md` covers the Verus lane.
 
 ## Not documented yet
 
 These work but are not covered above: `raw` and `async` handlers in depth, and the
 Python stub. `tests/benchmark_service.{rpc,h,cc}` is the fullest worked example — IDL,
 generated header, and all twelve handlers defined out of line on the generated class.
-Nothing in the build compiles it, and its committed header still carries the unedited
-`#include "srpc/srpc.hpp"`, so fix that line before you try.
+The `rpcbench` target compiles it, but `rpcbench` is `EXCLUDE_FROM_ALL`, so an ordinary
+build does not. Its committed header still opens with the monorepo-relative
+`#include "srpc/srpc.hpp"`; CMake resolves that with a configure-time symlink
+(`build/bench-include/srpc` → the source tree) instead of editing the generated file, so
+copy `rpcbench`'s include-directory list rather than patching the header.

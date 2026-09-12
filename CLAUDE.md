@@ -14,21 +14,20 @@ All 37 production modules are canonical **Rust** files living at their historica
 - **rusty-cpp** — one whole-crate invocation (`--crate Cargo.toml`) emits all 37 `.cppm` providers,
   which are the only *providers* in `libsrpc.a`.
 
-The hand-written C++/C that remains is seam, never logic: **`reactor/epoll_platform_linux.cc`**
-(the platform *implementation* unit for `srpc.epoll_wrapper` — the one hand-maintained C++ TU, and the
-sole inline-Rust DSL carrier), eight plain-C kernels (`*/srpc_*.c`) and their five `srpc_*.h` headers,
-`reactor/fiber_context_{x86_64,aarch64}.S`, and the C++ headers: `srpc.hpp`, `std_compat.hpp`,
-`base/all.hpp` (a five-import `base/` umbrella), seven `#pragma once` shims whose whole body is
-`import srpc.<module>;`, `rpc/frame_codec.hpp` (that import plus load-bearing `<queue>`/`<stack>`), and
-`rpc/fiber_channel.hpp` (an `#include <memory>` anchor with no import at all). Finding
-`rpc/frame_codec.hpp` beside `rpc/frame_codec.rs` is not a second implementation — never change behavior
-by editing a shim.
+Canonical Rust owns SRPC scheduling, transport policy, serialization, and reliability logic.
+`build.rs` and CMake compile the same nine C sources plus the selected architecture's fiber assembly
+from `scripts/native-kernel-sources.txt`. Those sources provide individual OS operations, platform
+layouts, entropy and clock reads, and context switching. Epoll policy is now in
+`reactor/epoll_wrapper.rs`; `reactor/epoll_platform_linux.cc` has been removed. Compatibility headers
+import generated modules, while `misc/serializable_support.hpp` supplies bounded C++ trait forwarding.
+Do not put SRPC policy in these adapters or patch generated C++ to bypass lowering. Fix canonical Rust
+or general compiler support. Read [the runtime ownership and migration notes](docs/canonical-rust-runtime.md).
 
-"Dual compile" is not two implementations. It recompiles each generated `.cppm` into its own object
-(imports resolved against CMake's configured BMIs), links one shared importer program twice — once over
-those fresh objects placed ahead of `libsrpc.a`, once over `libsrpc.a` alone — runs both, and requires
-the per-module `nm` strong-symbol sets to satisfy `production == generated + PLATFORM_IMPL_SYMBOLS`
-(1961 provider symbols plus 5 platform symbols).
+The dual-compile gate recompiles generated providers, runs its C++ importer against fresh objects and
+against the production archive, and compares measured ABI and import inventories. Current expectations
+live in `scripts/check_srpc_crate_mode.py`; do not copy symbol totals into documentation. The separate
+`srpc_runtime_parity` test compares actual Rust and generated-C++ runtime transcripts. Both checks are
+needed: two C++ executions alone cannot validate Cargo behavior.
 
 Consequence that governs almost every edit: **a change to a `.rs` file is simultaneously a Rust change
 and a C++ ABI change.** A green `cargo test` does not mean the C++ still builds or keeps its ABI.
@@ -42,20 +41,22 @@ safety net, and the `Verified:` paragraph the commit convention demands is copie
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets  # -> passed/failed counts
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release             # -> configure exit code
 cmake --build build --parallel 4                                    # -> build exit code (ALL pulls in both gates)
-ctest --test-dir build -L srpc --output-on-failure                  # -> must say 17 tests, not 7
+ctest --test-dir build -L srpc --output-on-failure                  # inspect the registered suites too
 ```
 
-Submodules must be initialized before anything CMake- or transpiler-related
-(`third-party/rusty-cpp` pinned at `21fc8f7b…` on branch `goal0-on-main`, plus `third-party/googletest`):
+Initialize `third-party/rusty-cpp` and `third-party/googletest` before building. The gitlink and hard
+checks in `scripts/extract_srpc_rust.py` and `scripts/check_srpc_crate_mode.py` define the current
+transpiler pin; a copied revision in prose is not authoritative:
 
 ```sh
 git submodule update --init --recursive
 ```
 
-**Rust lane** (no C++ toolchain needed — the fast inner loop):
+**Rust lane.** Cargo also needs a C compiler and archiver for the shared native kernels:
 
 ```sh
 cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --doc
 RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets   # what the gate actually runs
 cargo clippy --locked --workspace --all-targets -- -D warnings       # a lint here breaks the C++ build
 
@@ -63,7 +64,8 @@ cargo test --test frame_codec_rust                                   # one test 
 cargo test --test stat_rust -- --exact some_test_fn_name             # one test function
 ```
 
-**C++ lane** (needs Clang ≥ 22 with libc++, CMake ≥ 3.30, Ninja, Cargo, Python 3):
+**C++ lane** (needs Clang ≥ 22 with libc++, CMake ≥ 3.30, Ninja, Cargo, Python 3, plus `rg` (ripgrep) and a
+populated local Cargo registry — see the two source-gate prerequisites under *Individual gates*):
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -77,13 +79,14 @@ suites are `RUN_SERIAL` with `TIMEOUT 600` because they drive real epoll threads
 one to answer a Rust-only question; always budget for one before committing a canonical `.rs` change.
 
 ```sh
-ctest --test-dir build -L runtime_battery --output-on-failure   # the 9 battery binaries
+ctest --test-dir build -L runtime_battery --output-on-failure   # configured runtime and parity tests
 ctest --test-dir build -R '^test_fiber$' --output-on-failure    # one suite (name = CMake TARGET name)
 ./build/test_fiber --gtest_filter='FiberTest.SleepUsZero'       # one gtest case
 ```
 
-Eight of the nine battery binaries are gtest; `test_reactor_minimal` is a plain program with no gtest,
-so `--gtest_filter` does nothing to it.
+Some runtime targets are plain programs, including `test_reactor_minimal` and `test_runtime_parity`.
+`--gtest_filter` applies only to gtest targets. Inspect `ctest --test-dir build -N -L srpc` and the explicit
+CMake test lists rather than relying on a historical suite count.
 
 **Benchmark.** `rpcbench` is `EXCLUDE_FROM_ALL` — a benchmark is not a correctness gate, and it is not
 registered with ctest (throughput is not pass/fail, and it binds a real TCP port). Build and run it
@@ -117,26 +120,41 @@ machine- and thermal-dependent; only the back-to-back delta means anything. A ca
 `docs/verification.md`: a "+12% regression" sat in that file for a while on the strength of an
 uncommitted harness, and vanished the moment a committed one re-took it.
 
-**Individual gates** (all also run inside `srpc_goal0_source_gate`). Only the two Python suites run
-standalone — the other two exec the *built* transpiler at
-`third-party/rusty-cpp/target/release/rusty-cpp-transpiler` and fail closed without it
-(`inline-Rust emitter is unavailable`, exit 1; `no transpiler at …`, exit 2). Build it with
-`cmake --build build --target build_rusty_cpp_transpiler`, or point at one explicitly — but note the two
-take it differently: `extract_srpc_rust.py --transpiler <path>` (also honours `$RUSTY_CPP_TRANSPILER`),
-versus `srpc_dsl_check.sh <path>` as a bare positional argument (it reads neither the flag nor the env var):
+**Individual gates.** The source gate checks canonical inventory, compiler contracts, native kernel
+ownership, facade declarations, negative controls, Rust tests, and clippy. The extraction check needs the
+built transpiler; build it with `cmake --build build --target build_rusty_cpp_transpiler`. The DSL check no
+longer does — it still accepts a transpiler path for CMake compatibility, but never runs it.
 
 ```sh
-python3 scripts/tests/test_goal0_standalone.py   # manifest <-> lib.rs <-> CMakeLists inventory agreement
-python3 scripts/tests/test_goal0_contracts.py    # fail-closed negative controls on the ratchets
-python3 scripts/check_facade_shadow.py           # no rusty-rustc stub may shadow a canonical fn
-python3 scripts/extract_srpc_rust.py --check     # needs transpiler; src/lib.rs vs rust-modules.toml (--write regenerates)
-bash scripts/srpc_dsl_check.sh                   # needs transpiler; DSL drift in reactor/epoll_platform_linux.cc
+python3 scripts/tests/test_goal0_standalone.py
+python3 scripts/tests/test_goal0_contracts.py
+python3 scripts/check_facade_shadow.py
+python3 scripts/check_facade_stubs.py
+python3 scripts/check_native_kernels.py
+python3 scripts/tests/test_facade_audit.py
+python3 scripts/tests/test_runtime_parity.py
+python3 scripts/extract_srpc_rust.py --check
+bash scripts/srpc_dsl_check.sh
 ```
 
-`test_goal0_contracts.py` is itself a "green is not proof" trap: without a transpiler the whole
-`GateContractTests` class is skipped in `setUpClass`, so its 12 tests — every ABI/import/digest negative
-control — are never counted. The run prints `Ran 10 tests` / `OK (skipped=1)`, one skip line for twelve
-lost tests, and exits 0. A real run says `Ran 22`.
+Two host prerequisites are easy to miss because nothing in the tree vendors them, and both fail the *source
+gate*, not just the standalone script:
+
+- `scripts/srpc_dsl_check.sh` shells out to `rg` (ripgrep) under `set -euo pipefail`. Without `rg` on
+  `PATH` the command substitution exits 127, the script reports `canonical source scan failed` and
+  propagates that status — it fails closed rather than reporting zero carriers.
+- `scripts/facade_audit.py` — the shared engine behind both `check_facade_shadow.py` and
+  `check_facade_stubs.py` — builds its `syn` AST scanner with
+  `cargo build --quiet --locked --offline --manifest-path scripts/rust_source_audit/Cargo.toml` and
+  `check=True`. `--offline` means the crates in `scripts/rust_source_audit/Cargo.lock` (`syn`, `quote`,
+  `proc-macro2`, `serde_json` and their transitive deps) must already be in the local Cargo registry; on a
+  cold machine, warm it once with network access before running the gate offline.
+
+The two facade entry points share the `syn` AST audit and reviewed `scripts/facade-adapters.json`
+inventory. Renaming a substitute, moving it into a private method, or making it panic does not excuse
+it. Native source/header changes require review against `scripts/native-kernels.json`. These inventories
+have no automatic approval command. Check test output for skips: missing compiler dependencies can
+skip contract tests and cannot establish acceptance.
 
 **Verus** (separate lane, not wired into CMake or ctest):
 
@@ -148,7 +166,7 @@ VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh
 `cmake -S . -B build-asan -G Ninja -DSRPC_SANITIZER=address` (`none|address|thread|undefined`).
 
 There are two gate targets, both in `ALL`: `srpc_goal0_source_gate` (source side — DSL check,
-extraction check, both Python suites, `cargo test`, `cargo clippy -D warnings`) and
+extraction check, ownership audits, Python negative controls, `cargo test`, `cargo clippy -D warnings`) and
 `srpc_goal0_dual_compile` (archive side — the `nm`/ABI oracle in `check_srpc_crate_mode.py`). The `srpc`
 library target depends on the source gate, so *any* C++ build runs the whole Rust suite first, and a new
 clippy warning breaks the C++ build. A green source gate says nothing about ABI.
@@ -156,13 +174,15 @@ clippy warning breaks the C++ build. A green source gate says nothing about ABI.
 ## Invariants that will bite you
 
 **`#[cfg_attr(any(), …)]` is the emitter's directive language, and rustc never sees it.** `any()` is
-always false, so these 37 attributes are invisible to `cargo build`, `cargo test` and clippy while being
+always false, so these 29 attributes are invisible to `cargo build`, `cargo test` and clippy while being
 the only way to state a C++ contract Rust cannot: `thread_local` (0 — the reactor's nine migrated to real `thread_local!`, which the transpiler lowers
 to `inline thread_local rusty::LocalKey<T>`; the marker spelling is retired),
-`cpp_namespace(::janus)` (9 — the Quorum surface, which must live in *global* `::janus`; `srpc::janus::QuorumEvent`
+`cpp_namespace(::janus)` (8 — the Quorum surface, which must live in *global* `::janus`; `srpc::janus::QuorumEvent`
 mangles differently and is not a substitute), `cpp_noexcept` (4), `cpp_no_fieldwise_ctor` (3),
-`cpp_no_auto_traits` (3), `cpp_abi` (3), `cpp_trait_member_dispatch` (2), `cpp_default_argument` (2),
-`cpp_marker_trait` (1), `cpp_abi_alias` (1). Deleting or mistyping one is silent in the Rust lane and
+`cpp_no_auto_traits` (3), `cpp_abi` (3), `cpp_trait_member_dispatch` (3), `cpp_default_argument` (2),
+`cpp_marker_trait` (2), `cpp_abi_alias` (1). Three further `cfg_attr(any(), …)` spellings live inside
+`//` comments (`base/misc.rs`, `reactor/reactor.rs` twice) and are not attributes — do not count them.
+Deleting or mistyping one is silent in the Rust lane and
 changes the emitted module. The mirror form `#[cfg_attr(not(any()), derive(...))]` (19 sites) is the
 opposite — derives rustc *does* apply but the emitter must not see, so plain `#[derive(...)]` is not the
 same edit and emits C++ operators that were deliberately withheld. (`IdempotencyKey`'s hand-written
@@ -172,8 +192,10 @@ derive is hidden behind `not(any())`.)
 **`#[allow(clippy::…)]` in canonical sources are measured emitter pins, not style waivers.**
 `rpc/client.rs` opens with a block recording exactly what each costs — taking clippy's suggestion renames
 `DisconnectBehavior_QUEUE()`, retypes `clientpool_select`, changes a method signature, or deletes
-`FutureAttr::default_()`. And of the 68 `explicit_auto_deref` sites, 42 change emitted C++ — that family's
-suggestions are `MachineApplicable`, so `clippy --fix` applies them without ever seeing the consequence.
+`FutureAttr::default_()`. And of the 34 `explicit_auto_deref` allow attributes across the canonical dirs,
+23 are in `rpc/client.rs` alone; the per-site comments there record which ones change emitted C++ and how.
+That family's suggestions are `MachineApplicable`, so `clippy --fix` applies them without ever seeing the
+consequence.
 **Never run `clippy --fix` over `base/ misc/ rpc/ reactor/`.** (The module-level `#![allow(static_mut_refs)]` pin in
 `reactor/reactor.rs` is retired: the statics it covered migrated to `thread_local!`.)
 
@@ -196,29 +218,24 @@ orphan `.rs` files, and `test_goal0_standalone.py` asserts `src/` contains exact
 5. the hard-coded `37` in `scripts/tests/test_goal0_contracts.py` (`ExtractionContractTests`) — this one
    fires in the transpiler-free standalone lane, so it is the first failure you will hit;
 6. the ratchet tables in `scripts/check_srpc_crate_mode.py` (`ABI_SPECS`, `EXPECTED_IMPORTS`,
-   `EXPECTED_GENERATED_MODULE_SHA256`, `IMPORTER_USE_MARKERS`) **and** the ~3,500-line C++ importer
+   `EXPECTED_GENERATED_MODULE_SHA256`, `IMPORTER_USE_MARKERS`) **and** the ~3,650-line C++ importer
    program embedded as a Python string in that same file (`importer_source()`) — `require_importer_coverage`
    demands each module be imported there exactly once *and* actually used;
 7. rows in `module-preambles.toml` / `cpp-module-index.toml` / `rust-type-map.toml` if the module needs
    C++ includes, foreign symbols, or exact legacy type spellings.
 
-**Ordinary edits trip the ABI ratchets too.** `EXPECTED_TOTAL_PROVIDER_SYMBOLS = 1961` (plus
-`EXPECTED_TOTAL_PLATFORM_SYMBOLS = 5`) and the per-module `ABI_SPECS` freeze the public surface, so a real
-fix normally touches the `.rs`, its test, *and* `check_srpc_crate_mode.py` in one commit. `EXPECTED_IMPORTS`
-is an exact, *ordered* transcript of each generated `.cppm`'s import lines, so introducing the first `std`
-`Vec`, `BTreeMap`/`BTreeSet`, `Rc` or `HashMap`/`HashSet` into a module that had none adds a port BMI
-(`vec_port.vec`, `btree_port.btree.*`, `rc_port`, `std_port`) to its import list and fails the gate with
-nothing in the `.rs` diff to explain it. The `rusty::`-spelled containers pull the `rusty` umbrella instead
-and are not affected, and there is no string port. Two more ratchets fire the same way: the generated crate
-must report `0 slot(s) requiring hand-attention`, and `TODO`/`UNSUPPORTED`/`skipped` in generated output is
-rejected — so Rust the emitter cannot lower surfaces as a gate error, not a compile error. Generated-C++
-byte digests, by contrast, are **advisory only**.
+**Ordinary edits trip ABI checks too.** The current `ABI_SPECS`, provider totals, platform ownership,
+and ordered `EXPECTED_IMPORTS` live in `scripts/check_srpc_crate_mode.py`. An intended public change
+requires fresh generated objects and measured symbol/layout evidence before changing those expectations.
+Record why the interface changed. Do not read a new count from a success message that merely echoes an
+expected constant.
 
-When a surface change is intended, don't read the new symbol count off the gate's success line — that line
-echoes the constant back. The measured value appears only in the failure text
-(*"must contain exactly 1961 unique strong symbols; got N"*). Take `N` from there, update the constant and
-the affected `ABI_SPECS` entry, and note the delta rationale in a comment above the constant (the existing
-`1897 -> 1961` reactor note is the house form).
+New standard containers or canonical module dependencies can change the generated import list. Direct
+`crate::reactor` types and calls must retain their canonical dependency, using the supported
+`use crate::reactor as _;` anchor where needed. Rust aliases must not be redirected to omitted facade
+implementations to make an import error disappear. The generated crate must report zero hand-attention
+slots; `TODO`/`UNSUPPORTED`/`skipped` generated output is rejected. Generated byte digests are advisory,
+unlike ABI and ownership checks.
 
 **Canonical `.rs` files are byte-policed:** UTF-8, LF only (CRLF is rejected, not normalized), a trailing
 newline, no NUL. They may only live under `base/`, `misc/`, `rpc/`, `reactor/`, and the basename must equal
@@ -253,133 +270,40 @@ build-dependent, so they go behind the plain-C seam (`srpc_reactor_gettid`, `srp
 
 ## Testing
 
-**Rust lane.** Auto-discovered integration tests in `tests/*_rust.rs`; the base rule is
-`<dir>/<module>.rs` → `tests/<module>_rust.rs`, though the suite now also carries cross-cutting
-correctness suites that do not map to a single module (see the next paragraph). The counts only *look* one-to-one: `frame_codec` has two
-(`frame_codec_rust.rs` plus the bug-named `frame_codec_desync_rust.rs`), and
-`client_teardown_drains_queue_rust.rs`, despite its name, imports only `srpc::request_queue`.
-`rpc/client.rs` and `rpc/server.rs` share one real test, `tests/rpc_roundtrip_inmemory_rust.rs` — a full
-client→server→client RPC over the in-memory channel, possible under rustc only because everything on that
-path is synchronous: the RPC is registered with `reg_fast_rpc` (inline dispatch, no fiber). The real
-facade `PollThread` runs the deferred close jobs now, so teardown is safe in either order; the test keeps
-an explicit order anyway. Beyond that one path, a green `cargo test` still
-says little about `rpc/client.rs` (3.3k lines, the second-largest module) — and the largest,
-`reactor/reactor.rs`, is untested for a different reason given below.
+**Rust lane.** Cargo discovers `tests/*_rust.rs`, whose integration tests import the actual `srpc`
+library, never a `#[path]` copy or a test-local `mod` implementation. `build.rs` links the shared native kernels. Runtime tests must not replace fiber switches,
+clocks, sockets, or worker scheduling with inert symbols. Isolated fault injection must test a stated
+native contract and be paired with real-kernel coverage.
 
-**Correctness-category suites (docs/testing-plan.md).** Beyond the per-module tests, the suite carries
-property-based and robustness testing that uses the `proptest` dev-dependency:
-`wire_roundtrip_proptest_rust.rs` (codec round-trip: `decode(encode(x)) == x` over SparseInt v32/v64
-and the frame header — the suite that pins the known length-8 defect and would have caught it),
-`decoder_robustness_proptest_rust.rs` (arbitrary bytes through every decode entry point: no panic, no
-OOB, bounded termination — the in-lane fuzzer), and `frame_codec_chunking_rust.rs` (the framer under
-adversarial chunk boundaries — one byte at a time, split mid-header/mid-payload — guarding the
-silent-wedge desync). Sanitizer coverage is `scripts/run_sanitizer_battery.sh [address|thread|undefined]`,
-a separate build tree that runs the labelled battery under ASan/TSan/UBSan; run it for changes touching
-the reactor, fibers, channels, or the C seam (it is not wired into ctest — a sanitizer build is minutes
-and a whole extra tree).
+The canonical worker drives both stackful handlers and stackless tasks under Cargo. Tests cover real
+TCP requests, a suspended handler sharing its service with a fast request, timer ordering, foreign wake
+dispatch on the owner thread, retained wake lifetime, fiber receive/close, and concurrent connection
+teardown. Serialization tests recover actual payloads through canonical archives, holders and registries.
+See [the runtime notes](docs/canonical-rust-runtime.md) for named tests and API migration details.
 
-Tests import the library as an external consumer (`use srpc::<module>::…`), never via `#[path]` or `mod`.
-No canonical source has a `#[cfg(test)]` module; the workspace's only one is in `rusty-rustc/src/lib.rs`.
+The Rust suite also includes property tests for wire round trips, malformed input, and stream chunking.
+Run documentation tests separately, since `--all-targets` does not run compile-fail documentation checks.
+Internal synchronization layouts may differ between languages; C++ ABI measurements belong in the
+C++ gate, not in invented Rust-size equivalents. Keep tests for real public wire/ABI contracts.
 
-Four non-obvious things about these tests:
+**C++ lane.** CMake explicitly lists test sources. Adding a `.cc` file does not register or build it.
+Use `ctest --test-dir build -N -L srpc` to inspect the configured inventory, then run
+`ctest --test-dir build -L srpc --output-on-failure`. Missing googletest or omitted runtime targets
+must not be mistaken for a passing complete battery. Vendored rusty-cpp tests have a separate inventory.
+Historical test files may still depend on the upstream Mako layout. Their presence in `tests/` does not
+prove they compile or run; check the actual CMake target and include paths.
 
-- **There is no `build.rs`, so the plain-C kernels are never linked.** A test touching a module with a C
-  seam must define the stubs itself (`#[unsafe(no_mangle)] pub extern "C" fn srpc_clock_monotonic_us…`);
-  ~12 test files already do. Otherwise it fails to *link*.
-- **A test that reaches through the `cpp::`/`rusty` facade may prove nothing.** `rusty-rustc/src/` is a
-  ~3.2k-line hand-written facade in three files — `lib.rs` (2.3k, the `rusty::` runtime surface),
-  `srpc.rs` (757, the `cpp::srpc::*` foreign-module surface canonical code imports) and `task.rs` (149,
-  the stackless-task half of the async runtime) — that rusty-cpp omits from generated C++ by package identity — so it is
-  allowed to stand in for the C++ runtime, and still does where it must: `fiber_sleep` only records the
-  duration. What it may no longer do is stand in *silently*: a body of `{}` or `0` still answers, so a
-  caller gets a plausible wrong result and every Rust-lane test over that path proves nothing. That shape
-  has cost two real bugs — `RandomGenerator::rand` returned `min` (so `ClientPool` always selected index 0;
-  fixed, it is a real LCG now) and an inert `Serialize_` pair serialized nothing while the loud stub's own
-  error message recommended it (deleted). `scripts/check_facade_stubs.py` now gates this: a facade function
-  that cannot do the real thing must refuse loudly, and the six bodies where a constant *is* the truth (a
-  Rust `Arc` is never null) are listed in its `ALLOWED_STUBS` with reasons. Its `with_test_fiber` /
-  `take_test_sleep_calls` hooks are what such tests are actually for. It is no longer all mock: `PollThread` is a REAL epoll
-  loop (edge-triggered, 1 ms tick, command queue, job queue -- a faithful port of
-  `pollworker_poll_loop`'s semantics minus reactor coupling and fibers), which is what lets the canonical
-  TCP transport run under rustc. Reaching a *new* C++ runtime API from a canonical module means writing
-  its facade here first, plus a `rust-type-map.toml` row.
-
-  What it may no longer do is *shadow* a canonical implementation. `scripts/check_facade_shadow.py` (in the
-  source gate and in `ctest -L srpc`) fails if a facade item shares a name with a canonical one, unless it
-  is listed in that script's `ALLOWED_SHADOWS` with a reason. It resolves the module tree by **path**
-  (`resolve_module`), following both `pub mod name { … }` and `pub mod name;` → `<dir>/name.rs`, which is
-  what lets the `srpc` surface live in its own file; an earlier text-concatenating version could only
-  parse the inline form and fail-closed rather than pass vacuously over a file module. The ten entries there are the real
-  boundary of the Rust lane, each one measured against the pinned transpiler rather than reasoned about:
-  `debugging::verify` is generic, and the flat-import contract requires a route-(a) leaf to be a
-  non-generic free function; `rand::RandomGenerator` carries `cpp_abi` markers that make it an adapted
-  sibling; `reactor::Fiber` collides with the pre-existing `pub type Fiber` alias in `rpc/client.rs`;
-  retargeting `reactor::PollThread` makes the emitter rewrite unrelated `HashMap::remove` receivers into
-  `__rusty_alias_PollThread_remove`; and the four remaining `reactor` entries need a live reactor and a
-  current fiber that rustc does not have. Everything else was retired — `basetypes` and `logging` are gone
-  from the facade entirely, and 80-odd call sites now reach canonical Rust.
-
-  Serialization is the sharpest example of what the boundary means in practice. The canonical GENERIC
-  dispatchers (`Serialize_::serialize` / `Deserialize_::deserialize`) are **C++-only**: in C++ the
-  qualified call resolves the generated module's concrete leaf overloads before the generic template
-  (poison-scoped ADL alone cannot see them — using-directives are invisible to ADL, and primitives have no
-  associated namespace), while under rustc a `T: Serialize` bound there would cascade into the generic
-  container impls, which the emitter degrades to hand slots. So they stay unbounded and their facade
-  terminal `rusty::srpc_adl_serialize` is a LOUD `unimplemented!` — replacing years of silently writing
-  nothing. **Rust-lane leaf serialization is real** through two spellings: the `Serialize`/`Deserialize`
-  traits directly, and the facade route `cpp_serializable::Serialize_::serialize` the wire sites use —
-  which emits the same qualified `::srpc::Serialize_::serialize` call C++ always made (its
-  cpp-module-index row makes it a known foreign symbol) and under rustc dispatches through the
-  `RustcAdlSerialize`/`RustcAdlDeserialize` bound, satisfied by srpc's blanket impls on its archives over
-  the canonical traits. Container serialization panics wholesale under rustc; C++ container emission is
-  byte-for-byte untouched.
-- **`reactor/reactor.rs` is genuinely per-thread under rustc now.** The nine thread-local statics
-  are spelled with Rust's `thread_local!` (the transpiler lowers each to
-  `inline thread_local rusty::LocalKey<T>`; access goes through the closure-only `.with()`), so each
-  thread constructs its own reactor — `tests/reactor_multithread_rust.rs` pins two threads running
-  independent suspend→wake→pump cycles in one process. The fiber path works end to end on a poll
-  thread (`srpc_fiber.c` + the context-switch assembly, `-DREUSE_FIBER`; `rpcbench`'s `fiber`/`defer`
-  modes reach ~1.1M qps — reproduce with `cmake --build build --target rpcbench` then
-  `scripts/run_rpcbench.sh build/rpcbench <tag>`), and async suspension is pumped by the facade
-  `PollThread::add_tick_hook` (`run_loop` every pass — what pollworker's C++ loop does natively).
-  The C fiber engine is multi-poller-safe (audited: its only global, `g_active_fiber`, is
-  `_Thread_local`; pooling is per-reactor). **An earlier claim here that a `serve2` mode proved two
-  servers with two poll threads at near-linear aggregate throughput is NOT reproducible: no such mode
-  exists in `tests/rpcbench.cc`, whose modes are `fast|fiber|defer|async|fast_vec`.** It was measured
-  with an uncommitted local edit, so treat multi-poller aggregate throughput as unmeasured until
-  someone adds the mode. What remains unbuilt is one `Server` spreading connections across N poll
-  threads — a feature, not a safety gap; C++ battery coverage remains mandatory for teardown.
-- Many tests assert C++-visible layout (`size_of` / `align_of` / `offset_of`), and a few assert on the
-  *text* of the canonical source via `include_str!` — `tests/reactor_rust.rs` pins exact substrings and even
-  drop order by byte offset. A cosmetic refactor turns these red.
-
-**C++ lane (narrow).** `tests/` holds 77 `.cc` files but CMake names exactly **12** of them, in explicit
-`set()` lists — there is no glob for test sources, so adding a `.cc` to `tests/` does nothing. Those 12 build
-11 targets: the 9 battery binaries, `test_rpc_docs_symbols`, and `rpcbench` (which takes two sources).
-Three battery targets have names differing from their file names (`tests/fiber_test.cc` → `test_fiber`).
-The other 65 are dead: nothing compiles them, so nothing proves they still build. Five reference the Mako
-monorepo directly (`deptran/…` in `rpc_log_storage_test.cc`, `rpc_marshallable_proxy_test.cc`,
-`rpc_rocksdb_log_storage_test.cc`, `testharness.cc`; `mako/…` in `test_mako_core_minimal.cc`), and 15 more
-pull `tests/benchmark_service.h`, whose `#include "srpc/srpc.hpp"` is monorepo-relative. That include is
-*not* an unsolved problem any more — the `rpcbench` target resolves it with a configure-time symlink
-(`build/bench-include/srpc` → the source tree) rather than by editing the generated header, so reviving one
-of those 15 is now mostly a matter of copying `rpcbench`'s include-directory list. The rest include the same
-headers the built suites do — assume nothing without trying.
-
-**Always run `ctest -L srpc`, never a bare `ctest`.** `add_subdirectory(third-party/rusty-cpp)` also
-registers ~69 tests of its own whose executables are *not* in `ALL`, so a bare `ctest --test-dir build`
-reports 83 tests, marks those 69 "Not Run" and exits 8 — a failure that says nothing about SRPC. Every
-test this project owns carries the `srpc` label.
-
-`ctest -L srpc` selects 17: the 9 battery binaries (also labelled `runtime_battery`),
-`test_rpc_docs_symbols` (also `docs`), `srpc_goal0_standalone_structure`, `srpc_goal0_cargo`,
-`srpc_goal0_contracts`, `srpc_goal0_rand_kernel_smoke`, `srpc_facade_shadow`, `srpc_facade_stubs` and
-`srpc_docs_snippet_lint`. `srpc_goal0_cargo` just re-runs the whole Cargo suite. If the googletest
-submodule is missing, CMake only *warns* and silently registers 7 instead of 17 — a green run is not
-proof the battery ran.
+`srpc_runtime_parity` executes `tests/runtime_parity_rust.rs` and `tests/runtime_parity_test.cc`, rejects
+missing or malformed transcripts, checks independent expected results, and compares the two languages.
+The C++ dual-compile importer and ABI check remain separate. Run
+`scripts/run_sanitizer_battery.sh [address|thread|undefined]` in separate configurations for runtime,
+channel, ownership, and native-boundary changes. A successful ordinary build does not establish
+sanitizer acceptance.
 
 **Verus lane.** `verify/` is a workspace-excluded crate that `#[path]`-links the real sources and runs
-`cargo verus verify` against them; only `misc/stat.rs` and `rpc/internal_protocol.rs` carry specs today. A
+`cargo verus verify` against them; five modules carry specs today — `base/basetypes.rs`, `misc/stat.rs`,
+`rpc/errors.rs`, `rpc/frame_codec.rs` and `rpc/internal_protocol.rs`, each with a matching `#[path]` line in
+`verify/src/main.rs`. A
 canonical module may carry any contract that proves with **no in-body proof steps** — the transpiler's
 preflight rejects opaque macros, so no in-body `proof!`. (`internal_protocol.rs` uses purely definitional
 `ensures r == <wire-bit expression>`; `stat.rs` uses `requires old(self)…` / `ensures final(self)…` and still
@@ -390,12 +314,11 @@ negative control**: perturb the body, confirm it goes red, revert. A green that 
 
 ## Runtime architecture
 
-Layering is `base/` → `misc/` → `reactor/` → `rpc/`, but these are directories, not crates — everything is
-one flat `srpc` crate. Two inversions to know: `reactor/reactor.rs` imports `crate::pollable_proxy` (which
-lives under `rpc/`), and *nothing* uses `crate::reactor` — every consumer reaches the reactor through the
-foreign-module facade `use cpp::srpc::reactor` (`use rusty as cpp`) inside `unsafe` blocks, because that is
-what models the C++ module boundary. `idempotency` and `completion_tracker` are consumer-facing utilities
-that neither `client.rs` nor `server.rs` uses.
+Layering is `base/` → `misc/` → `reactor/` → `rpc/`, within one flat `srpc` crate.
+`reactor/reactor.rs` imports the pollable contract from `rpc/pollable_proxy.rs`. Its callers use canonical
+`crate::reactor` types and functions; the omitted `rusty-rustc` package contains standard-library,
+C-layout, trait-forwarding, and Rust Future representation adapters only. Scheduling and wake admission
+remain canonical. See [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) for ownership boundaries.
 
 **Request path.** Generated proxy → `Client::request` → `ClientConnection::request` →
 `clientconn_request_via_channel` (circuit-breaker gate → stale-request expiry → offline-queue check →
@@ -423,8 +346,9 @@ TCP is auto-installed by `Client::connect` / `Server::start`; to use in-memory y
 
 **Concurrency is both stackful and stackless.** Fibers are mmap'd stacks (1 MiB default + guard page)
 switched by `reactor/fiber_context_{x86_64,aarch64}.S`; the field order of `srpc_fiber_ctx` in
-`reactor/srpc_fiber.h` *is* the ABI contract with that assembly. The `Reactor` is thread-local *in the
-generated C++* (under rustc those markers are inert) and also drives stackless `rusty::Task` pollers.
+`reactor/srpc_fiber.h` *is* the ABI contract with that assembly. The `Reactor` uses real thread-local
+storage in both Rust and generated C++, and also drives stackless
+`rusty::Task` pollers. Cross-thread wake ingress is synchronized; fiber events remain owner-thread state.
 
 **Reliability layers** (circuit breaker, heartbeat, reconnect policy, connection state machine, request
 queue, metrics) are embedded by value in `ClientConnection`. Only four configs are staged on `Client` and
@@ -432,29 +356,19 @@ applied at `connect` (keepalive, heartbeat, circuit breaker, reconnect policy). 
 trap: its `BufferingConfig` is *not* staged — `Client::set_buffering_config` silently no-ops until a
 connection exists, so it must be called *after* `connect`. `LoadBalancer` is used only by `ClientPool`.
 
-## The hand-written C++ seam
+## Native and C++ adapters
 
-`srpc.hpp` is the consumer umbrella nearly every C++ test includes (72 of 76, and eight of the nine built
-suites — the ninth, `rpc_docs_symbols_test.cc`, only reads files).
-Its `import srpc.*;` list is hand-maintained and nothing generates or checks it, so a newly consumer-facing
-module is not reachable *through the umbrella* until it is added there — a test needing one of the eight
-modules commented out as "trimmed from consumer umbrella: nothing outside srpc names it (build-time opt)"
-names it directly instead (`import srpc.epoll_wrapper;`, as `tests/test_reactor.cc` does). Nothing in the
-repo measures that build-time cost, so treat re-adding a trimmed import as a claim to measure, not an
-obvious fix.
+`srpc.hpp` and compatibility headers import generated modules. Their include/import ordering matters
+for libc++ module declarations; keep textual includes before named-module imports.
+`misc/serializable_support.hpp` forwards external C++ ADL and erased trait calls. Canonical Rust owns
+serialization algorithms and concrete holders. `base/rustc_markers.hpp` supplies compile-time markers.
+Global C declarations enter generated modules through `module-preambles.toml`, including
+`reactor/srpc_epoll.h` and `reactor/srpc_fiber.h`.
 
-`misc/serializable_support.hpp` holds the real open-set ADL `serialize`/`deserialize` dispatch whose Rust
-spelling in `misc/serializable.rs` is an inert facade, and `base/rustc_markers.hpp` declares
-`rusty::cpp_inherit`; both reach generated modules only via `module-preambles.toml`. In `srpc.hpp` and
-`base/all.hpp` the `import srpc.*;` lines must sit after every textual `#include`, and `std_compat.hpp` —
-the only file here that spells `import std;` — exists solely to do the same for the std module: libc++
-rejects the other order with ODR errors inside its own internals (llvm-project #61465).
-
-In `reactor/epoll_platform_linux.cc`, the bodies inside `#if RUSTYCPP_RUST` are the source; the C++ between
-`/*RUSTYCPP:GEN-BEGIN … rust_sha256=… */` and `GEN-END` is generated — edit the Rust and regenerate with
-`rusty-cpp-transpiler inline-rust`, never the C++ between the fences. `srpc_dsl_check.sh` hard-codes the
-census (exactly this file, exactly 5 blocks) and also scans `*.rs`, so adding a DSL block anywhere under
-`base/ misc/ reactor/ rpc/` fails it until the script's counts are updated too.
+There is no remaining production inline-Rust DSL carrier. `scripts/srpc_dsl_check.sh` enforces that
+absence, and `scripts/check_native_kernels.py` rejects handwritten C++ implementation files under the
+canonical directories. Native sources and headers are reviewed and pinned. Adding an adapter requires
+an explicit contract and proof that SRPC policy still has a canonical Rust owner.
 
 ## Code generation (`pylib/`)
 
@@ -470,10 +384,10 @@ stabilization below. (There is no yapps compiler vendored anyway; `pylib/yapps/`
 generated `.h`.** Never delete the generated header before regenerating, or every id changes and wire
 compatibility silently breaks. Renaming a service function reassigns its id for the same reason.
 
-**`bin/rpcgen`, which both in-repo rpcgen tests shell out to, does not exist here** (it lived in the upstream
-Mako checkout) — drive the generator by importing `simplerpcgen.rpcgen` with `pylib/` on `sys.path`.
-`rpcgen_typed_structs_test.py` would run if the driver came back; `rpcgen_compile_test.py` is dead
-regardless, since its `RPC_SOURCES` name `src/deptran/*.rpc` paths that do not exist here.
+**`bin/rpcgen` does not exist here.** Drive the generator through `simplerpcgen` with `pylib/` on
+`sys.path`; `tests/rpcgen_typed_structs_test.py --repo .` uses that entry point. Generated service handlers
+and dispatch wrappers are const-callable; user overrides must match and synchronize mutable state.
+`rpcgen_compile_test.py` still names upstream `src/deptran/*.rpc` paths absent from this checkout.
 
 ## Conventions
 
@@ -481,9 +395,9 @@ regardless, since its `RPC_SOURCES` name `src/deptran/*.rpc` paths that do not e
 (`frame_codec:`, `stat:`, `client:`) or an area (`build:`, `docs:`, `tests:`, `verify:`, `gate:`, `goal0:`).
 `srpc:` for tree-wide changes. The legacy `rrr:` prefix is retired — do not reuse it. Because there is no CI,
 bodies carry the audit trail: a narrative of the defect and a `Verified:` paragraph with *measured* numbers
-(test counts, configure/build exit codes, the ABI symbol count). A minority of test-touching commits (31 of
-338) also add a `Tests:` paragraph naming the new test — `b8be721` and `e376fd6` are the recent examples,
-while `0e51bce` changed `tests/stat_rust.rs` without one. Transpiler pin bumps get their own commit:
+(test counts, configure/build exit codes, the ABI symbol count). A minority of test-touching commits (34 of
+the 354 that touch `tests/`) also add a `Tests:` paragraph naming the new test — `0d6274b` and `aeca82a` are
+the recent examples, while `0e51bce` changed `tests/stat_rust.rs` without one. Transpiler pin bumps get their own commit:
 `build: bump rusty-cpp <old> -> <new>`.
 
 **Style:** `//` line comments only, with long "why this constant exists" blocks as the house norm. Most
@@ -496,34 +410,21 @@ eight files carry a file-scope `#![allow(unsafe_code)]` (`reactor/{reactor,fiber
 `unsafe` gets a narrow per-item `#[allow(unsafe_code)]` — never relax the crate-level deny. There is no
 rustfmt/clippy/clang-format config.
 
-**`.apas` in the repo root is an agent-harness session file, untracked and not in `.gitignore`.** Never
-commit it; watch out for `git add -A`.
+**`.apas` in the repo root is an agent-harness session file, untracked and ignored via `.gitignore`
+(`/.apas`).** Never commit it: `git add -A` skips it only because of that ignore rule, so do not `git add -f`
+it or loosen the rule.
 
-## Documents that are stale — do not trust them
+## Historical documents
 
-- **`RUST_CANARY.md`** — says 23 canonical modules and 14 remaining inline modules (actually 37 and 0), a
-  15-file/326-block DSL inventory (actually 1 file / 5 blocks), 332 provider symbols (actually 1961), and an
-  old transpiler pin. Its build commands still work; its numbers do not.
-- **`reactor/CANONICAL_CHECKPOINT.md`** — a HOLD checkpoint for an older `rrr`-namespaced tree, citing
-  `scripts/extract_rrr_rust.py` (renamed to `extract_srpc_rust.py`) and machine-local `/var/tmp` scratch
-  paths. `reactor` *is* a canonical provider now. Still valuable for the ABI oracles: the 300-symbol
-  incumbent manifest (which `check_srpc_crate_mode.py` still names), the size/align table, the global-`::janus`
-  requirement, and the enumerated emitter contracts.
-- **`scripts/verify_srpc.sh`'s header comment** — claims `#[cfg(verus_only)]`. The sources use
-  `#[cfg(verus)]`. The script's *behavior* is correct; only its comment is wrong. `docs/verification.md`'s
-  expected "11 verified" count also disagrees with the commit that added it — run it and read the output.
-- **`README.md`'s `git log --follow` claim** — true for 20 of the 37 canonical files, not all of them. Seven
-  reach the 2018 genesis (`base/{debugging,logging,misc,threading}.rs`, `reactor/epoll_wrapper.rs`,
-  `rpc/{client,server}.rs`); thirteen more reach real 2026-era C++ (`reactor/{reactor,future,fiber}.rs`,
-  `rpc/{tcp_channel,inmemory_channel,fiber_channel,channel,callbacks,idempotency,pollable_proxy}.rs`,
-  `misc/{serializable,serializable_envelope,any_message}.rs`). For the other 17 the rewrite was too dissimilar
-  for rename detection and `--follow` stops at the promotion commit — reach the C++ era by naming the old
-  path: `git log --all -- rpc/frame_codec.cpp`.
-- **`docs/rpc/migration-guide.md`** does not exist, though `tests/rpc_docs_symbols_test.cc` reads it.
-  `docs/srpc-book.md` now does exist — ported from the Mako monorepo and rewritten chapter by chapter
-  against these sources — but neither doc test is wired into CMake, and the symbols test's `required` list
-  is itself partly stale (it demands `server.reg_service(`, an `RpcResult<…>` type that exists nowhere in
-  this repo, and three spellings that name stubs). Fix that list before wiring the test up, or it will pin
-  bad guidance in place.
+[translation-parity-audit.md](docs/translation-parity-audit.md) records the pre-repair baseline and
+its original findings. Its source line numbers, counts, and removed facade paths refer to the audited
+revision. [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) describes the current implementation
+and migration contracts, with final whole-crate and sanitizer acceptance tracked separately.
 
-When prose and code disagree, `CMakeLists.txt`, `rust-modules.toml`, and `scripts/` are the truth.
+`RUST_CANARY.md` and `reactor/CANONICAL_CHECKPOINT.md` contain older inventories and compiler blockers.
+`docs/srpc-book.md` also has pre-migration mutable service/channel and reply-guard examples. Check those
+against the canonical source and current migration notes before copying them. Use `git show` at the
+recorded baseline when investigating a historical claim.
+
+When prose and code disagree, `CMakeLists.txt`, `rust-modules.toml`, and the current gates in `scripts/`
+define the build contracts. Record measured results from the revision actually being accepted.

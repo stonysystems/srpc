@@ -1,5 +1,10 @@
 # SRPC correctness-testing plan
 
+This is the historical plan completed at the commits listed below. Its test
+counts describe that revision. Current runtime ownership and acceptance
+requirements are in [canonical-rust-runtime.md](canonical-rust-runtime.md)
+and the gates in `scripts/`.
+
 Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 
 **Status: COMPLETE.** Tiers 1 and 2 (all table-stakes categories) are done and
@@ -37,10 +42,11 @@ Constraints every item must respect (from CLAUDE.md):
     when `Cargo.lock` changes.
   * Tests import the library as an external consumer (`use srpc::…`); no
     `#[path]`/`mod` into canonical sources.
-  * A test that touches a module with a C seam must define the C stubs
-    itself (no `build.rs`).
-  * Anything reached through the `rusty` facade may prove little about
-    runtime behavior; prefer canonical paths.
+  * `build.rs` links the same reviewed native kernels as CMake. Runtime
+    tests use those real operations; test-local replacements must not stand
+    in for scheduler, transport, clock, or serialization behavior.
+  * Tests call canonical SRPC implementations. The `rusty` package adapts
+    standard-library and C ABI contracts and does not implement SRPC policy.
 
 ---
 
@@ -158,20 +164,14 @@ Constraints every item must respect (from CLAUDE.md):
   - Dev-dep: `loom` (test-only, behind cfg).
 
 - [~] **3.2 Deterministic simulated time** — DEFERRED with reason.
-    The clock IS already behind a swappable seam in the rustc lane (tests
-    define `srpc_clock_monotonic_us`), so `Time::now`-based logic can be
-    virtualized cheaply. But the retry coordinator runs on a REAL std thread
-    and blocks on `srpc_sleep_us` + a condvar timed-wait keyed to wall-clock
-    (the 1s cap), so full determinism would require re-architecting the
-    coordinator off real threads/sleeps -- disproportionate to the gain, and
-    the timeout/retry tests are already fast and reliable (timeout_conformance
-    + client_retry). Deferred as not worth the re-architecture; revisit if a
-    long deterministic backoff-chain test is ever needed.
-  - What: route the retry coordinator's and heartbeat's clock through a
-    swappable time source in the rustc lane (the facade already provides
-    the seam), so timeout tests advance a virtual clock instead of sleeping.
-  - Catches: makes Tier-2.4 tests fast and non-flaky; enables testing long
-    backoff chains deterministically.
+    Current tests supply timestamps to canonical `*_at(now)` policy methods
+    for exact heartbeat, circuit-breaker, and queue boundaries. Normal
+    runtime methods read the real native clock. The retry coordinator still
+    uses real threads, sleeps, and timed condition-variable waits, so a
+    complete simulated scheduler would require a separate design. No test
+    replaces the production clock symbol or uses a facade clock.
+  - Future work: make long retry/backoff scenarios deterministic while
+    retaining separate coverage of real timing and thread wakeups.
 
 ---
 
