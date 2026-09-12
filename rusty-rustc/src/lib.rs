@@ -49,10 +49,6 @@ pub struct PthreadCondAttr {
 pub mod sync {
     pub use ::std::sync::{Arc, Weak};
 
-    pub fn downgrade<T>(arc: Arc<T>) -> Weak<T> {
-        Arc::downgrade(&arc)
-    }
-
     pub mod atomic {
         pub use ::std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     }
@@ -83,6 +79,20 @@ pub mod port {
 /// `JoinHandle<T>` carries BOTH `join()` and `detach()`.  Rust has no variadic
 /// functions, so this model is the single-callable form, and every canonical
 /// caller spells that form.
+///
+/// It stays a model rather than a re-export of `std::thread`, for two measured
+/// reasons. First, `spawn` must abort on a panicking body: the runtime's
+/// `run_into_state` (thread.hpp) runs the body with no try/catch, so an
+/// exception escaping a spawned thread reaches `std::thread` and terminates
+/// the process, and the `catch_unwind(..).unwrap_or_else(abort)` below gives
+/// rustc the same semantics. `std::thread::spawn` would capture the panic into
+/// the handle instead; a detached client thread's panic would then die
+/// silently while a test awaiting it hangs. Second, `ThreadId` needs a zero
+/// niche: reactor/reactor.rs round-trips thread ids through `u64` with
+/// `transmute` (`u64_to_thread_id` / `thread_id_to_u64`) and an unset id is
+/// the bit pattern `0`; std's `ThreadId` wraps a `NonZero<u64>`, so
+/// transmuting `0` into it is undefined behaviour, whereas the
+/// `Option<std::thread::ThreadId>` below makes `0` a sound `None`.
 ///
 /// `spawn` runs the body on a standard Rust thread and requires `Send` captures.
 /// Canonical Future and ClientConnection synchronize shared state with mutexes
@@ -723,7 +733,9 @@ pub enum LegacyCVoid {}
 /// The production emitter recognizes this call and emits
 /// `rusty::make_box<Adapter>(value)`.  The divergent Rust facade lets the call
 /// coerce to the local trait-object return type without pretending to model
-/// C++'s generated adapter hierarchy.
+/// C++'s generated adapter hierarchy. It is an emitter contract (the
+/// transpiler's `make_box` coercion path), not a wrapper over `Box::new`, so
+/// it is not a candidate for the std spelling.
 pub fn make_box<Adapter>(value: Adapter) -> Box<Adapter> {
     Box::new(value)
 }
@@ -870,6 +882,14 @@ pub mod panic {
     /// Opaque model of the C++ `std::exception_ptr` payload carried out of a
     /// caught unwind. Production C++ resolves the pair below to
     /// `rusty::panic::catch_unwind` / `rusty::panic::payload_message`.
+    ///
+    /// Canonical code that only needs to swallow an unwind uses
+    /// `std::panic::catch_unwind` directly (rpc/callbacks.rs,
+    /// rpc/request_queue.rs). This model exists for the one site that inspects
+    /// the payload (the shutdown-hook invoker in rpc/server.rs): std's
+    /// `Err(Box<dyn Any + Send>)` has no C++ spelling, while the runtime's
+    /// payload is a `std::exception_ptr` whose `what()` `payload_message`
+    /// recovers.
     pub struct PanicPayload(Option<String>);
 
     pub fn do_panic(message: crate::std::string) -> ! {

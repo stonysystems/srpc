@@ -126,10 +126,6 @@
       "category": "standard",
       "sha256": "8e76badbf0e7a145f08e05c0189f72692ddad8ea8302d20319182176ffec6b9d"
     },
-    "function:sync::downgrade": {
-      "category": "standard",
-      "sha256": "8da4c469395cae4661206db51d5b17b1398190ad86c8538852f6f56741945847"
-    },
     "function:sys::process::getpid": {
       "category": "standard",
       "sha256": "b416d36dfdf151965c993af69b270f0f886f21fced2ffdaac0f84d0cdee4d5ce"
