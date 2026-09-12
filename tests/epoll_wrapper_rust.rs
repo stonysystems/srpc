@@ -3,6 +3,21 @@ use srpc::epoll_wrapper::{
 };
 use std::sync::atomic::Ordering;
 
+// Two tests below allocate real descriptors (socketpairs plus the epoll fd),
+// and one of them asserts on a descriptor it has just CLOSED. Linux hands out
+// the lowest free number, and the harness runs one binary's tests on parallel
+// threads, so a socketpair opened by the other test can land on the closed
+// number between the `drop` and the `epoll_ctl` -- the "closed" descriptor is
+// live again and `Add` succeeds (seen once in a gate run as `left: 0,
+// right: -1`). The fd-allocating tests hold this lock so no other descriptor
+// allocation in the process can interleave. Poisoning is tolerated so that a
+// failing test does not turn the other into a misleading PoisonError.
+static FD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn hold_fd_lock() -> std::sync::MutexGuard<'static, ()> {
+    FD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 struct TestPollable {
     fd: i32,
     mode: i32,
@@ -87,6 +102,7 @@ fn kernel_batch_preserves_each_descriptor_and_interest_update() {
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
 
+    let _fds = hold_fd_lock();
     let (mut first, mut first_peer) = UnixStream::pair().unwrap();
     let (mut second, mut second_peer) = UnixStream::pair().unwrap();
     let mut poll = Epoll::new();
@@ -128,6 +144,7 @@ fn closed_descriptor_registration_and_update_tolerate_teardown() {
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
 
+    let _fds = hold_fd_lock();
     let mut poll = Epoll::new();
     let (stream, _peer) = UnixStream::pair().unwrap();
     let fd = stream.as_raw_fd();
