@@ -36,6 +36,8 @@ Why the compile half looks the way it does
   tripping Clang's "GNU extensions was disabled in precompiled file"
   PCM-config check.  A consumer built `-std=c++23` fails that check.
 * `-stdlib=libc++`, matching the project-wide `add_compile_options`.
+* `-march=native`, matching the target features recorded in the production
+  BMIs. Clang rejects consumers with a different feature set.
 * The snippet units `#include "srpc.hpp"` — the umbrella lives at the
   repository root, and `-I <repo root>` is what the battery targets pass.
 """
@@ -284,7 +286,7 @@ public:
         return 0;
     }}
 
-    void __dispatch__(i32 rpc_id, rusty::Box<Request> req, WeakServerConnection weak_sconn) override {{
+    void __dispatch__(i32 rpc_id, rusty::Box<Request> req, WeakServerConnection weak_sconn) const override {{
         (void)rpc_id;
         (void)req;
         (void)weak_sconn;
@@ -372,6 +374,7 @@ def snippet_compile_command(cxx: str, repo_root: Path, modmap: Path | None) -> l
         # file" PCM-config check.
         "-std=gnu++23",
         "-stdlib=libc++",
+        "-march=native",
         "-w",
         "-fsyntax-only",
     ]

@@ -13,8 +13,7 @@ use std::sync::{Arc, Condvar, Mutex};
 // Rust enum for rustc callers; the checked type map preserves its public C++
 // spelling as `::srpc::RpcError`.
 #[allow(unused_imports)]
-use cpp::srpc::errors as cpp_errors;
-use rusty as cpp;
+use crate::errors as _;
 
 // Native Rust uses `String`. The SRPC consumer profile maps this private alias
 // to `std::string`, preserving the legacy callback and method signatures rather

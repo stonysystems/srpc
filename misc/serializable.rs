@@ -1,34 +1,24 @@
-//! Canonical Rust prototype for `srpc.serializable`.
+//! Canonical serialization, archives, payload ownership, and registry.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
 use crate::basetypes::SparseInt;
-use cpp::srpc::debugging as cpp_debugging;
+use crate::debugging::verify_at;
 use cpp::rusty as cpp_rusty;
 #[allow(unused_imports)]
 use cpp::std as _;
 use rusty as cpp;
-use rusty::Arc;
+use std::sync::Arc;
 
-// Keep these two module-owned aliases explicit.  Pulling *these types* through
-// an ordinary Rust `use crate::basetypes::{...}` made the C++ emitter invent a
-// nonexistent nested `srpc::basetypes` namespace; the actual provider exports
-// both directly from `srpc`.
-//
-// The restriction is narrower than it looks, and does not cover the
-// `use crate::basetypes::SparseInt;` above.  A carrier reached only for its
-// associated functions lowers correctly: the emitter writes `using
-// ::srpc::SparseInt;` at namespace-`srpc` scope and rewrites the calls to
-// `SparseInt::dump32(...)`, leaving `import srpc.basetypes;` unchanged.  It is
-// the *type alias* position that trips the namespace invention, so `v32`/`v64`
-// stay spelled through `rusty::` while ordinary items may use `crate::`.
-pub type v32 = rusty::SerializableV32;
-pub type v64 = rusty::SerializableV64;
+pub type v32 = crate::basetypes::v32;
+pub type v64 = crate::basetypes::v64;
 
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    pub fn srpc_fd_write_all(fd: i32, pointer: *const rusty::LegacyCVoid, length: usize);
-    pub fn srpc_fd_read_upto(fd: i32, pointer: *mut rusty::LegacyCVoid, length: usize) -> usize;
+    fn srpc_fd_write_once(fd: i32, pointer: *const rusty::LegacyCVoid, length: usize) -> i64;
+    fn srpc_fd_read_once(fd: i32, pointer: *mut rusty::LegacyCVoid, length: usize) -> i64;
+    fn srpc_fd_last_errno() -> i32;
+    fn srpc_fd_interrupted_errno() -> i32;
 }
 
 #[cfg_attr(any(), cpp_trait_member_dispatch)]
@@ -178,7 +168,19 @@ impl FdSink {
 #[allow(unsafe_code)]
 impl SinkBase for FdSink {
     unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
-        unsafe { srpc_fd_write_all(self.fd_, p as *const rusty::LegacyCVoid, n) };
+        let mut written = 0usize;
+        while written < n {
+            let count = unsafe {
+                srpc_fd_write_once(self.fd_, p.add(written) as *const rusty::LegacyCVoid, n - written)
+            };
+            if count < 0 && unsafe { srpc_fd_last_errno() == srpc_fd_interrupted_errno() } {
+                continue;
+            }
+            if count <= 0 {
+                std::process::abort();
+            }
+            written += count as usize;
+        }
     }
 }
 
@@ -199,7 +201,23 @@ impl FdSource {
 #[allow(unsafe_code)]
 impl SourceBase for FdSource {
     unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
-        unsafe { srpc_fd_read_upto(self.fd_, p as *mut rusty::LegacyCVoid, n) }
+        let mut got = 0usize;
+        while got < n {
+            let count = unsafe {
+                srpc_fd_read_once(self.fd_, p.add(got) as *mut rusty::LegacyCVoid, n - got)
+            };
+            if count < 0 && unsafe { srpc_fd_last_errno() == srpc_fd_interrupted_errno() } {
+                continue;
+            }
+            if count < 0 {
+                std::process::abort();
+            }
+            if count == 0 {
+                break;
+            }
+            got += count as usize;
+        }
+        got
     }
 }
 
@@ -250,28 +268,7 @@ impl SourceBase for *mut FdSource {
     }
 }
 
-// The archive layer does not touch the proxies directly; it dispatches through
-// `rusty::srpc_sink_write` / `srpc_source_read`, which stand in for C++ helpers
-// whose sink parameter is unconstrained.  Their Rust signatures therefore take
-// `?Sized`, and an unbounded parameter has no callable surface -- so both were
-// empty stubs, and `BinaryWriteArchive::write_bytes` silently discarded every
-// byte even once the proxies worked.  These two impls are the bound's other
-// half.
-// Rustc-lane bodies for the ADL dispatch bound.  `rusty::srpc_adl_serialize`
-// (the terminal of the GENERIC `Serialize_::serialize` chain) stays unbounded
-// and panics under rustc -- a `T: Serialize` bound there would cascade into the
-// generic container impls, which the emitter cannot lower (measured: it
-// degrades a constrained generic impl to hand slots), and the emitted C++ of
-// the chain and of every container element site must stay byte-identical
-// because the elements resolve through the QUALIFIED `Serialize_::serialize`
-// overload set, which poison-scoped ADL cannot see.  The bounded Rust-lane
-// entry is `rusty::srpc::serializable::Serialize_::serialize` instead, whose
-// `RustcAdlSerialize` bound is the facade trait these two impls satisfy.
-// (This used to name `rusty::SerializableSerializeDispatch::serialize`, a
-// superseded stub whose body was `{}` -- following that advice serialized
-// nothing, silently. It has been deleted; see the note at its old site in
-// rusty-rustc/src/lib.rs.)  Measured: each impl emits only an uninstantiated,
-// empty-bodied member template that no C++ code calls.
+// The runtime ADL adapter delegates to these canonical implementations.
 #[allow(unsafe_code)]
 impl<T: Serialize + ?Sized> cpp::RustcAdlSerialize<T> for BinaryWriteArchive {
     unsafe fn rustc_adl_serialize(&mut self, value: &T) {
@@ -350,7 +347,7 @@ pub trait Serialize {
     fn serialize(&self, ar: &mut BinaryWriteArchive);
 }
 #[allow(unsafe_code)]
-impl Serialize for rusty::SerializableV32 {
+impl Serialize for v32 {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let mut b: [u8; 9] = [0u8; 9];
         let bsize = unsafe { SparseInt::dump32(self.get(), b.as_mut_ptr()) };
@@ -358,7 +355,7 @@ impl Serialize for rusty::SerializableV32 {
     }
 }
 #[allow(unsafe_code)]
-impl Serialize for rusty::SerializableV64 {
+impl Serialize for v64 {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let mut b: [u8; 9] = [0u8; 9];
         let bsize = unsafe { SparseInt::dump64(self.get(), b.as_mut_ptr()) };
@@ -447,6 +444,14 @@ impl Serialize for f64 {
     }
 }
 
+#[allow(unsafe_code)]
+impl Serialize for String {
+    fn serialize(&self, ar: &mut BinaryWriteArchive) {
+        Serialize_::serialize(&v64::new(self.len() as i64), ar);
+        unsafe { ar.write_bytes(self.as_ptr(), self.len()) };
+    }
+}
+
 // ---- Variable-length byte sequences: v64 length prefix + raw bytes.
 // BOTH leaves carry the body (rather than rusty::LoggingString forwarding to a
 // rusty::SerializableStdStringView temporary, as the old hand pair did): a
@@ -488,7 +493,7 @@ impl Serialize for rusty::LoggingString {
         }
     }
 }
-impl<T> Serialize for rusty::SerializableStdList<T> {
+impl<T: Serialize> Serialize for rusty::SerializableStdList<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -501,7 +506,7 @@ impl<T> Serialize for rusty::SerializableStdList<T> {
 // Index loops, not `for e in self`: rusty::iter over these vector
 // shapes in this position mis-yields (the element call deduced T = the
 // whole container and landed on the poisoned catch-all).
-impl<T> Serialize for Vec<T> {
+impl<T: Serialize> Serialize for Vec<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -513,7 +518,7 @@ impl<T> Serialize for Vec<T> {
     }
 }
 
-impl<T> Serialize for rusty::SerializableStdVector<T> {
+impl<T: Serialize> Serialize for rusty::SerializableStdVector<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -525,7 +530,7 @@ impl<T> Serialize for rusty::SerializableStdVector<T> {
     }
 }
 
-impl<T> Serialize for rusty::SerializableStdSet<T> {
+impl<T: Serialize> Serialize for rusty::SerializableStdSet<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -535,7 +540,7 @@ impl<T> Serialize for rusty::SerializableStdSet<T> {
     }
 }
 
-impl<T> Serialize for rusty::SerializableStdUnorderedSet<T> {
+impl<T: Serialize> Serialize for rusty::SerializableStdUnorderedSet<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -545,31 +550,31 @@ impl<T> Serialize for rusty::SerializableStdUnorderedSet<T> {
     }
 }
 
-impl<K, V> Serialize for rusty::SerializableStdMap<K, V> {
+impl<K: Serialize, V: Serialize> Serialize for rusty::SerializableStdMap<K, V> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
         for kv in self {
-            Serialize_::serialize(&kv.first, ar);
-            Serialize_::serialize(&kv.second, ar);
+            Serialize_::serialize(kv.first, ar);
+            Serialize_::serialize(kv.second, ar);
         }
     }
 }
 
-impl<K, V> Serialize for rusty::SerializableStdUnorderedMap<K, V> {
+impl<K: Serialize, V: Serialize> Serialize for rusty::SerializableStdUnorderedMap<K, V> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
         for kv in self {
-            Serialize_::serialize(&kv.first, ar);
-            Serialize_::serialize(&kv.second, ar);
+            Serialize_::serialize(kv.first, ar);
+            Serialize_::serialize(kv.second, ar);
         }
     }
 }
 
 // rusty B-tree containers iterate Rust-style (no begin()/end()); the
 // explicit iterator loop is the same shape their old C++ bodies used.
-impl<T> Serialize for rusty::BTreeSet<T> {
+impl<T: Serialize> Serialize for rusty::BTreeSet<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -584,7 +589,7 @@ impl<T> Serialize for rusty::BTreeSet<T> {
     }
 }
 
-impl<K, V> Serialize for rusty::BTreeMap<K, V> {
+impl<K: Serialize, V: Serialize> Serialize for rusty::BTreeMap<K, V> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -595,8 +600,8 @@ impl<K, V> Serialize for rusty::BTreeMap<K, V> {
                 break;
             }
             let kv = e.unwrap();
-            Serialize_::serialize(&kv.0, ar);
-            Serialize_::serialize(&kv.1, ar);
+            Serialize_::serialize(kv.0, ar);
+            Serialize_::serialize(kv.1, ar);
         }
     }
 }
@@ -616,7 +621,7 @@ impl<K, V> Serialize for rusty::BTreeMap<K, V> {
 // crash-free and is what the RustyHashSetPrimitives /
 // RustyHashMapPrimitives tests exercise. If that ever changes, the
 // encoder needs a mangler-safe enumeration path (or a fixed toolchain).
-impl<T> Serialize for rusty::HashSet<T> {
+impl<T: Serialize> Serialize for rusty::HashSet<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -627,12 +632,12 @@ impl<T> Serialize for rusty::HashSet<T> {
                 break;
             }
             let kv = e.unwrap();
-            Serialize_::serialize(&kv.0, ar);
+            Serialize_::serialize(kv.0, ar);
         }
     }
 }
 
-impl<K, V> Serialize for rusty::HashMap<K, V> {
+impl<K: Serialize, V: Serialize> Serialize for rusty::HashMap<K, V> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -643,8 +648,8 @@ impl<K, V> Serialize for rusty::HashMap<K, V> {
                 break;
             }
             let kv = e.unwrap();
-            Serialize_::serialize(&kv.0, ar);
-            Serialize_::serialize(&kv.1, ar);
+            Serialize_::serialize(kv.0, ar);
+            Serialize_::serialize(kv.1, ar);
         }
     }
 }
@@ -653,7 +658,7 @@ impl<K, V> Serialize for rusty::HashMap<K, V> {
 // already knows the type and consumes its own bytes). It stays last in
 // the trait block; codegen emits every Serialize_ overload declaration
 // before any definition, so both element calls see the complete set.
-impl<T1, T2> Serialize for rusty::StdPair<T1, T2> {
+impl<T1: Serialize, T2: Serialize> Serialize for rusty::StdPair<T1, T2> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         Serialize_::serialize(&self.first, ar);
         Serialize_::serialize(&self.second, ar);
@@ -662,10 +667,10 @@ impl<T1, T2> Serialize for rusty::StdPair<T1, T2> {
 
 #[allow(non_snake_case, unsafe_code)]
 pub mod Serialize_ {
-    use super::{cpp, BinaryWriteArchive};
+    use super::{cpp, BinaryWriteArchive, Serialize};
     use cpp::rusty as cpp_rusty;
 
-    fn adl_serialize_bridge<T>(value: &T, archive: &mut BinaryWriteArchive) {
+    fn adl_serialize_bridge<T: Serialize + ?Sized>(value: &T, archive: &mut BinaryWriteArchive) {
         // SAFETY: the runtime bridge borrows both arguments only for this call
         // and performs a poison-scoped, ADL-only lookup. A missing overload
         // remains a hard C++ template-instantiation error.
@@ -674,19 +679,19 @@ pub mod Serialize_ {
 
     #[allow(non_snake_case)]
     pub mod adl_detail_ {
-        use super::BinaryWriteArchive;
+        use super::{BinaryWriteArchive, Serialize};
 
         // Historical lookup poison: declaration only, deliberately undefined.
         unsafe extern "Rust" {
             pub fn serialize();
         }
 
-        pub fn dispatch_serialize<T>(value: &T, archive: &mut BinaryWriteArchive) {
+        pub fn dispatch_serialize<T: Serialize + ?Sized>(value: &T, archive: &mut BinaryWriteArchive) {
             super::adl_serialize_bridge(value, archive)
         }
     }
 
-    pub fn serialize<T>(value: &T, archive: &mut BinaryWriteArchive) {
+    pub fn serialize<T: Serialize + ?Sized>(value: &T, archive: &mut BinaryWriteArchive) {
         // SAFETY: the runtime bridge borrows both arguments only for this call
         // and performs a poison-scoped, ADL-only lookup. A missing overload
         // remains a hard C++ template-instantiation error.
@@ -724,7 +729,7 @@ impl BinaryReadArchive {
     /// of [`SourceBase::read_bytes`]'s destination, non-overlap, and retained
     /// backing-storage requirements.
     pub unsafe fn read_or_abort(&mut self, p: *mut u8, n: usize) {
-        unsafe { cpp_debugging::verify(self.read_exact(p, n)) };
+        verify_at(self.read_exact(p, n), file!(), line!());
     }
 }
 
@@ -732,29 +737,29 @@ pub trait Deserialize {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive);
 }
 #[allow(unsafe_code)]
-impl Deserialize for rusty::SerializableV32 {
+impl Deserialize for v32 {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut b: [u8; 9] = [0u8; 9];
-        unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr(), 1)) };
+        unsafe { verify_at(ar.read_exact(b.as_mut_ptr(), 1), file!(), line!()) };
         let total = SparseInt::buf_size(b[0]);
         if total > 1 {
             // @unsafe - the tail read lands after the already-consumed
             // first byte (the retired `varint_tail` kernel's whole job).
-            unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr().add(1), total - 1)) };
+            unsafe { verify_at(ar.read_exact(b.as_mut_ptr().add(1), total - 1), file!(), line!()) };
         }
         self.set(unsafe { SparseInt::load32(b.as_ptr()) });
     }
 }
 #[allow(unsafe_code)]
-impl Deserialize for rusty::SerializableV64 {
+impl Deserialize for v64 {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut b: [u8; 9] = [0u8; 9];
-        unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr(), 1)) };
+        unsafe { verify_at(ar.read_exact(b.as_mut_ptr(), 1), file!(), line!()) };
         let total = SparseInt::buf_size(b[0]);
         if total > 1 {
             // @unsafe - the tail read lands after the already-consumed
             // first byte (the retired `varint_tail` kernel's whole job).
-            unsafe { cpp_debugging::verify(ar.read_exact(b.as_mut_ptr().add(1), total - 1)) };
+            unsafe { verify_at(ar.read_exact(b.as_mut_ptr().add(1), total - 1), file!(), line!()) };
         }
         self.set(unsafe { SparseInt::load64(b.as_ptr()) });
     }
@@ -841,6 +846,17 @@ impl Deserialize for f64 {
     }
 }
 
+#[allow(unsafe_code)]
+impl Deserialize for String {
+    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
+        let mut length = v64::new(0i64);
+        Deserialize_::deserialize(&mut length, ar);
+        let mut bytes = vec![0u8; length.get() as usize];
+        unsafe { ar.read_or_abort(bytes.as_mut_ptr(), bytes.len()) };
+        *self = String::from_utf8(bytes).unwrap();
+    }
+}
+
 // Read-side mirror of the string serialize leaf: v64 length prefix,
 // resize, then read the bytes straight into the string's buffer.
 // @unsafe { writing into rusty::LoggingString's internal buffer }
@@ -858,7 +874,7 @@ impl Deserialize for rusty::LoggingString {
         self.resize(len);
         if len > 0usize {
             let p: *mut u8 = unsafe { self.data() } as *mut u8;
-            unsafe { cpp_debugging::verify(ar.read_exact(p, len)) };
+            unsafe { verify_at(ar.read_exact(p, len), file!(), line!()) };
         }
     }
 }
@@ -872,14 +888,14 @@ impl Deserialize for rusty::LoggingString {
 // only insert (the clang-22 mangler crash is in ENUMERATION, which
 // only the serialize side does).
 
-impl<T1, T2> Deserialize for rusty::StdPair<T1, T2> {
+impl<T1: Deserialize, T2: Deserialize> Deserialize for rusty::StdPair<T1, T2> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         Deserialize_::deserialize(&mut self.first, ar);
         Deserialize_::deserialize(&mut self.second, ar);
     }
 }
 
-impl<T: Default> Deserialize for Vec<T> {
+impl<T: Default + Deserialize> Deserialize for Vec<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -896,7 +912,7 @@ impl<T: Default> Deserialize for Vec<T> {
     }
 }
 
-impl<T: Default> Deserialize for rusty::SerializableStdVector<T> {
+impl<T: Default + Deserialize> Deserialize for rusty::SerializableStdVector<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -913,7 +929,7 @@ impl<T: Default> Deserialize for rusty::SerializableStdVector<T> {
     }
 }
 
-impl<T: Default> Deserialize for rusty::SerializableStdList<T> {
+impl<T: Default + Deserialize> Deserialize for rusty::SerializableStdList<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -929,7 +945,7 @@ impl<T: Default> Deserialize for rusty::SerializableStdList<T> {
     }
 }
 
-impl<T: Default> Deserialize for rusty::BTreeSet<T> {
+impl<T: Default + Deserialize + Ord> Deserialize for rusty::BTreeSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -945,7 +961,7 @@ impl<T: Default> Deserialize for rusty::BTreeSet<T> {
     }
 }
 
-impl<T: Default> Deserialize for rusty::SerializableStdSet<T> {
+impl<T: Default + Deserialize + Ord> Deserialize for rusty::SerializableStdSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -961,7 +977,7 @@ impl<T: Default> Deserialize for rusty::SerializableStdSet<T> {
     }
 }
 
-impl<T: Default> Deserialize for rusty::HashSet<T> {
+impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for rusty::HashSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -977,7 +993,7 @@ impl<T: Default> Deserialize for rusty::HashSet<T> {
     }
 }
 
-impl<T: Default> Deserialize for rusty::SerializableStdUnorderedSet<T> {
+impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for rusty::SerializableStdUnorderedSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -993,7 +1009,7 @@ impl<T: Default> Deserialize for rusty::SerializableStdUnorderedSet<T> {
     }
 }
 
-impl<K: Default, V: Default> Deserialize for rusty::BTreeMap<K, V> {
+impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for rusty::BTreeMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1011,7 +1027,7 @@ impl<K: Default, V: Default> Deserialize for rusty::BTreeMap<K, V> {
     }
 }
 
-impl<K: Default, V: Default> Deserialize for rusty::SerializableStdMap<K, V> {
+impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for rusty::SerializableStdMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1029,7 +1045,7 @@ impl<K: Default, V: Default> Deserialize for rusty::SerializableStdMap<K, V> {
     }
 }
 
-impl<K: Default, V: Default> Deserialize for rusty::HashMap<K, V> {
+impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> Deserialize for rusty::HashMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1047,7 +1063,7 @@ impl<K: Default, V: Default> Deserialize for rusty::HashMap<K, V> {
     }
 }
 
-impl<K: Default, V: Default> Deserialize for rusty::SerializableStdUnorderedMap<K, V> {
+impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> Deserialize for rusty::SerializableStdUnorderedMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1067,10 +1083,10 @@ impl<K: Default, V: Default> Deserialize for rusty::SerializableStdUnorderedMap<
 
 #[allow(non_snake_case, unsafe_code)]
 pub mod Deserialize_ {
-    use super::{cpp, BinaryReadArchive};
+    use super::{cpp, BinaryReadArchive, Deserialize};
     use cpp::rusty as cpp_rusty;
 
-    fn adl_deserialize_bridge<T>(value: &mut T, archive: &mut BinaryReadArchive) {
+    fn adl_deserialize_bridge<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
         // SAFETY: same bounded ADL bridge contract as the write side, with the
         // payload mutably borrowed for the duration of the call only.
         unsafe { cpp_rusty::srpc_adl_deserialize(value, archive) }
@@ -1078,55 +1094,83 @@ pub mod Deserialize_ {
 
     #[allow(non_snake_case)]
     pub mod adl_detail_ {
-        use super::BinaryReadArchive;
+        use super::{BinaryReadArchive, Deserialize};
 
         // Historical lookup poison: declaration only, deliberately undefined.
         unsafe extern "Rust" {
             pub fn deserialize();
         }
 
-        pub fn dispatch_deserialize<T>(value: &mut T, archive: &mut BinaryReadArchive) {
+        pub fn dispatch_deserialize<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
             super::adl_deserialize_bridge(value, archive)
         }
     }
 
-    pub fn deserialize<T>(value: &mut T, archive: &mut BinaryReadArchive) {
+    pub fn deserialize<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
         adl_detail_::dispatch_deserialize(value, archive)
     }
 }
 
-pub trait SerializableBase {
+/// Structural contract implemented by concrete application payloads.
+/// The erased holder supplies type identity; payloads cannot forge it.
+#[cfg_attr(any(), cpp_trait_member_dispatch)]
+pub trait SerializablePayload {
+    fn save(&self, ar: &mut BinaryWriteArchive);
+    fn load(&mut self, ar: &mut BinaryReadArchive);
+    fn kind(&self) -> i32;
+}
+
+mod sealed {
+    #[cfg_attr(any(), cpp_marker_trait)]
+    pub trait SerializableHolder {}
+}
+
+/// Erased interface implemented only by the canonical payload holder.
+/// Sealing prevents safe callers from supplying an object that reports a
+/// payload type without actually having that holder's memory layout.
+///
+/// ```compile_fail
+/// use srpc::serializable::{SerializableBase, BinaryReadArchive, BinaryWriteArchive};
+/// struct Forged;
+/// impl SerializableBase for Forged {
+///     fn save(&self, _: &mut BinaryWriteArchive) {}
+///     fn load(&mut self, _: &mut BinaryReadArchive) {}
+///     fn kind(&self) -> i32 { 61 }
+///     fn payload_type_id(&self) -> std::any::TypeId { std::any::TypeId::of::<i64>() }
+/// }
+/// ```
+pub trait SerializableBase: sealed::SerializableHolder {
     fn save(&self, ar: &mut BinaryWriteArchive);
     fn load(&mut self, ar: &mut BinaryReadArchive);
     fn kind(&self) -> i32;
     fn payload_type_id(&self) -> std::any::TypeId;
 }
 
-/// Public owning proxy ABI.  The rustc facade models the same Arc-shaped
-/// handle; the production type map spells its pointee as this module's
-/// generated `SerializableBase` interface.
-pub type SerializableProxy = rusty::SerializableProxy;
+/// Shared ownership of a concrete canonical payload holder.
+pub type SerializableProxy = Arc<dyn SerializableBase>;
 
 /// Public registry-factory ABI (`rusty::Function<SerializableProxy()>`).
-pub type SerializableRegistryFactory = rusty::SerializableRegistryFactory;
+pub type SerializableRegistryFactory = rusty::Function<dyn FnMut() -> SerializableProxy + Send>;
 
 pub mod details {
-    use super::{Arc, BinaryReadArchive, BinaryWriteArchive, SerializableBase};
+    use super::{Arc, BinaryReadArchive, BinaryWriteArchive, SerializableBase, SerializablePayload, sealed};
+    use rusty::StdArcGetMutExt as _;
     use rusty::cpp_inherit;
 
     pub struct SerializableSharedPtrHolder<T> {
         pub ptr: Arc<T>,
     }
 
+    impl<T: SerializablePayload + 'static> sealed::SerializableHolder for SerializableSharedPtrHolder<T> {}
+
     #[cpp_inherit]
-    impl<T: SerializableBase + 'static> SerializableBase for SerializableSharedPtrHolder<T> {
+    impl<T: SerializablePayload + 'static> SerializableBase for SerializableSharedPtrHolder<T> {
         fn save(&self, ar: &mut BinaryWriteArchive) {
             self.ptr.save(ar)
         }
-        // @unsafe - unique-owner mutation window: load always runs on a
-        // factory-fresh proxy (registry create -> strong_count 1), so
-        // get_mut() is Some; a shared proxy here would be a bug and panics
-        // loudly instead of silently mutating shared state.
+        // @unsafe - payload mutation requires one strong owner and no Weak
+        // owners. A factory retaining either kind of additional owner is
+        // rejected before load can mutate the payload.
         fn load(&mut self, ar: &mut BinaryReadArchive) {
             self.ptr.get_mut().unwrap().load(ar)
         }
@@ -1144,23 +1188,20 @@ pub mod details {
 /// # Safety
 ///
 /// `base` must be null or point to a live `SerializableBase` implementation
-/// for the duration of the call. If that object reports
-/// `TypeId::of::<T>()`, its dynamic object must actually be this module's
-/// `details::SerializableSharedPtrHolder<T>`, created by the corresponding
-/// proxy factory; an arbitrary `SerializableBase` implementation must not
-/// forge another payload's `TypeId`. The returned pointer borrows that same
-/// allocation and must never outlive it.
+/// for the duration of the call. The sealed base trait guarantees that a
+/// matching payload type identifies this module's concrete holder. The
+/// returned pointer borrows that same allocation and must never outlive it.
 #[allow(unsafe_code)]
 pub unsafe fn serializable_holder_of<T: 'static>(
-    base: *const rusty::SerializableBase,
-) -> *const rusty::SerializableSharedPtrHolder<T> {
+    base: *const dyn SerializableBase,
+) -> *const details::SerializableSharedPtrHolder<T> {
     if base.is_null() {
         return core::ptr::null();
     }
     if unsafe { (*base).payload_type_id() } != std::any::TypeId::of::<T>() {
         return core::ptr::null();
     }
-    base as *const rusty::SerializableSharedPtrHolder<T>
+    base as *const details::SerializableSharedPtrHolder<T>
 }
 
 #[cfg_attr(any(), cpp_no_auto_traits)]
@@ -1183,19 +1224,18 @@ impl<const KIND: i32> Serializable<KIND> {
 }
 
 #[allow(unsafe_code)]
-pub fn make_serializable_proxy_default<T: 'static>() -> rusty::SerializableProxy {
-    // SAFETY: the C++ helper allocates T and immediately moves its owning Arc
-    // into the only SerializableBase holder implementation.
-    let sp: Arc<T> = unsafe { cpp_rusty::srpc_arc_default::<T>() };
-    unsafe { cpp_rusty::srpc_holder_proxy::<rusty::SerializableSharedPtrHolder<T>, T>(sp) }
+pub fn make_serializable_proxy_default<T: SerializablePayload + Default + 'static>() -> SerializableProxy {
+    make_serializable_proxy(Arc::new(T::default()))
 }
 
 #[allow(unsafe_code)]
-pub fn make_serializable_proxy_copy<T: 'static>(value: &T) -> rusty::SerializableProxy {
-    // SAFETY: the helper copy-constructs T from a live shared reference and
-    // transfers the resulting Arc into the holder proxy.
-    let sp: Arc<T> = unsafe { cpp_rusty::srpc_arc_copy(value) };
-    unsafe { cpp_rusty::srpc_holder_proxy::<rusty::SerializableSharedPtrHolder<T>, T>(sp) }
+pub fn make_serializable_proxy_copy<T: SerializablePayload + Clone + 'static>(value: &T) -> SerializableProxy {
+    make_serializable_proxy(Arc::new(value.clone()))
+}
+
+/// Share a concrete payload through the canonical type-erased holder.
+pub fn make_serializable_proxy<T: SerializablePayload + 'static>(value: Arc<T>) -> SerializableProxy {
+    Arc::<details::SerializableSharedPtrHolder<T>>::new(details::SerializableSharedPtrHolder { ptr: value })
 }
 
 pub struct SerializableRegistry {}
@@ -1210,19 +1250,16 @@ impl SerializableRegistry {
     // without re-checking that; a by-reference capture would dangle.
     // The proxy is holder-shaped so SerializableEnvelope::load gives
     // unpack_shared<T> a refcount-shared Arc<T>.
-    pub fn reg<T: 'static>(kind: i32) -> i32 {
-        let factory = unsafe {
-            cpp_rusty::srpc_factory_from_callable(|| -> rusty::SerializableProxy {
-                let sp: Arc<T> = cpp_rusty::srpc_arc_default::<T>();
-                cpp_rusty::srpc_holder_proxy::<rusty::SerializableSharedPtrHolder<T>, T>(sp)
-            })
-        };
+    pub fn reg<T: SerializablePayload + Default + 'static>(kind: i32) -> i32 {
+        let factory = SerializableRegistryFactory::from_callable(|| -> SerializableProxy {
+            make_serializable_proxy_default::<T>()
+        });
         serializable_registry_register_factory(kind, factory);
         0i32
     }
 
     // Create a fresh proxy for the given kind; aborts if unregistered.
-    pub fn create(kind: i32) -> rusty::SerializableProxy {
+    pub fn create(kind: i32) -> SerializableProxy {
         serializable_registry_create_impl(kind)
     }
 
@@ -1237,7 +1274,7 @@ impl SerializableRegistry {
 }
 
 struct SerializableRegistryMap {
-    map: rusty::HashMap<i32, rusty::SerializableRegistryFactory>,
+    map: rusty::HashMap<i32, SerializableRegistryFactory>,
 }
 
 // The otherwise-unused parameter intentionally makes this a C++ function
@@ -1254,7 +1291,7 @@ fn registry<T>() -> &'static rusty::Mutex<SerializableRegistryMap> {
 #[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_register_factory(
     kind: i32,
-    factory: rusty::SerializableRegistryFactory,
+    factory: SerializableRegistryFactory,
 ) {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
     (*guard).map.insert(kind, factory);
@@ -1262,10 +1299,10 @@ pub fn serializable_registry_register_factory(
 
 #[allow(clippy::explicit_auto_deref)]
 #[allow(unsafe_code)]
-pub fn serializable_registry_create_impl(kind: i32) -> rusty::SerializableProxy {
-    let guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    let entry = (*guard).map.get(&kind);
-    unsafe { cpp_debugging::verify(entry.is_some()) };
+pub fn serializable_registry_create_impl(kind: i32) -> SerializableProxy {
+    let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
+    let entry = (*guard).map.get_mut(&kind);
+    verify_at(entry.is_some(), file!(), line!());
     entry.unwrap()()
 }
 

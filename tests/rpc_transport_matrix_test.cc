@@ -5,10 +5,8 @@
 // than one transport (gRPC fixture-matrix style), so a divergence in the
 // shared server-dispatch / client-demux path shows up regardless of which
 // channel carried it. This is the C++ lane's home for the matrix because TCP
-// needs the linked plain-C socket kernels, which the pure-cargo Rust lane
-// (no build.rs) cannot link -- the Rust lane already covers the in-memory
-// round trip (tests/rpc_roundtrip_inmemory_rust.rs), and this is the first
-// full RPC round trip in the gating C++ battery.
+// and the Rust lane both link the same native C kernels. The Rust counterpart
+// also checks cooperative dispatch in tests/rpc_runtime_rust.rs.
 //
 // The service echoes an i64 doubled, over a fast RPC (inline dispatch, no
 // fiber -- keeps the test synchronous and deterministic). It is run over:
@@ -46,7 +44,7 @@ class EchoDoubleService : public Service {
     }
 
     void __dispatch__(int32_t rpc_id, rusty::Box<Request> req,
-                      WeakServerConnection weak_sconn) override {
+                      WeakServerConnection weak_sconn) const override {
         if (rpc_id != ECHO_DOUBLE_RPC_ID) {
             return;
         }
@@ -118,6 +116,77 @@ TEST(RpcTransportMatrix, TcpLoopbackRoundTrip) {
     EXPECT_EQ(echo_once(client, 21), 42);
     EXPECT_EQ(echo_once(client, 1000), 2000);
 
+    client->close();
+}
+
+// Both methods share one service object. A suspended stackful handler must
+// leave the service available for another request on the same poll thread.
+class SuspendingService : public Service {
+ public:
+    static constexpr int32_t SLOW_RPC_ID = 0x00E0'1002;
+    static constexpr int32_t FAST_RPC_ID = 0x00E0'1003;
+    mutable std::atomic<int> stage{0};
+
+    int32_t __reg_to__(Server& server, size_t index) override {
+        const auto error = server.reg_rpc(SLOW_RPC_ID, index);
+        return error == 0 ? server.reg_fast_rpc(FAST_RPC_ID, index) : error;
+    }
+
+    void __dispatch__(int32_t rpc_id, rusty::Box<Request> req,
+                      WeakServerConnection weak_sconn) const override {
+        if (rpc_id == SLOW_RPC_ID) {
+            stage.store(1);
+            this_fiber::sleep_ms(75);
+            EXPECT_EQ(stage.load(), 2);
+            stage.store(3);
+        } else if (rpc_id == FAST_RPC_ID) {
+            EXPECT_EQ(stage.exchange(2), 1);
+        } else {
+            return;
+        }
+        auto connection = weak_sconn.upgrade();
+        if (connection.is_some()) {
+            auto sconn = connection.unwrap();
+            const_cast<ServerConnection&>(*sconn).reply(
+                *req, 0, ServerReplyFn{[](BinaryWriteArchive& out) {
+                    Serialize_::serialize(int64_t{41}, out);
+                }});
+        }
+    }
+};
+
+TEST(RpcTransportMatrix, StackfulHandlerAllowsSameServiceDispatch) {
+    auto poll = PollThread::create();
+    auto server = Server::new_(rusty::Some(poll.clone()));
+    auto service = rusty::make_box<SuspendingService>();
+    const auto* observer = service.get();
+    server.reg_service_typed(std::move(service));
+    ASSERT_EQ(server.start(reinterpret_cast<const int8_t*>("127.0.0.1:0")), 0);
+    const auto addr = "127.0.0.1:" + std::to_string(server.get_bound_port());
+    auto client = Client::create(poll.clone());
+    ASSERT_EQ(client->connect(reinterpret_cast<const int8_t*>(addr.c_str()), true), 0);
+
+    auto slow_result = client->request(SuspendingService::SLOW_RPC_ID, FutureAttr{},
+                                     [](BinaryWriteArchive&) {});
+    ASSERT_TRUE(slow_result.is_ok());
+    auto slow = slow_result.unwrap();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (observer->stage.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(observer->stage.load(), 1);
+    auto fast_result = client->request(SuspendingService::FAST_RPC_ID, FutureAttr{},
+                                     [](BinaryWriteArchive&) {});
+    ASSERT_TRUE(fast_result.is_ok());
+    auto fast = fast_result.unwrap();
+    ASSERT_TRUE(fast->wait_with_options());
+    ASSERT_TRUE(slow->wait_with_options());
+    EXPECT_EQ(fast->get_error_code(), 0);
+    EXPECT_EQ(slow->get_error_code(), 0);
+    EXPECT_EQ(observer->stage.load(), 3);
+    int64_t value = 0;
+    deserialize_from(slow->get_reply(), value);
+    EXPECT_EQ(value, 41);
     client->close();
 }
 

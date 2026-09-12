@@ -399,15 +399,15 @@ pub struct InMemoryChannelShim {
 
 #[cpp_inherit]
 impl ChannelConnectionBase for InMemoryChannelShim {
-    unsafe fn send_frame(&mut self, frame: &ChannelFrame) -> ChannelError {
+    unsafe fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
         unsafe { self.conn_.send_frame(frame) }
     }
 
-    fn flush(&mut self) {
+    fn flush(&self) {
         self.conn_.flush();
     }
 
-    fn close(&mut self) {
+    fn close(&self) {
         self.conn_.close();
     }
 

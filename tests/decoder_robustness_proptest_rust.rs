@@ -22,25 +22,6 @@ use srpc::frame_codec::{
 };
 use srpc::internal_protocol::{response_has_extended_header, response_payload_size};
 
-// No build.rs: supply the C symbols basetypes references.
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    1
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_realtime_coarse_us() -> u64 {
-    2
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_gettimeofday_us() -> u64 {
-    3
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_sleep_us(_us: u64) {}
 
 fn view() -> FrameView {
     FrameView {

@@ -24,25 +24,6 @@ use srpc::frame_codec::{
     kMaxFramePayloadSize, FrameDecodeStatus, FrameHeader,
 };
 
-// No build.rs, so this binary supplies the C symbols basetypes references.
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    1_000_000
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_realtime_coarse_us() -> u64 {
-    2_000_000
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_gettimeofday_us() -> u64 {
-    3_000_000
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_sleep_us(_microseconds: u64) {}
 
 // The upper bound of the SparseInt 7-byte range (inclusive): values with a
 // magnitude at or below this round-trip through the <=7-byte path unharmed.

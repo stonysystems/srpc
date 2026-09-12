@@ -6,8 +6,8 @@
 # runnable pass. It is a SEPARATE build tree (sanitizers are a whole-config
 # switch, per CLAUDE.md) so it never disturbs the normal build/.
 #
-# It builds and runs ONLY the runtime-battery executables, NOT the Goal-0
-# gates. The dual-compile gate is an exact strong-symbol census (1966 symbols)
+# It builds the runtime-battery target and its normal source-check dependencies.
+# It excludes the Goal-0 dual-compile target, whose exact strong-symbol census
 # and ASan/TSan/UBSan instrumentation injects its own runtime symbols
 # (__asan_*, interceptors), which perturbs that census -- so the ABI oracle is
 # both meaningless and failing under a sanitizer. Runtime memory/race checking
@@ -17,7 +17,7 @@
 #   scripts/run_sanitizer_battery.sh [address|thread|undefined]   (default: address)
 #
 # What it catches per mode:
-#   address    fd/memory leaks (LSan) + heap/stack/use-after-free
+#   address    memory leaks (LSan) + heap/stack/use-after-free
 #   thread     data races across the reactor's poll threads and fibers
 #   undefined  UB in the framer/varint/pointer code
 #
@@ -35,23 +35,11 @@ esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build-san-$MODE"
 
-# The eight runtime-battery suites (SRPC_RUNTIME_BATTERY in CMakeLists.txt).
-BATTERY=(
-  test_reactor
-  test_reactor_extended
-  test_reactor_minimal
-  test_timeout_race
-  test_and_event
-  test_fiber
-  test_fiber_runtime
-  test_rpc_pollthread_proxy_storage
-)
-
 echo "=== configuring $BUILD (SRPC_SANITIZER=$MODE) ==="
 cmake -S "$ROOT" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DSRPC_SANITIZER="$MODE"
 
 echo "=== building ONLY the battery under $MODE (skipping the ABI gate) ==="
-cmake --build "$BUILD" --parallel 4 --target "${BATTERY[@]}"
+cmake --build "$BUILD" --parallel 4 --target srpc_runtime_battery
 
 echo "=== running the runtime battery under $MODE ==="
 # LSan on by default under address; make a leak fail the run.  Suppress the

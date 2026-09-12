@@ -81,6 +81,7 @@ includes = [
 [[module]]
 name = "srpc.epoll_wrapper"
 includes = [
+    { path = "reactor/srpc_epoll.h", form = "quote" },
     { path = "rusty/os/fd.hpp", form = "angle" },
     { path = "rusty/sync/atomic.hpp", form = "angle" },
 ]

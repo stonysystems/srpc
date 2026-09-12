@@ -1,0 +1,223 @@
+#include <gtest/gtest.h>
+#include <rusty/rusty.hpp>
+#include "../misc/serializable.hpp"
+#include "../misc/any_message.hpp"
+#include "../misc/serializable_envelope.hpp"
+
+import std;
+import rusty;
+
+namespace {
+
+template<class T>
+std::vector<uint8_t> Encode(const T& value) {
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive archive{srpc::make_sink_proxy_buffer(&sink)};
+  srpc::Serialize_::serialize(value, archive);
+  return {sink.bytes.data(), sink.bytes.data() + sink.bytes.len()};
+}
+
+template<class T>
+T Decode(const std::vector<uint8_t>& bytes) {
+  auto source = srpc::BufferSource::new_(bytes.data(), bytes.size());
+  srpc::BinaryReadArchive archive{srpc::make_source_proxy_buffer(&source)};
+  T value{};
+  srpc::Deserialize_::deserialize(value, archive);
+  EXPECT_EQ(source.remaining(), 0u);
+  return value;
+}
+
+TEST(SerializationParity, NestedContainersMatchRustWireVector) {
+  const std::vector<std::vector<int64_t>> original{{1, 2, 3}, {}, {-9001, INT64_MAX}};
+  std::vector<uint8_t> expected{3, 3};
+  for (int64_t value : {INT64_C(1), INT64_C(2), INT64_C(3)}) {
+    const auto bytes = std::bit_cast<std::array<uint8_t, sizeof(value)>>(value);
+    expected.insert(expected.end(), bytes.begin(), bytes.end());
+  }
+  expected.insert(expected.end(), {0, 2});
+  for (int64_t value : {INT64_C(-9001), INT64_MAX}) {
+    const auto bytes = std::bit_cast<std::array<uint8_t, sizeof(value)>>(value);
+    expected.insert(expected.end(), bytes.begin(), bytes.end());
+  }
+  EXPECT_EQ(Encode(original), expected);
+  EXPECT_EQ(Decode<std::vector<int64_t>>(Encode(original.front())), original.front());
+  EXPECT_EQ(Decode<std::vector<std::vector<int64_t>>>(expected), original);
+  static_assert(sizeof(srpc::SerializeAdapter<std::vector<int64_t>>) > 0);
+  static_assert(sizeof(srpc::DeserializeAdapter<std::vector<int64_t>>) > 0);
+}
+
+TEST(SerializationParity, OrderedAndUnorderedContainersPreserveKeys) {
+  const std::set<int32_t> ordered_set{3, 1, 3};
+  EXPECT_EQ(Decode<std::set<int32_t>>(Encode(ordered_set)), ordered_set);
+  const std::map<int32_t, std::vector<int32_t>> ordered_map{{3, {9, 8}}, {1, {5}}};
+  EXPECT_EQ((Decode<std::map<int32_t, std::vector<int32_t>>>(Encode(ordered_map))), ordered_map);
+  const std::unordered_set<int32_t> unordered_set{3, 3, 1};
+  EXPECT_EQ(Decode<std::unordered_set<int32_t>>(Encode(unordered_set)), unordered_set);
+  const std::unordered_map<int32_t, std::string> unordered_map{{3, "three"}, {1, "one"}};
+  EXPECT_EQ((Decode<std::unordered_map<int32_t, std::string>>(Encode(unordered_map))), unordered_map);
+  const std::list<int32_t> sequence{3, 3, 1};
+  EXPECT_EQ(Decode<std::list<int32_t>>(Encode(sequence)), sequence);
+}
+
+struct Payload {
+  int64_t value = 0;
+  std::vector<int32_t> values;
+  void save(srpc::BinaryWriteArchive& archive) const {
+    srpc::Serialize_::serialize(value, archive);
+    srpc::Serialize_::serialize(values, archive);
+  }
+  void load(srpc::BinaryReadArchive& archive) {
+    srpc::Deserialize_::deserialize(value, archive);
+    srpc::Deserialize_::deserialize(values, archive);
+  }
+  int32_t kind() const { return 61; }
+};
+
+struct OtherPayload {
+  int64_t value = 0;
+  void save(srpc::BinaryWriteArchive& archive) const { srpc::Serialize_::serialize(value, archive); }
+  void load(srpc::BinaryReadArchive& archive) { srpc::Deserialize_::deserialize(value, archive); }
+  int32_t kind() const { return 62; }
+};
+struct EnvelopePayloadSet {};
+
+}  // namespace
+
+namespace srpc {
+template<> struct PayloadMember<EnvelopePayloadSet, Payload> {
+  static constexpr bool value = true;
+  static constexpr int32_t KIND = 61;
+};
+template<> struct PayloadMember<EnvelopePayloadSet, OtherPayload> {
+  static constexpr bool value = true;
+  static constexpr int32_t KIND = 62;
+};
+}  // namespace srpc
+
+namespace {
+
+TEST(SerializationParity, AnyMessageRoundTripPreservesValuesAndChecksHolderType) {
+  const std::string name = "serialization.parity.payload";
+  const std::string other_name = "serialization.parity.other";
+  srpc::reg_any_message_as<Payload>(name);
+  srpc::reg_any_message_as<OtherPayload>(other_name);
+  auto value = rusty::Arc<Payload>::make();
+  value.get_mut().unwrap().value = -9001;
+  value.get_mut().unwrap().values = {2, 3, 5};
+  auto original = srpc::AnyMessage::pack(value);
+  ASSERT_TRUE(original.unpack<Payload>().is_some());
+  EXPECT_EQ(original.unpack<Payload>().unwrap().get(), value.get());
+  EXPECT_TRUE(original.unpack<OtherPayload>().is_none());
+  auto restored = Decode<srpc::AnyMessage>(Encode(original));
+  ASSERT_TRUE(restored.unpack<Payload>().is_some());
+  EXPECT_NE(restored.unpack<Payload>().unwrap().get(), value.get());
+  EXPECT_EQ(restored.unpack<Payload>().unwrap()->value, value->value);
+  EXPECT_EQ(restored.unpack<Payload>().unwrap()->values, value->values);
+  EXPECT_EQ(restored.type_name_, name);
+
+  auto spoof = srpc::AnyMessage::pack_as<Payload>(other_name, value);
+  EXPECT_TRUE(spoof.is_a<OtherPayload>());
+  EXPECT_TRUE(spoof.unpack<OtherPayload>().is_none());
+}
+
+TEST(SerializationParity, ClosedEnvelopeRoundTripPreservesKindValuesAndIdentity) {
+  using Envelope = srpc::SerializableEnvelope<EnvelopePayloadSet>;
+  auto empty = Envelope::default_();
+  EXPECT_FALSE(empty.has_value());
+  EXPECT_TRUE(empty.unpack_shared<Payload>().is_none());
+  srpc::SerializableRegistry::clear_for_testing();
+  srpc::SerializableRegistry::reg<Payload>(61);
+  auto value = rusty::Arc<Payload>::make();
+  value.get_mut().unwrap().value = -9001;
+  value.get_mut().unwrap().values = {2, 3, 5};
+  auto original = Envelope::pack_aliased(value);
+  EXPECT_EQ(original.kind(), 61);
+  EXPECT_EQ(original.unpack_shared<Payload>().unwrap().get(), value.get());
+  EXPECT_EQ(original.unpack<OtherPayload>(), nullptr);
+  auto restored = Decode<Envelope>(Encode(original));
+  EXPECT_EQ(restored.kind(), 61);
+  ASSERT_TRUE(restored.unpack_shared<Payload>().is_some());
+  EXPECT_NE(restored.unpack_shared<Payload>().unwrap().get(), value.get());
+  EXPECT_EQ(restored.unpack<Payload>()->value, value->value);
+  EXPECT_EQ(restored.unpack<Payload>()->values, value->values);
+  EXPECT_TRUE(restored.unpack_shared<OtherPayload>().is_none());
+  srpc::SerializableRegistry::clear_for_testing();
+}
+
+TEST(SerializationParity, HolderAndMutableFactoryPreservePayload) {
+  Payload original{-9001, {2, 3, 5}};
+  auto proxy = srpc::make_serializable_proxy_copy(original);
+  EXPECT_EQ(proxy->kind(), 61);
+  auto holder = srpc::serializable_holder_of<Payload>(proxy.get());
+  ASSERT_NE(holder, nullptr);
+  EXPECT_EQ(holder->ptr->value, original.value);
+  EXPECT_EQ(holder->ptr->values, original.values);
+  EXPECT_EQ(srpc::serializable_holder_of<int64_t>(proxy.get()), nullptr);
+
+  srpc::SerializableRegistry::clear_for_testing();
+  srpc::SerializableRegistry::reg<Payload>(61);
+  auto fresh = srpc::SerializableRegistry::create(61);
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive writer{srpc::make_sink_proxy_buffer(&sink)};
+  proxy->save(writer);
+  auto source = srpc::BufferSource::new_(sink.bytes.data(), sink.bytes.len());
+  srpc::BinaryReadArchive reader{srpc::make_source_proxy_buffer(&source)};
+  fresh.get_mut().unwrap().load(reader);
+  auto restored = srpc::serializable_holder_of<Payload>(fresh.get());
+  ASSERT_NE(restored, nullptr);
+  EXPECT_EQ(restored->ptr->value, original.value);
+  EXPECT_EQ(restored->ptr->values, original.values);
+  EXPECT_EQ(source.remaining(), 0u);
+
+  srpc::serializable_registry_register_factory(62,
+      srpc::SerializableRegistryFactory::from_callable([calls = 0]() mutable {
+        auto value = rusty::Arc<Payload>::make();
+        value.get_mut().unwrap().value = ++calls;
+        return srpc::make_serializable_proxy(std::move(value));
+      }));
+  for (int64_t expected = 1; expected <= 2; ++expected) {
+    auto value = srpc::SerializableRegistry::create(62);
+    auto stored = srpc::serializable_holder_of<Payload>(value.get());
+    ASSERT_NE(stored, nullptr);
+    EXPECT_EQ(stored->ptr->value, expected);
+  }
+  srpc::SerializableRegistry::clear_for_testing();
+}
+
+struct WeakFactoryPayload {
+  int32_t value = 7;
+  void save(srpc::BinaryWriteArchive&) const {}
+  void load(srpc::BinaryReadArchive&) { value = 99; }
+  int32_t kind() const { return 196601; }
+};
+
+TEST(SerializationParity, FactoryWithWeakPayloadRejectsMutableLoad) {
+  auto retained = std::make_shared<rusty::sync::Weak<WeakFactoryPayload>>();
+  srpc::serializable_registry_register_factory(196601,
+      srpc::SerializableRegistryFactory::from_callable([retained] {
+        auto payload = rusty::Arc<WeakFactoryPayload>::make();
+        *retained = rusty::downgrade(payload);
+        return srpc::make_serializable_proxy(std::move(payload));
+      }));
+  auto proxy = srpc::SerializableRegistry::create(196601);
+  auto source = srpc::BufferSource::new_(nullptr, 0);
+  srpc::BinaryReadArchive archive{srpc::make_source_proxy_buffer(&source)};
+  bool rejected = false;
+  try {
+    proxy.get_mut().unwrap().load(archive);
+  } catch (const std::runtime_error& error) {
+    EXPECT_STREQ(error.what(), "Called unwrap on None");
+    rejected = true;
+  }
+  ASSERT_TRUE(rejected);
+  ASSERT_TRUE(retained->upgrade().is_some());
+  EXPECT_EQ(retained->upgrade().unwrap()->value, 7);
+  retained->reset();
+  proxy.get_mut().unwrap().load(archive);
+  auto holder = srpc::serializable_holder_of<WeakFactoryPayload>(proxy.get());
+  ASSERT_NE(holder, nullptr);
+  EXPECT_EQ(holder->ptr->value, 99);
+  srpc::SerializableRegistry::clear_for_testing();
+}
+
+}  // namespace

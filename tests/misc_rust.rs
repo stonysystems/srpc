@@ -5,30 +5,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_get_ncpu() -> i32 {
-    8
-}
-
-#[allow(unsafe_code)]
-#[allow(clippy::missing_safety_doc)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn srpc_format_fixed_2(value: f64, output: *mut i8, capacity: usize) -> i32 {
-    let formatted = format!("{value:.2}");
-    assert!(formatted.len() < capacity);
-    // SAFETY: the canonical owner passes a live buffer of `capacity` bytes;
-    // this test oracle checked that the formatted bytes fit.
-    unsafe {
-        core::ptr::copy_nonoverlapping(formatted.as_ptr().cast::<i8>(), output, formatted.len());
-        *output.add(formatted.len()) = 0;
-    }
-    formatted.len() as i32
-}
-
 #[test]
 fn process_seam_and_homogeneous_clamp_preserve_results() {
-    assert_eq!(get_ncpu(), 8);
+    assert!(get_ncpu() > 0);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,17 +100,19 @@ fn async_double_resolves_as_a_plain_rust_future() {
 }
 
 #[test]
+#[allow(unsafe_code)]
 fn async_double_drives_through_the_facade_task_bridge() {
     // The same shape the canonical reactor uses: a facade Context wrapping a
     // facade Waker, polled through `Task::from_future`.
     let mut waker = rusty::Waker {
-        wake_fn: Box::new(|| {}),
+        wake_fn: std::sync::Arc::new(|| {}),
     };
     let mut cx = rusty::Context {
         waker: &raw mut waker,
     };
     let mut task = rusty::Task::from_future(srpc::misc::async_double(21));
-    let poll = task.poll(&mut cx);
+    // SAFETY: the local Waker remains live and unchanged during this poll.
+    let poll = unsafe { task.poll(&mut cx) };
     assert!(poll.is_ready(), "ready future resolves on the first task poll");
     assert_eq!(poll.value, 42);
 }

@@ -1,7 +1,6 @@
 //! Canonical Rust source for the historical `srpc.reactor` provider.
 //!
-//! This file intentionally retains the historical `.cpp` path.  The crate
-//! view is `#[path = "../reactor/reactor.rs"] pub mod reactor;` in the
+//! The crate view is `#[path = "../reactor/reactor.rs"] pub mod reactor;` in the
 //! generated `src/lib.rs`, which points straight back at this source of truth.
 //!
 //! Per-thread state is spelled with Rust's `thread_local!` macro, which is
@@ -35,14 +34,14 @@ use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 
 use crate::basetypes::Time;
 use crate::epoll_wrapper::{Epoll, PollMode, PollReady, Pollable};
 use crate::misc::Job;
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 use crate::logging::{log_line, Log};
-use cpp::srpc::debugging as cpp_debugging;
+use crate::debugging::verify_at;
 use cpp::std as cpp_std;
 use rusty as cpp;
 
@@ -125,9 +124,7 @@ fn reusing_fiber() -> bool {
 // The incumbent had no wrapper at all; it called the imported template
 // directly, which is what this rename restores.
 fn reactor_verify(value: bool) {
-    // The checked foreign facade models the same abort-on-false contract as
-    // the imported `srpc.debugging` provider.
-    unsafe { cpp_debugging::verify(value) };
+    verify_at(value, file!(), line!());
 }
 
 // NOT named `log_line`: the imported `srpc::logging::log_line` lands in the
@@ -1163,10 +1160,9 @@ fn stackless_wake_make_binding<WakeDomain>(ingress: Arc<StacklessWakeIngress>) -
     });
     let wake_ingress = ingress.clone();
     let wake_ticket = ticket.clone();
-    let wake_fn: Box<dyn Fn() + Send + Sync> = Box::new(move || {
+    let waker = rusty::Waker::from_callable(move || {
         stackless_wake_request::<WakeDomain>(&wake_ingress, &wake_ticket);
     });
-    let waker = rusty::Waker { wake_fn };
     let mut binding = Box::new(StacklessWakeBinding {
         ticket,
         waker,
@@ -1402,8 +1398,8 @@ pub struct Reactor {
     // and a ready queue.  `run_loop` drains the ready queue via
     // `process_stackless_tasks()` each pass; waking a task pushes its index
     // back onto it.  The rustc-lane half (`Task`/`Waker`/`Context` and the
-    // `std::task::Waker` bridge) lives in rusty-rustc, and `PollThread` drives
-    // the whole thing through `add_tick_hook`.  It is small, single-threaded
+    // `std::task::Waker` bridge) lives in rusty-rustc, and `pollworker_poll_loop`
+    // (below) pumps `run_loop` after every epoll pass.  It is small, single-threaded
     // per reactor and cooperative -- by design, because every piece has to have
     // a C++20 coroutine counterpart.  See docs/async-runtime.md.
     pub stackless_tasks_: RefCell<Vec<StacklessTaskEntry>>,
@@ -1904,7 +1900,8 @@ where
     let mut early_binding = stackless_wake_make_binding::<()>(ingress);
     let early_ticket = early_binding.ticket.clone();
     let ectx: &mut rusty::Context = stackless_wake_binding_context::<()>(&mut early_binding);
-    let mut early_poll = task.poll(ectx);
+    // SAFETY: early_binding owns this Context and Waker throughout the poll.
+    let mut early_poll = unsafe { task.poll(ectx) };
     if early_poll.is_ready() {
         on_ready(early_poll.value);
         // Task retains Context*. Destroy it explicitly while the heap binding
@@ -1922,7 +1919,8 @@ where
     let completion_ticket = early_ticket.clone();
     let poller = StacklessPollFn::from_callable(move |ctx: &mut rusty::Context| -> bool {
         // Scoped so the task borrow is released before on_ready runs.
-        let poll_result = state.task.borrow_mut().poll(ctx);
+        // SAFETY: the owner reactor pins each binding throughout task polling.
+        let poll_result = unsafe { state.task.borrow_mut().poll(ctx) };
         if !poll_result.is_ready() {
             return false;
         }
@@ -2076,6 +2074,8 @@ pub struct PollThread {
     // native id) — used to detect self-join attempts in shutdown.
     pub poll_thread_id_bits_: AtomicU64,
     pub shutdown_called_: AtomicBool,
+    /// Number of removal commands accepted by the worker's command queue.
+    remove_count_: AtomicI32,
 }
 
 impl PollThread {
@@ -2134,27 +2134,29 @@ impl PollThread {
     }
 
     pub fn remove(&self, poll: &mut dyn Pollable) {
-        // Err == the poll worker exited; the fd it would unregister is gone too.
-        let _dropped_when_worker_gone =
-            self.sender_.send(PollCommand::RemovePollable { fd: poll.fd() });
+        self.remove_fd(poll.fd());
     }
 
-    // fd-keyed variant (remove only reads .fd() anyway); lets
-    // shim-only callers avoid the Pollable base entirely.
+    /// Unregister the caller's current descriptor asynchronously.
+    /// The caller must keep that descriptor owned until command processing
+    /// completes, for example by retaining it through worker shutdown.
     pub fn remove_fd(&self, fd: i32) {
-        // Err == the poll worker exited; the fd it would unregister is gone too.
-        let _dropped_when_worker_gone =
-            self.sender_.send(PollCommand::RemovePollable { fd });
+        if self.sender_.send(PollCommand::RemovePollable { fd }).is_ok() {
+            self.remove_count_.fetch_add(1, rusty::sync::atomic::Ordering::Relaxed);
+        }
     }
 
-    // Thread-safe close: removes from epoll, closes socket, drops
-    // proxy ownership.
+    /// Ask the worker to unregister and close its currently owned descriptor.
+    /// The caller must identify a live registration and must not independently
+    /// close or replace its descriptor while this command is pending.
     pub fn request_close(&self, fd: i32) {
         // Err == the poll worker exited; it already closed everything it owned.
         let _dropped_when_worker_gone =
             self.sender_.send(PollCommand::ClosePollable { fd });
     }
 
+    /// Change the caller's current registration asynchronously. Its descriptor
+    /// must remain owned until this command has been processed.
     pub fn update_mode(&self, fd: i32, new_mode: i32) {
         let result = self.sender_.send(PollCommand::UpdateMode { fd, new_mode });
         if result.is_err() {
@@ -2168,9 +2170,10 @@ impl PollThread {
             self.sender_.send(PollCommand::AddJob { job });
     }
 
-    // For testing — worker state is not reachable across the channel.
+    /// Count accepted remove requests, including requests for an absent fd.
+    /// Requests sent after worker shutdown are rejected and do not count.
     pub fn get_remove_count(&self) -> i32 {
-        0
+        self.remove_count_.load(rusty::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -3174,13 +3177,14 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
 
 // MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
 #[allow(clippy::arc_with_non_send_sync)]
-fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
+pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
     let mut early_binding = stackless_wake_make_binding::<()>(ingress);
     let early_ticket = early_binding.ticket.clone();
     let ectx: &mut rusty::Context = stackless_wake_binding_context::<()>(&mut early_binding);
-    if task.poll(ectx).is_ready() {
+    // SAFETY: early_binding owns this Context and Waker throughout the poll.
+    if unsafe { task.poll(ectx) }.is_ready() {
         // Task retains Context*. Keep the binding alive through destruction.
         drop(task);
         return;
@@ -3196,7 +3200,8 @@ fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
         // Scoped so the task borrow is released before the ready-path store.
         let ready: bool = {
             let mut tguard = state.task.borrow_mut();
-            (*tguard).poll(ctx).is_ready()
+            // SAFETY: the owner reactor pins the binding throughout polling.
+            unsafe { (*tguard).poll(ctx) }.is_ready()
         };
         if !ready {
             return false;
@@ -3350,19 +3355,9 @@ fn pollworker_poll_loop(w: &mut PollThreadWorker) {
         let mut n: usize = 0;
         while n < closed_fds.len() {
             let fd = closed_fds[n];
-            let proxy_opt = w.fd_to_pollable_.get_mut(&fd);
-            if let Some(p) = proxy_opt {
-                let p: &mut Box<dyn PollableBase> = p;
-                // Remove from epoll if still registered.
-                if w.mode_.contains_key(&fd) {
-                    w.poll_.Remove(fd);
-                }
-                // Invoke the close callback before erasing the map entry
-                // so cleanup hooks run.
-                p.close();
-                w.fd_to_pollable_.remove(&fd);
-                w.mode_.remove(&fd);
-            }
+            // Detach before the callout, retain the proxy lease through DEL,
+            // then invoke close without a live map borrow.
+            pollworker_do_close_pollable(w, fd);
             n += 1;
         }
     }
@@ -3447,24 +3442,41 @@ fn pollworker_trigger_job(w: &mut PollThreadWorker) {
     }
 }
 
+// Preserve the shared Box reference across HashMap lookup; see the measured
+// lowering requirement on pollable_proxy_fd below.
+#[allow(clippy::borrowed_box)]
 fn pollworker_do_add_pollable(w: &mut PollThreadWorker, poll: PollableProxy) {
     let fd = pollable_proxy_fd(&poll);
     let poll_mode = pollable_proxy_mode(&poll);
 
-    // The pollable can close between CmdAddPollable being enqueued and
-    // processed (teardown racing an accept/connect registration): fd is
-    // then -1 and registering would abort inside Epoll::Add. A closed
-    // pollable can never produce events — drop it.
-    if fd < 0 {
+    // The proxy owns its descriptor through every epoll operation, including
+    // close racing this check. A queued registration already logically closed
+    // needs no epoll entry; dropping the proxy releases its descriptor lease.
+    //
+    // The `&Box<dyn PollableBase>` rebind is a measured lowering requirement,
+    // the same one `old` needs below. The emitter writes `->` for a receiver
+    // whose declared type is literally `&Box<..>`; a by-value receiver of the
+    // alias type `PollableProxy` lowered to `poll.is_closed()` on a
+    // `rusty::Box<PollableBase>` -- "no member named 'is_closed'" -- and the
+    // srpc.reactor module failed to compile. The fn-level `borrowed_box`
+    // allow above covers this rebind too.
+    let poll_ref: &Box<dyn PollableBase> = &poll;
+    if fd < 0 || poll_ref.is_closed() {
         return;
     }
     if w.fd_to_pollable_.contains_key(&fd) {
-        return;
+        let old = w.fd_to_pollable_.get(&fd).unwrap();
+        let old: &Box<dyn PollableBase> = old;
+        if !old.is_closed() {
+            return;
+        }
+        // Retire the closed registration before admitting a replacement,
+        // including any removal queued for the old connection.
+        pollworker_do_close_pollable(w, fd);
     }
     w.fd_to_pollable_.insert(fd, poll);
     w.mode_.insert(fd, poll_mode);
-    // Add fails (-1) on the EBADF teardown race — drop the dead
-    // pollable again.
+    // A failed registration still owns its descriptor until this proxy drops.
     if w.poll_.Add(fd, poll_mode) != 0 {
         w.fd_to_pollable_.remove(&fd);
         w.mode_.remove(&fd);
@@ -3481,17 +3493,17 @@ fn pollworker_do_remove_pollable(w: &mut PollThreadWorker, fd: i32) {
 
 fn pollworker_do_close_pollable(w: &mut PollThreadWorker, fd: i32) {
     w.pending_remove_.remove(&fd);
-    if !w.fd_to_pollable_.contains_key(&fd) {
-        return;
+    let retired = w.fd_to_pollable_.remove(&fd);
+    if let Some(mut poll) = retired {
+        if w.mode_.contains_key(&fd) {
+            w.poll_.Remove(fd);
+        }
+        w.mode_.remove(&fd);
+        // Own the retired proxy across its callout. A close callback may
+        // reenter the worker after the old registration has been removed.
+        let poll: &mut Box<dyn PollableBase> = &mut poll;
+        poll.close();
     }
-    if w.mode_.contains_key(&fd) {
-        w.poll_.Remove(fd);
-    }
-    // Virtual close through the proxy (arrow kernel: unwrap would copy
-    // the move-only Box).
-    pollworker_close_proxy_of(w, fd);
-    w.fd_to_pollable_.remove(&fd);
-    w.mode_.remove(&fd);
 }
 
 fn pollworker_do_update_mode(w: &mut PollThreadWorker, fd: i32, new_mode: i32) {
@@ -3594,6 +3606,7 @@ fn pollthread_create() -> Arc<PollThread> {
         join_handle_: PollJoinSlot::new(None),
         poll_thread_id_bits_: rusty::sync::atomic::AtomicU64::new(0),
         shutdown_called_: rusty::sync::atomic::AtomicBool::new(false),
+        remove_count_: AtomicI32::new(0),
     };
     let arc: Arc<PollThread> = Arc::new(seed);
     // rusty atomic ops are const, so a const* suffices through the Arc.
@@ -3755,3 +3768,7 @@ fn quorum_event_is_slow(_qe: &QuorumEvent) -> bool {
     r.slow_.set(false);
     result
 }
+
+#[cfg(test)]
+#[path = "../tests/helpers/pollworker_fd_reuse.rs"]
+mod pollworker_fd_reuse_tests;

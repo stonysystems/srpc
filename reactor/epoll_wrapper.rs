@@ -1,10 +1,5 @@
-//! Canonical Rust owner for the `srpc.epoll_wrapper` C++ module.
-//!
-//! The historical `.cc` suffix is intentional: the generated `src/lib.rs`
-//! names this file in a `#[path]` attribute, so Cargo reads these exact
-//! bytes with nothing standing in between.  The Linux syscall
-//! definitions remain in `reactor/epoll_platform_linux.cc`, an implementation
-//! unit of the generated interface.
+//! Canonical epoll registration, error policy, and readiness dispatch.
+//! Rust and generated C++ use the same syscall adapters in srpc_epoll.c.
 
 use cpp::rusty as cpp_rusty;
 use rusty as cpp;
@@ -45,40 +40,70 @@ pub fn epoll_bump_remove_count() {
     epoll_remove_count.fetch_add(1_i32, Ordering::SeqCst);
 }
 
-// The implementation unit supplies these four module-attached definitions.
-// Rust's native ABI is deliberate: rusty-cpp emits ordinary C++ declarations,
-// while direct rustc checking keeps calls explicit and unsafe.
-#[allow(unsafe_code)]
-unsafe extern "Rust" {
-    pub fn epoll_open() -> i32;
-    pub fn epoll_add_impl(poll_fd: i32, fd: i32, poll_mode: i32) -> i32;
-    pub fn epoll_remove_impl(poll_fd: i32, fd: i32) -> i32;
-    pub fn epoll_update_impl(poll_fd: i32, fd: i32, new_mode: i32, old_mode: i32) -> i32;
-}
-
-// Linux/x86-64's packed epoll_event has a 12-byte stride.  This private FFI
-// carrier exposes only the union member the wait path consumes and keeps the
-// platform header out of the public module surface.
+// Native epoll_event layout differs between supported architectures. The C
+// boundary normalizes the kernel record; scheduling and error handling stay
+// in these canonical Rust functions.
 #[repr(C)]
 #[derive(Default)]
 struct EpollWaitEvent {
     events: u32,
     fd: i32,
-    padding: u32,
 }
 
 #[allow(unsafe_code)]
-mod epoll_wait_ffi {
-    use super::EpollWaitEvent;
+unsafe extern "C" {
+    fn srpc_epoll_open() -> i32;
+    fn srpc_epoll_ctl(poll_fd: i32, operation: i32, fd: i32, flags: u32) -> i32;
+    fn srpc_epoll_wait(poll_fd: i32, events: *mut core::ffi::c_void, capacity: i32, timeout_ms: i32) -> i32;
+}
 
-    unsafe extern "C" {
-        pub(super) fn epoll_wait(
-            epoll_fd: i32,
-            events: *mut EpollWaitEvent,
-            max_events: i32,
-            timeout_ms: i32,
-        ) -> i32;
+#[allow(unsafe_code)]
+pub fn epoll_open() -> i32 {
+    let fd = unsafe { srpc_epoll_open() };
+    assert!(fd >= 0);
+    fd
+}
+
+#[allow(unsafe_code)]
+pub fn epoll_add_impl(poll_fd: i32, fd: i32, poll_mode: i32) -> i32 {
+    let mut flags = 0x8000_0000_u32 | LINUX_EPOLLIN | LINUX_EPOLLRDHUP;
+    if (poll_mode & PollMode::WRITE) != 0 {
+        flags |= LINUX_EPOLLOUT;
     }
+    let mut result = unsafe { srpc_epoll_ctl(poll_fd, 1_i32, fd, flags) };
+    if result == -17_i32 {
+        unsafe { srpc_epoll_ctl(poll_fd, 2_i32, fd, 0_u32); }
+        result = unsafe { srpc_epoll_ctl(poll_fd, 1_i32, fd, flags) };
+    }
+    if result == -9_i32 {
+        return -1_i32;
+    }
+    assert!(result == 0);
+    0_i32
+}
+
+#[allow(unsafe_code)]
+pub fn epoll_remove_impl(poll_fd: i32, fd: i32) -> i32 {
+    epoll_bump_remove_count();
+    unsafe { srpc_epoll_ctl(poll_fd, 2_i32, fd, 0_u32); }
+    0_i32
+}
+
+#[allow(unsafe_code)]
+pub fn epoll_update_impl(poll_fd: i32, fd: i32, new_mode: i32, _old_mode: i32) -> i32 {
+    let mut flags = 0x8000_0000_u32 | LINUX_EPOLLRDHUP;
+    if (new_mode & PollMode::READ) != 0 {
+        flags |= LINUX_EPOLLIN;
+    }
+    if (new_mode & PollMode::WRITE) != 0 {
+        flags |= LINUX_EPOLLOUT;
+    }
+    let result = unsafe { srpc_epoll_ctl(poll_fd, 3_i32, fd, flags) };
+    if result == -2_i32 || result == -9_i32 {
+        return 0_i32;
+    }
+    assert!(result == 0);
+    0_i32
 }
 
 const LINUX_EPOLLIN: u32 = 0x001_u32;
@@ -98,7 +123,7 @@ where
 {
     let mut events: [EpollWaitEvent; 100] = std::array::from_fn(|_| EpollWaitEvent::default());
     let ready_count =
-        unsafe { epoll_wait_ffi::epoll_wait(poll_fd, events.as_mut_ptr(), 100_i32, 1_i32) };
+        unsafe { srpc_epoll_wait(poll_fd, events.as_mut_ptr() as *mut core::ffi::c_void, 100_i32, 1_i32) };
     let mut index: i32 = 0_i32;
     while index < ready_count {
         let event_index = index as usize;
@@ -149,17 +174,17 @@ impl Epoll {
 
     #[allow(unsafe_code)]
     pub fn Add(&mut self, fd: i32, poll_mode: i32) -> i32 {
-        unsafe { epoll_add_impl(self.poll_fd_.as_raw_fd(), fd, poll_mode) }
+        epoll_add_impl(self.poll_fd_.as_raw_fd(), fd, poll_mode)
     }
 
     #[allow(unsafe_code)]
     pub fn Remove(&mut self, fd: i32) -> i32 {
-        unsafe { epoll_remove_impl(self.poll_fd_.as_raw_fd(), fd) }
+        epoll_remove_impl(self.poll_fd_.as_raw_fd(), fd)
     }
 
     #[allow(unsafe_code)]
     pub fn Update(&mut self, fd: i32, new_mode: i32, old_mode: i32) -> i32 {
-        unsafe { epoll_update_impl(self.poll_fd_.as_raw_fd(), fd, new_mode, old_mode) }
+        epoll_update_impl(self.poll_fd_.as_raw_fd(), fd, new_mode, old_mode)
     }
 
     pub fn Wait<F>(&mut self, on_ready: F)

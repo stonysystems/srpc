@@ -21,30 +21,11 @@
 // Vectors captured from the current encoder and reviewed by hand against the
 // SparseInt unary-length-prefix scheme before pinning.
 
-use rusty::{SerializableV32, SerializableV64};
+use srpc::basetypes::{v32 as SerializableV32, v64 as SerializableV64};
 use srpc::serializable::{
     make_sink_proxy_buffer, make_source_proxy_buffer, BinaryReadArchive, BinaryWriteArchive,
     BufferSink, BufferSource, Deserialize, Serialize,
 };
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    0
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_realtime_coarse_us() -> u64 {
-    0
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_gettimeofday_us() -> u64 {
-    0
-}
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_sleep_us(_us: u64) {}
 
 #[allow(unsafe_code)]
 fn encode(f: impl FnOnce(&mut BinaryWriteArchive)) -> Vec<u8> {

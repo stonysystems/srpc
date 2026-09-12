@@ -147,7 +147,12 @@ pub fn verify<Expr>(
     Expr: Copy + Into<bool>,
 {
     let value: bool = (*expr).into();
+    verify_at(value, location.file_name(), location.line());
+}
+
+/// Verify at an explicit call site using the same implementation in both languages.
+pub fn verify_at(value: bool, file: &str, line: u32) {
     if unlikely(!value) {
-        verify_failed(location.file_name(), location.line());
+        verify_failed(file, line);
     }
 }

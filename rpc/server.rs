@@ -11,11 +11,13 @@
 #![allow(unsafe_code)]
 #![allow(clippy::arc_with_non_send_sync)]
 
+#[allow(unused_imports)]
+use crate::reactor as _;
+
 use rusty::cpp_inherit;
-use rusty::RustyBoxGet as _;
 use rusty::RustyFunctionIsEmpty as _;
 use rusty::RustyHandleIsValid as _;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
 
@@ -36,39 +38,24 @@ use crate::misc::OneTimeJob;
 use crate::serializable::{BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource};
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
-use cpp::srpc::debugging as cpp_debugging;
+use crate::debugging::verify_at;
 // This otherwise-unused source-owned import keeps the exact
 // `srpc.internal_protocol` provider visible to generated C++; the heartbeat
 // rpc-id constant below is read through the crate path.
 #[allow(unused_imports)]
-use cpp::srpc::internal_protocol as cpp_internal_protocol;
-use cpp::srpc::reactor as cpp_reactor;
-use cpp::srpc::serializable as cpp_serializable;
-use rusty as cpp;
+use crate::internal_protocol as _;
 
 // The consumer profile maps this private carrier to `std::string`, retaining
 // the established C++ surface instead of exposing rusty-cpp's distinct
 // `rusty::String` owner.
 type LegacyStdString = String;
 
-// `PollThread` and `Fiber` live in `srpc.reactor`, the last carrier that is
-// still an inline module. They are reached through the checked
-// cpp-module-index facade rather than a `crate::` path.
-type PollThread = cpp::ReactorPollThread;
+// Use the canonical reactor worker in both Rust and generated C++.
+type PollThread = crate::reactor::PollThread;
 
-// The checked type map restores this alias to the exact legacy C++ spelling
-// `srpc::ChannelConnectionBase`, so a raw pointer through it stays the thin
-// polymorphic pointer the retired carrier returned rather than a Rust fat
-// trait-object pointer.
-type LegacyChannelConnectionBase = dyn ChannelConnectionBase;
-
-// The length-prefixed integer carriers are module-owned aliases for exactly
-// the reason serializable.cpp documents: pulling them through
-// `use crate::serializable::{..}` makes the emitter invent a nested
-// `srpc::serializable` namespace, while the real provider exports them
-// straight out of `srpc`.
-type v32 = rusty::SerializableV32;
-type v64 = rusty::SerializableV64;
+// Use the canonical sparse integer values for wire headers.
+type v32 = crate::basetypes::v32;
+type v64 = crate::basetypes::v64;
 
 
 
@@ -82,12 +69,6 @@ pub const SERVER_ERR_NO_ENTRY: i32 = 2;
 #[allow(unsafe_code)]
 mod server_ffi {
     unsafe extern "C" {
-        /// Parse a decimal port out of `text`, mirroring `std::stoi`'s
-        /// accept/reject language exactly. Returns 0 on success and stores
-        /// the value through `out`; returns -1 when the input has no
-        /// conversion or falls outside the int32 range.
-        pub(super) fn srpc_parse_port(text: *const u8, len: usize, out: *mut i32) -> i32;
-
         /// Length of a NUL-terminated C string.
         pub(super) fn srpc_cstr_len(text: *const u8) -> usize;
 
@@ -191,28 +172,15 @@ fn make_empty_request_box() -> Box<Request> {
 }
 
 
-// The channel layer's callback aliases require `Send + Sync` captures because
-// a transport may deliver on a poll thread. The two types the server captures
-// carry `Cell` / `RefCell` interior mutability, so the assertions below are
-// what makes those captures well-formed.
-//
-// SAFETY: this states the module's long-standing single-dispatch-thread
-// contract, unchanged from the retired C++ carrier. `RpcServiceContext` is
-// immutable after `Server::start()` except for the `RefCell<ServiceProxy>`
-// slots, and every `__dispatch__` runs on the connection's own poll thread;
-// `ServerConnection`'s `Cell` state (`status_`, `channel_mode_`) is written
-// only from that thread and read elsewhere as a monotone latch, exactly as
-// the C++ carrier read it.
-unsafe impl Send for RpcServiceContext {}
-unsafe impl Sync for RpcServiceContext {}
-unsafe impl Send for ServerConnection {}
-unsafe impl Sync for ServerConnection {}
-
+/// Dispatch uses a shared receiver because a stackful handler may suspend
+/// while another request enters the same service. Handlers synchronize any
+/// mutable application state and release locks before yielding.
+///
 /// @interface
 /// @safe - Pure virtual interface. All declarations carry per-method `// @safe`.
-pub trait Service {
+pub trait Service: Send + Sync {
     fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32;
-    fn __dispatch__(&mut self, rpc_id: i32, req: Box<Request>, sconn: WeakServerConnection);
+    fn __dispatch__(&self, rpc_id: i32, req: Box<Request>, sconn: WeakServerConnection);
 }
 
 pub type ServiceProxy = Box<dyn Service>;
@@ -223,9 +191,7 @@ pub fn make_service_proxy_from_box(svc: Box<dyn Service>) -> ServiceProxy {
     svc
 }
 
-/// `ServiceBoxShim<T>` — the generic Box-holding Service implementor
-/// (generic #[cpp_inherit]; Box gives owning mutable access, so no
-/// constness dance at all).
+/// Own a typed service and forward registration and shared dispatch.
 pub struct ServiceBoxShim<T> {
     svc_: Box<T>,
 }
@@ -236,7 +202,7 @@ impl<T: Service> Service for ServiceBoxShim<T> {
         self.svc_.__reg_to__(server, svc_index)
     }
 
-    fn __dispatch__(&mut self, rpc_id: i32, req: Box<Request>, sconn: ArcWeak<ServerConnection>) {
+    fn __dispatch__(&self, rpc_id: i32, req: Box<Request>, sconn: ArcWeak<ServerConnection>) {
         self.svc_.__dispatch__(rpc_id, req, sconn)
     }
 }
@@ -258,20 +224,16 @@ pub type ServerDropHeartbeatRepliesAtomic = AtomicBool;
 /// This struct is shared between Server and ServerConnection via
 /// `Arc<RpcServiceContext>` to avoid raw pointer dependencies.
 ///
-/// SAFETY: The struct is constructed once in `Server::start()` and shared via
-/// Arc. All fields are immutable after construction. Services use RefCell for
-/// interior mutability, allowing non-const `__dispatch__` calls through const
-/// Arc access.
-///
-/// NOTE: RefCell is single-threaded. All RPC dispatches must occur on the same
-/// thread.
+/// The struct is constructed once in `Server::start()` and shared via
+/// Arc. All fields are immutable after construction. Service dispatch uses a
+/// shared receiver; handlers synchronize mutable application state themselves.
 ///
 /// @safe - All fields are const after construction; the factory just moves
 /// owned containers into place. No syscalls, no raw pointers.
 pub struct RpcServiceContext {
     pub rpc_to_service: HashMap<i32, usize>,
     pub fast_rpc_ids: HashSet<i32>,
-    pub services: Vec<RefCell<ServiceProxy>>,
+    pub services: Vec<ServiceProxy>,
     pub addr: LegacyStdString,
     pub pending_requests: Arc<ServerPendingRequestsAtomic>,
     pub drop_heartbeat_replies: Arc<ServerDropHeartbeatRepliesAtomic>,
@@ -282,7 +244,7 @@ impl RpcServiceContext {
     pub fn new(
         rpc_map: HashMap<i32, usize>,
         fast_rpc_set: HashSet<i32>,
-        svcs: Vec<RefCell<ServiceProxy>>,
+        svcs: Vec<ServiceProxy>,
         address: LegacyStdString,
         pending_counter: Arc<ServerPendingRequestsAtomic>,
         drop_heartbeats: Arc<ServerDropHeartbeatRepliesAtomic>,
@@ -324,22 +286,18 @@ pub enum ServerConnStatus {
     CLOSED,
 }
 
-/// ServerConnection — one client connection's server-side state. All fields
-/// are already rusty (Arc / Mutex / Cell / Weak), so the struct is
-/// borrow-checked. The reply/dispatch/decode bodies live in the `sconn_*`
-/// free fns the methods delegate to.
+/// One client connection's server-side state. Status is shared across the
+/// server teardown thread and transport callbacks; the context is immutable
+/// after publication, and channel storage is protected by its mutex.
 ///
 /// @safe - the delegating methods forward to the `sconn_*` free fns, which
 /// carry their own `// @unsafe`.
 pub struct ServerConnection {
     pub ctx_: Arc<RpcServiceContext>,
-    // Cell, matching how Server already holds shutdown_phase_field: an
-    // Arc<ServerConnection> is shared, so state changes go through interior
-    // mutability rather than callers const_cast-ing to get a &mut.
-    pub status_: Cell<ServerConnStatus>,
+    pub status_: AtomicI32,
     pub weak_self_: WeakServerConnection,
-    pub channel_proxy_: rusty::Mutex<Option<ChannelConnectionProxy>>,
-    pub channel_mode_: Cell<bool>,
+    pub channel_proxy_: rusty::Mutex<Option<Arc<ChannelConnectionProxy>>>,
+    pub channel_mode_: AtomicBool,
     pub count: i32,
 }
 
@@ -347,10 +305,10 @@ impl ServerConnection {
     pub fn new(ctx: Arc<RpcServiceContext>, _socket: i32) -> ServerConnection {
         ServerConnection {
             ctx_: ctx,
-            status_: Cell::new(ServerConnStatus::CONNECTED),
+            status_: AtomicI32::new(ServerConnStatus::CONNECTED as i32),
             weak_self_: Default::default(),
-            channel_proxy_: rusty::Mutex::<Option<ChannelConnectionProxy>>::new(None),
-            channel_mode_: Cell::new(false),
+            channel_proxy_: rusty::Mutex::<Option<Arc<ChannelConnectionProxy>>>::new(None),
+            channel_mode_: AtomicBool::new(false),
             count: 0i32,
         }
     }
@@ -360,15 +318,15 @@ impl ServerConnection {
     }
 
     pub fn is_channel_mode(&self) -> bool {
-        self.channel_mode_.get()
+        self.channel_mode_.load(Ordering::Acquire)
     }
 
     pub fn connected(&self) -> bool {
-        self.status_.get() == ServerConnStatus::CONNECTED
+        self.status_.load(Ordering::Acquire) == ServerConnStatus::CONNECTED as i32
     }
 
     pub fn is_closed(&self) -> bool {
-        self.status_.get() == ServerConnStatus::CLOSED
+        self.status_.load(Ordering::Acquire) == ServerConnStatus::CLOSED as i32
     }
 
     pub fn reply(&self, req: &Request, error_code: i32, write_fn: ServerReplyFn) {
@@ -376,17 +334,19 @@ impl ServerConnection {
     }
 
     pub fn close(&self) {
-        if self.status_.get() == ServerConnStatus::CONNECTED {
-            self.status_.set(ServerConnStatus::CLOSED);
+        if self.status_.swap(ServerConnStatus::CLOSED as i32, Ordering::AcqRel)
+            == ServerConnStatus::CONNECTED as i32
+        {
             let message: LegacyStdString =
                 format!("server@{} close ServerConnection", self.ctx_.addr);
             // SAFETY: the file pointer is null, so the logger performs no path scan.
             unsafe { log_line(4, 0, core::ptr::null(), &message) };
-            // Tear down the channel proxy. Idempotent per channel-layer contract.
-            let mut guard = self.channel_proxy_.lock().unwrap();
-            if (*guard).is_some() {
-                let proxy: &mut Box<dyn ChannelConnectionBase> = (*guard).as_mut().unwrap();
-                proxy.close();
+            // Clone ownership before calling the transport: close may invoke
+            // on_closed synchronously, and that callback may re-enter us.
+            let channel: Option<Arc<ChannelConnectionProxy>> = self.channel_proxy_.lock().unwrap().clone();
+            if let Some(proxy) = channel {
+                let connection: &dyn ChannelConnectionBase = &**proxy;
+                connection.close();
             }
         }
     }
@@ -428,9 +388,9 @@ impl ServerConnection {
         }
         {
             let mut guard = self.channel_proxy_.lock().unwrap();
-            *guard = Some(proxy);
+            *guard = Some(Arc::new(proxy));
         }
-        self.channel_mode_.set(true);
+        self.channel_mode_.store(true, Ordering::Release);
     }
 
     pub fn run_async(&self, mut f: Box<dyn FnMut()>) -> i32 {
@@ -569,19 +529,12 @@ pub struct ShutdownState {
     pub shutdown: bool,
 }
 
-/// Pick the PollThread to use (auto-create one if the caller did not supply
-/// one). Used by the ctor.
-///
-/// # Safety
-///
-/// `unsafe` records the foreign named-module boundary: `srpc.reactor` is the
-/// last inline carrier, so `PollThread::create` is reached through the
-/// checked cpp-module-index facade.
-pub unsafe fn server_resolve_poll_thread(
+/// Use the supplied worker or create a canonical poll thread.
+pub fn server_resolve_poll_thread(
     poll_thread_worker: Option<Arc<PollThread>>,
 ) -> Option<Arc<PollThread>> {
     if poll_thread_worker.is_none() {
-        return Some(unsafe { cpp_reactor::PollThread::create() });
+        return Some(crate::reactor::PollThread::create());
     }
     poll_thread_worker
 }
@@ -687,10 +640,10 @@ pub fn server_drain_impl(
     // SAFETY: the file pointer is null.
     unsafe { log_line(3, 0, core::ptr::null(), &entering) };
     phase.set(ShutdownPhase::DRAINING);
-    let start_us = rusty::sys::time::clock_monotonic_us();
+    let start_us = crate::basetypes::Time::now(true);
     let timeout_us = timeout_ms * 1000u64;
     while pending.load(Ordering::Relaxed) > 0i32 {
-        let elapsed_us = rusty::sys::time::clock_monotonic_us() - start_us;
+        let elapsed_us = crate::basetypes::Time::now(true) - start_us;
         if elapsed_us >= timeout_us {
             let expired: LegacyStdString = format!(
                 "Server::drain: timeout after {} ms, pending={}",
@@ -722,21 +675,48 @@ pub fn server_run_shutdown_hooks(hooks: &rusty::Mutex<Vec<ShutdownHook>>) {
     }
 }
 
-/// @unsafe - strtoll-equivalent parse behind a C shim.
-///
-/// `srpc_parse_port` reports "no conversion" and out-of-range saturation the
-/// same way `std::stoi` does (invalid_argument -> None, out_of_range -> None)
-/// with the throw removed rather than caught. Returning Option keeps the
-/// failure signal distinct from a legitimately parsed value.
+/// Parse the decimal prefix accepted by the historical `std::stoi` path.
+/// Leading ASCII whitespace and a sign are permitted; trailing text is ignored.
+/// Keep the old 63-byte limit and reject missing digits or int32 overflow.
 pub fn server_parse_port(text: &LegacyStdString) -> Option<i32> {
-    let mut value: i32 = 0i32;
-    // SAFETY: `text` is a NUL-terminated owner for the duration of the call
-    // and `value` is a live, exclusively borrowed i32.
-    let ok = unsafe { server_ffi::srpc_parse_port(text.as_ptr(), text.len(), &raw mut value) };
-    if ok != 0i32 {
+    let bytes = text.as_bytes();
+    if bytes.len() > 63 {
         return None;
     }
-    Some(value)
+    let mut offset: usize = 0;
+    while offset < bytes.len() {
+        let byte = bytes[offset];
+        if byte != b' ' && byte != b'\t' && byte != b'\n'
+            && byte != b'\r' && byte != 11u8 && byte != 12u8
+        {
+            break;
+        }
+        offset += 1;
+    }
+    let mut negative = false;
+    if offset < bytes.len() && (bytes[offset] == b'+' || bytes[offset] == b'-') {
+        negative = bytes[offset] == b'-';
+        offset += 1;
+    }
+    let start = offset;
+    let mut magnitude: i64 = 0;
+    let limit: i64 = if negative { 2147483648 } else { 2147483647 };
+    while offset < bytes.len() && bytes[offset] >= b'0' && bytes[offset] <= b'9' {
+        let digit = (bytes[offset] - b'0') as i64;
+        if magnitude > (limit - digit) / 10 {
+            return None;
+        }
+        magnitude = magnitude * 10 + digit;
+        offset += 1;
+    }
+    if offset == start {
+        return None;
+    }
+    if negative {
+        Some((-magnitude) as i32)
+    } else {
+        Some(magnitude as i32)
+    }
 }
 
 /// The invoker catches a panicking hook and logs it, exactly as the old
@@ -820,13 +800,10 @@ impl Drop for Server {
             let close_job: Arc<OneTimeJob> = Arc::new(OneTimeJob::new(Box::new(move || {
                 listener_box.close();
             })));
-            // Explicit unsize to `Arc<dyn Job>`; the facade queue is bounded
-            // on the erased type (see Client::close).
+            // Erase the job type for the worker command queue.
             let close_job_erased: Arc<dyn crate::misc::Job> = close_job;
             let pt: &Arc<PollThread> = self.poll_thread_field.as_ref().unwrap();
-            // SAFETY: `srpc.reactor` is a foreign named module; the job is a
-            // well-formed owning handle the worker command queue takes over.
-            unsafe { pt.add(close_job_erased) };
+            pt.add(close_job_erased);
         }
         {
             let mut guard = self.channel_sconns_field.lock().unwrap();
@@ -850,17 +827,13 @@ impl Drop for Server {
 }
 
 impl Server {
-    /// # Safety
-    ///
-    /// `unsafe` records the `srpc.reactor` named-module boundary crossed when
-    /// no poll thread is supplied and one must be created.
-    pub unsafe fn new(poll_thread_worker: Option<Arc<PollThread>>) -> Server {
+    pub fn new(poll_thread_worker: Option<Arc<PollThread>>) -> Server {
         Server {
             pending_services_field: Vec::<ServiceProxy>::new(),
             pending_rpc_to_service_field: HashMap::<i32, usize>::new(),
             pending_fast_rpc_ids_field: HashSet::<i32>::new(),
             ctx_field: None,
-            poll_thread_field: unsafe { server_resolve_poll_thread(poll_thread_worker) },
+            poll_thread_field: server_resolve_poll_thread(poll_thread_worker),
             shutdown_state_field: rusty::Mutex::<ShutdownState>::new(ShutdownState {
                 shutdown: false,
             }),
@@ -1037,26 +1010,16 @@ impl Server {
         // stays alive for this call.
         let addr_str: LegacyStdString = unsafe { server_dsl_addr_to_string(bind_addr) };
 
-        // Wrap each service in RefCell for interior mutability. The pending
-        // Vec is taken whole and drained in order.
-        let mut pending: Vec<ServiceProxy> = core::mem::take(&mut self.pending_services_field);
-        let mut wrapped_services: Vec<RefCell<ServiceProxy>> =
-            Vec::<RefCell<ServiceProxy>>::new();
-        // `mut` is redundant in Rust (a non-mut binding can still be moved
-        // out of) but load-bearing for the C++ lowering: without it the
-        // element binds as `const auto&&` and `std::move` selects Box's
-        // deleted copy constructor.
-        #[allow(unused_mut)]
-        for mut svc in pending.drain(..) {
-            wrapped_services.push(RefCell::<ServiceProxy>::new(svc));
-        }
+        // Registration is complete. Publish the owning service vector without
+        // mutable borrow state so concurrent and suspended handlers share it.
+        let services: Vec<ServiceProxy> = core::mem::take(&mut self.pending_services_field);
 
         // Create the immutable RpcServiceContext from the pending
         // registration data.
         self.ctx_field = Some(Arc::new(RpcServiceContext::new(
             core::mem::take(&mut self.pending_rpc_to_service_field),
             core::mem::take(&mut self.pending_fast_rpc_ids_field),
-            wrapped_services,
+            services,
             addr_str.clone(),
             self.pending_requests_field.clone(),
             self.drop_heartbeat_replies_field.clone(),
@@ -1173,8 +1136,7 @@ impl Server {
             return 0i32;
         }
 
-        // SAFETY: `unsafe` records the `srpc.debugging` named-module boundary.
-        unsafe { cpp_debugging::verify(false) };
+        verify_at(false, file!(), line!());
         -1i32
     }
 
@@ -1227,23 +1189,13 @@ impl Server {
         self.pending_services_field.push(proxy);
     }
 
-    pub fn for_each_service<F: FnMut(&mut Box<dyn Service>)>(&self, mut callback: F) {
+    pub fn for_each_service<F: FnMut(&dyn Service)>(&self, mut callback: F) {
         let ctx = self.ctx_field.as_ref().unwrap();
-        let n: usize = ctx.services.len();
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut guard = ctx.services[i].borrow_mut();
-            // MEASURED emitter pin, not style. `clippy::explicit_auto_deref` wants
-// `&mut guard`. Regenerating without the `*` emits
-//     rusty::Box<Service>& svc = guard;
-// binding the guard itself, not the boxed service, to a `rusty::Box<Service>&`.
-// The `*` is what produces the incumbent's `rusty::Box<Service>& svc = *guard;`.
-            #[allow(clippy::explicit_auto_deref)]
-            let svc: &mut Box<dyn Service> = &mut *guard;
-            callback(svc);
-            i += 1usize;
+        for service in ctx.services.iter() {
+            callback(&**service);
         }
     }
+
 }
 
 // ===========================================================================
@@ -1272,16 +1224,16 @@ pub fn sconn_reply(
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&v64::new(req.xid), ar) };
+    crate::serializable::Serialize_::serialize(&v64::new(req.xid), ar);
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&v32::new(error_code), ar) };
+    crate::serializable::Serialize_::serialize(&v32::new(error_code), ar);
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(
+    crate::serializable::Serialize_::serialize(
         &v64::new(sconn.ctx_.server_instance_id as i64),
         ar,
-    ) };
+    );
     if !write_fn.is_empty() {
         let mut write = write_fn;
         write(ar);
@@ -1301,8 +1253,7 @@ pub fn sconn_reply(
 /// each closure stays the single-call shape the emitter lowers into a
 /// const-callable `rusty::Function`.
 ///
-/// Dispatch only READS the connection (`status_` via Cell, `ctx_` through the
-/// Arc), so it takes a const&.
+/// Dispatch reads atomic connection status and the immutable shared context.
 ///
 /// # Safety
 ///
@@ -1371,16 +1322,7 @@ pub fn sconn_dispatch_in_fiber(
     req: Box<Request>,
     weak_this: ArcWeak<ServerConnection>,
 ) {
-    let mut guard = ctx.services[svc_index].borrow_mut();
-    // Concrete `Box<..>`, not the ServiceProxy alias: through the alias the
-    // pointer-like check fails and the call lowers to `.` instead of `->`.
-    // MEASURED emitter pin, not style. `clippy::explicit_auto_deref` wants
-// `&mut guard`. Regenerating without the `*` emits
-//     rusty::Box<Service>& svc = guard;
-// binding the guard itself, not the boxed service, to a `rusty::Box<Service>&`.
-// The `*` is what produces the incumbent's `rusty::Box<Service>& svc = *guard;`.
-    #[allow(clippy::explicit_auto_deref)]
-    let svc: &mut Box<dyn Service> = &mut *guard;
+    let svc: &dyn Service = &*ctx.services[svc_index];
     svc.__dispatch__(rpc_id, req, weak_this);
 }
 
@@ -1400,7 +1342,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     bytes: *const u8,
     size: usize,
 ) {
-    if sconn.status_.get() == ServerConnStatus::CLOSED {
+    if sconn.status_.load(Ordering::Acquire) == ServerConnStatus::CLOSED as i32 {
         return;
     }
     let mut req_box: Box<Request> = make_empty_request_box();
@@ -1428,9 +1370,9 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     let mut v_xid = v64::new(0i64);
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_xid, &mut header_ar) };
+    crate::serializable::Deserialize_::deserialize(&mut v_xid, &mut header_ar);
     req_box.xid = v_xid.get();
-    let pending_counter = sconn.ctx_.pending_requests.clone();
+    let pending_counter: Arc<ServerPendingRequestsAtomic> = sconn.ctx_.pending_requests.clone();
     req_box.attach_pending_guard(&pending_counter);
 
     // sizeof(i32) spelled as its value: not enough bytes for rpc_id.
@@ -1443,7 +1385,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     let mut rpc_id: i32 = 0i32;
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Deserialize_::deserialize(&mut rpc_id, &mut header_ar) };
+    crate::serializable::Deserialize_::deserialize(&mut rpc_id, &mut header_ar);
     if rpc_id == crate::internal_protocol::kInternalHeartbeatRpcId {
         let hb: &Arc<ServerDropHeartbeatRepliesAtomic> = &sconn.ctx_.drop_heartbeat_replies;
         if !hb.load(Ordering::Acquire) {
@@ -1481,20 +1423,13 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     let weak_this: WeakServerConnection = sconn.weak_self_.clone();
     if sconn.ctx_.fast_rpc_ids.contains(&rpc_id) {
         // Fast inline dispatch — no fiber spawn.
-        let mut guard = sconn.ctx_.services[svc_index].borrow_mut();
-        // MEASURED emitter pin, not style. `clippy::explicit_auto_deref` wants
-// `&mut guard`. Regenerating without the `*` emits
-//     rusty::Box<Service>& svc = guard;
-// binding the guard itself, not the boxed service, to a `rusty::Box<Service>&`.
-// The `*` is what produces the incumbent's `rusty::Box<Service>& svc = *guard;`.
-        #[allow(clippy::explicit_auto_deref)]
-        let svc: &mut Box<dyn Service> = &mut *guard;
+        let svc: &dyn Service = &*sconn.ctx_.services[svc_index];
         svc.__dispatch__(rpc_id, req_box, weak_this);
     } else {
         // Slow path — spawn a fiber so the handler can yield (e.g. for
         // nested RPC calls). The ctx Arc clone keeps the services alive
         // even if the connection is closed mid-flight.
-        let ctx2 = sconn.ctx_.clone();
+        let ctx2: Arc<RpcServiceContext> = sconn.ctx_.clone();
         // `FnMut` (not `FnOnce`) is what `rusty::Function<void()>` models, so
         // the moved-in request and weak handle are parked in `Option` slots
         // the first call takes. The fiber runs the job exactly once.
@@ -1527,21 +1462,9 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     }
 }
 
-/// @unsafe - Box raw extraction for the dispatch body below — the pointer
-/// must OUTLIVE the guard (send happens without the lock, per the
-/// channel-layer contract that send_frame is internally thread-safe).
-pub fn sconn_proxy_ptr(
-    slot: &Option<ChannelConnectionProxy>,
-) -> *mut LegacyChannelConnectionBase {
-    slot.as_ref().unwrap().get()
-}
-
-/// Dispatch a reply-frame body through the bound proxy. Locks the mutex
-/// briefly to extract the proxy pointer, then drops the guard so the actual
-/// `send_frame` happens without holding the lock. Errors are observable via
-/// the proxy's installed on_error/on_closed callbacks; the return value is
-/// deliberately discarded — the RPC layer mirrors the legacy fd path's
-/// behavior of not surfacing send-side errors from `reply()`.
+/// Clone the channel owner while holding the slot mutex, then release the
+/// lock before sending. The clone pins the proxy even if teardown replaces
+/// the slot, and shared dispatch permits synchronous callback re-entry.
 ///
 /// # Safety
 ///
@@ -1552,24 +1475,12 @@ pub unsafe fn sconn_dispatch_response_frame_via_channel(
     bytes: *const u8,
     size: usize,
 ) {
-    let conn_ptr: *mut LegacyChannelConnectionBase;
-    {
-        let guard = sconn.channel_proxy_.lock().unwrap();
-        if (*guard).is_none() {
-            let message: LegacyStdString =
-                "srpc::ServerConnection::dispatch_response_frame_via_channel: channel mode flipped on but proxy is unbound (race?). Dropping reply."
-                    .to_string();
-            // SAFETY: the file pointer is null.
-            unsafe { log_line(2, 0, core::ptr::null(), &message) };
-            return;
-        }
-        conn_ptr = sconn_proxy_ptr(&guard);
+    let channel: Option<Arc<ChannelConnectionProxy>> = sconn.channel_proxy_.lock().unwrap().clone();
+    if let Some(proxy) = channel {
+        let frame = ChannelFrame { payload: bytes, size };
+        let connection: &dyn ChannelConnectionBase = &**proxy;
+        // SAFETY: the caller pins the frame bytes, and this Arc pins the
+        // shared transport until its synchronous send returns.
+        let _ = unsafe { connection.send_frame(&frame) };
     }
-    let frame = ChannelFrame {
-        payload: bytes,
-        size,
-    };
-    // SAFETY: the proxy Arc keeps the connection alive across the unlocked
-    // send, and the caller pins the payload bytes.
-    let _ = unsafe { (*conn_ptr).send_frame(&frame) };
 }

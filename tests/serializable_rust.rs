@@ -1,9 +1,14 @@
+mod serialization_helpers;
+use serialization_helpers::{encode, decode};
+use srpc::serializable::{BinaryReadArchive, BinaryWriteArchive, SerializablePayload};
+use std::any::TypeId;
+
 use srpc::serializable::{
     BufferSink, BufferSource, Deserialize, Serializable, SerializableRegistry, Serialize, SinkBase,
     SourceBase, make_serializable_proxy_copy, make_serializable_proxy_default,
 };
 use srpc::basetypes::SparseInt;
-use rusty::{SerializableV32, SerializableV64};
+use srpc::basetypes::{v32 as SerializableV32, v64 as SerializableV64};
 
 fn expected_sparse(value: i64) -> (usize, [u8; 9]) {
     let size = if (-64..=63).contains(&value) {
@@ -43,7 +48,7 @@ fn expected_sparse(value: i64) -> (usize, [u8; 9]) {
 
 #[test]
 #[allow(unsafe_code)]
-fn sparse_facade_matches_independent_wire_oracle() {
+fn sparse_encoding_matches_independent_wire_oracle() {
     let values = [
         i64::MIN,
         -36_028_797_018_963_969,
@@ -154,19 +159,64 @@ fn serializable_kind_is_exact_and_nonzero() {
     assert_eq!(Serializable::<-9> {}.kind(), -9);
 }
 
-#[test]
-fn proxy_factories_keep_the_historical_unconstrained_template_shape() {
-    struct NeitherDefaultNorClone;
 
-    // These functions are rustc-only panicking facades, so this lane pins
-    // monomorphization and signatures without executing them. Production C++
-    // retains the historical unconstrained templates: invalid construction is
-    // diagnosed only when the body is instantiated.
-    let _default: fn() -> rusty::SerializableProxy =
-        make_serializable_proxy_default::<NeitherDefaultNorClone>;
-    let _copy: fn(&NeitherDefaultNorClone) -> rusty::SerializableProxy =
-        make_serializable_proxy_copy::<NeitherDefaultNorClone>;
-    let _register: fn(i32) -> i32 = SerializableRegistry::reg::<NeitherDefaultNorClone>;
+#[derive(Default, Clone, Debug, PartialEq)]
+struct Payload { value: i64, values: Vec<i32> }
+
+impl SerializablePayload for Payload {
+    fn save(&self, archive: &mut BinaryWriteArchive) {
+        self.value.serialize(archive);
+        self.values.serialize(archive);
+    }
+    fn load(&mut self, archive: &mut BinaryReadArchive) {
+        self.value.deserialize(archive);
+        self.values.deserialize(archive);
+    }
+    fn kind(&self) -> i32 { 61 }
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn proxy_factories_and_registry_preserve_payloads() {
+    let original = Payload { value: -9_001, values: vec![2, 3, 5] };
+    let copy = make_serializable_proxy_copy(&original);
+    assert_eq!(copy.kind(), 61);
+    let bytes = encode(|archive| copy.save(archive));
+    let expected = encode(|archive| original.save(archive));
+    assert_eq!(bytes, expected);
+
+    let mut fresh = make_serializable_proxy_default::<Payload>();
+    let (_, remaining) = decode(&bytes, |archive| {
+        std::sync::Arc::get_mut(&mut fresh).unwrap().load(archive);
+    });
+    assert_eq!(remaining, 0);
+    let holder = unsafe { srpc::serializable::serializable_holder_of::<Payload>(std::sync::Arc::as_ptr(&fresh)) };
+    assert!(!holder.is_null());
+    assert_eq!(unsafe { &*(*holder).ptr }, &original);
+
+    SerializableRegistry::clear_for_testing();
+    SerializableRegistry::reg::<Payload>(61);
+    assert!(SerializableRegistry::is_registered(61));
+    let created = SerializableRegistry::create(61);
+    assert_eq!(created.kind(), 61);
+    assert_eq!(created.payload_type_id(), TypeId::of::<Payload>());
+    let mut calls = 0;
+    srpc::serializable::serializable_registry_register_factory(
+        62,
+        srpc::serializable::SerializableRegistryFactory::from_callable(move || {
+            calls += 1;
+            srpc::serializable::make_serializable_proxy(std::sync::Arc::new(Payload {
+                value: calls,
+                values: vec![calls as i32],
+            }))
+        }),
+    );
+    for expected_call in 1..=2 {
+        let created = SerializableRegistry::create(62);
+        let holder = unsafe { srpc::serializable::serializable_holder_of::<Payload>(std::sync::Arc::as_ptr(&created)) };
+        assert_eq!(unsafe { &*(*holder).ptr }.value, expected_call);
+    }
+    SerializableRegistry::clear_for_testing();
 }
 
 #[test]
@@ -254,18 +304,10 @@ fn archive_round_trips_a_leaf_through_both_proxies() {
     assert!(source.eof());
 }
 
-// The wire sites in rpc/client.rs and rpc/server.rs serialize their headers
-// through the FACADE route `cpp_serializable::Serialize_::serialize` -- which
-// emits the same qualified `::srpc::Serialize_::serialize` call the C++ lane
-// always made, and under rustc dispatches through the `RustcAdlSerialize`
-// bound (srpc's blanket impl over `T: Serialize`).  Until this change the
-// facade's `Serialize_` accepted only `String`, so no wire header could
-// serialize at all.  This test pins the facade route over the CANONICAL
-// archives; the earlier round-trip test calls the trait methods directly and
-// would stay green if this path rotted again.
+// Exercise the same generic entry points used by RPC header encoding.
 #[test]
 #[allow(unsafe_code)]
-fn adl_dispatchers_round_trip_leaves_through_the_facade_bridge() {
+fn canonical_dispatchers_round_trip_header_leaves() {
     let mut sink = BufferSink { bytes: Vec::new() };
     {
         let mut ar = srpc::serializable::BinaryWriteArchive {
@@ -274,10 +316,10 @@ fn adl_dispatchers_round_trip_leaves_through_the_facade_bridge() {
         };
         // SAFETY (all six facade calls below): foreign named-module boundary;
         // both borrows are held only for the duration of each call.
-        unsafe {
-            rusty::srpc::serializable::Serialize_::serialize(&SerializableV64::new(-77_000), &mut ar);
-            rusty::srpc::serializable::Serialize_::serialize(&123_456_789_i64, &mut ar);
-            rusty::srpc::serializable::Serialize_::serialize(&SerializableV32::new(63), &mut ar);
+        {
+            srpc::serializable::Serialize_::serialize(&SerializableV64::new(-77_000), &mut ar);
+            srpc::serializable::Serialize_::serialize(&123_456_789_i64, &mut ar);
+            srpc::serializable::Serialize_::serialize(&SerializableV32::new(63), &mut ar);
         }
     }
     assert!(!sink.bytes.is_empty());
@@ -293,10 +335,10 @@ fn adl_dispatchers_round_trip_leaves_through_the_facade_bridge() {
         let mut plain = 0i64;
         let mut v32 = SerializableV32::new(0);
         // SAFETY: same facade-boundary contract as the write side.
-        unsafe {
-            rusty::srpc::serializable::Deserialize_::deserialize(&mut v64, &mut ar);
-            rusty::srpc::serializable::Deserialize_::deserialize(&mut plain, &mut ar);
-            rusty::srpc::serializable::Deserialize_::deserialize(&mut v32, &mut ar);
+        {
+            srpc::serializable::Deserialize_::deserialize(&mut v64, &mut ar);
+            srpc::serializable::Deserialize_::deserialize(&mut plain, &mut ar);
+            srpc::serializable::Deserialize_::deserialize(&mut v32, &mut ar);
         }
         assert_eq!(v64.get(), -77_000);
         assert_eq!(plain, 123_456_789);
@@ -305,37 +347,114 @@ fn adl_dispatchers_round_trip_leaves_through_the_facade_bridge() {
     assert!(source.eof());
 }
 
-// The canonical GENERIC dispatch chain (`Serialize_::serialize` and its
-// Deserialize twin) has no Rust body: it is the C++ open-set ADL path, and a
-// `T: Serialize` bound on it would cascade into the generic container impls,
-// which the transpiler cannot lower (it degrades a constrained generic impl to
-// hand slots).  Everything that reaches it under rustc -- container
-// serialization first among them -- panics via `rusty::srpc_adl_serialize`'s
-// `unimplemented!`.  These pin that the failure is LOUD -- the alternative, an
-// empty stub, silently wrote nothing for years.
+
 #[test]
-#[allow(unsafe_code)]
-#[should_panic(expected = "generic deserialization dispatch (Deserialize_::deserialize) has no")]
-fn container_element_read_dispatch_fails_loudly_under_rustc() {
-    let encoded = [2u8, 0, 0]; // v64 length prefix of 2, then would-be elements
-    let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
-    let mut ar = srpc::serializable::BinaryReadArchive {
-        // SAFETY: `source` and `encoded` outlive the archive.
-        source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) },
-    };
-    let mut values: Vec<i64> = Vec::new();
-    srpc::serializable::Deserialize::deserialize(&mut values, &mut ar);
+fn containers_round_trip_through_canonical_generic_dispatch() {
+    let original = vec![vec![1i64, 2, 3], vec![], vec![-9_001, i64::MAX]];
+    let bytes = encode(|archive| srpc::serializable::Serialize_::serialize(&original, archive));
+    let mut expected = vec![3, 3];
+    for value in [1i64, 2, 3] { expected.extend_from_slice(&value.to_ne_bytes()); }
+    expected.extend_from_slice(&[0, 2]);
+    for value in [-9_001i64, i64::MAX] { expected.extend_from_slice(&value.to_ne_bytes()); }
+    assert_eq!(bytes, expected);
+    let (restored, remaining) = decode(&expected, |archive| {
+        let mut restored = Vec::<Vec<i64>>::new();
+        srpc::serializable::Deserialize_::deserialize(&mut restored, archive);
+        restored
+    });
+    assert_eq!(restored, original);
+    assert_eq!(remaining, 0);
+}
+
+fn round_trip<T: Serialize + Deserialize + Default>(value: &T) -> T {
+    let bytes = encode(|archive| value.serialize(archive));
+    let (restored, remaining) = decode(&bytes, |archive| {
+        let mut restored = T::default();
+        restored.deserialize(archive);
+        restored
+    });
+    assert_eq!(remaining, 0);
+    restored
 }
 
 #[test]
-#[allow(unsafe_code)]
-#[should_panic(expected = "generic serialization dispatch (Serialize_::serialize) has no")]
-fn container_element_dispatch_fails_loudly_under_rustc() {
-    let mut sink = BufferSink { bytes: Vec::new() };
-    let mut ar = srpc::serializable::BinaryWriteArchive {
-        // SAFETY: `sink` outlives the archive that borrows it.
-        sink_: unsafe { srpc::serializable::make_sink_proxy_buffer(&raw mut sink) },
-    };
-    let values: Vec<i64> = vec![1, 2, 3];
-    srpc::serializable::Serialize::serialize(&values, &mut ar);
+fn ordered_collections_preserve_order_uniqueness_and_replacement() {
+    let mut btree = rusty::BTreeMap::<i32, i32>::new();
+    btree.insert(3, 30);
+    btree.insert(1, 10);
+    btree.insert(3, 99);
+    let btree = round_trip(&btree);
+    assert_eq!(btree.into_iter().collect::<Vec<_>>(), [(1, 10), (3, 99)]);
+
+    let mut standard = rusty::SerializableStdMap::<i32, i32>::default();
+    standard.emplace(3, 30);
+    standard.emplace(1, 10);
+    standard.emplace(3, 99);
+    let standard = round_trip(&standard);
+    assert_eq!((&standard).into_iter().map(|p| (*p.first, *p.second)).collect::<Vec<_>>(), [(1, 10), (3, 30)]);
+
+    let mut btree_set = rusty::BTreeSet::new();
+    let mut standard_set = rusty::SerializableStdSet::default();
+    for value in [3i32, 1, 3] {
+        btree_set.insert(value);
+        standard_set.insert(value);
+    }
+    let btree_set = round_trip(&btree_set);
+    let standard_set = round_trip(&standard_set);
+    assert_eq!(btree_set.into_iter().collect::<Vec<_>>(), [1, 3]);
+    assert_eq!((&standard_set).into_iter().copied().collect::<Vec<_>>(), [1, 3]);
+    let bytes = encode(|archive| standard_set.serialize(archive));
+    let mut expected = vec![2];
+    expected.extend_from_slice(&1i32.to_ne_bytes());
+    expected.extend_from_slice(&3i32.to_ne_bytes());
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn unordered_collections_round_trip_and_remove_duplicate_keys() {
+    let mut map = rusty::HashMap::new();
+    map.insert(3i32, 30i32);
+    map.insert(1, 10);
+    map.insert(3, 99);
+    let map = round_trip(&map);
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.get(&3), Some(&99));
+    assert_eq!(map.get(&1), Some(&10));
+
+    let mut standard_map = rusty::SerializableStdUnorderedMap::default();
+    standard_map.emplace(3i32, 30i32);
+    standard_map.emplace(1, 10);
+    standard_map.emplace(3, 99);
+    let standard_map = round_trip(&standard_map);
+    let mut pairs = (&standard_map).into_iter().map(|p| (*p.first, *p.second)).collect::<Vec<_>>();
+    pairs.sort();
+    assert_eq!(pairs, [(1, 10), (3, 30)]);
+
+    let mut set = rusty::HashSet::new();
+    let mut standard_set = rusty::SerializableStdUnorderedSet::default();
+    for value in [3i32, 1, 3] {
+        set.insert(value);
+        standard_set.insert(value);
+    }
+    let set = round_trip(&set);
+    assert_eq!(set.len(), 2);
+    assert!(set.contains(&1) && set.contains(&3));
+    let standard_set = round_trip(&standard_set);
+    let mut values = (&standard_set).into_iter().copied().collect::<Vec<_>>();
+    values.sort();
+    assert_eq!(values, [1, 3]);
+}
+
+#[test]
+fn list_and_vector_adapters_preserve_duplicates_and_input_order() {
+    let mut list = rusty::SerializableStdList::default();
+    let mut vector = rusty::SerializableStdVector::default();
+    for value in [3i32, 1, 3] {
+        list.push_back(value);
+        vector.push_back(value);
+    }
+    let list = round_trip(&list);
+    let vector = round_trip(&vector);
+    assert_eq!((&list).into_iter().copied().collect::<Vec<_>>(), [3, 1, 3]);
+    assert_eq!((&vector).into_iter().copied().collect::<Vec<_>>(), [3, 1, 3]);
 }

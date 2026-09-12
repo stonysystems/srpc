@@ -1,39 +1,9 @@
 use std::mem::{align_of, offset_of, size_of};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use srpc::basetypes::{
     abort_if_false, i16, i32, i64, i8, time_now_us, v32, v64, Counter, SparseInt, Time, Timer,
     SRPC_USEC_PER_SEC,
 };
-
-static MONOTONIC_US: AtomicU64 = AtomicU64::new(1_000_000);
-static REALTIME_US: AtomicU64 = AtomicU64::new(2_000_000);
-static GETTIMEOFDAY_US: AtomicU64 = AtomicU64::new(3_000_000);
-static SLEPT_US: AtomicU64 = AtomicU64::new(0);
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    MONOTONIC_US.load(Ordering::SeqCst)
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_realtime_coarse_us() -> u64 {
-    REALTIME_US.load(Ordering::SeqCst)
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_gettimeofday_us() -> u64 {
-    GETTIMEOFDAY_US.load(Ordering::SeqCst)
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_sleep_us(microseconds: u64) {
-    SLEPT_US.store(microseconds, Ordering::SeqCst);
-}
 
 #[test]
 fn aliases_layouts_and_traits_match_the_cpp_surface() {
@@ -258,19 +228,25 @@ fn values_counter_and_time_facades_preserve_behavior() {
 
     assert_eq!(SRPC_USEC_PER_SEC, 1_000_000);
     abort_if_false(true);
-    assert_eq!(time_now_us(true), 1_000_000);
-    assert_eq!(Time::now(false), 2_000_000);
-    Time::sleep(37);
-    assert_eq!(SLEPT_US.load(Ordering::SeqCst), 37);
+    let monotonic_before = time_now_us(true);
+    assert!(monotonic_before > 0);
+    assert!(Time::now(false) > 1_000_000_000_000);
+    let sleep_started = std::time::Instant::now();
+    Time::sleep(2_000);
+    assert!(sleep_started.elapsed() >= std::time::Duration::from_millis(2));
+    assert!(time_now_us(true) >= monotonic_before + 2_000);
 
     let mut timer = Timer::new();
     timer.start();
-    assert_eq!(timer.begin_us, 3_000_000);
-    GETTIMEOFDAY_US.store(5_250_000, Ordering::SeqCst);
-    assert_eq!(timer.elapsed(), 2.25);
+    assert!(timer.begin_us > 1_000_000_000_000);
+    Time::sleep(2_000);
+    assert!(timer.elapsed() >= 0.002);
     timer.stop();
-    assert_eq!(timer.end_us, 5_250_000);
-    GETTIMEOFDAY_US.store(9_000_000, Ordering::SeqCst);
+    let stopped = timer.elapsed();
+    Time::sleep(1_000);
+    assert_eq!(timer.elapsed(), stopped);
+    timer.begin_us = 3_000_000;
+    timer.end_us = 5_250_000;
     assert_eq!(timer.elapsed(), 2.25);
     timer.begin_us = 10;
     timer.end_us = 5;

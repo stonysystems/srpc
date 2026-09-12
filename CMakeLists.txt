@@ -176,22 +176,31 @@ set(BENCH_CXXFLAGS
     -march=native
 )
 
-# srpc: STATIC library compiled from the remaining NATIVE units (C++, C, ASM).
-# The canonical Rust providers are not native sources and are now named .rs,
-# so these patterns no longer match them at all; the explicit REMOVE_ITEM
-# below is kept as a belt-and-braces guard in case a canonical path ever
-# re-enters the glob. The .cpp/.cc patterns stay so that genuine C++ added to
-# these directories later is still compiled. Migration is measurement-gated —
-# see the Goal-0 migration notes in this repository.
-file(GLOB SRPC_BENCH_SRC
-    "${CMAKE_CURRENT_SOURCE_DIR}/base/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/misc/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/rpc/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/reactor/*.cc"
-    # fiber context-switch trampolines, real assembly (see top-level
-    # CMakeLists enable_language(ASM))
-    "${CMAKE_CURRENT_SOURCE_DIR}/reactor/*.S"
-)
+# SRPC_NATIVE_MANIFEST_BEGIN
+# Both build systems compile this same reviewed set of C and assembly leaves.
+set(SRPC_NATIVE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/scripts/native-kernel-sources.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SRPC_NATIVE_MANIFEST}")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    set(_SRPC_NATIVE_ARCH x86_64)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(_SRPC_NATIVE_ARCH aarch64)
+else()
+    message(FATAL_ERROR "Unsupported SRPC native architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+file(STRINGS "${SRPC_NATIVE_MANIFEST}" _SRPC_NATIVE_RECORDS)
+set(SRPC_NATIVE_SOURCES)
+foreach(_SRPC_NATIVE_RECORD IN LISTS _SRPC_NATIVE_RECORDS)
+    if(NOT _SRPC_NATIVE_RECORD MATCHES "^(all|x86_64|aarch64) ([a-zA-Z0-9_/.]+)$")
+        message(FATAL_ERROR "Invalid native kernel manifest record: ${_SRPC_NATIVE_RECORD}")
+    endif()
+    set(_SRPC_NATIVE_SELECTOR "${CMAKE_MATCH_1}")
+    set(_SRPC_NATIVE_PATH "${CMAKE_MATCH_2}")
+    if(_SRPC_NATIVE_SELECTOR STREQUAL "all" OR _SRPC_NATIVE_SELECTOR STREQUAL _SRPC_NATIVE_ARCH)
+        list(APPEND SRPC_NATIVE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${_SRPC_NATIVE_PATH}")
+    endif()
+endforeach()
+set(SRPC_BENCH_SRC)
+# SRPC_NATIVE_MANIFEST_END
 
 # Remaining C++23 named-module interface units whose Rust is still embedded in
 # an inline carrier. Keep this census complete so none is also compiled through
@@ -434,9 +443,8 @@ if(NOT _SRPC_GOAL0_CANONICAL_COUNT EQUAL _SRPC_GOAL0_MODULE_COUNT OR
         "provider pair per canonical module")
 endif()
 
-# Production always combines the remaining inline carriers with the canonical
-# generated providers. The partial crate root remains compile-only until all
-# 37 retained named modules are canonical Rust (CPUInfo was removed entirely).
+# All 37 production providers come from canonical Rust. The empty inline
+# inventory remains checked below. The partial crate umbrella is compile-only.
 set(SRPC_MODULE_SRC ${SRPC_INLINE_MODULE_SRC} ${SRPC_GOAL0_CRATE_CHILD_SRC})
 set(SRPC_MODULE_BASE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/base
@@ -478,11 +486,6 @@ foreach(_SRPC_GOAL0_CHILD IN LISTS SRPC_GOAL0_CRATE_CHILD_SRC)
             "Goal-0 production is missing generated provider: ${_SRPC_GOAL0_CHILD}")
     endif()
 endforeach()
-# Platform implementation units for srpc.epoll_wrapper (Rust std's
-# sys-module pattern): exactly one is compiled, selected below.
-list(REMOVE_ITEM SRPC_BENCH_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
-
 set(SRPC_CXXFLAGS ${BENCH_CXXFLAGS})
 
 # The `rusty` umbrella module — historically defined here because the
@@ -552,26 +555,15 @@ if(NOT TARGET srpc)
             FILES ${SRPC_MODULE_SRC}
         )
     endif()
-    # Goal-0 C demotion: syscall ladders that will never be Rust live as
-    # plain C with C signatures (the crate's own extern-C kernels mirror
-    # them); the C++ modules keep thin type-converting shims.
-    target_sources(srpc PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/srpc_connect.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/srpc_server.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/rpc/srpc_net.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_timing.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_rand.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/misc/srpc_io.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/base/srpc_base.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/reactor/srpc_fiber.c
-    )
+    # Both Rust and generated C++ call the same C platform kernels.
+    # Retry, timeout, and scheduling policy lives in canonical Rust.
+    target_sources(srpc PRIVATE ${SRPC_NATIVE_SOURCES})
     target_include_directories(srpc PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${SRPC_RUSTY_CPP_DIR}/include
     )
     target_compile_options(srpc PUBLIC ${SRPC_CXXFLAGS})
     target_link_libraries(srpc pthread rusty)
-    target_sources(srpc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/reactor/epoll_platform_linux.cc)
 
     # Remaining hand-authored SRPC C++ module units for borrow checking. The
     # canonical Rust modules are checked by rustc and are not duplicated
@@ -664,6 +656,15 @@ add_custom_target(srpc_goal0_source_gate
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
     COMMAND
         "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_runtime_parity.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_facade_audit.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_kernels.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
     COMMAND
         "${Python3_EXECUTABLE}"
@@ -680,6 +681,13 @@ add_custom_target(srpc_goal0_source_gate
         --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     COMMAND
         "${SRPC_CARGO_EXECUTABLE}"
+        test
+        --locked
+        --workspace
+        --doc
+        --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+    COMMAND
+        "${SRPC_CARGO_EXECUTABLE}"
         clippy
         --locked
         --workspace
@@ -688,7 +696,7 @@ add_custom_target(srpc_goal0_source_gate
         --
         -D warnings
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Checking remaining inline Rust and canonical rustc crate sources"
+    COMMENT "Checking canonical Rust, adapter ownership, and native kernel contracts"
     USES_TERMINAL
     VERBATIM
 )
@@ -882,16 +890,9 @@ add_dependencies(srpc_goal0_dual_compile
 # ---------------------------------------------------------------------------
 # Goal-0 runtime test battery.
 #
-# reactor/CANONICAL_CHECKPOINT.md makes generated-C++ multithread/TLS runtime
-# coverage a hard promotion gate and names the exact eight incumbent suites
-# below.  All eight sources have always lived in tests/, but nothing in this
-# build ever compiled or ran them, so that gate had nothing to run.
-#
-# These targets link the CURRENT production libsrpc.a — whose `srpc.reactor`
-# provider is the canonical Rust source `reactor/reactor.rs` —
-# which is precisely the incumbent baseline a promoted canonical-Rust Reactor
-# has to be compared against.  They do not require the canonical Rust Reactor
-# to compile.
+# These targets link the production libsrpc.a built from canonical Rust
+# providers and the shared native kernels. The suites cover threads, fibers,
+# transports, ownership, serialization, and paired Rust/C++ execution.
 # ---------------------------------------------------------------------------
 set(SRPC_GTEST_ROOT
     ${CMAKE_CURRENT_SOURCE_DIR}/third-party/googletest/googletest)
@@ -974,7 +975,7 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         target_link_libraries(srpc_gtest_main PUBLIC srpc_gtest pthread)
     endif()
 
-    # name -> source. Exactly the eight suites named by the checkpoint.
+    # Runtime suites, including retained-waker teardown and transport coverage.
     set(SRPC_RUNTIME_BATTERY
         test_reactor
         test_reactor_extended
@@ -985,6 +986,10 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         test_fiber_runtime
         test_rpc_pollthread_proxy_storage
         test_rpc_transport_matrix
+        reactor_stackless_battery
+        test_rpc_tcp_channel
+        test_rpc_metrics
+        test_client_replay
     )
     set(SRPC_BATTERY_SRC_test_reactor                    tests/test_reactor.cc)
     set(SRPC_BATTERY_SRC_test_reactor_extended           tests/test_reactor_extended.cc)
@@ -997,10 +1002,18 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         tests/rpc_pollthread_proxy_storage_test.cc)
     set(SRPC_BATTERY_SRC_test_rpc_transport_matrix
         tests/rpc_transport_matrix_test.cc)
+    set(SRPC_BATTERY_SRC_reactor_stackless_battery
+        tests/reactor_stackless_battery.cc)
+    set(SRPC_BATTERY_SRC_test_rpc_tcp_channel
+        tests/rpc_tcp_channel_test.cc)
+
+    set(SRPC_BATTERY_SRC_test_rpc_metrics tests/rpc_metrics_test.cc)
+    set(SRPC_BATTERY_SRC_test_client_replay tests/client_replay_test.cc)
 
     # Suites that define their own `int main`. Everything else links
     # gtest_main. test_reactor_minimal is a plain program with no gtest at all.
     set(SRPC_BATTERY_OWN_MAIN
+        test_rpc_metrics
         test_reactor
         test_reactor_extended
         test_reactor_minimal
@@ -1014,11 +1027,22 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     # because they need exactly the same plumbing (`import std;` => the
     # modmap response file, the scanner opt-out, gtest_main), but they are
     # deliberately NOT members of SRPC_RUNTIME_BATTERY: that list is the
-    # checkpoint's exact eight incumbent suites, and it also drives the
+    # runtime suites, and it also drives the
     # `runtime_battery` ctest label and the RUN_SERIAL / TIMEOUT 600 policy,
     # which exist for suites that drive real epoll threads and fibers.  A
     # docs test only reads a file and searches strings, so it neither belongs
     # under that label nor needs to be serialised against them.
+    list(APPEND SRPC_RUNTIME_BATTERY test_native_policy)
+    list(APPEND SRPC_BATTERY_OWN_MAIN test_native_policy)
+    set(SRPC_BATTERY_SRC_test_native_policy tests/native_policy_test.cc)
+
+    list(APPEND SRPC_RUNTIME_BATTERY test_runtime_parity)
+    list(APPEND SRPC_BATTERY_OWN_MAIN test_runtime_parity)
+    set(SRPC_BATTERY_SRC_test_runtime_parity tests/runtime_parity_test.cc)
+
+    list(APPEND SRPC_RUNTIME_BATTERY test_serialization_parity)
+    set(SRPC_BATTERY_SRC_test_serialization_parity tests/serialization_parity_test.cc)
+
     set(SRPC_DOCS_BATTERY
         test_rpc_docs_symbols
     )
@@ -1062,6 +1086,15 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         endif()
     endforeach()
 
+    # A test-only reactor implementation unit can exercise private canonical
+    # worker operations without adding production exports or duplicating them.
+    set(_fd_reuse_source ${CMAKE_CURRENT_SOURCE_DIR}/tests/pollworker_fd_reuse_test.cc)
+    target_sources(test_reactor_extended PRIVATE ${_fd_reuse_source})
+    set_source_files_properties(${_fd_reuse_source} PROPERTIES
+        CXX_SCAN_FOR_MODULES OFF
+        COMPILE_OPTIONS "@${SRPC_BATTERY_MODMAP}"
+        OBJECT_DEPENDS "${SRPC_BATTERY_MODMAP}")
+
     # The suite's built-in fallback is the RELATIVE path "docs/srpc-book.md",
     # which would resolve against whatever working directory ctest runs the
     # binary in (the build tree), not the source tree.  Hand it the absolute
@@ -1074,7 +1107,7 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
 
     add_custom_target(srpc_runtime_battery
         DEPENDS ${SRPC_RUNTIME_BATTERY}
-        COMMENT "Goal-0 runtime test battery (incumbent reactor)"
+        COMMENT "Canonical runtime and Rust/C++ parity test battery"
     )
 endif()
 
@@ -1152,6 +1185,22 @@ if(BUILD_TESTING)
                 RUN_SERIAL TRUE
                 LABELS "runtime_battery;srpc")
         endforeach()
+        add_test(NAME srpc_runtime_parity
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_runtime_parity.py"
+                --repo "${CMAKE_CURRENT_SOURCE_DIR}"
+                --cargo "${CARGO_EXECUTABLE}"
+                --cpp-exe "$<TARGET_FILE:test_runtime_parity>")
+        set_tests_properties(srpc_runtime_parity PROPERTIES
+            TIMEOUT 300
+            RUN_SERIAL TRUE
+            LABELS "runtime_battery;srpc")
+        add_test(NAME srpc_runtime_parity_negative_controls
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_runtime_parity.py")
+        set_tests_properties(srpc_runtime_parity_negative_controls PROPERTIES
+            TIMEOUT 30
+            LABELS "srpc")
         # Pure file I/O and string search: no reactor, no serialisation, and
         # a short timeout.  Not labelled `runtime_battery`.
         add_test(NAME test_rpc_docs_symbols
@@ -1184,8 +1233,8 @@ if(BUILD_TESTING)
     set_tests_properties(srpc_goal0_contracts PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
-    # Guards the rustc-only `rusty` facade against re-growing mocks that shadow
-    # canonical Rust.  Needs no transpiler, no build tree and no submodule.
+    # Both legacy entry points run the shared Rust AST ownership/body audit.
+    # Cargo builds its small syn-based scanner independently of the transpiler.
     add_test(
         NAME srpc_facade_shadow
         COMMAND "${Python3_EXECUTABLE}"
@@ -1194,11 +1243,8 @@ if(BUILD_TESTING)
     set_tests_properties(srpc_facade_shadow PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
-    # The shadow gate's companion: that one asks whether a facade item shadows a
-    # canonical implementation, this one asks whether a facade item LIES -- a
-    # body of `{}` or `0` that answers plausibly instead of refusing loudly.
-    # Two such bodies have already cost real bugs (RandomGenerator::rand, and
-    # the inert Serialize_ pair).  Same zero dependencies.
+    # Keep the existing stub-check entry point for downstream callers; it uses
+    # the same reviewed adapter and canonical constant-function inventories.
     add_test(
         NAME srpc_facade_stubs
         COMMAND "${Python3_EXECUTABLE}"

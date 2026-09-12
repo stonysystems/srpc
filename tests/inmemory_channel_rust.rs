@@ -10,7 +10,7 @@ use srpc::inmemory_channel::{
     inmemory_channel_inject_send_error, make_channel_pair_for_testing, make_inmemory_factory_proxy,
     InMemoryFactory, InMemoryListener, InMemorySwitchboard,
 };
-use rusty::CallbackWrapper;
+use srpc::callback_wrapper::detail::CallbackWrapper;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -104,7 +104,7 @@ fn direct_listener_without_self_weak_reports_internal() {
 #[test]
 fn connect_delivers_copied_bytes_and_peer_addresses_synchronously() {
     let mut factory = make_factory();
-    let (_listener, mut client, accepted) =
+    let (_listener, client, accepted) =
         listen_and_connect(&mut factory, "inmemory://copy-test");
     let mut server = accepted.0.lock().unwrap().take().unwrap();
 
@@ -237,7 +237,7 @@ fn close_is_peer_only_idempotent_and_kills_both_directions() {
 #[test]
 fn fault_injection_is_per_side_drop_first_and_clearable() {
     let (a, b) = make_channel_pair_for_testing("side-a".to_owned(), "side-b".to_owned());
-    let mut a_proxy = inmemory_channel::make_inmemory_channel_proxy(a.clone());
+    let a_proxy = inmemory_channel::make_inmemory_channel_proxy(a.clone());
     let mut b_proxy = inmemory_channel::make_inmemory_channel_proxy(b.clone());
     let delivered: Arc<AtomicU32> = Arc::new(AtomicU32::new(0_u32));
     let delivered_cb = delivered.clone();
@@ -283,7 +283,7 @@ fn duplicate_injection_delivers_each_armed_send_twice_and_clears() {
     // the injection primitive -- the armed sends reach the peer's on_frame
     // twice, with identical bytes, and the arming is consumed then clearable.
     let (a, b) = make_channel_pair_for_testing("dup-a".to_owned(), "dup-b".to_owned());
-    let mut a_proxy = inmemory_channel::make_inmemory_channel_proxy(a.clone());
+    let a_proxy = inmemory_channel::make_inmemory_channel_proxy(a.clone());
     let mut b_proxy = inmemory_channel::make_inmemory_channel_proxy(b.clone());
 
     let deliveries: Arc<AtomicU32> = Arc::new(AtomicU32::new(0_u32));

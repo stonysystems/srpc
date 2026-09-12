@@ -17,10 +17,19 @@ pub struct Waker {
     // The production `rusty::Waker` stores a copyable `std::function` and its
     // `wake()` member is const.  Model that contract directly so a retained
     // waker may be invoked concurrently without an `FnMut` aliasing hole.
-    pub wake_fn: Box<dyn Fn() + Send + Sync>,
+    pub wake_fn: ::std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Waker {
+    pub fn from_callable<F>(callback: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        Self {
+            wake_fn: ::std::sync::Arc::new(callback),
+        }
+    }
+
     pub fn wake(&self) {
         (self.wake_fn)();
     }
@@ -85,40 +94,24 @@ impl<T> Task<T> {
     /// never need this: calling the coroutine already yields a Task, which is
     /// why the bridge lives here in the facade and not in a canonical module.
     ///
-    /// The facade waker inside `Context` is bridged to a `std::task::Waker`
-    /// through the safe `Wake` trait.  Capturing the raw waker pointer is
-    /// sound under the canonical reactor's documented contract ("every
-    /// Context/Waker allocation remains stable through Task destruction",
-    /// reactor/reactor.rs header) and the facade `Waker::wake` taking `&self`
-    /// with a `Send + Sync` callee.
+    /// Each Rust waker owns the callback copied from the current polling
+    /// context. The callback can therefore outlive both Task destruction and
+    /// reactor teardown, just as a copied C++ `std::function` can. Canonical
+    /// wake admission checks decide whether that retained callback has work.
     pub fn from_future<F>(future: F) -> Self
     where
         F: ::std::future::Future<Output = T> + 'static,
         T: Default,
     {
-        struct FacadeWake {
-            waker: ::std::sync::atomic::AtomicPtr<Waker>,
+        struct NativeWake {
+            callback: ::std::sync::Arc<dyn Fn() + Send + Sync>,
         }
-        // SAFETY: the pointer targets a Context/Waker allocation the canonical
-        // reactor keeps stable through Task destruction, and the underlying
-        // wake closure is `Fn + Send + Sync`.
-        #[allow(unsafe_code)]
-        unsafe impl Send for FacadeWake {}
-        #[allow(unsafe_code)]
-        unsafe impl Sync for FacadeWake {}
-        impl ::std::task::Wake for FacadeWake {
+        impl ::std::task::Wake for NativeWake {
             fn wake(self: ::std::sync::Arc<Self>) {
                 self.wake_by_ref();
             }
             fn wake_by_ref(self: &::std::sync::Arc<Self>) {
-                let ptr = self.waker.load(::std::sync::atomic::Ordering::Acquire);
-                if !ptr.is_null() {
-                    // SAFETY: stability contract above; `wake` is `&self`.
-                    #[allow(unsafe_code)]
-                    unsafe {
-                        (*ptr).wake()
-                    };
-                }
+                (self.callback)();
             }
         }
 
@@ -128,9 +121,12 @@ impl<T> Task<T> {
             if finished {
                 panic!("facade Task polled after completion");
             }
-            let bridge = ::std::sync::Arc::new(FacadeWake {
-                waker: ::std::sync::atomic::AtomicPtr::new(cx.waker),
-            });
+            assert!(!cx.waker.is_null(), "Task polling requires a live Context waker");
+            // SAFETY: the executor keeps this polling context's Waker alive
+            // for the synchronous poll. Only its owned callback escapes.
+            #[allow(unsafe_code)]
+            let callback = unsafe { (*cx.waker).wake_fn.clone() };
+            let bridge = ::std::sync::Arc::new(NativeWake { callback });
             let std_waker = ::std::task::Waker::from(bridge);
             let mut std_cx = ::std::task::Context::from_waker(&std_waker);
             match pinned.as_mut().poll(&mut std_cx) {
@@ -143,7 +139,16 @@ impl<T> Task<T> {
         })
     }
 
-    pub fn poll(&mut self, context: &mut Context) -> Poll<T> {
+    /// Poll once using an executor-owned wake context.
+    ///
+    /// # Safety
+    ///
+    /// `context.waker` must point to a live Waker for this entire call. The
+    /// executor must not mutate or destroy that Waker concurrently. Retained
+    /// Rust wakers own a callback clone and impose no lifetime requirement
+    /// after the call returns.
+    #[allow(unsafe_code)]
+    pub unsafe fn poll(&mut self, context: &mut Context) -> Poll<T> {
         (self.poller)(context)
     }
 }

@@ -32,9 +32,9 @@ public:
         ERROR_METHOD = 0x1004
     };
 
-    std::atomic<int> call_count{0};
-    std::atomic<bool> should_delay{false};
-    std::atomic<int> delay_ms{100};
+    mutable std::atomic<int> call_count{0};
+    mutable std::atomic<bool> should_delay{false};
+    mutable std::atomic<int> delay_ms{100};
 
     // Registers RPC IDs with server using service index
     // @safe
@@ -48,7 +48,7 @@ public:
     }
 
     // @safe - Virtual dispatch for RPC requests
-    void __dispatch__(i32 rpc_id, rusty::Box<Request> req, WeakServerConnection weak_sconn) override {
+    void __dispatch__(i32 rpc_id, rusty::Box<Request> req, WeakServerConnection weak_sconn) const override {
         switch (rpc_id) {
         case FAST_ECHO: fast_echo_wrapper(std::move(req), weak_sconn); break;
         case SLOW_ECHO: slow_echo_wrapper(std::move(req), weak_sconn); break;
@@ -59,7 +59,7 @@ public:
     }
 
 private:
-    void fast_echo_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) {
+    void fast_echo_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) const {
         call_count++;
         std::string input;
         srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
@@ -74,7 +74,7 @@ private:
         }
     }
 
-    void slow_echo_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) {
+    void slow_echo_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) const {
         call_count++;
         std::string input;
         srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
@@ -93,7 +93,7 @@ private:
         }
     }
 
-    void get_value_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) {
+    void get_value_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) const {
         call_count++;
         i32 input;
         srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
@@ -110,7 +110,7 @@ private:
         }
     }
 
-    void error_method_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) {
+    void error_method_wrapper(rusty::Box<Request> req, WeakServerConnection weak_sconn) const {
         call_count++;
         // Don't reply - simulate an error
     }

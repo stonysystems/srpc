@@ -3,6 +3,12 @@
 use rusty::cpp_inherit;
 use std::sync::Arc;
 
+/// A registration owns the descriptor returned by `fd` until it unregisters.
+///
+/// Implementations must retain that descriptor across logical close and every
+/// concurrent epoll operation. The worker calls `close` only after unregister;
+/// callers closing a transport independently need a separate registration
+/// lease, as the TCP pollable proxies provide.
 pub trait PollableBase: Send {
     fn fd(&self) -> i32;
     fn poll_mode(&self) -> i32;
@@ -15,6 +21,10 @@ pub trait PollableBase: Send {
     fn is_closed(&self) -> bool;
 }
 
+// The shared target must preserve the registered descriptor while its shim
+// exists, or close only after the worker has unregistered it. Arc ownership of
+// a target alone does not extend an interior descriptor that close replaces.
+// TCP uses its dedicated proxy factories to retain a descriptor lease.
 trait PollableSharedTarget: Send + Sync {
     fn fd(&self) -> i32;
     fn poll_mode(&self) -> i32;
@@ -28,38 +38,6 @@ trait PollableSharedTarget: Send + Sync {
 }
 
 pub type PollableProxy = Box<dyn PollableBase>;
-
-// Rustc-lane vtable bridge for the facade's REAL poll thread.  The facade
-// cannot name `PollableBase` (`rusty` does not depend on `srpc`), so its epoll
-// loop drives registered pollables through `rusty::RustcPollable`; this impl is
-// the other half.  The self type is a trait object, which the emitter lowers to
-// nothing -- the generated C++ is byte-identical with or without it.
-impl rusty::RustcPollable for dyn PollableBase {
-    fn rustc_fd(&self) -> i32 {
-        self.fd()
-    }
-    fn rustc_poll_mode(&self) -> i32 {
-        self.poll_mode()
-    }
-    fn rustc_handle_read(&mut self) -> bool {
-        self.handle_read()
-    }
-    fn rustc_handle_write(&mut self) -> i32 {
-        self.handle_write()
-    }
-    fn rustc_handle_error(&mut self) {
-        self.handle_error()
-    }
-    fn rustc_close(&mut self) {
-        self.close()
-    }
-    fn rustc_check_pending_write_update(&self) -> bool {
-        self.check_pending_write_update()
-    }
-    fn rustc_is_closed(&self) -> bool {
-        self.is_closed()
-    }
-}
 
 #[repr(C)]
 pub struct PollableArcShim<T> {
@@ -105,6 +83,9 @@ impl<T: PollableSharedTarget> PollableBase for PollableArcShim<T> {
     }
 }
 
+/// Adapt a shared target whose descriptor outlives its registration.
+/// Transport types with independently closable descriptor slots must use
+/// their dedicated registration factories, which retain the socket owner.
 #[allow(private_bounds)]
 pub fn make_pollable_proxy_from_typed_arc<T>(poll: Arc<T>) -> PollableProxy
 where

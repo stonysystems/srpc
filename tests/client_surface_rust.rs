@@ -20,137 +20,7 @@ use srpc::reconnect_policy::ReconnectPolicy;
 use srpc::serializable::{BinaryReadArchive, BinaryWriteArchive, Deserialize, Serialize};
 use srpc::server::{Request, Server, ServerReplyFn, Service, WeakServerConnection};
 
-use rusty::srpc::reactor::PollThread;
-
-// House pattern: no build.rs, so this binary supplies every C symbol the
-// linked modules reference. Same tiers as tests/rpc_roundtrip_inmemory_rust.rs.
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    1_000_000
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_realtime_coarse_us() -> u64 {
-    2_000_000
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_random_u64() -> u64 {
-    0x9E37_79B9_7F4A_7C15
-}
-
-#[allow(unsafe_code)]
-#[allow(clippy::missing_safety_doc)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn srpc_cstr_len(text: *const u8) -> usize {
-    if text.is_null() {
-        return 0;
-    }
-    let mut n = 0usize;
-    // SAFETY: the caller passes a NUL-terminated string, as the C kernel requires.
-    while unsafe { *text.add(n) } != 0 {
-        n += 1;
-    }
-    n
-}
-
-#[allow(unsafe_code)]
-#[allow(clippy::missing_safety_doc)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn srpc_path_basename(path: *const i8) -> *const i8 {
-    if path.is_null() {
-        return core::ptr::null();
-    }
-    let mut last = path;
-    let mut cursor = path;
-    // SAFETY: the caller passes a NUL-terminated path, as the C kernel requires.
-    while unsafe { *cursor } != 0 {
-        // SAFETY: `cursor` still points inside that same NUL-terminated string.
-        if unsafe { *cursor } == b'/' as i8 {
-            // SAFETY: one past a non-NUL byte is still inside the string.
-            last = unsafe { cursor.add(1) };
-        }
-        // SAFETY: same bound as the loop condition.
-        cursor = unsafe { cursor.add(1) };
-    }
-    last
-}
-
-#[allow(unsafe_code)]
-#[allow(clippy::missing_safety_doc)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn srpc_time_now_str(now: *mut i8) {
-    let stamp = b"2026-01-01 00:00:00.000\0";
-    // SAFETY: the canonical caller sized the destination to 24 bytes.
-    unsafe { core::ptr::copy_nonoverlapping(stamp.as_ptr().cast::<i8>(), now, stamp.len()) };
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-extern "C" fn srpc_stderr() -> *mut rusty::CFile {
-    core::ptr::null_mut()
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-extern "C" fn srpc_backtrace_capture(_out_symbols: *mut *mut *mut i8) -> i32 {
-    -1_i32
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-extern "C" fn srpc_backtrace_free(_symbols: *mut *mut i8) {}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-extern "C" fn srpc_reactor_reusing_fiber() -> i32 {
-    0
-}
-
-// Real spawn instantiates the reconnect/retry bodies, which reach the timing
-// and jitter kernels; supply them for real (sleep) and deterministically (rand).
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-extern "C" fn srpc_sleep_us(microseconds: u64) {
-    std::thread::sleep(std::time::Duration::from_micros(microseconds));
-}
-
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-extern "C" fn srpc_rand_raw() -> i32 {
-    4 // deterministic jitter for tests
-}
-
-macro_rules! never_runs {
-    ($($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)+) => {$(
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        extern "C" fn $name($(_: $ty),*) $(-> $ret)? {
-            unreachable!(concat!(
-                stringify!($name),
-                " must not run: this suite is a synchronous in-memory fast path"
-            ))
-        }
-    )+};
-}
-
-never_runs! {
-    srpc_fiber_init(f: *mut core::ffi::c_void, s: usize,
-        e: unsafe extern "C" fn(*mut core::ffi::c_void), a: *mut core::ffi::c_void);
-    srpc_fiber_resume(f: *mut core::ffi::c_void);
-    srpc_fiber_yield(f: *mut core::ffi::c_void);
-    srpc_fiber_destroy(f: *mut core::ffi::c_void);
-    srpc_tcp_connect_socket(a: u32, p: u16, t: i32, e: *mut i32) -> i32;
-    srpc_tcp_current_thread_id() -> u32;
-    srpc_tcp_last_errno() -> i32;
-    srpc_tcp_recv_scratch() -> *mut u8;
-    srpc_tcp_recv_bytes(fd: i32, d: *mut u8, n: usize) -> i64;
-    srpc_tcp_send_bytes(fd: i32, d: *const u8, n: usize) -> i64;
-    srpc_tcp_shutdown(fd: i32) -> i32;
-}
+use srpc::reactor::PollThread;
 
 const ECHO_DOUBLE_RPC_ID: i32 = 0x00E0_0043;
 
@@ -162,7 +32,7 @@ impl Service for EchoDoubleService {
     }
 
     #[allow(unsafe_code)]
-    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
+    fn __dispatch__(&self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
         assert_eq!(rpc_id, ECHO_DOUBLE_RPC_ID);
         let mut value = 0i64;
         {
@@ -189,7 +59,7 @@ fn connected_pair(tag: &str) -> (Server, Arc<Client>) {
 
     // SAFETY: rustc-lane poll threads; the in-memory channel never schedules
     // onto them.
-    let mut server = unsafe { Server::new(Some(PollThread::create())) };
+    let mut server = Server::new(Some(PollThread::create()));
     server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
     ))));
@@ -197,7 +67,7 @@ fn connected_pair(tag: &str) -> (Server, Arc<Client>) {
     // SAFETY: `addr` is NUL-terminated and outlives the call.
     assert_eq!(unsafe { server.start(addr.as_ptr()) }, 0);
 
-    let client = Client::create(unsafe { PollThread::create() });
+    let client = Client::create(PollThread::create());
     client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
     ))));
@@ -231,6 +101,9 @@ fn request_async_delivers_the_reply_to_the_callback() {
     }, on_reply);
     assert!(sent.is_ok());
     assert_eq!(got.load(Ordering::Acquire), 42, "fire-and-forget still round-trips");
+    assert_eq!(client.metrics().requests_sent(), 1);
+    assert_eq!(client.metrics().requests_completed(), 1);
+    assert_eq!(client.metrics().in_flight_requests(), 0, "inline async completion balances admission");
 
     drop(server);
     drop(client);
@@ -251,14 +124,28 @@ fn connection_accessors_and_live_metrics_are_reachable() {
         .expect("request accepted");
     assert_eq!(fu.get_error_code(), 0);
 
-    // The LIVE counters, on the connection — not Client::metrics(), which is
-    // the documented zeroed stub (asserted as such below so a future fix is
-    // a deliberate edit here, not a surprise).
+    // Both accessors read the same live counters after a real round trip.
     assert!(conn.metrics().requests_sent() >= 1);
-    assert_eq!(client.metrics().requests_sent(), 0, "Client::metrics() is the stub");
+    assert_eq!(client.metrics().requests_sent(), 1, "Client shares the live connection counters");
+    assert_eq!(client.metrics().requests_completed(), 1);
+    assert_eq!(client.metrics().in_flight_requests(), 0, "inline completion balances admission");
 
     drop(server);
     drop(client);
+}
+
+#[test]
+fn inline_error_reply_balances_admission() {
+    let (server, client) = connected_pair("inline-error-metrics");
+    let future = client.request(ECHO_DOUBLE_RPC_ID + 1, &srpc::client::FutureAttr::default(), |_| {})
+        .expect("a missing method still returns a real RPC reply");
+    assert!(future.ready());
+    assert_eq!(future.get_error_code(), 2);
+    assert_eq!(client.metrics().requests_sent(), 1);
+    assert_eq!(client.metrics().requests_failed(), 1);
+    assert_eq!(client.metrics().in_flight_requests(), 0);
+    drop(client);
+    drop(server);
 }
 
 #[test]
@@ -297,7 +184,7 @@ fn connection_callbacks_fire_on_connect() {
     let addr = CString::new("inmemory://cb-connect").expect("addr");
 
     #[allow(unsafe_code)]
-    let mut server = unsafe { Server::new(Some(PollThread::create())) };
+    let mut server = Server::new(Some(PollThread::create()));
     server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
     ))));
@@ -307,7 +194,7 @@ fn connection_callbacks_fire_on_connect() {
     assert_eq!(started, 0);
 
     #[allow(unsafe_code)]
-    let client = Client::create(unsafe { PollThread::create() });
+    let client = Client::create(PollThread::create());
     client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
     ))));
@@ -335,7 +222,7 @@ fn client_pool_construction_and_config_are_reachable() {
     config.load_balancing = LoadBalancingStrategy::ROUND_ROBIN;
     config.max_connections = 8;
 
-    let pool = ClientPool::new(Some(unsafe { PollThread::create() }), config);
+    let pool = ClientPool::new(Some(PollThread::create()), config);
     assert_eq!(pool.pool_config().max_connections, 8);
     assert_eq!(pool.total_client_count(), 0);
     assert_eq!(pool.address_count(), 0);

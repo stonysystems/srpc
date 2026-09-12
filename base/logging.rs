@@ -1,6 +1,6 @@
 // Canonical Rust source for the srpc.logging module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
-use cpp::srpc::debugging as cpp_debugging;
+use crate::debugging::verify_at;
 use cpp::std as cpp_std;
 use rusty as cpp;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -53,7 +53,7 @@ pub fn log_level_tag(level: i32) -> &'static str {
 pub unsafe fn log_line(level: i32, line: i32, file: *const i8, msg: &LegacyStdString) {
     if level > Log::DEBUG {
         // SAFETY: the indexed verifier has no caller-side precondition.
-        unsafe { cpp_debugging::verify(false) };
+        verify_at(false, file!(), line!());
     }
     if level <= Log::level_now() {
         let mut out: rusty::LoggingString = Default::default();
@@ -89,7 +89,8 @@ mod logging_ffi {
 
     unsafe extern "C" {
         pub(super) fn srpc_path_basename(path: *const LegacyCChar) -> *const LegacyCChar;
-        pub(super) fn srpc_time_now_str(now: *mut LegacyCChar);
+        pub(super) fn srpc_local_calendar_fields(fields: *mut i32) -> i32;
+        pub(super) fn srpc_gettimeofday_us() -> u64;
     }
 }
 
@@ -119,14 +120,62 @@ pub unsafe fn log_basename(fpath: *const i8) -> rusty::LoggingString {
     out
 }
 
+fn log_write_digits(bytes: &mut [u8], mut value: i32, offset: usize, digits: usize) {
+    let mut index = offset + digits;
+    while index > offset {
+        index -= 1;
+        bytes[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+}
+
+fn log_format_time(fields: &[i32], milliseconds: i32) -> rusty::LoggingString {
+    let mut bytes: [u8; 23] = [0; 23];
+    log_write_digits(&mut bytes, fields[0], 0, 4);
+    bytes[4] = b'-';
+    log_write_digits(&mut bytes, fields[1], 5, 2);
+    bytes[7] = b'-';
+    log_write_digits(&mut bytes, fields[2], 8, 2);
+    bytes[10] = b' ';
+    log_write_digits(&mut bytes, fields[3], 11, 2);
+    bytes[13] = b':';
+    log_write_digits(&mut bytes, fields[4], 14, 2);
+    bytes[16] = b':';
+    log_write_digits(&mut bytes, fields[5], 17, 2);
+    bytes[19] = b'.';
+    log_write_digits(&mut bytes, milliseconds, 20, 3);
+    let mut now: rusty::LoggingString = Default::default();
+    let mut index: usize = 0;
+    while index < bytes.len() {
+        now.push_back(bytes[index] as LegacyCChar);
+        index += 1;
+    }
+    now
+}
+
 /// Produce the legacy 23-character local-time timestamp.
 #[allow(unsafe_code)]
 pub fn log_time_now() -> rusty::LoggingString {
-    let mut now: rusty::LoggingString = Default::default();
-    now.resize(24);
-    // SAFETY: resize created 24 writable bytes; the terminal C helper writes
-    // exactly 23 timestamp bytes and a trailing NUL.
-    unsafe { logging_ffi::srpc_time_now_str(now.data()) };
-    now.resize(23);
-    now
+    let mut fields: [i32; 6] = [0; 6];
+    // SAFETY: the calendar operation writes exactly six integer fields.
+    if unsafe { logging_ffi::srpc_local_calendar_fields(fields.as_mut_ptr()) } != 0 {
+        std::process::abort();
+    }
+    let milliseconds = (unsafe { logging_ffi::srpc_gettimeofday_us() } % 1_000_000 / 1_000) as i32;
+    log_format_time(&fields, milliseconds)
+}
+
+#[cfg(test)]
+mod time_format_tests {
+    #[test]
+    fn timestamp_bytes_preserve_padding_and_leap_second() {
+        assert_eq!(
+            &*super::log_format_time(&[2026, 1, 2, 3, 4, 5], 6),
+            "2026-01-02 03:04:05.006"
+        );
+        assert_eq!(
+            &*super::log_format_time(&[2024, 12, 31, 23, 59, 60], 999),
+            "2024-12-31 23:59:60.999"
+        );
+    }
 }

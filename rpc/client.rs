@@ -43,30 +43,20 @@
 
 #![allow(unsafe_code, non_camel_case_types, non_snake_case)]
 
-use std::cell::{Cell, RefCell, RefMut};
-use std::collections::{BTreeMap, HashMap};
+#[allow(unused_imports)]
+use crate::reactor as _;
+
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 // (`std::ffi::CStr` is deliberately NOT imported: see `clientconn_addr_to_string`.)
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
-use cpp::srpc::rand as cpp_rand_facade;
-use rusty as cpp;
+use crate::rand::randgen_range;
 
-// These are still supplied by historical inline C++ modules.  The `cpp::`
-// imports make their named-module ownership explicit without inventing a Rust
-// namespace that does not exist in the public C++ surface.
-// These otherwise-unused source-owned imports keep the exact
-// `srpc.callback_wrapper` / `srpc.reactor` / `srpc.serializable` providers
-// visible to generated C++; the types themselves are reached through the
-// checked type map and the crate paths.
+// Retain the C++ module dependency for the canonical callback template.
 #[allow(unused_imports)]
-use cpp::srpc::callback_wrapper as _;
-#[allow(unused_imports)]
-use cpp::srpc::reactor as _;
-#[allow(unused_imports)]
-use cpp::srpc::serializable as cpp_serializable;
-use rusty::RustyCellGet as _;
-use rusty::RustyStdStringCStr as _;
+use crate::callback_wrapper as _;
 use rusty::RustyHandleIsValid as _;
 
 
@@ -92,37 +82,32 @@ use crate::reconnect_policy::{ReconnectPolicy};
 use crate::request_options::{RequestOptions, TimeoutType};
 use crate::request_queue::{
     OverflowStrategy, QueuedRequest, QueuedRequestCallback, RequestQueue, RequestQueueConfig,
+    kRequestQueueExpiredError, rq_invoke_callback_safely,
 };
 use crate::serializable::{
     BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource, SinkProxy, SourceProxy,
 };
 use crate::tcp_channel::{make_tcp_factory_proxy, TcpFactory};
 
-// Rustc-only facade identities with checked C++ type maps back to the public
-// root-level `srpc::Fiber` and `srpc::PollThread` classes.
-pub type Fiber = cpp::ReactorFiber;
-pub type PollThread = cpp::ReactorPollThread;
+// The public aliases share the canonical reactor implementation.
+pub type Fiber = crate::reactor::Fiber;
+pub type PollThread = crate::reactor::PollThread;
 
 pub type WeakClientConnection = Weak<ClientConnection>;
 pub type FutureResult = Result<Arc<Future>, i32>;
-pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize)>;
+pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize) + Send>;
 pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool) + Send>;
-pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64)>;
+pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64) + Send>;
 pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
 pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &LegacyStdString) + Send + Sync>;
 pub type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
 pub type LegacyStdString = String;
 
-// The length-prefixed integer carriers are module-owned aliases for exactly
-// the reason rpc/server.rs:70 documents: `crate::basetypes::v64` and
-// `rusty::SerializableV64` are the same C++ `v64` (rust-type-map.toml), but
-// only the latter carries the Rust `Serialize`/`Deserialize` impls the bounded
-// ADL dispatchers require, and pulling the type through
-// `use crate::serializable::{..}` makes the emitter invent a nested namespace.
-type v32 = rusty::SerializableV32;
-type v64 = rusty::SerializableV64;
+// Use the canonical sparse integer values for wire headers.
+type v32 = crate::basetypes::v32;
+type v64 = crate::basetypes::v64;
 pub type LegacyStdStringView<'a> = &'a str;
-pub type LegacyCallbackWrapper<F> = rusty::CallbackWrapper<F>;
+pub type LegacyCallbackWrapper<F> = crate::callback_wrapper::detail::CallbackWrapper<F>;
 
 pub struct ClientCloneCell<T>(Mutex<T>);
 
@@ -168,10 +153,7 @@ pub const CLIENT_POLL_NO_CHANGE: i32 = -1;
 pub type c_char = i8;
 
 pub fn client_rand(min: i32, max: i32) -> i32 {
-    // SAFETY: `srpc::RandomGenerator::rand` is a pure integer draw over the
-    // half-open range; the foreign named-module boundary is what `unsafe`
-    // records here, not a memory precondition.
-    unsafe { cpp_rand_facade::RandomGenerator::rand(min, max) }
+    randgen_range(min, max)
 }
 
 pub fn client_verify(value: bool) {
@@ -270,6 +252,11 @@ pub struct ReplyBuffer {
     src: BufferSource,
 }
 
+// SAFETY: src is empty or points into this buffer's owned Vec allocation.
+// Moving the Vec leaves that allocation stable; filling replaces src before
+// returning. Access through Future is serialized by its reply mutex.
+unsafe impl Send for ReplyBuffer {}
+
 pub fn client_sink_proxy(sink: &mut BufferSink) -> SinkProxy {
     // SAFETY: the archive proxy is used only while this uniquely borrowed
     // sink remains live in its enclosing request operation.
@@ -301,13 +288,13 @@ pub fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
 
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
-pub fn deserialize_from<T: crate::serializable::Deserialize>(mut src: RefMut<ReplyBuffer>, value: &mut T) {
+pub fn deserialize_from<T: crate::serializable::Deserialize>(mut src: MutexGuard<ReplyBuffer>, value: &mut T) {
     let mut ar = BinaryReadArchive {
         source_: client_source_proxy(&mut (*src).src),
     };
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Deserialize_::deserialize(value, &mut ar) };
+    crate::serializable::Deserialize_::deserialize(value, &mut ar);
 }
 
 // clippy::upper_case_acronyms -- renaming the variant renames the emitted enumerator AND the exported DisconnectBehavior_QUEUE() accessor; measured. See the Task-2 measurement block above.
@@ -494,54 +481,41 @@ impl Default for FutureAttr {
 pub struct FutureState {
     ready: bool,
     timed_out: bool,
-    completion_callbacks: Vec<rusty::Function<dyn FnMut()>>,
+    completion_callbacks: Vec<rusty::Function<dyn FnMut() + Send>>,
 }
 
 impl FutureState {
     fn new() -> FutureState {
-        FutureState { ready: false, timed_out: false, completion_callbacks: Vec::<rusty::Function<dyn FnMut()>>::new() }
+        FutureState { ready: false, timed_out: false, completion_callbacks: Vec::<rusty::Function<dyn FnMut() + Send>>::new() }
     }
 }
 
 pub struct Future {
     xid_: i64,
-    error_code_: Cell<i32>,
+    error_code_: ClientCloneCell<i32>,
     attr_: FutureAttr,
-    reply_: RefCell<ReplyBuffer>,
+    reply_: Mutex<ReplyBuffer>,
     timeout_: u64,
     state_: Mutex<FutureState>,
     ready_cond_: Condvar,
-    options_: Cell<RequestOptions>,
-    timeout_type_: Cell<TimeoutType>,
-    retry_count_: Cell<u16>,
+    options_: ClientCloneCell<RequestOptions>,
+    timeout_type_: ClientCloneCell<TimeoutType>,
+    retry_count_: ClientCloneCell<u16>,
 }
-
-// The retry coordinator and the reply path touch a Future from threads other
-// than the waiter's.  Every cross-thread read is ordered by the
-// `state_`/`ready_cond_` handshake: writers fill the Cell fields and the
-// reply buffer BEFORE notify_ready takes the mutex and broadcasts, and the
-// waiter reads them only after its wait returns under that same mutex -- the
-// exact protocol the C++ carrier has always relied on for these plain
-// (non-atomic) members.  The Cells are never written concurrently by two
-// threads: the coordinator owns them until it notifies, the waiter after.
-#[allow(unsafe_code)]
-unsafe impl Send for Future {}
-#[allow(unsafe_code)]
-unsafe impl Sync for Future {}
 
 impl Future {
     fn new(xid: i64, attr: FutureAttr) -> Future {
         Future {
             xid_: xid,
-            error_code_: Cell::new(0i32),
+            error_code_: ClientCloneCell::new(0i32),
             attr_: attr,
-            reply_: RefCell::<ReplyBuffer>::new(reply_buffer_empty()),
+            reply_: Mutex::<ReplyBuffer>::new(reply_buffer_empty()),
             timeout_: 1000000u64,
             state_: Mutex::<FutureState>::new(FutureState::new()),
             ready_cond_: Condvar::new(),
-            options_: Cell::new(RequestOptions::defaults()),
-            timeout_type_: Cell::new(TimeoutType::NONE),
-            retry_count_: Cell::new(0u16),
+            options_: ClientCloneCell::new(RequestOptions::defaults()),
+            timeout_type_: ClientCloneCell::new(TimeoutType::NONE),
+            retry_count_: ClientCloneCell::new(0u16),
         }
     }
 
@@ -605,7 +579,7 @@ impl Future {
         guard.timed_out
     }
 
-    fn add_completion_callback(&self, callback: rusty::Function<dyn FnMut()>) -> bool {
+    fn add_completion_callback(&self, callback: rusty::Function<dyn FnMut() + Send>) -> bool {
         let mut guard = self.state_.lock().unwrap();
         if guard.ready || guard.timed_out {
             return false;
@@ -614,9 +588,9 @@ impl Future {
         true
     }
 
-    pub fn get_reply(&self) -> RefMut<'_, ReplyBuffer> {
+    pub fn get_reply(&self) -> MutexGuard<'_, ReplyBuffer> {
         self.wait();
-        self.reply_.borrow_mut()
+        self.reply_.lock().unwrap()
     }
 
     pub fn get_error_code(&self) -> i32 {
@@ -666,7 +640,7 @@ impl Future {
 
     fn notify_ready(&self, self_arc: Arc<Future>) {
         let should_callback: bool;
-        let mut completion_callbacks: Vec<rusty::Function<dyn FnMut()>>;
+        let mut completion_callbacks: Vec<rusty::Function<dyn FnMut() + Send>>;
         {
             let mut guard = self.state_.lock().unwrap();
             if !guard.timed_out {
@@ -740,53 +714,70 @@ pub fn make_prefilled_cb_slots() -> Vec<Option<AsyncReplyCallback>> {
 
 pub struct ClientConnection {
     poll_thread_worker_: Arc<PollThread>,
-    fiber_channel_: rusty::Mutex<Option<Box<FiberChannel>>>,
-    direct_channel_: rusty::Mutex<Option<ChannelConnectionProxy>>,
-    channel_mode_: Cell<bool>,
-    factory_: rusty::Mutex<Option<ChannelFactoryProxy>>,
+    // Lock order is lifecycle, channel slots, queue, queued futures, async
+    // slots, pending futures. No channel or user callout holds this lock.
+    lifecycle_: Mutex<ClientBindingState>,
+    // Box constructs the move-disabled C++ FiberChannel in its final slot;
+    // Arc then shares that slot with suspended receivers and replacement.
+    #[allow(clippy::redundant_allocation)]
+    fiber_channel_: rusty::Mutex<Option<Arc<Box<FiberChannel>>>>,
+    direct_channel_: rusty::Mutex<Option<Arc<ChannelConnectionProxy>>>,
+    closing_: AtomicBool,
+    channel_mode_: ClientCloneCell<bool>,
+    factory_: Mutex<Option<Arc<Mutex<ChannelFactoryProxy>>>>,
     xid_counter_: Counter,
     pending_fu_: rusty::Mutex<HashMap<i64, Arc<Future>>>,
+    queued_fu_: Arc<Mutex<HashMap<i64, Arc<Future>>>>,
+    replaying_: Arc<AtomicBool>,
     pending_cb_slots_: rusty::Mutex<Vec<Option<AsyncReplyCallback>>>,
+    // This private state machine never installs StateChangeCallback. Lifecycle
+    // changes its stored state directly; CallbackManager notifications run
+    // after release instead of calling callback-capable transition methods.
     state_machine_: ConnectionStateMachine,
-    reconnect_policy_: Cell<ReconnectPolicy>,
+    reconnect_policy_: ClientCloneCell<ReconnectPolicy>,
     reconnect_: ReconnectState,
-    reconnect_address_: Cell<LegacyStdString>,
-    buffering_config_: Cell<BufferingConfig>,
+    reconnect_address_: ClientCloneCell<LegacyStdString>,
+    buffering_config_: ClientCloneCell<BufferingConfig>,
     pending_queue_: RequestQueue,
-    server_instance_id_: Cell<u64>,
-    on_server_restart_: RefCell<OnServerRestartCallbackFn>,
-    keepalive_config_: Cell<KeepaliveConfig>,
+    server_instance_id_: ClientCloneCell<u64>,
+    on_server_restart_: Mutex<Arc<Mutex<OnServerRestartCallbackFn>>>,
+    keepalive_config_: ClientCloneCell<KeepaliveConfig>,
     heartbeat_manager_: HeartbeatManager,
     circuit_breaker_: CircuitBreaker,
     callback_manager_: Arc<CallbackManager>,
-    last_activity_time_: Cell<u64>,
-    metrics_: ConnectionMetrics,
+    last_activity_time_: ClientCloneCell<u64>,
+    metrics_: Arc<ConnectionMetrics>,
     weak_self_: WeakClientConnection,
     host_: LegacyStdString,
     packets_: u64,
-    paused_: Cell<bool>,
+    paused_: ClientCloneCell<bool>,
     is_client_mode_: bool,
 }
 
-// The reactor's `OneTimeJob` callable is `Box<dyn FnMut() + Send + Sync>`
-// (base/misc.cpp), and this module schedules two of them onto the poll
-// thread -- the channel-mode close job in `ClientProxy::close` and the
-// recv-loop spawn in `clientconn_start_recv_job` -- capturing an
-// `Arc<ClientConnection>` / `Weak<ClientConnection>`.  `ClientConnection`
-// carries `Cell` / `RefCell` interior mutability, so those captures are only
-// well-formed with the assertions below.  This is the same statement
-// `rpc/server.cpp` already makes for `RpcServiceContext` / `ServerConnection`.
-//
-// SAFETY: this states the module's long-standing single-poll-thread contract,
-// unchanged from the retired C++ carrier.  Every `Cell`/`RefCell` field of
-// `ClientConnection` is written from the connection's own poll thread; other
-// threads read them as monotone latches or under the `rusty::Mutex` slots,
-// exactly as the C++ carrier did.  The two jobs above are executed by that
-// same poll thread, in queue order.
-#[allow(unsafe_code)]
-unsafe impl Send for ClientConnection {}
-#[allow(unsafe_code)]
-unsafe impl Sync for ClientConnection {}
+struct ClientBindingState {
+    generation: u64,
+    active: bool,
+}
+
+struct ClientPendingBatch {
+    queued: VecDeque<QueuedRequest>,
+    buffered: HashMap<i64, Arc<Future>>,
+    callbacks: Vec<AsyncReplyCallback>,
+    futures: HashMap<i64, Arc<Future>>,
+}
+
+struct ClientReplayScope {
+    running: Arc<AtomicBool>,
+}
+
+impl Drop for ClientReplayScope {
+    fn drop(&mut self) {
+        self.running.store(false, rusty::sync::atomic::Ordering::Release);
+    }
+}
+
+// Auto traits enforce that shared connection state and callback captures are
+// synchronized. Channel operations pin ownership and run outside slot locks.
 
 impl Drop for ClientConnection {
     fn drop(&mut self) {
@@ -800,15 +791,19 @@ impl ClientConnection {
     fn new(poll_thread_worker: Arc<PollThread>) -> ClientConnection {
         ClientConnection {
             poll_thread_worker_: poll_thread_worker,
-            fiber_channel_: rusty::Mutex::<Option<Box<FiberChannel>>>::new(None),
-            direct_channel_: rusty::Mutex::<Option<ChannelConnectionProxy>>::new(None),
-            channel_mode_: Cell::<bool>::new(false),
-            factory_: rusty::Mutex::<Option<ChannelFactoryProxy>>::new(None),
+            lifecycle_: Mutex::new(ClientBindingState { generation: 0, active: false }),
+            fiber_channel_: rusty::Mutex::<Option<Arc<Box<FiberChannel>>>>::new(None),
+            direct_channel_: rusty::Mutex::<Option<Arc<ChannelConnectionProxy>>>::new(None),
+            closing_: AtomicBool::new(false),
+            channel_mode_: ClientCloneCell::<bool>::new(false),
+            factory_: Mutex::new(None),
             xid_counter_: Counter::new(0i64),
             pending_fu_: rusty::Mutex::<HashMap<i64, Arc<Future>>>::new(HashMap::<i64, Arc<Future>>::new()),
+            queued_fu_: Arc::new(Mutex::new(HashMap::new())),
+            replaying_: Arc::new(AtomicBool::new(false)),
             pending_cb_slots_: rusty::Mutex::<Vec<Option<AsyncReplyCallback>>>::new(make_prefilled_cb_slots()),
             state_machine_: ConnectionStateMachine::new(),
-            reconnect_policy_: Cell::<ReconnectPolicy>::new(ReconnectPolicy::new()),
+            reconnect_policy_: ClientCloneCell::<ReconnectPolicy>::new(ReconnectPolicy::new()),
             reconnect_: ReconnectState {
                 reconnecting_: AtomicBool::new(false),
                 reconnect_abort_: AtomicBool::new(false),
@@ -820,21 +815,21 @@ impl ClientConnection {
             // which does not exist. In expected-type position the emitter
             // lowers `Default::default()` to `rusty::default_like<T>()`, the
             // same shape the `on_server_restart_` field below already uses.
-            reconnect_address_: Cell::<LegacyStdString>::new(Default::default()),
-            buffering_config_: Cell::<BufferingConfig>::new(BufferingConfig::defaults()),
+            reconnect_address_: ClientCloneCell::<LegacyStdString>::new(Default::default()),
+            buffering_config_: ClientCloneCell::<BufferingConfig>::new(BufferingConfig::defaults()),
             pending_queue_: make_pending_queue(&BufferingConfig::defaults().to_queue_config()),
-            server_instance_id_: Cell::<u64>::new(0u64),
-            on_server_restart_: RefCell::<OnServerRestartCallbackFn>::new(Default::default()),
-            keepalive_config_: Cell::<KeepaliveConfig>::new(KeepaliveConfig::new()),
+            server_instance_id_: ClientCloneCell::<u64>::new(0u64),
+            on_server_restart_: Mutex::new(Arc::new(Mutex::<OnServerRestartCallbackFn>::new(Default::default()))),
+            keepalive_config_: ClientCloneCell::<KeepaliveConfig>::new(KeepaliveConfig::new()),
             heartbeat_manager_: HeartbeatManager::new(&HeartbeatConfig::disabled()),
             circuit_breaker_: CircuitBreaker::new(CircuitBreakerConfig::disabled()),
             callback_manager_: Arc::<CallbackManager>::new(CallbackManager::new()),
-            last_activity_time_: Cell::<u64>::new(0u64),
-            metrics_: ConnectionMetrics::new(),
+            last_activity_time_: ClientCloneCell::<u64>::new(0u64),
+            metrics_: Arc::new(ConnectionMetrics::new()),
             weak_self_: WeakClientConnection::new(),
             host_: Default::default(),
             packets_: 0u64,
-            paused_: Cell::<bool>::new(false),
+            paused_: ClientCloneCell::<bool>::new(false),
             is_client_mode_: false,
         }
     }
@@ -849,21 +844,36 @@ impl ClientConnection {
     // clippy::unnecessary_cast -- measured: drops the emitted rusty::detail::ptr_cast<const int8_t*>. See the Task-2 measurement block above.
     #[allow(clippy::explicit_auto_deref, clippy::unnecessary_cast)]
     fn on_channel_closed_fan_out(&self) {
-        let prev_state = self.state_machine_.state();
-        let abort_flag: bool = self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-        let user_initiated_closing: bool =
-            (prev_state as i32) == (ConnectionState::DISCONNECTING as i32)
-            || (prev_state as i32) == (ConnectionState::DISCONNECTED as i32)
-            || abort_flag;
+        let generation = self.lifecycle_.lock().unwrap().generation;
+        self.on_binding_closed(generation);
+    }
 
+    // Keep the explicit Arc payload accesses used by the existing reconnect worker.
+    #[allow(clippy::explicit_auto_deref)]
+    fn on_binding_closed(&self, generation: u64) {
+        let batch;
+        let user_initiated_closing;
+        {
+            let mut lifecycle = self.lifecycle_.lock().unwrap();
+            if lifecycle.generation != generation
+                || (!lifecycle.active && self.state_machine_.state() != ConnectionState::CONNECTING) {
+                return;
+            }
+            lifecycle.active = false;
+            let prev_state = self.state_machine_.state();
+            user_initiated_closing = prev_state == ConnectionState::DISCONNECTING
+                || prev_state == ConnectionState::DISCONNECTED
+                || self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+            if !user_initiated_closing {
+                self.state_machine_.state_field.set(ConnectionState::FAILED);
+            }
+            self.heartbeat_manager_.reset();
+            batch = self.detach_pending_futures();
+        }
         if !user_initiated_closing {
             self.invoke_error_callback(CLIENT_ERR_CONNECTION_RESET, &client_text("channel closed"));
-            self.state_machine_.force_state(ConnectionState::FAILED);
         }
-
-        self.heartbeat_manager_.reset();
-        self.invalidate_pending_futures();
-
+        self.notify_pending_futures(batch);
         if !user_initiated_closing {
             self.invoke_disconnected_callback();
         }
@@ -894,44 +904,49 @@ impl ClientConnection {
                 let state = (*conn).connection_state();
                 if (state as i32) == (ConnectionState::FAILED as i32)
                     || (state as i32) == (ConnectionState::DISCONNECTED as i32) {
-                    if (*conn).is_factory_bound() {
-                        client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: channel-mode auto-reconnect (factory) triggered after on_closed"));
-                        // Reset the channel-mode latch + drop the stale FiberChannel
-                        // before re-connecting (connect verifies !is_connected and
-                        // bind_channel needs the slot empty). connect reads
-                        // reconnect_address_ itself, so we just re-run it.
-                        (*conn).reset_channel_mode_for_reconnect();
-                        let reconnect_addr: LegacyStdString = (*conn).reconnect_address_.get();
-                        let _ = (*conn).connect(reconnect_addr.c_str() as *const i8);
-                        return;
-                    }
-                    client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: channel-mode auto-reconnect (legacy) triggered after on_closed"));
                     (*conn).reconnect(Default::default());
                 }
             }).detach();
         }
     }
-    // connect/bind cluster: &self over interior-mutable state (channels are
-    // rusty::Mutex, reconnect_address_ is Cell), so reachable through a shared Arc.
+    // Shared connection operations synchronize channel slots and configuration.
     fn connect_via_factory(&self, addr: *const i8) -> i32 { clientconn_connect_via_factory(self, addr) }
+    #[allow(clippy::explicit_auto_deref)]
     fn reset_channel_mode_for_reconnect(&self) {
-        {
-            let mut guard = self.fiber_channel_.lock().unwrap();
-            *guard = None;
-        }
-        {
-            let mut guard = self.direct_channel_.lock().unwrap();
-            *guard = None;
-        }
-        self.channel_mode_.set(false);
-        self.state_machine_.force_state(ConnectionState::DISCONNECTED);
+        self.close();
     }
-    fn connect(&self, addr: *const i8) -> i32 {
-        client_verify(!self.state_machine_.is_connected());
+    fn binding_is_current(&self, generation: u64) -> bool {
+        let lifecycle = self.lifecycle_.lock().unwrap();
+        lifecycle.active && lifecycle.generation == generation
+    }
 
-        if !self.state_machine_.transition_to(ConnectionState::CONNECTING) {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: cannot connect from state ",
-                               connection_state_to_string(self.state_machine_.state()), ""));
+    fn connect(&self, addr: *const i8) -> i32 {
+        let generation = Cell::new(0u64);
+        let result = self.connect_attempt(addr, &generation);
+        if result != 0 {
+            return result;
+        }
+        self.invoke_connected_callback();
+        if self.binding_is_current(generation.get()) { 0 } else { CLIENT_ERR_CANCELED }
+    }
+
+    fn connect_attempt(&self, addr: *const i8, attempt_generation: &Cell<u64>) -> i32 {
+        let generation;
+        let admitted = {
+            let mut lifecycle = self.lifecycle_.lock().unwrap();
+            generation = lifecycle.generation + 1;
+            attempt_generation.set(generation);
+            if self.state_machine_.can_connect() {
+                lifecycle.generation += 1;
+                lifecycle.active = false;
+                self.closing_.store(false, rusty::sync::atomic::Ordering::Release);
+                self.state_machine_.state_field.set(ConnectionState::CONNECTING);
+                true
+            } else {
+                false
+            }
+        };
+        if !admitted {
             self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, &client_text("invalid state for connect"));
             return CLIENT_ERR_INVALID_ARGUMENT;
         }
@@ -946,25 +961,13 @@ impl ClientConnection {
             self.invoke_error_callback(CLIENT_ERR_INVALID_ARGUMENT, &client_text("no channel factory bound"));
             return CLIENT_ERR_INVALID_ARGUMENT;
         }
-        self.connect_via_factory(addr)
+        clientconn_connect_factory_for_binding(self, addr, generation)
     }
     fn bind_channel(&self, channel: ChannelConnectionProxy) {
         if !channel.is_valid() {
             return;
         }
-        // Move the proxy into a heap-allocated FiberChannel. FiberChannel is
-        // move-deleted (its callbacks capture `this`), so the emitted C++
-        // lowers `Box::new(FiberChannel::new(..))` to the in-place
-        // `emplace_with` seam: the factory's returned prvalue constructs the
-        // channel directly in its final heap slot (guaranteed copy elision).
-        // bind_callbacks must run AFTER the Box holds that final address so
-        // its [this]-captures pin to a stable location.
-        {
-            let mut guard = self.fiber_channel_.lock().unwrap();
-            *guard = Some(Box::new(FiberChannel::new(channel)));
-            let fc: &mut Box<FiberChannel> = (*guard).as_mut().unwrap();
-            (*fc).bind_callbacks();
-        }
+        let channel = self.replace_fiber_channel(channel);
         self.channel_mode_.set(true);
 
         // Capture a Weak so the parked recv-loop fiber doesn't extend the
@@ -975,14 +978,52 @@ impl ClientConnection {
         // the caller picks the thread (see bind_channel_via_poll_thread).
         // SAFETY: foreign named-module boundary; the file pointer is null and
         // the closure owns everything it captures.
-        unsafe { Fiber::create_run_impl(move || {
+        Fiber::create_run(move || {
             let conn_opt = weak_self.upgrade();
             if conn_opt.is_none() {
                 return;
             }
             let conn = conn_opt.unwrap();
-            (*conn).run_recv_loop();
-        }, core::ptr::null(), 0) };
+            clientconn_run_recv_loop_on_channel(&conn, channel.clone());
+        });
+    }
+    // Preserve the independently pinned channel allocation when cloning ownership.
+    #[allow(clippy::redundant_allocation)]
+    fn fiber_channel(&self) -> Option<Arc<Box<FiberChannel>>> {
+        self.fiber_channel_.lock().unwrap().clone()
+    }
+    // Callback installation needs exclusive Box access before Arc publication.
+    #[allow(clippy::explicit_auto_deref, clippy::redundant_allocation)]
+    fn replace_fiber_channel(&self, channel: ChannelConnectionProxy) -> Arc<Box<FiberChannel>> {
+        let config = self.keepalive_config_.get();
+        let proxy: &dyn ChannelConnectionBase = &*channel;
+        let _ = proxy.set_keepalive(config.enabled, config.idle_sec, config.interval_sec, config.count);
+        let mut boxed = clientconn_make_fiber_channel(channel);
+        boxed.bind_callbacks();
+        let channel = Arc::new(boxed);
+        let retired;
+        let retired_direct;
+        let batch;
+        {
+            let mut lifecycle = self.lifecycle_.lock().unwrap();
+            lifecycle.generation += 1;
+            lifecycle.active = true;
+            retired = self.fiber_channel_.lock().unwrap().replace(channel.clone());
+            retired_direct = self.direct_channel_.lock().unwrap().take();
+            self.closing_.store(false, rusty::sync::atomic::Ordering::Release);
+            self.channel_mode_.set(true);
+            batch = self.detach_pending_futures();
+        }
+        if let Some(old) = retired {
+            let fiber: &FiberChannel = &**old;
+            fiber.close();
+        }
+        if let Some(old) = retired_direct {
+            let proxy: &dyn ChannelConnectionBase = &**old;
+            proxy.close();
+        }
+        self.notify_pending_futures(batch);
+        channel
     }
     fn bind_channel_via_poll_thread(&self, channel: ChannelConnectionProxy) { clientconn_bind_channel_via_poll_thread(self, channel); }
     // Direct on_frame / on_closed binding: bypasses FiberChannel and the
@@ -992,38 +1033,43 @@ impl ClientConnection {
     // frames. send_frame remains callable from any thread (dispatch_frame_via
     // _channel uses it from user threads).
     //
-    // Callbacks are installed BEFORE the proxy moves into `direct_channel_`.
-    // Once it is in the slot, dropping the slot drops the callbacks, so any
-    // in-flight dispatch must complete before the drop -- the same contract
-    // the FiberChannel destructor honours.
+    // Callbacks are installed before the proxy moves into `direct_channel_`.
+    // Each dispatch clones the channel's Arc before releasing the slot lock.
+    // Removing the slot cannot destroy a channel still executing a callback.
     // clippy::type_complexity -- the same spelling rpc/fiber_channel.cpp uses for this callback; factoring it into an alias would emit a new `using`. See the Task-2 measurement block above.
-    #[allow(clippy::type_complexity)]
-    fn bind_channel_direct(&self, mut channel: ChannelConnectionProxy) {
+    #[allow(clippy::type_complexity, clippy::explicit_auto_deref)]
+    fn bind_channel_direct(&self, mut channel: ChannelConnectionProxy, generation: u64) -> bool {
         if !channel.is_valid() {
-            return;
+            return false;
         }
-        // The channel is owned by this connection, so callback teardown occurs
-        // before its receiver storage is released. Store the pinned receiver
-        // address as an integer so the cross-thread callback's capture itself
-        // is Send+Sync (the same pattern used by FiberChannel).
-        let frame_self = self as *const ClientConnection as usize;
-        let closed_self = frame_self;
+        let config = self.keepalive_config_.get();
+        let proxy: &dyn ChannelConnectionBase = &*channel;
+        let _ = proxy.set_keepalive(config.enabled, config.idle_sec, config.interval_sec, config.count);
+        // A dispatch can outlive the slot that originally owned the channel.
+        // Upgrade the weak receiver for each callback to pin it for that call.
+        let frame_self: WeakClientConnection = self.weak_self_.clone();
+        let closed_self: WeakClientConnection = self.weak_self_.clone();
         {
             // Concrete `Box<..>`, not the ChannelConnectionProxy alias: through
             // the alias the pointer-like check fails and the calls lower to
             // `channel.set_on_frame(..)` (dot) instead of `->` (docs 7.50).
             let ch: &mut Box<dyn ChannelConnectionBase> = &mut channel;
-            ch.set_on_frame(OnFrameCallback::from_callable(Box::new(move |f: &ChannelFrame| {
-                // SAFETY: the owning connection retains and tears down this
-                // callback before its own storage is released.
-                unsafe { (*(frame_self as *const ClientConnection))
-                    .decode_response_and_notify(f.payload, f.size) };
-            })));
-            ch.set_on_closed(OnClosedCallback::from_callable(Box::new(move |_reason: ChannelError| {
-                // SAFETY: same owner/teardown invariant as the frame callback.
-                unsafe { (*(closed_self as *const ClientConnection))
-                    .on_channel_closed_fan_out() };
-            })));
+            let frame_callback: Box<dyn Fn(&ChannelFrame) + Send + Sync> = Box::new(move |f: &ChannelFrame| {
+                if let Some(connection) = frame_self.upgrade() {
+                    let owner: Arc<ClientConnection> = connection;
+                    let receiver: &ClientConnection = &*owner;
+                    clientconn_decode_response_for_binding(receiver, generation, f.payload, f.size);
+                }
+            });
+            ch.set_on_frame(OnFrameCallback::from_callable(frame_callback));
+            let closed_callback: Box<dyn Fn(ChannelError) + Send + Sync> = Box::new(move |_reason: ChannelError| {
+                if let Some(connection) = closed_self.upgrade() {
+                    let owner: Arc<ClientConnection> = connection;
+                    let receiver: &ClientConnection = &*owner;
+                    receiver.on_binding_closed(generation);
+                }
+            });
+            ch.set_on_closed(OnClosedCallback::from_callable(closed_callback));
             // on_error is not surfaced in this mode: the channel-layer contract
             // follows a fatal error with on_closed, so the fan-out covers it.
             //
@@ -1036,18 +1082,48 @@ impl ClientConnection {
                 Box::new(move |_err, _msg| {});
             ch.set_on_error(OnErrorCallback::from_callable(error_callback));
         }
-        {
-            let mut guard = self.direct_channel_.lock().unwrap();
-            *guard = Some(channel);
+        let proxy: &dyn ChannelConnectionBase = &*channel;
+        if proxy.is_closed() {
+            self.on_binding_closed(generation);
+            return false;
         }
-        self.channel_mode_.set(true);
+        let channel = Arc::new(channel);
+        let retired_direct;
+        let retired_fiber;
+        {
+            let mut lifecycle = self.lifecycle_.lock().unwrap();
+            if lifecycle.generation != generation
+                || self.state_machine_.state() != ConnectionState::CONNECTING {
+                return false;
+            }
+            retired_direct = self.direct_channel_.lock().unwrap().replace(channel);
+            retired_fiber = self.fiber_channel_.lock().unwrap().take();
+            lifecycle.active = true;
+            self.closing_.store(false, rusty::sync::atomic::Ordering::Release);
+            self.channel_mode_.set(true);
+            self.state_machine_.state_field.set(ConnectionState::CONNECTED);
+        }
+        if let Some(old) = retired_direct {
+            let proxy: &dyn ChannelConnectionBase = &**old;
+            proxy.close();
+        }
+        if let Some(old) = retired_fiber {
+            let fiber: &FiberChannel = &**old;
+            fiber.close();
+        }
+        true
+    }
+    fn direct_channel(&self) -> Option<Arc<ChannelConnectionProxy>> {
+        let guard = self.direct_channel_.lock().unwrap();
+        (*guard).clone()
     }
     fn bind_factory(&self, factory: ChannelFactoryProxy) {
         if !factory.is_valid() {
             return;
         }
-        let mut guard = self.factory_.lock().unwrap();
-        *guard = Some(factory);
+        let factory = Arc::new(Mutex::new(factory));
+        let retired = self.factory_.lock().unwrap().replace(factory);
+        drop(retired);
     }
     fn abort_reconnect(&mut self) { self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release); }
     fn set_callback_manager(&mut self, callback_manager: &Arc<CallbackManager>) {
@@ -1060,58 +1136,50 @@ impl ClientConnection {
     // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
     #[allow(clippy::explicit_auto_deref)]
     fn invalidate_pending_futures(&self) {
-        // Drain the disconnect buffer FIRST. A request queued by the
-        // `!is_connected()` branch of clientconn_request_via_channel never
-        // enters `pending_fu_` -- it returns as soon as the enqueue succeeds,
-        // so the queued callback is the ONLY thing holding that future's
-        // notification path. Draining `pending_cb_slots_` and `pending_fu_`
-        // below cannot reach it, and without this the callback was simply
-        // destroyed with the queue: the waiter got a 1s timeout and
-        // ETIMEDOUT instead of a connection error, and a callback-style
-        // caller (which is what mako's generated proxies use) was never
-        // called at all.
-        //
-        // There is no double-notify: the buffered and in-flight paths are
-        // disjoint by construction, as above.
-        //
-        // Safe from Drop as well as from close()/mark_closing(): this runs in
-        // `Drop::drop` before any field is dropped, so the raw `conn_ptr` the
-        // queued callback uses to reach `metrics_` is still live.
-        self.pending_queue_.clear_all(CLIENT_ERR_NOT_CONNECTED);
+        let batch = {
+            let _lifecycle = self.lifecycle_.lock().unwrap();
+            self.detach_pending_futures()
+        };
+        self.notify_pending_futures(batch);
+    }
 
-        // Drain the slim async-callback slots first. Take each callback out
-        // under the lock via Option::take (mem::take leaves None behind, so
-        // the fixed-size slot vector keeps its shape), then fire them outside
-        // the lock with CLIENT_ERR_NOT_CONNECTED + a null reply view.
-        let mut drained_callbacks: Vec<AsyncReplyCallback> = Vec::new();
+    // Called only with lifecycle held. Transfer every completion owner before
+    // the first callback can reconnect or publish a replacement request.
+    fn detach_pending_futures(&self) -> ClientPendingBatch {
+        let queued = self.pending_queue_.drain();
+        let buffered = std::mem::take(&mut *self.queued_fu_.lock().unwrap());
+        let mut callbacks = Vec::new();
         {
-            let mut cb_guard = self.pending_cb_slots_.lock().unwrap();
-            let mut i: usize = 0;
-            while i < cb_guard.len() {
-                if cb_guard[i].is_some() {
-                    drained_callbacks.push(std::mem::take(&mut cb_guard[i]).unwrap());
+            let mut slots = self.pending_cb_slots_.lock().unwrap();
+            for slot in &mut *slots {
+                if let Some(callback) = slot.take() {
+                    callbacks.push(callback);
                 }
-                i += 1usize;
             }
         }
-        for cb in &mut drained_callbacks {
-            self.metrics_.record_request_dropped();
-            cb(CLIENT_ERR_NOT_CONNECTED, core::ptr::null(), 0);
-        }
+        let futures = std::mem::take(&mut *self.pending_fu_.lock().unwrap());
+        ClientPendingBatch { queued, buffered, callbacks, futures }
+    }
 
-        // Drain the pending-future map in one pass: HashMap::drain() empties
-        // the map as it yields each (xid, Arc<Future>) entry, replacing the
-        // prior iterate-then-clear. The lock is held through the notify loop
-        // below, matching the original (the map is already empty by then).
-        let mut futures: Vec<Arc<Future>> = Vec::new();
-        let mut guard = self.pending_fu_.lock().unwrap();
-        for (_xid, fu) in guard.drain() {
-            futures.push(fu);
+    fn notify_pending_futures(&self, batch: ClientPendingBatch) {
+        // Queue callbacks now find their old xid absent. They cannot remove
+        // ownership admitted by a reentrant reconnect because xids are unique.
+        for request in batch.queued {
+            rq_invoke_callback_safely(request.callback, CLIENT_ERR_NOT_CONNECTED);
         }
-        for fu in &futures {
+        for (_xid, future) in batch.buffered {
+            self.metrics_.record_queue_drop();
+            future.error_code_.set(CLIENT_ERR_NOT_CONNECTED);
+            future.notify_ready(future.clone());
+        }
+        for mut callback in batch.callbacks {
             self.metrics_.record_request_dropped();
-            (*fu).error_code_.set(CLIENT_ERR_NOT_CONNECTED);
-            (*fu).notify_ready(fu.clone());
+            callback(CLIENT_ERR_NOT_CONNECTED, core::ptr::null(), 0);
+        }
+        for (_xid, future) in batch.futures {
+            self.metrics_.record_request_dropped();
+            future.error_code_.set(CLIENT_ERR_NOT_CONNECTED);
+            future.notify_ready(future.clone());
         }
     }
     // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
@@ -1134,53 +1202,74 @@ impl ClientConnection {
             (*fu).notify_ready(fu.clone());
         }
     }
+    #[allow(clippy::explicit_auto_deref)]
     pub fn close(&self) {
-        let prev_state = self.state_machine_.state();
-        let was_connected: bool = self.state_machine_.is_connected();
-        if was_connected {
-            self.state_machine_.transition_to(ConnectionState::DISCONNECTING);
-        }
+        self.close_binding(None);
+    }
 
-        // Tear down the channel proxy(ies). The channel layer's close() is
-        // idempotent + thread-safe per the facade contract. The `&mut` local
-        // is load-bearing: deref-through-a-guard-chain drops the deref
-        // (docs 7.50), and a `&` binding would lower to `const Box<T>&`
-        // while close() is &mut self.
+    #[allow(clippy::explicit_auto_deref)]
+    fn close_binding(&self, expected_generation: Option<u64>) {
+        let direct;
+        let fiber;
+        let batch;
+        let notify_disconnected;
         {
-            let mut guard = self.direct_channel_.lock().unwrap();
-            if (*guard).is_some() {
-                let ch: &mut Box<dyn ChannelConnectionBase> = (*guard).as_mut().unwrap();
-                (*ch).close();
+            let mut lifecycle = self.lifecycle_.lock().unwrap();
+            if let Some(expected) = expected_generation {
+                if lifecycle.generation != expected {
+                    return;
+                }
             }
-        }
-        {
-            let mut guard = self.fiber_channel_.lock().unwrap();
-            if (*guard).is_some() {
-                let fc: &mut Box<FiberChannel> = (*guard).as_mut().unwrap();
-                (*fc).close();
+            if self.closing_.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
+                return;
             }
+            lifecycle.active = false;
+            lifecycle.generation += 1;
+            let previous = self.state_machine_.state();
+            notify_disconnected = previous == ConnectionState::CONNECTED
+                || previous == ConnectionState::DISCONNECTING;
+            self.state_machine_.state_field.set(ConnectionState::DISCONNECTED);
+            direct = std::mem::take(&mut *self.direct_channel_.lock().unwrap());
+            fiber = std::mem::take(&mut *self.fiber_channel_.lock().unwrap());
+            self.channel_mode_.set(false);
+            self.heartbeat_manager_.reset();
+            batch = self.detach_pending_futures();
         }
-
-        if was_connected {
-            self.state_machine_.transition_to(ConnectionState::DISCONNECTED);
-        } else if !self.state_machine_.is_terminal() {
-            self.state_machine_.force_state(ConnectionState::DISCONNECTED);
+        if let Some(channel) = direct {
+            let channel_ref: &dyn ChannelConnectionBase = &**channel;
+            channel_ref.close();
         }
-        self.heartbeat_manager_.reset();
-        self.invalidate_pending_futures();
-
-        if (prev_state as i32) == (ConnectionState::CONNECTED as i32)
-            || (prev_state as i32) == (ConnectionState::DISCONNECTING as i32) {
+        if let Some(channel) = fiber {
+            let fiber_ref: &FiberChannel = &**channel;
+            fiber_ref.close();
+        }
+        self.notify_pending_futures(batch);
+        if notify_disconnected {
             self.invoke_disconnected_callback();
         }
     }
-    fn mark_closing(&self) {
-        self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release);
-        if self.state_machine_.is_connected() {
-            self.state_machine_.transition_to(ConnectionState::DISCONNECTING);
-        }
-        self.invalidate_pending_futures();
+    fn mark_closing(&self) -> u64 {
+        let generation;
+        let batch = {
+            let mut lifecycle = self.lifecycle_.lock().unwrap();
+            if self.state_machine_.state() == ConnectionState::DISCONNECTING {
+                return lifecycle.generation;
+            }
+            lifecycle.active = false;
+            lifecycle.generation += 1;
+            generation = lifecycle.generation;
+            self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release);
+            if !self.state_machine_.is_terminal() {
+                self.state_machine_.state_field.set(ConnectionState::DISCONNECTING);
+            }
+            self.detach_pending_futures()
+        };
+        self.notify_pending_futures(batch);
+        generation
     }
+    /// Returns CLIENT_ERR_BUSY if another reconnect owns the attempt, including
+    /// calls from its callbacks. Returns CLIENT_ERR_CANCELED if a completion
+    /// callback replaces or closes the binding established by this attempt.
     pub fn reconnect(&self, on_complete: OnReconnectCompleteCallbackFn) -> i32 { clientconn_reconnect(self, on_complete) }
     pub fn set_buffering_config(&self, config: &BufferingConfig) {
         self.buffering_config_.set(*config);
@@ -1359,13 +1448,22 @@ impl ClientConnection {
     pub fn pending_future_count(&self) -> usize { self.pending_fu_.lock().unwrap().len() }
     fn replay_pending_requests_for_test(&self) -> usize { self.replay_pending_requests() }
     fn update_pending_queue_config_for_test(&self, config: &RequestQueueConfig) { self.pending_queue_.update_config(*config); }
-    pub fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) { self.on_server_restart_.replace(callback); }
+    pub fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) {
+        let replacement = Arc::<Mutex<OnServerRestartCallbackFn>>::new(
+            Mutex::<OnServerRestartCallbackFn>::new(callback));
+        let retired = {
+            let mut guard = self.on_server_restart_.lock().unwrap();
+            std::mem::replace(&mut *guard, replacement)
+        };
+        drop(retired);
+    }
     fn check_server_instance(&self, new_id: u64) -> bool {
         let old_id = self.server_instance_id_.get();
         self.server_instance_id_.set(new_id);
         if old_id != 0u64 && old_id != new_id {
             client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text_u64_pair("Server restart detected: old_id=", old_id, " new_id=", new_id, ""));
-            let mut cb_ref = self.on_server_restart_.borrow_mut();
+            let callback: Arc<Mutex<OnServerRestartCallbackFn>> = self.on_server_restart_.lock().unwrap().clone();
+            let mut cb_ref = callback.lock().unwrap();
             if !cb_ref.is_empty() {
                 (*cb_ref)(old_id, new_id);
             }
@@ -1373,7 +1471,18 @@ impl ClientConnection {
         }
         false
     }
-    pub fn set_keepalive(&self, config: &KeepaliveConfig) { self.keepalive_config_.set(*config); }
+    #[allow(clippy::explicit_auto_deref)]
+    pub fn set_keepalive(&self, config: &KeepaliveConfig) {
+        self.keepalive_config_.set(*config);
+        if let Some(channel) = self.direct_channel() {
+            let proxy: &dyn ChannelConnectionBase = &**channel;
+            let _ = proxy.set_keepalive(config.enabled, config.idle_sec, config.interval_sec, config.count);
+        } else if let Some(channel) = self.fiber_channel() {
+            let fiber: &FiberChannel = &**channel;
+            let proxy: &dyn ChannelConnectionBase = &*fiber.ch_;
+            let _ = proxy.set_keepalive(config.enabled, config.idle_sec, config.interval_sec, config.count);
+        }
+    }
     fn on_request_dispatched(&self, bytes: usize) {
         self.metrics_.record_bytes_sent(bytes as u64);
         self.update_last_activity(clientconn_monotonic_ms_now());
@@ -1428,16 +1537,12 @@ impl ClientConnection {
         (current_time_ms - last) > idle_ms
     }
     fn validate_connection(&self) -> bool { self.state_machine_.is_connected() }
-    pub fn metrics(&self) -> &ConnectionMetrics { &self.metrics_ }
-    fn replay_pending_requests(&self) -> usize { 0usize }
-    fn apply_keepalive_options(&mut self) {}
-    fn fd(&self) -> i32 { -1 }
+    // Explicit Arc dereference preserves the borrowed counter reference in C++.
+    #[allow(clippy::explicit_auto_deref)]
+    pub fn metrics(&self) -> &ConnectionMetrics { &*self.metrics_ }
+    pub fn replay_pending_requests(&self) -> usize { clientconn_replay_pending_requests(self) }
     fn pause(&self) { self.paused_.set(true); }
     fn resume(&self) { self.paused_.set(false); }
-    fn poll_mode(&self) -> i32 { CLIENT_POLL_READ }
-    fn content_size(&self) -> usize { 0usize }
-    fn handle_write(&self) -> i32 { CLIENT_POLL_NO_CHANGE }
-    fn handle_read(&self) -> bool { false }
     fn is_closed(&self) -> bool { self.state_machine_.is_terminal() }
 }
 
@@ -1454,12 +1559,9 @@ pub struct Client {
     pending_reconnect_policy_field: Cell<ReconnectPolicy>,
     callback_manager_field: Arc<CallbackManager>,
     pending_factory_field: rusty::Mutex<Option<ChannelFactoryProxy>>,
-    // Per-Client empty metrics used as the no-connection fallback by
-    // `metrics()` (returns a live ref). Per-instance rather than
-    // program-global so a `static const ConnectionMetrics` isn't
-    // needed in the DSL. Cheap because ConnectionMetrics is just 18
-    // Atomic<u64> fields.
-    empty_metrics_field: ConnectionMetrics,
+    // The Client retains the same counters as its connection so references
+    // remain valid through close and reconnect, including callback reentry.
+    metrics_field: Arc<ConnectionMetrics>,
 }
 
 impl Drop for Client {
@@ -1483,7 +1585,7 @@ impl Client {
             pending_reconnect_policy_field: Cell::<ReconnectPolicy>::new(ReconnectPolicy::conservative()),
             callback_manager_field: Arc::<CallbackManager>::new(CallbackManager::new()),
             pending_factory_field: rusty::Mutex::<Option<ChannelFactoryProxy>>::new(None),
-            empty_metrics_field: ConnectionMetrics::new(),
+            metrics_field: Arc::new(ConnectionMetrics::new()),
         }
     }
 
@@ -1504,7 +1606,7 @@ impl Client {
 
     pub fn request<F>(&self, rpc_id: i32, attr: &FutureAttr, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         if guard.is_none() {
             return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
         }
@@ -1514,22 +1616,23 @@ impl Client {
 
     pub fn request_with_options<F>(&self, rpc_id: i32, options: &RequestOptions, write_fn: F) -> FutureResult
     where F: FnMut(&mut BinaryWriteArchive) {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         if guard.is_none() {
             return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
         }
         self.rpc_id_field.set(rpc_id);
+        let attr: FutureAttr = FutureAttr { callback: Default::default() };
         guard.as_ref().unwrap().request_with_options(
             rpc_id,
             options,
-            &FutureAttr { callback: Default::default() },
+            &attr,
             write_fn,
         )
     }
 
     pub fn request_async<F>(&self, rpc_id: i32, write_fn: F, on_reply: AsyncReplyCallback) -> Result<(), i32>
     where F: FnMut(&mut BinaryWriteArchive) {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         if guard.is_none() {
             return Result::<(), i32>::Err(CLIENT_ERR_NOT_CONNECTED);
         }
@@ -1537,13 +1640,13 @@ impl Client {
         guard.as_ref().unwrap().request_async(rpc_id, write_fn, on_reply)
     }
 
-    fn set_valid(&self, _valid: bool) {}
 
     pub fn connect(&self, addr: *const i8, client: bool) -> i32 {
         let conn: Arc<ClientConnection> = Arc::new_cyclic(|weak_conn| {
             let mut value = ClientConnection::new(self.poll_thread_worker_field.clone());
             value.weak_self_ = weak_conn.clone();
             value.callback_manager_ = self.callback_manager_field.clone();
+            value.metrics_ = self.metrics_field.clone();
             value.is_client_mode_ = client;
             value
         });
@@ -1580,60 +1683,41 @@ impl Client {
     // clippy::arc_with_non_send_sync -- no fix short of changing the payload type; the C++ Arc erases Rust auto traits. See the Task-2 measurement block above.
     #[allow(clippy::arc_with_non_send_sync)]
     pub fn close(&self) {
-        let guard = self.connection_field.borrow_mut();
-        if guard.is_some() {
-            let conn_ref = guard.as_ref().unwrap();
-            let was_connected: bool = conn_ref.connected();
-            conn_ref.mark_closing();
-            if was_connected {
-                let conn_arc: Arc<ClientConnection> = conn_ref.clone();
-                // NOTE: keep the trailing-underscore C++ spelling here.
-                // When written as Rust-idiomatic `::new(...)`, the transpiler
-                // adds a spurious `-> Arc<PollThread>` return type to
-                // the inner lambda (inferred from the next statement's
-                // receiver type) and the lambda body becomes ill-typed.
-                // Tracked as a transpiler bug; use `::new_(...)` until fixed.
-                let close_job: Arc<OneTimeJob> =
-                    Arc::<OneTimeJob>::new(OneTimeJob::new(Box::new(move || {
-                        conn_arc.close();
-                    })));
-                // Explicit unsize to `Arc<dyn Job>` before the foreign call:
-                // the facade's REAL job queue is bounded on
-                // `rusty::RustcJobRun`, implemented for `dyn Job` (a nominal
-                // `OneTimeJob` impl would emit a new C++ member).  In C++ this
-                // is the same Arc<OneTimeJob> -> Arc<Job> template-ctor upcast
-                // that always happened at the add() boundary.
-                let close_job_erased: Arc<dyn crate::misc::Job> = close_job;
-                // SAFETY: foreign named-module boundary; the job handle is
-                // freshly built and uniquely owned here.
-                unsafe { self.poll_thread_worker_field.add(close_job_erased) };
-            }
+        if let Some(conn_ref) = self.connection() {
+            let generation = conn_ref.mark_closing();
+            let conn_arc: Arc<ClientConnection> = conn_ref.clone();
+            let close_job: Arc<OneTimeJob> =
+                Arc::<OneTimeJob>::new(OneTimeJob::new(Box::new(move || {
+                    conn_arc.close_binding(Some(generation));
+                })));
+            let close_job_erased: Arc<dyn crate::misc::Job> = close_job;
+            self.poll_thread_worker_field.add(close_job_erased);
         }
     }
 
     pub fn handle_free(&self, xid: i64) {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().handle_free(xid);
+        if let Some(conn) = self.connection() {
+            conn.handle_free(xid);
         }
     }
 
     fn pause(&self) {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().pause();
+        if let Some(conn) = self.connection() {
+            conn.pause();
         }
     }
 
     fn resume(&self) {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().resume();
+        if let Some(conn) = self.connection() {
+            conn.resume();
         }
     }
 
+    /// A concurrent or reentrant owned attempt returns CLIENT_ERR_BUSY.
+    /// A callback that replaces the completed binding makes this call return
+    /// CLIENT_ERR_CANCELED.
     pub fn reconnect(&self, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         if guard.is_none() {
             if !on_complete.is_empty() {
                 on_complete(false);
@@ -1657,29 +1741,26 @@ impl Client {
     }
 
     pub fn pending_request_count(&self) -> usize {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().pending_request_count();
+        if let Some(conn) = self.connection() {
+            return conn.pending_request_count();
         }
         0usize
     }
 
     pub fn clear_pending_requests(&self, error_code: i32) {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().clear_pending_requests(error_code);
+        if let Some(conn) = self.connection() {
+            conn.clear_pending_requests(error_code);
         }
     }
 
     pub fn is_reconnecting(&self) -> bool {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         guard.is_some() && guard.as_ref().unwrap().is_reconnecting()
     }
 
     fn host(&self) -> LegacyStdString {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().host();
+        if let Some(conn) = self.connection() {
+            return conn.host();
         }
         // See `ClientConnection::new`: the alias maps to `std::string`, so
         // `LegacyStdString::new()` would emit `std::string::new_`.
@@ -1687,14 +1768,13 @@ impl Client {
     }
 
     pub fn connected(&self) -> bool {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         guard.is_some() && guard.as_ref().unwrap().connected()
     }
 
     pub fn connection_state(&self) -> ConnectionState {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().connection_state();
+        if let Some(conn) = self.connection() {
+            return conn.connection_state();
         }
         ConnectionState::NEW
     }
@@ -1721,119 +1801,107 @@ impl Client {
     }
 
     pub fn server_instance_id(&self) -> u64 {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().server_instance_id();
+        if let Some(conn) = self.connection() {
+            return conn.server_instance_id();
         }
         0u64
     }
 
     pub fn set_on_server_restart(&self, callback: OnServerRestartCallbackFn) {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().set_on_server_restart(callback);
+        if let Some(conn) = self.connection() {
+            conn.set_on_server_restart(callback);
         }
     }
 
     fn check_server_instance(&self, new_id: u64) -> bool {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().check_server_instance(new_id);
+        if let Some(conn) = self.connection() {
+            return conn.check_server_instance(new_id);
         }
         false
     }
 
     pub fn set_reconnect_policy(&self, policy: &ReconnectPolicy) {
         self.pending_reconnect_policy_field.set(*policy);
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().set_reconnect_policy(policy);
+        if let Some(conn) = self.connection() {
+            conn.set_reconnect_policy(policy);
         }
     }
 
     pub fn set_buffering_config(&self, config: &BufferingConfig) {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().set_buffering_config(config);
+        if let Some(conn) = self.connection() {
+            conn.set_buffering_config(config);
         }
     }
 
     pub fn set_keepalive(&self, config: &KeepaliveConfig) {
         self.pending_keepalive_config_field.set(*config);
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().set_keepalive(config);
+        if let Some(conn) = self.connection() {
+            conn.set_keepalive(config);
         }
     }
 
     pub fn keepalive_config(&self) -> KeepaliveConfig {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().keepalive_config();
+        if let Some(conn) = self.connection() {
+            return conn.keepalive_config();
         }
         self.pending_keepalive_config_field.get()
     }
 
     pub fn set_heartbeat(&self, config: &HeartbeatConfig) {
         self.pending_heartbeat_config_field.set(*config);
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().set_heartbeat_config(config);
+        if let Some(conn) = self.connection() {
+            conn.set_heartbeat_config(config);
         }
     }
 
     pub fn heartbeat_config(&self) -> HeartbeatConfig {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().heartbeat_config();
+        if let Some(conn) = self.connection() {
+            return conn.heartbeat_config();
         }
         self.pending_heartbeat_config_field.get()
     }
 
     pub fn set_circuit_breaker(&self, config: &CircuitBreakerConfig) {
         self.pending_circuit_breaker_config_field.set(*config);
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            guard.as_ref().unwrap().set_circuit_breaker_config(config);
+        if let Some(conn) = self.connection() {
+            conn.set_circuit_breaker_config(config);
         }
     }
 
     pub fn circuit_breaker_config(&self) -> CircuitBreakerConfig {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().circuit_breaker_config();
+        if let Some(conn) = self.connection() {
+            return conn.circuit_breaker_config();
         }
         self.pending_circuit_breaker_config_field.get()
     }
 
     pub fn circuit_breaker_state(&self) -> CircuitState {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().circuit_breaker_state();
+        if let Some(conn) = self.connection() {
+            return conn.circuit_breaker_state();
         }
         CircuitState::CLOSED
     }
 
     pub fn is_idle(&self, idle_ms: u64, current_time_ms: u64) -> bool {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().is_idle(idle_ms, current_time_ms);
+        if let Some(conn) = self.connection() {
+            return conn.is_idle(idle_ms, current_time_ms);
         }
         false
     }
 
     fn validate_connection(&self) -> bool {
-        let guard = self.connection_field.borrow();
-        if guard.is_some() {
-            return guard.as_ref().unwrap().validate_connection();
+        if let Some(conn) = self.connection() {
+            return conn.validate_connection();
         }
         false
     }
 
-    pub fn metrics(&self) -> &ConnectionMetrics { &self.empty_metrics_field }
+    // Explicit Arc dereference preserves the borrowed counter reference in C++.
+    #[allow(clippy::explicit_auto_deref)]
+    pub fn metrics(&self) -> &ConnectionMetrics { &*self.metrics_field }
 
     pub fn has_connection(&self) -> bool {
-        let guard = self.connection_field.borrow();
+        let guard = self.connection();
         guard.is_some()
     }
 
@@ -1903,7 +1971,7 @@ impl Drop for ClientPool {
         if self.poll_thread_worker_.is_some() {
             // SAFETY: foreign named-module boundary; the worker handle is
             // live for the duration of the call.
-            unsafe { (*self.poll_thread_worker_.as_ref().unwrap()).shutdown() };
+            (*self.poll_thread_worker_.as_ref().unwrap()).shutdown();
         }
     }
 }
@@ -1915,7 +1983,7 @@ impl ClientPool {
         let mut ptw: Option<Arc<PollThread>> = poll_thread_worker;
         if ptw.is_none() {
             // SAFETY: foreign named-module boundary; no caller precondition.
-            ptw = Some(unsafe { PollThread::create() });
+            ptw = Some(PollThread::create());
         }
         ClientPool {
             poll_thread_worker_: ptw,
@@ -1983,188 +2051,102 @@ pub fn make_pending_queue(c: &RequestQueueConfig) -> RequestQueue {
     RequestQueue::with_config(*c)
 }
 
-pub fn clientconn_monotonic_ms_now() -> u64 { rusty::sys::time::clock_monotonic_us() / 1000 }
+pub fn clientconn_monotonic_ms_now() -> u64 { Time::now(true) / 1000 }
 
 // clippy::unnecessary_cast -- measured: drops the emitted rusty::detail::ptr_cast<const int8_t*>. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_cast)]
 pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
-    // Reset the abort latch before delegating (folded in from the former
-    // const `reconnect` facade): the Client::reconnect path needs a stale
-    // abort=true from a prior close() cleared, and the close-fan-out spawn
-    // path only reaches here with abort already false, so the reset is a
-    // no-op there. `reconnect_` is a mutable atomic, so const self suffices.
-    self_.reconnect_.reconnect_abort_.store(false, rusty::sync::atomic::Ordering::Release);
-
     let mut complete_callback = |result: i32| -> i32 {
         if !on_complete.is_empty() {
-            on_complete(result == 0i32);
+            on_complete(result == 0);
         }
         result
     };
-
-    let aborted: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-    if aborted {
-        return complete_callback(CLIENT_ERR_CANCELED);
+    // Waiting here can wait for this very call's on_reconnecting/error
+    // callback to return. A second caller receives an explicit busy result.
+    if self_.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) {
+        return complete_callback(CLIENT_ERR_BUSY);
     }
-
-    let wait_for_inflight_reconnect = || -> i32 {
-        loop {
-            let busy: bool = self_.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire);
-            if !busy {
-                break;
-            }
-            let cancel: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-            if cancel {
-                return CLIENT_ERR_CANCELED;
-            }
-            if self_.state_machine_.is_connected() {
-                return 0i32;
-            }
-            Time::sleep(5000u64);
-        }
-        if self_.state_machine_.is_connected() {
-            return 0i32;
-        }
-        CLIENT_INT_MIN
-    };
-
-    let reconnecting: bool = self_.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire);
-    if reconnecting {
-        let waited: i32 = wait_for_inflight_reconnect();
-        if waited != CLIENT_INT_MIN {
-            return complete_callback(waited);
-        }
-    }
-
-    // Check if we have an address to reconnect to
-    if self_.reconnect_address_.get().is_empty() {
-        client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: no address to reconnect to"));
+    if self_.reconnect_address_.get().is_empty() || !self_.state_machine_.can_connect() {
         return complete_callback(CLIENT_ERR_INVALID_ARGUMENT);
     }
-
-    // Can only reconnect from FAILED or DISCONNECTED state
-    if !self_.state_machine_.can_connect() {
-        client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: cannot reconnect from state ",
-                  connection_state_to_string(self_.state_machine_.state()), ""));
-        return complete_callback(CLIENT_ERR_INVALID_ARGUMENT);
+    let start_generation;
+    {
+        let lifecycle = self_.lifecycle_.lock().unwrap();
+        if self_.reconnect_.reconnecting_.compare_exchange(false, true,
+            rusty::sync::atomic::Ordering::AcqRel,
+            rusty::sync::atomic::Ordering::Acquire).is_err() {
+            drop(lifecycle);
+            return complete_callback(CLIENT_ERR_BUSY);
+        }
+        start_generation = lifecycle.generation;
+        self_.reconnect_.reconnect_abort_.store(false, rusty::sync::atomic::Ordering::Release);
     }
-
-    loop {
-        let expected: bool = false;
-        let won: bool = {
-            self_.reconnect_.reconnecting_.compare_exchange(expected, true,
-                rusty::sync::atomic::Ordering::AcqRel,
-                rusty::sync::atomic::Ordering::Acquire).is_ok()
-        };
-        if won {
-            break;
+    let attempt_generation = Cell::new(start_generation);
+    let mut finish = |success: bool, result: i32| -> i32 {
+        let generation = attempt_generation.get();
+        let mut result = result;
+        {
+            let lifecycle = self_.lifecycle_.lock().unwrap();
+            if lifecycle.generation != generation || (success && !lifecycle.active) {
+                result = CLIENT_ERR_CANCELED;
+            }
+            // No later part of this completion writes the latch. A user
+            // notification may now start and own a completely new attempt.
+            self_.reconnect_.reconnecting_.store(false, rusty::sync::atomic::Ordering::Release);
+            if success && result == 0 {
+                self_.metrics_.record_reconnect();
+            }
         }
-        let waited: i32 = wait_for_inflight_reconnect();
-        if waited != CLIENT_INT_MIN {
-            return complete_callback(waited);
+        if success && result == 0 {
+            self_.invoke_connected_callback();
+            if self_.binding_is_current(generation) {
+                clientconn_replay_pending_for_binding(self_, generation);
+            }
+            if !self_.binding_is_current(generation) {
+                result = CLIENT_ERR_CANCELED;
+            }
         }
-    }
-    self_.invoke_reconnecting_callback();
-
-    let mut complete_reconnect = |success: bool, result: i32| -> i32 {
-        self_.reconnect_.reconnecting_.store(false, rusty::sync::atomic::Ordering::Release);
-        self_.invoke_reconnected_callback(success);
-
-        if success {
-            client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: reconnected to ", &self_.reconnect_address_.get(), ""));
-
-            // Record reconnection in metrics
-            self_.metrics_.record_reconnect();
-
-            // Sweep the disconnect-buffering queue. Entries that ran past
-            // their TTL while the connection was down resolve their
-            // futures with `kRequestQueueExpiredError` and bump
-            // `queue_dropped_requests`. Non-stale entries remain in the
-            // queue for a future replay path.
-            self_.pending_queue_.expire_stale();
-            return complete_callback(0i32);
-        }
-        if result == CLIENT_ERR_CANCELED {
-            client_log_line(Log::DEBUG, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: reconnect cancelled for ",
-                      &self_.reconnect_address_.get(), ""));
-        } else {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str_i32("srpc::ClientConnection: reconnection failed to ",
-                      &self_.reconnect_address_.get(), ": ", result, ""));
+        self_.invoke_reconnected_callback(success && result == 0);
+        if success && result == 0 && !self_.binding_is_current(generation) {
+            result = CLIENT_ERR_CANCELED;
         }
         complete_callback(result)
     };
-
+    self_.invoke_reconnecting_callback();
+    let attempt_is_current = || -> bool {
+        let lifecycle = self_.lifecycle_.lock().unwrap();
+        lifecycle.generation == attempt_generation.get()
+            && !self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire)
+    };
     let reconnect_once = || -> i32 {
-        let cancel: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-        if cancel {
+        if !attempt_is_current() {
             return CLIENT_ERR_CANCELED;
         }
-        // 4g3c2: `socket_ = -1` reset removed. socket_ is unused in
-        // channel mode (the channel proxy's TcpConnection owns the fd);
-        // the `connect()` call below routes through `connect_via_factory`
-        // which produces a fresh proxy + fresh fd internally.
-        let address = self_.reconnect_address_.get();
-        self_.connect(address.c_str() as *const i8)
+        let mut address = self_.reconnect_address_.get().as_bytes().to_vec();
+        address.push(0);
+        self_.connect_attempt(address.as_ptr() as *const i8, &attempt_generation)
     };
-
-    let abort_now: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-    if abort_now {
-        return complete_reconnect(false, CLIENT_ERR_CANCELED);
+    let mut result = reconnect_once();
+    if result == 0 {
+        return finish(true, result);
     }
-
-    // Another reconnect attempt can complete between the pre-CAS state check and
-    // this thread acquiring reconnect ownership.
-    if self_.state_machine_.is_connected() {
-        return complete_reconnect(true, 0i32);
-    }
-
-    if !self_.state_machine_.can_connect() {
-        return complete_reconnect(false, CLIENT_ERR_INVALID_ARGUMENT);
-    }
-
-    // First attempt happens immediately.
-    let mut result: i32 = reconnect_once();
-    if result == 0i32 {
-        return complete_reconnect(true, 0i32);
-    }
-
-    // Follow configured backoff/retry policy for subsequent attempts.
-    let policy: ReconnectPolicy = self_.reconnect_policy_.get();
+    let policy = self_.reconnect_policy_.get();
     let calc = crate::reconnect_policy::ReconnectCalculator::new(&policy);
-    while calc.should_retry() {
-        let cancel: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-        if cancel {
-            return complete_reconnect(false, CLIENT_ERR_CANCELED);
+    while result != CLIENT_ERR_CANCELED && calc.should_retry() {
+        if !attempt_is_current() {
+            return finish(false, CLIENT_ERR_CANCELED);
         }
-
-        let delay_ms: u32 = calc.next_delay_ms();
-        if delay_ms > 0u32 {
-            Time::sleep((delay_ms as u64) * 1000u64);
+        let delay = calc.next_delay_ms();
+        if delay > 0 {
+            Time::sleep((delay as u64) * 1000);
         }
-
-        let cancel2: bool = self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
-        if cancel2 {
-            return complete_reconnect(false, CLIENT_ERR_CANCELED);
-        }
-
-        // Another path may have re-established connection while sleeping.
-        if self_.state_machine_.is_connected() {
-            return complete_reconnect(true, 0i32);
-        }
-
-        if !self_.state_machine_.can_connect() {
-            return complete_reconnect(false, CLIENT_ERR_INVALID_ARGUMENT);
-        }
-
-        client_log_line(Log::DEBUG, 0i32, core::ptr::null(), client_text_u32_str("srpc::ClientConnection: reconnect retry #",
-                  calc.retry_count(), " to ", &self_.reconnect_address_.get(), ""));
         result = reconnect_once();
-        if result == 0i32 {
-            return complete_reconnect(true, 0i32);
+        if result == 0 {
+            return finish(true, result);
         }
     }
-
-    complete_reconnect(false, result)
+    finish(false, result)
 }
 
 // clippy::borrowed_box -- the concrete Box spelling is load-bearing: through &T the pointer-like check fails and the calls lower to `.` instead of `->` (docs 7.50); measured. See the Task-2 measurement block above.
@@ -2173,6 +2155,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
 pub fn clientconn_request_via_channel<F>(conn: &ClientConnection, rpc_id: i32,
                                      attr: &FutureAttr, mut write_fn: F) -> FutureResult
 where F: FnMut(&mut BinaryWriteArchive) {
+    let generation = conn.lifecycle_.lock().unwrap().generation;
     if !conn.allow_request_with_circuit_metrics() {
         return FutureResult::Err(CLIENT_ERR_BUSY);
     }
@@ -2180,59 +2163,25 @@ where F: FnMut(&mut BinaryWriteArchive) {
     if !conn.state_machine_.is_connected() {
         let buffering_cfg = conn.buffering_config_.get();
         if buffering_cfg.enabled && buffering_cfg.behavior == DisconnectBehavior::QUEUE {
-            let fu = Future::create(conn.xid_counter_.next(1i64), attr.clone());
-            let fu_for_cb = fu.clone();
-            let mut qr = QueuedRequest::new();
-            qr.xid = (*fu).xid_;
-            qr.rpc_id = rpc_id;
-            qr.ttl_ms = buffering_cfg.default_ttl_ms;
-            // Raw self-pointer capture (== the old [this]); the callback
-            // outlives this call but not the connection.
-            let conn_ptr: *const ClientConnection = &raw const *conn;
-            let cb_fn = move |err: i32| {
-                // SAFETY: the queue belongs to this connection and is drained
-                // before the connection storage is released -- by
-                // invalidate_pending_futures(), which Drop::drop calls before
-                // any field is dropped. That drain is what makes this raw
-                // `conn_ptr` deref sound; until it was added the callback was
-                // never invoked at all, so this note described an invariant
-                // nothing established.
-                unsafe { (*conn_ptr).metrics_.record_queue_drop() };
-                (*fu_for_cb).error_code_.set(err);
-                (*fu_for_cb).notify_ready(fu_for_cb.clone());
-            };
-            // Through the provider's alias, not an inline
-            // `rusty::Function::<dyn FnMut(i32)>` turbofish: in EXPRESSION
-            // position the emitter lowers `dyn FnMut(i32)` to
-            // `std::function<void(int32_t)>` and then re-wraps it, yielding the
-            // undefined `rusty::Function<std::function<void(int32_t)>>`. The
-            // alias declaration lowers correctly (`rusty::Function<void(int32_t)>`)
-            // and names the identical Rust type.
-            qr.callback = QueuedRequestCallback::from_callable(cb_fn);
-            if conn.pending_queue_.enqueue(qr) {
-                return FutureResult::Ok(fu);
-            }
-            return FutureResult::Err(CLIENT_REQUEST_QUEUE_REJECTED_ERROR);
+            return clientconn_queue_request(conn, rpc_id, attr, write_fn);
         }
         conn.record_circuit_result(CLIENT_ERR_NOT_CONNECTED);
         return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
     }
     {
-        let direct_guard = conn.direct_channel_.lock().unwrap();
-        if (*direct_guard).is_some() {
-            let proxy: &Box<dyn ChannelConnectionBase> = (*direct_guard).as_ref().unwrap();
+        let direct = conn.direct_channel();
+        if let Some(channel) = direct {
+            let proxy: &dyn ChannelConnectionBase = &**channel;
             if proxy.is_closed() {
                 conn.record_circuit_result(CLIENT_ERR_NOT_CONNECTED);
                 return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
             }
         } else {
-            let guard2 = conn.fiber_channel_.lock().unwrap();
-            let mut chan_dead = (*guard2).is_none();
-            if !chan_dead {
-                let fc: &Box<FiberChannel> = (*guard2).as_ref().unwrap();
-                if fc.is_closed() {
-                    chan_dead = true;
-                }
+            let channel = conn.fiber_channel();
+            let mut chan_dead = channel.is_none();
+            if let Some(fc) = channel {
+                let fiber: &FiberChannel = &**fc;
+                chan_dead = fiber.is_closed();
             }
             if chan_dead {
                 conn.record_circuit_result(CLIENT_ERR_NOT_CONNECTED);
@@ -2242,11 +2191,6 @@ where F: FnMut(&mut BinaryWriteArchive) {
     }
 
     let fu = Future::create(conn.xid_counter_.next(1i64), attr.clone());
-    {
-        let mut pending_guard = conn.pending_fu_.lock().unwrap();
-        (*pending_guard).insert((*fu).xid_, fu.clone());
-    }
-
     // sconn_reply's archive shape: aggregate literals + the &mut alias
     // (bare reference args pass as lvalues where a by-value local would
     // be move-wrapped at its last use).
@@ -2255,35 +2199,194 @@ where F: FnMut(&mut BinaryWriteArchive) {
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&v64::new((*fu).xid_), ar) };
+    crate::serializable::Serialize_::serialize(&v64::new((*fu).xid_), ar);
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&rpc_id, ar) };
+    crate::serializable::Serialize_::serialize(&rpc_id, ar);
     write_fn(ar);
 
+    // Publish ownership and its in-flight count together before a channel can
+    // reply inline or teardown can drain the pending map. User writing has
+    // already finished, so callback reentry cannot retire an uncounted request.
+    {
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if !lifecycle.active || lifecycle.generation != generation || !conn.connected() {
+            return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
+        }
+        let mut pending_guard = conn.pending_fu_.lock().unwrap();
+        (*pending_guard).insert((*fu).xid_, fu.clone());
+        conn.metrics_.record_request_sent();
+        conn.on_request_dispatched(body_sink.bytes.len());
+    }
     let ch_err = unsafe {
-        conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
+        clientconn_dispatch_frame_for_binding(conn, generation, body_sink.bytes.as_ptr(), body_sink.bytes.len())
     };
     if ch_err != ChannelError::None {
         {
             let mut pending_guard2 = conn.pending_fu_.lock().unwrap();
-            (*pending_guard2).remove(&(*fu).xid_);
+            if (*pending_guard2).remove(&(*fu).xid_).is_some() {
+                conn.metrics_.record_request_dropped();
+            }
         }
         conn.record_circuit_result(CLIENT_ERR_IO);
         return FutureResult::Err(CLIENT_ERR_IO);
     }
 
-    conn.metrics_.record_request_sent();
-    conn.on_request_dispatched(body_sink.bytes.len());
     FutureResult::Ok(fu)
 }
 
+/// Serialize once while disconnected. The queued bytes and future remain
+/// owned until replay, expiry, overflow, or explicit connection teardown.
+fn clientconn_queue_request<F>(conn: &ClientConnection, rpc_id: i32,
+                              attr: &FutureAttr, mut write_fn: F) -> FutureResult
+where F: FnMut(&mut BinaryWriteArchive) {
+    let generation = conn.lifecycle_.lock().unwrap().generation;
+    let future = Future::create(conn.xid_counter_.next(1i64), attr.clone());
+    let xid = future.xid_;
+    let mut body = BufferSink { bytes: Vec::<u8>::with_capacity(kRequestSinkInitialCapacity) };
+    {
+        let mut archive = BinaryWriteArchive { sink_: client_sink_proxy(&mut body) };
+        crate::serializable::Serialize_::serialize(&v64::new(xid), &mut archive);
+        crate::serializable::Serialize_::serialize(&rpc_id, &mut archive);
+        write_fn(&mut archive);
+    }
+    let mut request = QueuedRequest::new();
+    request.xid = xid;
+    request.rpc_id = rpc_id;
+    request.ttl_ms = conn.buffering_config_.get().default_ttl_ms;
+    request.payload = body.bytes;
+    let queued: Arc<Mutex<HashMap<i64, Arc<Future>>>> = conn.queued_fu_.clone();
+    let weak_connection = conn.weak_self_.clone();
+    request.callback = QueuedRequestCallback::from_callable(move |error: i32| {
+        let completed: Option<Arc<Future>> = queued.lock().unwrap().remove(&xid);
+        if let Some(future) = completed {
+            if let Some(connection) = weak_connection.upgrade() {
+                let owner: Arc<ClientConnection> = connection;
+                (*owner).metrics().record_queue_drop();
+            }
+            future.error_code_.set(error);
+            future.notify_ready(future.clone());
+        }
+    });
+    let admission = {
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if lifecycle.generation != generation {
+            return FutureResult::Err(CLIENT_ERR_NOT_CONNECTED);
+        }
+        conn.queued_fu_.lock().unwrap().insert(xid, future.clone());
+        conn.pending_queue_.enqueue_deferred(request)
+    };
+    if !admission.notify() {
+        return FutureResult::Err(CLIENT_REQUEST_QUEUE_REJECTED_ERROR);
+    }
+    // Reconnect may finish while the caller serializes its request.
+    if conn.connected() {
+        conn.replay_pending_requests();
+    }
+    FutureResult::Ok(future)
+}
+
+fn clientconn_replay_pending_requests(conn: &ClientConnection) -> usize {
+    let generation = conn.lifecycle_.lock().unwrap().generation;
+    clientconn_replay_pending_for_binding(conn, generation)
+}
+
+fn clientconn_replay_pending_for_binding(conn: &ClientConnection, expected_generation: u64) -> usize {
+    if conn.replaying_.compare_exchange(false, true,
+        rusty::sync::atomic::Ordering::AcqRel,
+        rusty::sync::atomic::Ordering::Acquire).is_err() {
+        return 0;
+    }
+    let scope = ClientReplayScope { running: conn.replaying_.clone() };
+    let mut replayed = 0usize;
+    loop {
+        let request = {
+            let lifecycle = conn.lifecycle_.lock().unwrap();
+            if !lifecycle.active || lifecycle.generation != expected_generation {
+                break;
+            }
+            conn.pending_queue_.dequeue()
+        };
+        if request.is_none() {
+            break;
+        }
+        let request = request.unwrap();
+        if request.is_expired() {
+            rq_invoke_callback_safely(request.callback, kRequestQueueExpiredError);
+            continue;
+        }
+        if !conn.connected() {
+            let admission = {
+                let _lifecycle = conn.lifecycle_.lock().unwrap();
+                if conn.queued_fu_.lock().unwrap().contains_key(&request.xid) {
+                    Some(conn.pending_queue_.enqueue_deferred(request))
+                } else {
+                    None
+                }
+            };
+            if let Some(admission) = admission {
+                admission.notify();
+            }
+            break;
+        }
+        // Transfer ownership while holding both map locks. A concurrent close
+        // always finds this future in one map, including after queue removal.
+        let admitted: bool;
+        let generation;
+        {
+            let lifecycle = conn.lifecycle_.lock().unwrap();
+            generation = lifecycle.generation;
+            let mut queued = conn.queued_fu_.lock().unwrap();
+            let future = if lifecycle.active && lifecycle.generation == expected_generation && conn.connected() {
+                queued.remove(&request.xid)
+            } else {
+                None
+            };
+            admitted = future.is_some();
+            if let Some(future) = future {
+                let mut pending = conn.pending_fu_.lock().unwrap();
+                pending.insert(request.xid, future);
+                conn.metrics_.record_request_sent();
+                conn.on_request_dispatched(request.payload.len());
+            }
+        }
+        if !admitted {
+            continue;
+        }
+        // In-memory responses may complete synchronously inside send_frame.
+        let error = unsafe {
+            clientconn_dispatch_frame_for_binding(conn, generation, request.payload.as_ptr(), request.payload.len())
+        };
+        if error == ChannelError::None {
+            replayed += 1;
+        } else {
+            conn.record_circuit_result(CLIENT_ERR_IO);
+            conn.fail_pending_future(request.xid, CLIENT_ERR_IO);
+        }
+    }
+    drop(scope);
+    // A callback may reconnect while this replay still owns the running flag.
+    // Hand off only after releasing it, then admit work using the current
+    // binding's token. The old loop never sends through a replacement slot.
+    let current_generation = {
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if lifecycle.active { Some(lifecycle.generation) } else { None }
+    };
+    if let Some(current) = current_generation {
+        if !conn.pending_queue_.empty() {
+            replayed += clientconn_replay_pending_for_binding(conn, current);
+        }
+    }
+    replayed
+}
+
 // clippy::borrowed_box -- the concrete Box spelling is load-bearing: through &T the pointer-like check fails and the calls lower to `.` instead of `->` (docs 7.50); measured. See the Task-2 measurement block above.
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box, clippy::explicit_auto_deref)]
 pub fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
                                mut write_fn: F, on_reply: AsyncReplyCallback)
                                -> Result<(), i32>
 where F: FnMut(&mut BinaryWriteArchive) {
+    let generation = conn.lifecycle_.lock().unwrap().generation;
     if !conn.allow_request_with_circuit_metrics() {
         return Result::<(), i32>::Err(CLIENT_ERR_BUSY);
     }
@@ -2292,21 +2395,19 @@ where F: FnMut(&mut BinaryWriteArchive) {
         return Result::<(), i32>::Err(CLIENT_ERR_NOT_CONNECTED);
     }
     {
-        let direct_guard = conn.direct_channel_.lock().unwrap();
-        if (*direct_guard).is_some() {
-            let proxy: &Box<dyn ChannelConnectionBase> = (*direct_guard).as_ref().unwrap();
+        let direct = conn.direct_channel();
+        if let Some(channel) = direct {
+            let proxy: &dyn ChannelConnectionBase = &**channel;
             if proxy.is_closed() {
                 conn.record_circuit_result(CLIENT_ERR_NOT_CONNECTED);
                 return Result::<(), i32>::Err(CLIENT_ERR_NOT_CONNECTED);
             }
         } else {
-            let guard2 = conn.fiber_channel_.lock().unwrap();
-            let mut chan_dead = (*guard2).is_none();
-            if !chan_dead {
-                let fc: &Box<FiberChannel> = (*guard2).as_ref().unwrap();
-                if fc.is_closed() {
-                    chan_dead = true;
-                }
+            let channel = conn.fiber_channel();
+            let mut chan_dead = channel.is_none();
+            if let Some(fc) = channel {
+                let fiber: &FiberChannel = &**fc;
+                chan_dead = fiber.is_closed();
             }
             if chan_dead {
                 conn.record_circuit_result(CLIENT_ERR_NOT_CONNECTED);
@@ -2317,37 +2418,53 @@ where F: FnMut(&mut BinaryWriteArchive) {
 
     let xid: i64 = conn.xid_counter_.next(1i64);
     let slot: usize = (xid as usize) % kAsyncSlotCount;
-    {
-        let mut guard = conn.pending_cb_slots_.lock().unwrap();
-        if (*guard)[slot].is_some() {
-            conn.record_circuit_result(CLIENT_ERR_BUSY);
-            return Result::<(), i32>::Err(CLIENT_ERR_BUSY);
-        }
-        (*guard)[slot] = Some(on_reply);
-    }
 
     let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::with_capacity(kRequestSinkInitialCapacity) };
     let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&v64::new(xid), ar) };
+    crate::serializable::Serialize_::serialize(&v64::new(xid), ar);
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&rpc_id, ar) };
+    crate::serializable::Serialize_::serialize(&rpc_id, ar);
     write_fn(ar);
 
+    {
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if !lifecycle.active || lifecycle.generation != generation || !conn.connected() {
+            return Result::<(), i32>::Err(CLIENT_ERR_NOT_CONNECTED);
+        }
+        let mut guard = conn.pending_cb_slots_.lock().unwrap();
+        if (*guard)[slot].is_some() {
+            conn.record_circuit_result(CLIENT_ERR_BUSY);
+            return Result::<(), i32>::Err(CLIENT_ERR_BUSY);
+        }
+        (*guard)[slot] = Some(on_reply);
+        conn.metrics_.record_request_sent();
+        conn.on_request_dispatched(body_sink.bytes.len());
+    }
     let ch_err = unsafe {
-        conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
+        clientconn_dispatch_frame_for_binding(conn, generation, body_sink.bytes.as_ptr(), body_sink.bytes.len())
     };
     if ch_err != ChannelError::None {
-        let mut guard = conn.pending_cb_slots_.lock().unwrap();
-        (*guard)[slot] = None;
+        let rejected: Option<AsyncReplyCallback> = {
+            let lifecycle = conn.lifecycle_.lock().unwrap();
+            if lifecycle.generation == generation {
+                conn.pending_cb_slots_.lock().unwrap()[slot].take()
+            } else {
+                None
+            }
+        };
+        if rejected.is_some() {
+            conn.metrics_.record_request_dropped();
+        }
+        // Captured destructors can reenter the client, just like invocations.
+        // Keep callback destruction outside the callback-table mutex.
+        drop(rejected);
         conn.record_circuit_result(CLIENT_ERR_IO);
         return Result::<(), i32>::Err(CLIENT_ERR_IO);
     }
-    conn.metrics_.record_request_sent();
-    conn.on_request_dispatched(body_sink.bytes.len());
     Result::<(), i32>::Ok(())
 }
 
@@ -2366,9 +2483,8 @@ pub fn make_write_archive(sink: *mut BufferSink) -> BinaryWriteArchive {
     BinaryWriteArchive { sink_: client_sink_proxy(unsafe { &mut *sink }) }
 }
 
-// @unsafe - copies the attempt's unread reply region into the coordinator
-// future's buffer. Two simultaneous RefCell borrows (two DISTINCT
-// Futures, so no re-entrant borrow) plus a raw sub-slice of the borrowed
+// Copies the attempt's unread reply region into the coordinator
+// future's buffer. Both distinct reply buffers are locked around a sub-slice
 // body — spelled exactly as clientconn_decode_response_and_notify below
 // already spells the same fill: `ptr::add` + `core::slice::from_raw_parts`
 // inside `unsafe`, which is what retired the "span has no DSL form"
@@ -2378,12 +2494,12 @@ pub fn make_write_archive(sink: *mut BufferSink) -> BinaryWriteArchive {
 // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref)]
 pub fn request_copy_reply(final_fu: &Arc<Future>, attempt_fu: &Arc<Future>) {
-    let attempt_reply = (*attempt_fu).reply_.borrow_mut();
+    let attempt_reply = (*attempt_fu).reply_.lock().unwrap();
     let reply_size: usize = (*attempt_reply).src.remaining();
     if reply_size > 0usize {
         let base: *const u8 = (*attempt_reply).body.as_ptr();
         let start: usize = (*attempt_reply).src.pos();
-        let mut final_reply = (*final_fu).reply_.borrow_mut();
+        let mut final_reply = (*final_fu).reply_.lock().unwrap();
         reply_buffer_fill(&mut *final_reply, unsafe {
             core::slice::from_raw_parts(base.add(start), reply_size)
         });
@@ -2458,9 +2574,9 @@ where F: FnMut(&mut BinaryWriteArchive) {
                     || timeout_type == TimeoutType::REQUEST_TIMEOUT
                     || timeout_type == TimeoutType::RESPONSE_TIMEOUT
                     || timeout_type == TimeoutType::TOTAL_TIMEOUT {
-                    (*conn).metrics_.record_request_timeout();
+                    (*conn).metrics().record_request_timeout();
                 } else if err != 0i32 {
-                    (*conn).metrics_.record_request_failed();
+                    (*conn).metrics().record_request_failed();
                 }
             }
             if timeout_type != TimeoutType::NONE {
@@ -2538,7 +2654,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
                 return;
             }
 
-            (*conn).metrics_.record_retry_attempt();
+            (*conn).metrics().record_retry_attempt();
             let backoff_delay_ms: u64 = effective_options.calculate_delay_ms(retry_count.get());
             if backoff_delay_ms > 0u64 {
                 if effective_options.total_timeout_ms > 0u64 {
@@ -2566,25 +2682,37 @@ where F: FnMut(&mut BinaryWriteArchive) {
 ///
 /// `body_bytes` must point at `body_size` readable bytes that stay live for
 /// the duration of the call; the channel copies out of them synchronously.
+#[allow(clippy::explicit_auto_deref)]
 pub unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
                                                 body_bytes: *const u8,
                                                 body_size: usize) -> ChannelError {
-    if !conn.channel_mode_.get() {
-        return ChannelError::ConnectionReset;
-    }
+    let generation = conn.lifecycle_.lock().unwrap().generation;
+    unsafe { clientconn_dispatch_frame_for_binding(conn, generation, body_bytes, body_size) }
+}
+
+// Arc<Box<FiberChannel>> needs both payload dereferences in the generated C++ call.
+#[allow(clippy::explicit_auto_deref)]
+unsafe fn clientconn_dispatch_frame_for_binding(conn: &ClientConnection, generation: u64,
+                                              body_bytes: *const u8, body_size: usize) -> ChannelError {
+    let direct;
+    let fiber;
     {
-        let mut guard = conn.direct_channel_.lock().unwrap();
-        if (*guard).is_some() {
-            let p: &mut Box<dyn ChannelConnectionBase> = (*guard).as_mut().unwrap();
-            return unsafe { p.send_frame(&ChannelFrame { payload: body_bytes, size: body_size }) };
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if !lifecycle.active || lifecycle.generation != generation {
+            return ChannelError::ConnectionReset;
         }
+        direct = conn.direct_channel();
+        fiber = conn.fiber_channel();
     }
-    let mut guard2 = conn.fiber_channel_.lock().unwrap();
-    if (*guard2).is_none() {
-        return ChannelError::ConnectionReset;
+    if let Some(channel) = direct {
+        let proxy: &dyn ChannelConnectionBase = &**channel;
+        return unsafe { proxy.send_frame(&ChannelFrame { payload: body_bytes, size: body_size }) };
     }
-    let p2: &mut Box<FiberChannel> = (*guard2).as_mut().unwrap();
-    unsafe { p2.send_frame(&ChannelFrame { payload: body_bytes, size: body_size }) }
+    if let Some(channel) = fiber {
+        let fiber_ref: &FiberChannel = &**channel;
+        return unsafe { fiber_ref.send_frame(&ChannelFrame { payload: body_bytes, size: body_size }) };
+    }
+    ChannelError::ConnectionReset
 }
 
 pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
@@ -2596,13 +2724,13 @@ pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
     let ar: &mut BinaryWriteArchive = &mut ar_store;
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(
+    crate::serializable::Serialize_::serialize(
         &v64::new(conn.xid_counter_.next(1i64)),
         ar,
-    ) };
+    );
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
-    unsafe { cpp_serializable::Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar) };
+    crate::serializable::Serialize_::serialize(&CLIENT_INTERNAL_HEARTBEAT_RPC_ID, ar);
     // Send-side errors are ignored here (same as the legacy fd path).
     let _ = unsafe {
         conn.dispatch_frame_via_channel(body_sink.bytes.as_ptr(), body_sink.bytes.len())
@@ -2645,57 +2773,63 @@ pub fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
 }
 
 pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -> i32 {
+    let generation = conn.lifecycle_.lock().unwrap().generation;
+    let result = clientconn_connect_factory_for_binding(conn, addr_i8, generation);
+    if result != 0 {
+        return result;
+    }
+    conn.invoke_connected_callback();
+    if conn.binding_is_current(generation) { 0 } else { CLIENT_ERR_CANCELED }
+}
+
+fn clientconn_connect_factory_for_binding(conn: &ClientConnection, addr_i8: *const i8,
+                                         generation: u64) -> i32 {
     let addr_str: LegacyStdString = clientconn_addr_to_string(addr_i8);
-    {
-        let mut guard = conn.factory_.lock().unwrap();
-        if (*guard).is_none() {
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text("srpc::ClientConnection::connect_via_factory: factory unbound at the moment of connect (race against bind_factory)"));
-            conn.state_machine_.transition_to(ConnectionState::FAILED);
-            conn.invoke_error_callback(CLIENT_ERR_NOT_CONNECTED, &client_text("factory unbound"));
-            return CLIENT_ERR_NOT_CONNECTED;
+    let factory = conn.factory_.lock().unwrap().clone();
+    if factory.is_none() {
+        conn.invoke_error_callback(CLIENT_ERR_NOT_CONNECTED, &client_text("factory unbound"));
+        return CLIENT_ERR_NOT_CONNECTED;
+    }
+    let factory = factory.unwrap();
+    // Only the factory's own mutable-callable lock is held across connect.
+    // The client slot and lifecycle locks are released before the callout.
+    let mut result: ConnectResult = {
+        let mut factory_guard = factory.lock().unwrap();
+        let bound: &mut Box<dyn ChannelFactoryBase> = &mut factory_guard;
+        bound.connect(&addr_str)
+    };
+    if result.error != ChannelError::None || result.connection.is_none() {
+        let err_str = client_text_str("factory connect failed: ", channel_error_to_string(result.error), "");
+        let mut rc = CLIENT_ERR_NOT_CONNECTED;
+        if result.error == ChannelError::ConnectionRefused {
+            rc = CLIENT_ERR_CONNECTION_REFUSED;
+        } else if result.error == ChannelError::AddressInvalid {
+            rc = CLIENT_ERR_INVALID_ARGUMENT;
         }
-        let bound: &mut Box<dyn ChannelFactoryBase> = (*guard).as_mut().unwrap();
-        let mut result: ConnectResult = bound.connect(&addr_str);
-        if result.error != ChannelError::None || result.connection.is_none() {
-            let err_name = channel_error_to_string(result.error);
-            let err_str: LegacyStdString = client_text_str("factory connect failed: ", err_name, "");
-            client_log_line(Log::ERROR, 0i32, core::ptr::null(), client_text_str_pair("srpc::ClientConnection: ", &err_str, " (addr=", &addr_str, ")"));
-            conn.state_machine_.transition_to(ConnectionState::FAILED);
-            // Map the channel error onto an errno-shaped value the
-            // legacy call sites expect.
-            let mut rc: i32 = CLIENT_ERR_NOT_CONNECTED;
-            if result.error == ChannelError::ConnectionRefused {
-                rc = CLIENT_ERR_CONNECTION_REFUSED;
-            } else if result.error == ChannelError::AddressInvalid {
-                rc = CLIENT_ERR_INVALID_ARGUMENT;
+        {
+            let lifecycle = conn.lifecycle_.lock().unwrap();
+            if lifecycle.generation == generation {
+                conn.state_machine_.state_field.set(ConnectionState::FAILED);
             }
-            conn.invoke_error_callback(rc, &err_str);
-            return rc;
         }
-        let conn_proxy = result.connection.take().unwrap();
-        conn.bind_channel_direct(conn_proxy);
+        conn.invoke_error_callback(rc, &err_str);
+        return rc;
+    }
+    let conn_proxy = result.connection.take().unwrap();
+    if !conn.bind_channel_direct(conn_proxy, generation) {
+        return CLIENT_ERR_CANCELED;
     }
 
-    // Record address for the close fan-out's reconnect spawn — it
-    // re-runs the factory connect with the same target.
-    conn.reconnect_address_.set(addr_str);
-
-    // Mirror the fd path's terminal transition: the channel layer's
-    // own state (proxy.is_closed()) becomes the source of truth, but
-    // we still drive the legacy state machine through CONNECTED so
-    // existing health-check / metric APIs keep working.
-    if !conn.state_machine_.transition_to(ConnectionState::CONNECTED) {
-        conn.state_machine_.force_state(ConnectionState::CONNECTED);
-    }
-    // Record connect timestamp so metrics_.connect_time_ms() is
-    // non-zero from the moment a request can be issued; seed
-    // last_activity_time_ so is_idle() measures time since connect.
     {
-        let now: u64 = clientconn_monotonic_ms_now();
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if lifecycle.generation != generation || !lifecycle.active {
+            return CLIENT_ERR_CANCELED;
+        }
+        conn.reconnect_address_.set(addr_str);
+        let now = clientconn_monotonic_ms_now();
         conn.metrics_.record_connect(now);
         conn.update_last_activity(now);
     }
-    conn.invoke_connected_callback();
     0i32
 }
 
@@ -2708,11 +2842,11 @@ pub fn clientconn_make_fiber_channel(ch: ChannelConnectionProxy) -> Box<FiberCha
 
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_unwrap)]
-pub fn clientconn_recv_job_entry(weak_self: WeakClientConnection) {
+pub fn clientconn_recv_job_entry(weak_self: WeakClientConnection, channel: Arc<Box<FiberChannel>>) {
     let conn_opt = weak_self.upgrade();
     if conn_opt.is_some() {
         let c = conn_opt.unwrap();
-        (*c).run_recv_loop();
+        clientconn_run_recv_loop_on_channel(&c, channel);
     }
 }
 
@@ -2723,16 +2857,7 @@ pub fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
     if !channel.is_valid() {
         return;
     }
-    // Move the proxy into the heap-allocated FiberChannel and flip the
-    // latch on the calling thread — pure data mutations; the recv-loop
-    // fiber doesn't observe them until the OneTimeJob below is
-    // submitted. bind_callbacks() runs after the Box address is final.
-    {
-        let mut guard = conn.fiber_channel_.lock().unwrap();
-        *guard = Some(clientconn_make_fiber_channel(channel));
-        let fc: &mut Box<FiberChannel> = (*guard).as_mut().unwrap();
-        fc.bind_callbacks();
-    }
+    let channel = conn.replace_fiber_channel(channel);
     conn.channel_mode_.set(true);
 
     let weak_self: WeakClientConnection = conn.weak_self_.clone();
@@ -2741,61 +2866,45 @@ pub fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
     // poll thread's `trigger_job` calls `Fiber::create_run` from its
     // own reactor, so the resulting fiber's IntEvent waits and the
     // `on_frame` callback's signal both land on the same thread.
-    // (The closure is bound to a local first: the inline-argument
-    // closure path mis-infers a return type here — the ::new_ note at
-    // ClientProxy::close — while the let-bound path emits it clean.)
     let job_fn = move || {
-        clientconn_recv_job_entry(weak_self.clone());
+        clientconn_recv_job_entry(weak_self.clone(), channel.clone());
     };
     let recv_job: Arc<OneTimeJob> =
         Arc::<OneTimeJob>::new(OneTimeJob::new(Box::new(job_fn)));
-    // Explicit unsize to `Arc<dyn Job>`; see the close-job comment in
-    // `Client::close` for why the facade queue is bounded on the erased type.
+    // Erase the job type for the worker command queue.
     let recv_job_erased: Arc<dyn crate::misc::Job> = recv_job;
     let pt: &Arc<PollThread> = &conn.poll_thread_worker_;
-    // SAFETY: foreign named-module boundary; the job handle is freshly built
-    // and uniquely owned here.
-    unsafe { pt.add(recv_job_erased) };
+    pt.add(recv_job_erased);
 }
 
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
-#[allow(clippy::explicit_auto_deref)]
-pub fn clientconn_fiber_channel_ptr(slot: &Option<Box<FiberChannel>>) -> *mut FiberChannel {
-    // The borrow is taken into a named reference first, and it keeps the
-    // explicit `&**` (the `Box` deref must be written out; the emitter does
-    // not insert Rust's deref coercion). Written inline as
-    // `&**slot.as_ref().unwrap() as *const FiberChannel`, the emitter drops
-    // the leading `&` and casts the DEREFERENCED value to a pointer type.
-    let borrowed: &FiberChannel = &**slot.as_ref().unwrap();
-    (borrowed as *const FiberChannel).cast_mut()
-}
-
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
-#[allow(clippy::explicit_auto_deref)]
 pub fn clientconn_run_recv_loop(conn: &ClientConnection) {
-    let fc: *mut FiberChannel;
-    {
-        let guard = conn.fiber_channel_.lock().unwrap();
-        if (*guard).is_none() {
-            return;
-        }
-        fc = clientconn_fiber_channel_ptr(&*guard);
+    if let Some(channel) = conn.fiber_channel() {
+        clientconn_run_recv_loop_on_channel(conn, channel);
     }
+}
+
+#[allow(clippy::explicit_auto_deref)]
+pub fn clientconn_run_recv_loop_on_channel(conn: &ClientConnection, channel: Arc<Box<FiberChannel>>) {
     loop {
-        // SAFETY: `fc` points at the stable boxed channel retained by this
-        // connection for the lifetime of the receive loop.
-        let frame_opt: Option<OwnedFrame> = unsafe { (*fc).recv_frame() };
+        let fiber: &FiberChannel = &**channel;
+        let frame_opt: Option<OwnedFrame> = fiber.recv_frame();
+        let generation = {
+            let lifecycle = conn.lifecycle_.lock().unwrap();
+            let current = conn.fiber_channel();
+            if !lifecycle.active || current.is_none() {
+                return;
+            }
+            if Arc::as_ptr(current.as_ref().unwrap()) != Arc::as_ptr(&channel) {
+                return;
+            }
+            lifecycle.generation
+        };
         if frame_opt.is_none() {
-            // Channel closed. Run the close-side fan-out (sub-leaf 4d):
-            // cancel pending futures with CLIENT_ERR_NOT_CONNECTED, fire error /
-            // disconnected callbacks, and trigger auto-reconnect if the
-            // policy allows. The fiber then exits, dropping its
-            // Arc<ClientConnection> capture.
-            conn.on_channel_closed_fan_out();
+            conn.on_binding_closed(generation);
             return;
         }
         let frame = frame_opt.unwrap();
-        conn.decode_response_and_notify(frame.bytes.as_ptr(), frame.bytes.len());
+        clientconn_decode_response_for_binding(conn, generation, frame.bytes.as_ptr(), frame.bytes.len());
     }
 }
 
@@ -2809,90 +2918,79 @@ pub fn clientconn_run_recv_loop(conn: &ClientConnection) {
 #[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap, clippy::not_unsafe_ptr_arg_deref)]
 pub fn clientconn_decode_response_and_notify(conn: &ClientConnection,
                                          bytes: *const u8, size: usize) {
-    // Account for every inbound frame body byte and bump the activity
-    // clock so metrics_.bytes_received() and is_idle() reflect real
-    // I/O regardless of which dispatch slot the reply maps onto.
-    conn.on_response_received(size);
+    let generation = conn.lifecycle_.lock().unwrap().generation;
+    clientconn_decode_response_for_binding(conn, generation, bytes, size);
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+fn clientconn_decode_response_for_binding(conn: &ClientConnection, generation: u64,
+                                        bytes: *const u8, size: usize) {
     let mut src = BufferSource::new(bytes, size);
     let mut ar = BinaryReadArchive { source_: client_source_proxy(&mut src) };
-
-    let mut v_reply_xid = v64::new(0i64);
-    let mut v_error_code = v32::new(0i32);
-    // In channel mode the extended-header flag is consumed by the
-    // framing layer; the server always emits the extended form.
-    let mut v_server_instance_id = v64::new(0i64);
-    // SAFETY: foreign named-module serialization boundary; both borrows
-    // are held only for the duration of the call.
-    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_reply_xid, &mut ar) };
-    // SAFETY: foreign named-module serialization boundary; both borrows
-    // are held only for the duration of the call.
-    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_error_code, &mut ar) };
-    // SAFETY: foreign named-module serialization boundary; both borrows
-    // are held only for the duration of the call.
-    unsafe { cpp_serializable::Deserialize_::deserialize(&mut v_server_instance_id, &mut ar) };
-    conn.check_server_instance(v_server_instance_id.get() as u64);
-
-    let parsed_header_size: usize = src.pos();
-    let response_payload_bytes: usize = size - parsed_header_size;
-    conn.heartbeat_manager_.on_pong_received();
-
+    let mut xid = v64::new(0);
+    let mut error = v32::new(0);
+    let mut server_id = v64::new(0);
+    crate::serializable::Deserialize_::deserialize(&mut xid, &mut ar);
+    crate::serializable::Deserialize_::deserialize(&mut error, &mut ar);
+    crate::serializable::Deserialize_::deserialize(&mut server_id, &mut ar);
+    let header_size = src.pos();
+    let payload_size = size - header_size;
+    let callback: Option<AsyncReplyCallback>;
+    let mut future: Option<Arc<Future>> = None;
+    let mut restart: Option<Arc<Mutex<OnServerRestartCallbackFn>>> = None;
+    let old_server_id;
+    let new_server_id = server_id.get() as u64;
     {
-        let slot: usize = (v_reply_xid.get() as usize) % kAsyncSlotCount;
-        let mut cb_opt: Option<AsyncReplyCallback> = None;
-        {
-            let mut guard = conn.pending_cb_slots_.lock().unwrap();
-            if (*guard)[slot].is_some() {
-                cb_opt = core::mem::take(&mut (*guard)[slot]);
+        let lifecycle = conn.lifecycle_.lock().unwrap();
+        if !lifecycle.active || lifecycle.generation != generation {
+            return;
+        }
+        conn.on_response_received(size);
+        old_server_id = conn.server_instance_id_.get();
+        conn.server_instance_id_.set(new_server_id);
+        if old_server_id != 0 && old_server_id != new_server_id {
+            restart = Some(conn.on_server_restart_.lock().unwrap().clone());
+        }
+        conn.heartbeat_manager_.on_pong_received();
+        let slot = (xid.get() as usize) % kAsyncSlotCount;
+        callback = conn.pending_cb_slots_.lock().unwrap()[slot].take();
+        if callback.is_none() {
+            future = conn.pending_fu_.lock().unwrap().remove(&xid.get());
+        }
+        if let Some(future) = &future {
+            client_verify(future.xid_ == xid.get());
+            future.error_code_.set(error.get());
+            if payload_size > 0 {
+                let mut reply = future.reply_.lock().unwrap();
+                reply_buffer_fill(&mut reply, unsafe {
+                    core::slice::from_raw_parts(bytes.add(header_size), payload_size)
+                });
             }
         }
-        if cb_opt.is_some() {
-            let mut cb = cb_opt.unwrap();
-            let err_code: i32 = v_error_code.get();
-            if err_code == 0i32 {
+        if callback.is_some() || future.is_some() {
+            if error.get() == 0 {
                 conn.metrics_.record_request_completed();
             } else {
                 conn.metrics_.record_request_failed();
             }
-            conn.record_circuit_result(err_code);
-            cb(err_code, unsafe { bytes.add(parsed_header_size) },
-               response_payload_bytes);
-            return;
+            conn.record_circuit_result(error.get());
         }
     }
-
-    let mut fu_opt: Option<Arc<Future>> = None;
-    {
-        let mut guard = conn.pending_fu_.lock().unwrap();
-        let fu_ptr = (*guard).get(&v_reply_xid.get());
-        if fu_ptr.is_some() {
-            fu_opt = Some(fu_ptr.unwrap().clone());
-            (*guard).remove(&v_reply_xid.get());
+    // All mutable connection effects and completion ownership were selected
+    // under lifecycle. A restart callback may now reconnect without an old
+    // frame removing that replacement's future or updating its heartbeat.
+    if let Some(restart) = restart {
+        let mut handler = restart.lock().unwrap();
+        if !handler.is_empty() {
+            (*handler)(old_server_id, new_server_id);
         }
     }
-
-    if fu_opt.is_some() {
-        let fu = fu_opt.unwrap();
-        client_verify((*fu).xid_ == v_reply_xid.get());
-        (*fu).error_code_.set(v_error_code.get());
-        if response_payload_bytes > 0usize {
-            let mut rb_guard = (*fu).reply_.borrow_mut();
-            reply_buffer_fill(&mut *rb_guard, unsafe {
-                core::slice::from_raw_parts(
-                    bytes.add(parsed_header_size),
-                    response_payload_bytes)
-            });
-        }
-        if v_error_code.get() == 0i32 {
-            conn.metrics_.record_request_completed();
-        } else {
-            conn.metrics_.record_request_failed();
-        }
-        conn.record_circuit_result(v_error_code.get());
-        (*fu).notify_ready(fu.clone());
+    if let Some(mut callback) = callback {
+        callback(error.get(), unsafe { bytes.add(header_size) }, payload_size);
     }
-    // No matching future (timed out or replaced) -> drop the payload.
-    // With channel-mode framing the input bytes are owned by the
-    // caller and freed on return -- nothing to drain.
+    if let Some(future) = future {
+        future.notify_ready(future.clone());
+    }
 }
 
 pub fn clientconn_map_system_error(err: i32) -> RpcError {
@@ -3170,14 +3268,12 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
     total_closed
 }
 
-// The `const int8_t*` the srpc wire type wants is spelled `addr.c_str()
-// as *const i8`, which lowers to the same reinterpret_cast the old
-// kernel wrote by hand. (The historical carrier kept caller and callee in
-// one inline-Rust region; the canonical file has no regions.)
-// clippy::unnecessary_cast -- measured: drops the emitted rusty::detail::ptr_cast<const int8_t*>. See the Task-2 measurement block above.
-#[allow(clippy::unnecessary_cast)]
+// The owned NUL terminator keeps the C address valid for the synchronous
+// connect call in Rust and generated C++ alike.
 pub fn clientpool_connect_client(client: &Arc<Client>, addr: &LegacyStdString) -> i32 {
-    client.connect(addr.c_str() as *const i8, true)
+    let mut address_bytes = addr.as_bytes().to_vec();
+    address_bytes.push(0u8);
+    client.connect(address_bytes.as_ptr() as *const i8, true)
 }
 
 // clippy::ptr_arg -- measured: changes the exported clientpool_select signature from const rusty::Vec<..>& to std::span<..>. See the Task-2 measurement block above.

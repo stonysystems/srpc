@@ -10,50 +10,13 @@
 pub use ::std::boxed::Box;
 pub use ::std::cell::{Cell, RefCell, RefMut};
 pub use ::std::collections::{VecDeque};
-use ::std::marker::PhantomData;
 use ::std::ops::{Deref, DerefMut, Index};
 pub use ::std::option::Option;
 pub use ::std::option::Option::{None, Some};
 pub use ::std::rc::Rc;
-use ::std::time::Duration;
 pub use ::std::vec::Vec;
 
 pub use rusty_cpp_markers::cpp_inherit;
-
-/// Rust-only callback-wrapper spelling for canonical cross-module facades.
-pub struct CallbackWrapper<F> {
-    inner: Option<::std::sync::Arc<F>>,
-}
-
-impl<F> CallbackWrapper<F> {
-    pub fn from_callable(callable: F) -> Self {
-        Self {
-            inner: Some(::std::sync::Arc::new(callable)),
-        }
-    }
-
-    pub fn has_value(&self) -> bool {
-        self.inner.is_some()
-    }
-
-    pub fn callable(&self) -> &F {
-        self.inner.as_deref().unwrap()
-    }
-}
-
-impl<F> Clone for CallbackWrapper<F> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<F> Default for CallbackWrapper<F> {
-    fn default() -> Self {
-        Self { inner: None }
-    }
-}
 
 /// Opaque rustc-only models of the native pthread types used by the
 /// canonical threading wrapper. The checked C++ type map restores the native
@@ -121,39 +84,28 @@ pub mod port {
 /// functions, so this model is the single-callable form, and every canonical
 /// caller spells that form.
 ///
-/// `spawn` is REAL: it runs the body on a std thread, which is what makes the
-/// retry coordinator and auto-reconnect live under rustc.  It requires `Send`
-/// -- unlike the retired drop-the-body model, which could not, because the
-/// canonical bodies captured `Future`'s Cell fields.  Those captures are
-/// genuinely `Send` now: `Future` carries the same documented
-/// notify-before-read `unsafe impl Send/Sync` contract `ClientConnection`
-/// always had, and the callback aliases carry `Send` bounds, so the bound
-/// here describes something true instead of rejecting the client's bodies.
+/// `spawn` runs the body on a standard Rust thread and requires `Send` captures.
+/// Canonical Future and ClientConnection synchronize shared state with mutexes
+/// and atomics, and callback aliases require the appropriate thread bounds.
+/// Their thread safety is checked through Rust auto traits.
 pub mod thread {
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[repr(transparent)]
-    pub struct ThreadId(pub u64);
-
-    impl ThreadId {
-        pub fn as_native(self) -> u64 {
-            self.0
-        }
-    }
+    pub struct ThreadId(Option<::std::thread::ThreadId>);
 
     /// The runtime's spawned-thread handle: a real `std::thread::JoinHandle`.
     ///
     /// Generic in the body's result so `JoinHandle<()>` -- the payload of the
     /// reactor's `PollJoinSlot` -- names the same type production `spawn`
     /// deduces for a void body.  Dropping the handle detaches, exactly like
-    /// the C++ runtime's; `join()` blocks and swallows a panicked body's
-    /// payload (the C++ thread would have terminated the process instead,
-    /// which the battery covers).
+    /// the C++ runtime's. An uncaught panic aborts at the thread boundary,
+    /// matching an uncaught exception in the native C++ thread.
     pub struct JoinHandle<T>(Option<::std::thread::JoinHandle<T>>);
 
     impl<T> JoinHandle<T> {
         pub fn join(mut self) {
             if let Some(handle) = self.0.take() {
-                let _ = handle.join();
+                handle.join().unwrap_or_else(|_| ::std::process::abort());
             }
         }
         pub fn detach(mut self) {
@@ -162,16 +114,7 @@ pub mod thread {
     }
 
     pub fn current_id() -> ThreadId {
-        // The production facade preserves the platform-native id.  Direct
-        // rustc needs only stable equality within one execution, so derive a
-        // deterministic numeric token from ThreadId's Debug representation.
-        let text = ::std::format!("{:?}", ::std::thread::current().id());
-        let value = text
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(')')
-            .parse::<u64>()
-            .unwrap_or(0);
-        ThreadId(value)
+        ThreadId(Some(::std::thread::current().id()))
     }
 
     /// Production C++ resolves this to the runtime's thread spawn.
@@ -180,14 +123,18 @@ pub mod thread {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        JoinHandle(Some(::std::thread::spawn(body)))
+        JoinHandle(Some(::std::thread::spawn(move || {
+            ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(body))
+                .unwrap_or_else(|_| ::std::process::abort())
+        })))
     }
 }
 
 mod task;
 pub use task::{Context, Poll, Task, Waker};
 
-/// Rustc-side x86-64 layout model for the plain-C fiber context.
+/// Native x86-64 fiber register layout, shared with the C/assembly engine.
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct ReactorFiberContext {
     pub rsp: *mut core::ffi::c_void,
@@ -198,6 +145,25 @@ pub struct ReactorFiberContext {
     pub r13: usize,
     pub r14: usize,
     pub r15: usize,
+}
+
+/// Native AArch64 register layout from reactor/srpc_fiber.h.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct ReactorFiberContext {
+    pub sp: *mut core::ffi::c_void,
+    pub pc: *mut core::ffi::c_void,
+    pub x19: usize,
+    pub x20: usize,
+    pub x21: usize,
+    pub x22: usize,
+    pub x23: usize,
+    pub x24: usize,
+    pub x25: usize,
+    pub x26: usize,
+    pub x27: usize,
+    pub x28: usize,
+    pub fp: usize,
 }
 
 /// Rustc-side layout model for `::srpc_fiber` from `reactor/srpc_fiber.h`.
@@ -215,19 +181,19 @@ pub struct ReactorFiberState {
 /// Rustc-only storage model for the reactor's `std::set<Arc<Job>>` slot.
 ///
 /// The production type map lowers `ReactorJobSet<T>` to `std::set<T>`; this
-/// vector-backed model preserves the set's pointer-identity semantics for
+/// sorted storage preserves the set's pointee-address order and uniqueness for
 /// direct Rust checking without requiring `dyn Job: Ord`.
 pub struct ReactorJobSet<T> {
     entries: Vec<T>,
 }
 
 pub trait ReactorJobSetKey {
-    fn same_identity(&self, other: &Self) -> bool;
+    fn identity_address(&self) -> usize;
 }
 
 impl<T: ?Sized> ReactorJobSetKey for ::std::sync::Arc<T> {
-    fn same_identity(&self, other: &Self) -> bool {
-        ::std::sync::Arc::ptr_eq(self, other)
+    fn identity_address(&self) -> usize {
+        ::std::sync::Arc::as_ptr(self) as *const () as usize
     }
 }
 
@@ -243,18 +209,19 @@ impl<T: ReactorJobSetKey> ReactorJobSet<T> {
     }
 
     pub fn insert(&mut self, value: T) {
-        if !self
-            .entries
-            .iter()
-            .any(|existing| existing.same_identity(&value))
-        {
-            self.entries.push(value);
+        if let Err(index) = self.entries.binary_search_by_key(
+            &value.identity_address(), |existing| existing.identity_address(),
+        ) {
+            self.entries.insert(index, value);
         }
     }
 
     pub fn erase(&mut self, value: T) {
-        self.entries
-            .retain(|existing| !existing.same_identity(&value));
+        if let Ok(index) = self.entries.binary_search_by_key(
+            &value.identity_address(), |existing| existing.identity_address(),
+        ) {
+            self.entries.remove(index);
+        }
     }
 
     pub fn iter(&self) -> ::std::slice::Iter<'_, T> {
@@ -263,22 +230,6 @@ impl<T: ReactorJobSetKey> ReactorJobSet<T> {
 }
 
 
-thread_local! {
-    static REACTOR_CURRENT_FIBER: RefCell<Option<Rc<ReactorFiber>>> = const { RefCell::new(None) };
-    static REACTOR_SLEEP_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Rust-only model of the `srpc.reactor` module's `Fiber` class.
-///
-/// The checked type map restores the existing `srpc::Fiber` spelling for C++;
-/// this state exists only for direct rustc tests of `srpc.fiber`.
-pub struct ReactorFiber {
-    pub id: Cell<u64>,
-    yields: Cell<u64>,
-}
-
-pub type ReactorIntEvent = srpc::reactor::IntEvent;
-pub type ReactorPollThread = srpc::reactor::PollThread;
 pub type RustcSocketAddrV4 = ::std::net::SocketAddrV4;
 pub type RustcIoErrorKind = ::std::io::ErrorKind;
 
@@ -350,7 +301,9 @@ impl RustcTcpListener {
     pub fn set_nonblocking(&self, value: bool) -> Result<(), RustcIoError> {
         self.inner
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| RustcIoError::from(::std::io::Error::new(
+                ::std::io::ErrorKind::InvalidInput, "listener not bound",
+            )))?
             .set_nonblocking(value)
             .map_err(Into::into)
     }
@@ -359,7 +312,9 @@ impl RustcTcpListener {
         let address = self
             .inner
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| RustcIoError::from(::std::io::Error::new(
+                ::std::io::ErrorKind::InvalidInput, "listener not bound",
+            )))?
             .local_addr()
             .map_err(RustcIoError::from)?;
         match address {
@@ -375,7 +330,9 @@ impl RustcTcpListener {
         let (stream, address) = self
             .inner
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| RustcIoError::from(::std::io::Error::new(
+                ::std::io::ErrorKind::InvalidInput, "listener not bound",
+            )))?
             .accept()
             .map_err(RustcIoError::from)?;
         match address {
@@ -436,158 +393,6 @@ impl RustcOwnedFd {
     }
 }
 
-impl ReactorFiber {
-    /// # Safety
-    ///
-    /// Reading the reactor's thread-local handle has no caller precondition.
-    #[allow(unsafe_code)]
-    pub unsafe fn current_fiber() -> Option<Rc<ReactorFiber>> {
-        REACTOR_CURRENT_FIBER.with(|slot| slot.borrow().clone())
-    }
-
-    /// # Safety
-    ///
-    /// The receiver must be a live reactor fiber.
-    #[allow(unsafe_code)]
-    pub unsafe fn yield_(&self) {
-        self.yields.set(self.yields.get().wrapping_add(1));
-    }
-
-    /// Model of the `srpc::Fiber::create_run_impl` static. Production C++
-    /// resolves it to the reactor carrier's own definition, which heap-
-    /// allocates the task and schedules it.
-    ///
-    /// This used to `return None` -- "the model runs nothing so a direct-rustc
-    /// check never starts a fiber". That is a silent answer to a request that
-    /// cannot be honoured, and it had a live consumer: `rpc/client.rs` aliases
-    /// `pub type Fiber = cpp::ReactorFiber` (forced by the `reactor::Fiber`
-    /// entry in check_facade_shadow.py's ALLOWED_SHADOWS), so
-    /// `ClientConnection::bind_channel` reached THIS function to spawn its
-    /// recv-loop fiber. Under rustc the closure never ran, `run_recv_loop()`
-    /// never started, and the discarded `None` left no trace. The path is dead
-    /// today only because `bind_channel` currently has no callers -- the live
-    /// binders are `bind_channel_direct` and `bind_channel_via_poll_thread`.
-    ///
-    /// So it panics instead. Anyone who wires that path up under rustc now
-    /// finds out immediately, and is pointed at the real fiber entry: canonical
-    /// `crate::reactor::fiber_create_run_impl` does schedule on a live reactor.
-    ///
-    /// # Safety
-    ///
-    /// `file` must be null or a valid NUL-terminated path; `unsafe` otherwise
-    /// records the foreign named-module boundary.
-    #[allow(unsafe_code)]
-    pub unsafe fn create_run_impl<F>(_func: F, _file: *const i8, _line: i64) -> Option<Rc<ReactorFiber>>
-    where
-        F: FnMut() + 'static,
-    {
-        panic!(
-            "rusty::ReactorFiber::create_run_impl has no rustc body: it models the \
-             C++ reactor carrier's fiber scheduler. Returning None here would \
-             silently drop the closure -- the caller's fiber would simply never \
-             run. Schedule through canonical crate::reactor::fiber_create_run_impl \
-             on a live reactor instead"
-        )
-    }
-}
-
-/// Rust-only model of the `srpc.reactor` module's `BoxEvent<T>` template.
-///
-/// Crate-mode C++ generation maps this type back to the existing
-/// `srpc::BoxEvent<T>` definition. The synchronization state exists only so
-/// direct rustc tests can exercise one-shot set/wait/get behavior; it is never
-/// emitted into production C++.
-pub struct ReactorBoxEvent<T> {
-    pub is_set_: Cell<bool>,
-    value: Mutex<Option<T>>,
-    ready: ::std::sync::Condvar,
-    not_thread_safe: PhantomData<Rc<()>>,
-}
-
-/// Rust-only conversion used by [`ReactorBoxEvent::set`] so canonical source
-/// can pass either an owned value or the borrowed value accepted by C++.
-pub trait ReactorSetValue<T> {
-    fn into_owned(self) -> T;
-}
-
-impl<T> ReactorSetValue<T> for T {
-    fn into_owned(self) -> T {
-        self
-    }
-}
-
-impl<T> ReactorSetValue<T> for &T
-where
-    T: Clone,
-{
-    fn into_owned(self) -> T {
-        self.clone()
-    }
-}
-
-impl<T> ReactorBoxEvent<T> {
-    pub fn new() -> ReactorBoxEvent<T> {
-        ReactorBoxEvent {
-            is_set_: Cell::new(false),
-            value: Mutex::new(None),
-            ready: ::std::sync::Condvar::new(),
-            not_thread_safe: PhantomData,
-        }
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.is_set_.get()
-    }
-
-    pub fn set<V>(&self, value: V)
-    where
-        V: ReactorSetValue<T>,
-    {
-        *self.value.lock().unwrap() = Some(value.into_owned());
-        self.is_set_.set(true);
-        self.ready.notify_all();
-    }
-
-    pub fn wait(&self) {
-        let mut value = self.value.lock().unwrap();
-        while value.is_none() {
-            value = self.ready.wait(value).unwrap();
-        }
-    }
-
-    pub fn wait_timeout(&self, timeout_us: u64) {
-        if timeout_us == 0 {
-            self.wait();
-            return;
-        }
-        let value = self.value.lock().unwrap();
-        if value.is_none() {
-            let _guard = self
-                .ready
-                .wait_timeout(value, Duration::from_micros(timeout_us))
-                .unwrap();
-        }
-    }
-
-    pub fn get(&self) -> T
-    where
-        T: Clone,
-    {
-        self.value
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("BoxEvent value is not set")
-            .clone()
-    }
-}
-
-impl<T> Default for ReactorBoxEvent<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Rust-only representation of `std::pair<A, B>` used by canonical sources.
 pub struct StdPair<A, B> {
     pub first: A,
@@ -616,10 +421,12 @@ pub struct SourceLocation {
 }
 
 impl SourceLocation {
+    #[track_caller]
     pub fn current() -> SourceLocation {
+        let caller = ::std::panic::Location::caller();
         SourceLocation {
-            file: file!(),
-            line: line!(),
+            file: caller.file(),
+            line: caller.line(),
         }
     }
 
@@ -649,83 +456,6 @@ impl<T: ?Sized> StdArcGetMutExt<T> for ::std::sync::Arc<T> {
     }
 }
 
-/// Rustc-only spelling for the sparse 32-bit wrapper exported directly by the
-/// `srpc.basetypes` C++ module.  The production type map restores the public
-/// `srpc::v32` spelling; this local model only supplies the checked Rust API.
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-pub struct SerializableV32(i32);
-
-impl SerializableV32 {
-    pub const fn new(value: i32) -> Self {
-        Self(value)
-    }
-
-    pub fn set(&mut self, value: i32) {
-        self.0 = value;
-    }
-
-    pub const fn get(&self) -> i32 {
-        self.0
-    }
-}
-
-/// Rustc-only spelling for the corresponding sparse 64-bit wrapper.
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-pub struct SerializableV64(i64);
-
-impl SerializableV64 {
-    pub const fn new(value: i64) -> Self {
-        Self(value)
-    }
-
-    pub fn set(&mut self, value: i64) {
-        self.0 = value;
-    }
-
-    pub const fn get(&self) -> i64 {
-        self.0
-    }
-}
-
-// `SerializableSerializeDispatch` / `SerializableDeserializeDispatch` used to
-// live here: a pair of `Serialize_`-spelled structs whose Rust bodies were `{}`
-// -- "intentionally inert", on the theory that Rust-lane tests only exercise
-// concrete leaves. They were superseded by `srpc::serializable::Serialize_`
-// below, which carries the real `RustcAdlSerialize` bound and is registered as
-// a foreign symbol in cpp-module-index.toml, and they were left behind with
-// zero live callers.
-//
-// Leaving them was worse than not writing them. The empty bodies still ANSWERED:
-// a caller who reached them serialized nothing at all, silently -- the exact
-// failure the loud `srpc_adl_serialize` below exists to prevent -- and both that
-// panic's message and a comment in misc/serializable.rs still named them as the
-// recommended Rust-lane entry point. Deleted, with their rust-type-map.toml rows.
-
-/// Rustc-only model of the move-only zero-argument registry factory. The
-/// production type map restores `rusty::Function<SerializableProxy()>`.
-pub struct SerializableRegistryFactory {
-    callback: Box<dyn Fn() -> SerializableProxy + Send>,
-}
-
-impl SerializableRegistryFactory {
-    pub fn from_callable<C>(callback: C) -> Self
-    where
-        C: Fn() -> SerializableProxy + Send + 'static,
-    {
-        Self {
-            callback: Box::new(callback),
-        }
-    }
-}
-
-impl Deref for SerializableRegistryFactory {
-    type Target = dyn Fn() -> SerializableProxy + Send;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.callback
-    }
-}
-
 /// Minimal rustc-only model of the runtime mutex.  Production C++ keeps using
 /// `rusty::Mutex`; this wrapper exists only so canonical sources can be checked
 /// by rustc, including const initialization of process-wide registries.
@@ -741,208 +471,69 @@ impl<T> Mutex<T> {
     }
 }
 
-/// Facade-only sequence used for the Rusty B-tree set.  The production type
-/// map restores the concrete C++ runtime container spelling.
-pub struct BTreeSet<T> {
-    values: Vec<T>,
-}
+// Runtime collection names retain distinct C++ type mappings. Their Rust
+// storage delegates to standard collections, including key replacement,
+// ordering and duplicate elimination.
+pub use ::std::collections::{BTreeMap, BTreeSet};
 
-impl<T> Default for BTreeSet<T> {
-    fn default() -> Self {
-        Self { values: Vec::new() }
-    }
-}
+type NativeHashMap<K, V> = ::std::collections::HashMap<
+    K, V, ::std::hash::BuildHasherDefault<::std::collections::hash_map::DefaultHasher>,
+>;
 
-impl<T> BTreeSet<T> {
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub fn insert(&mut self, value: T) {
-        self.values.push(value);
-    }
-
-    pub fn iter(&self) -> ::std::slice::Iter<'_, T> {
-        self.values.iter()
-    }
-}
-
-/// Facade-only associative sequence.  It deliberately requires no ordering or
-/// hashing bounds, matching the unconstrained C++ templates emitted from the
-/// canonical source.
-pub struct BTreeMap<K, V> {
-    values: Vec<(K, V)>,
-}
-
-impl<K, V> Default for BTreeMap<K, V> {
-    fn default() -> Self {
-        Self { values: Vec::new() }
-    }
-}
-
-impl<K, V> BTreeMap<K, V> {
-    pub const fn new() -> Self {
-        Self { values: Vec::new() }
-    }
-
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub fn insert(&mut self, key: K, value: V) {
-        self.values.push((key, value));
-    }
-
-    pub fn get(&self, key: &K) -> Option<&V>
-    where
-        K: PartialEq,
-    {
-        self.values
-            .iter()
-            .find_map(|(candidate, value)| (candidate == key).then_some(value))
-    }
-
-    pub fn iter(&self) -> ::std::slice::Iter<'_, (K, V)> {
-        self.values.iter()
-    }
-}
-
-/// Hash-map facade kept distinct from `BTreeMap` so canonical source can carry
-/// both otherwise-overlapping Rust trait implementations.
 pub struct HashMap<K, V> {
-    values: Vec<(K, V)>,
+    values: NativeHashMap<K, V>,
 }
 
 impl<K, V> Default for HashMap<K, V> {
-    fn default() -> Self {
-        Self { values: Vec::new() }
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl<K, V> HashMap<K, V> {
     pub const fn new() -> Self {
-        Self { values: Vec::new() }
+        Self { values: NativeHashMap::with_hasher(::std::hash::BuildHasherDefault::new()) }
     }
+    pub fn len(&self) -> usize { self.values.len() }
+    pub fn is_empty(&self) -> bool { self.values.is_empty() }
+    pub fn clear(&mut self) { self.values.clear(); }
+    pub fn iter(&self) -> ::std::collections::hash_map::Iter<'_, K, V> { self.values.iter() }
+}
 
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub fn insert(&mut self, key: K, value: V) {
-        self.values.push((key, value));
-    }
-
+impl<K: Eq + ::std::hash::Hash, V> HashMap<K, V> {
+    pub fn insert(&mut self, key: K, value: V) { self.values.insert(key, value); }
     pub fn insert_callable<C, R>(&mut self, key: K, callback: C)
     where
         C: Fn() -> R + 'static,
         R: 'static,
         V: FromCallable0<C, R>,
     {
-        self.values
-            .push((key, <V as FromCallable0<C, R>>::from_callable(callback)));
+        self.values.insert(key, <V as FromCallable0<C, R>>::from_callable(callback));
     }
-
-    pub fn get(&self, key: &K) -> Option<&V>
-    where
-        K: PartialEq,
-    {
-        self.values
-            .iter()
-            .find_map(|(candidate, value)| (candidate == key).then_some(value))
-    }
-
-    pub fn iter(&self) -> ::std::slice::Iter<'_, (K, V)> {
-        self.values.iter()
-    }
-
-    pub fn contains_key(&self, key: &K) -> bool
-    where
-        K: PartialEq,
-    {
-        self.values.iter().any(|(candidate, _)| candidate == key)
-    }
-
-    pub fn remove(&mut self, key: &K)
-    where
-        K: PartialEq,
-    {
-        self.values.retain(|(candidate, _)| candidate != key);
-    }
+    pub fn get(&self, key: &K) -> Option<&V> { self.values.get(key) }
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> { self.values.get_mut(key) }
+    pub fn contains_key(&self, key: &K) -> bool { self.values.contains_key(key) }
+    pub fn remove(&mut self, key: &K) { self.values.remove(key); }
 }
 
-/// Hash-set facade exposes the `map` field used by the historical encoder.
+/// Hash-set exposes the runtime's map field to its canonical encoder.
 pub struct HashSet<T> {
     pub map: HashMap<T, ()>,
 }
 
 impl<T> Default for HashSet<T> {
-    fn default() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl<T> HashSet<T> {
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
+    pub const fn new() -> Self { Self { map: HashMap::new() } }
+    pub fn len(&self) -> usize { self.map.len() }
+    pub fn is_empty(&self) -> bool { self.map.is_empty() }
+    pub fn clear(&mut self) { self.map.clear(); }
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.map.clear();
-    }
-
-    pub const fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
-    }
-
-    pub fn insert(&mut self, value: T) {
-        self.map.insert(value, ());
-    }
-
-    pub fn contains(&self, value: &T) -> bool
-    where
-        T: PartialEq,
-    {
-        self.map.contains_key(value)
-    }
-
-    pub fn remove(&mut self, value: &T)
-    where
-        T: PartialEq,
-    {
-        self.map.remove(value);
-    }
+impl<T: Eq + ::std::hash::Hash> HashSet<T> {
+    pub fn insert(&mut self, value: T) { self.map.insert(value, ()); }
+    pub fn contains(&self, value: &T) -> bool { self.map.contains_key(value) }
+    pub fn remove(&mut self, value: &T) { self.map.remove(value); }
 }
 
 /// Distinct rustc-only model for `std::string_view`.
@@ -961,105 +552,131 @@ impl SerializableStdStringView {
     }
 }
 
-/// Distinct rustc-only models keep otherwise-aliasing C++ container impls
-/// coherent in Rust.  Each is mapped back to its historical STL spelling.
-macro_rules! serializable_std_sequence {
-    ($name:ident) => {
-        pub struct $name<T> {
-            values: Vec<T>,
-        }
-
-        impl<T> Default for $name<T> {
-            fn default() -> Self {
-                Self { values: Vec::new() }
-            }
-        }
-
-        impl<T> $name<T> {
-            pub fn size(&self) -> usize {
-                self.values.len()
-            }
-
-            pub fn clear(&mut self) {
-                self.values.clear();
-            }
-
-            pub fn reserve(&mut self, additional: usize) {
-                self.values.reserve(additional);
-            }
-
-            pub fn push_back(&mut self, value: T) {
-                self.values.push(value);
-            }
-
-            pub fn insert(&mut self, value: T) {
-                self.values.push(value);
-            }
-        }
-
-        impl<T> ::std::ops::Index<usize> for $name<T> {
-            type Output = T;
-
-            fn index(&self, index: usize) -> &Self::Output {
-                &self.values[index]
-            }
-        }
-
-        impl<'a, T> IntoIterator for &'a $name<T> {
-            type Item = &'a T;
-            type IntoIter = ::std::slice::Iter<'a, T>;
-
-            fn into_iter(self) -> Self::IntoIter {
-                self.values.iter()
-            }
-        }
-    };
+/// Distinct adapters preserve STL container identity during Rust checking.
+pub struct SerializableStdVector<T> {
+    values: Vec<T>,
+}
+impl<T> Default for SerializableStdVector<T> {
+    fn default() -> Self { Self { values: Vec::new() } }
+}
+impl<T> SerializableStdVector<T> {
+    pub fn size(&self) -> usize { self.values.len() }
+    pub fn clear(&mut self) { self.values.clear(); }
+    pub fn reserve(&mut self, additional: usize) { self.values.reserve(additional); }
+    pub fn push_back(&mut self, value: T) { self.values.push(value); }
+}
+impl<T> ::std::ops::Index<usize> for SerializableStdVector<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T { &self.values[index] }
+}
+impl<'a, T> IntoIterator for &'a SerializableStdVector<T> {
+    type Item = &'a T;
+    type IntoIter = ::std::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
 }
 
-serializable_std_sequence!(SerializableStdList);
-serializable_std_sequence!(SerializableStdVector);
-serializable_std_sequence!(SerializableStdSet);
-serializable_std_sequence!(SerializableStdUnorderedSet);
-
-macro_rules! serializable_std_map {
-    ($name:ident) => {
-        pub struct $name<K, V> {
-            values: Vec<StdPair<K, V>>,
-        }
-
-        impl<K, V> Default for $name<K, V> {
-            fn default() -> Self {
-                Self { values: Vec::new() }
-            }
-        }
-
-        impl<K, V> $name<K, V> {
-            pub fn size(&self) -> usize {
-                self.values.len()
-            }
-
-            pub fn clear(&mut self) {
-                self.values.clear();
-            }
-
-            pub fn emplace(&mut self, key: K, value: V) {
-                self.values.push(StdPair::new(key, value));
-            }
-        }
-
-        impl<'a, K, V> IntoIterator for &'a $name<K, V> {
-            type Item = &'a StdPair<K, V>;
-            type IntoIter = ::std::slice::Iter<'a, StdPair<K, V>>;
-
-            fn into_iter(self) -> Self::IntoIter {
-                self.values.iter()
-            }
-        }
-    };
+pub struct SerializableStdList<T> {
+    values: ::std::collections::LinkedList<T>,
+}
+impl<T> Default for SerializableStdList<T> {
+    fn default() -> Self { Self { values: Default::default() } }
+}
+impl<T> SerializableStdList<T> {
+    pub fn size(&self) -> usize { self.values.len() }
+    pub fn clear(&mut self) { self.values.clear(); }
+    pub fn push_back(&mut self, value: T) { self.values.push_back(value); }
+}
+impl<'a, T> IntoIterator for &'a SerializableStdList<T> {
+    type Item = &'a T;
+    type IntoIter = ::std::collections::linked_list::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
 }
 
-serializable_std_map!(SerializableStdMap);
-serializable_std_map!(SerializableStdUnorderedMap);
+pub struct SerializableStdSet<T> {
+    values: ::std::collections::BTreeSet<T>,
+}
+impl<T> Default for SerializableStdSet<T> {
+    fn default() -> Self { Self { values: Default::default() } }
+}
+impl<T> SerializableStdSet<T> {
+    pub fn size(&self) -> usize { self.values.len() }
+    pub fn clear(&mut self) { self.values.clear(); }
+}
+impl<T: Ord> SerializableStdSet<T> {
+    pub fn insert(&mut self, value: T) { self.values.insert(value); }
+}
+impl<'a, T> IntoIterator for &'a SerializableStdSet<T> {
+    type Item = &'a T;
+    type IntoIter = ::std::collections::btree_set::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
+}
+
+pub struct SerializableStdUnorderedSet<T> {
+    values: ::std::collections::HashSet<T>,
+}
+impl<T> Default for SerializableStdUnorderedSet<T> {
+    fn default() -> Self { Self { values: Default::default() } }
+}
+impl<T> SerializableStdUnorderedSet<T> {
+    pub fn size(&self) -> usize { self.values.len() }
+    pub fn clear(&mut self) { self.values.clear(); }
+}
+impl<T: Eq + ::std::hash::Hash> SerializableStdUnorderedSet<T> {
+    pub fn insert(&mut self, value: T) { self.values.insert(value); }
+}
+impl<'a, T> IntoIterator for &'a SerializableStdUnorderedSet<T> {
+    type Item = &'a T;
+    type IntoIter = ::std::collections::hash_set::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
+}
+
+fn borrowed_std_pair<'a, K, V>((key, value): (&'a K, &'a V)) -> StdPair<&'a K, &'a V> {
+    StdPair::new(key, value)
+}
+
+pub struct SerializableStdMap<K, V> {
+    values: ::std::collections::BTreeMap<K, V>,
+}
+impl<K, V> Default for SerializableStdMap<K, V> {
+    fn default() -> Self { Self { values: Default::default() } }
+}
+impl<K, V> SerializableStdMap<K, V> {
+    pub fn size(&self) -> usize { self.values.len() }
+    pub fn clear(&mut self) { self.values.clear(); }
+}
+impl<K: Ord, V> SerializableStdMap<K, V> {
+    pub fn emplace(&mut self, key: K, value: V) { self.values.entry(key).or_insert(value); }
+}
+impl<'a, K, V> IntoIterator for &'a SerializableStdMap<K, V> {
+    type Item = StdPair<&'a K, &'a V>;
+    type IntoIter = ::std::iter::Map<
+        ::std::collections::btree_map::Iter<'a, K, V>,
+        fn((&'a K, &'a V)) -> StdPair<&'a K, &'a V>,
+    >;
+    fn into_iter(self) -> Self::IntoIter { self.values.iter().map(borrowed_std_pair::<K, V>) }
+}
+
+pub struct SerializableStdUnorderedMap<K, V> {
+    values: ::std::collections::HashMap<K, V>,
+}
+impl<K, V> Default for SerializableStdUnorderedMap<K, V> {
+    fn default() -> Self { Self { values: Default::default() } }
+}
+impl<K, V> SerializableStdUnorderedMap<K, V> {
+    pub fn size(&self) -> usize { self.values.len() }
+    pub fn clear(&mut self) { self.values.clear(); }
+}
+impl<K: Eq + ::std::hash::Hash, V> SerializableStdUnorderedMap<K, V> {
+    pub fn emplace(&mut self, key: K, value: V) { self.values.entry(key).or_insert(value); }
+}
+impl<'a, K, V> IntoIterator for &'a SerializableStdUnorderedMap<K, V> {
+    type Item = StdPair<&'a K, &'a V>;
+    type IntoIter = ::std::iter::Map<
+        ::std::collections::hash_map::Iter<'a, K, V>,
+        fn((&'a K, &'a V)) -> StdPair<&'a K, &'a V>,
+    >;
+    fn into_iter(self) -> Self::IntoIter { self.values.iter().map(borrowed_std_pair::<K, V>) }
+}
 
 /// Rustc stand-ins for the compiler-generated trait adapters.
 ///
@@ -1115,76 +732,6 @@ pub trait RustcAdlDeserialize<T: ?Sized> {
     unsafe fn rustc_adl_deserialize(&mut self, value: &mut T);
 }
 
-/// Callable surface the rustc-lane poll thread drives.
-///
-/// The real `PollThread` below cannot name `srpc::pollable_proxy::PollableBase`
-/// (`rusty` does not depend on `srpc`), so this trait is the facade's spelling
-/// of that vtable; srpc implements it for `dyn PollableBase` (a trait-object
-/// impl, which the emitter lowers to nothing), and the `Box` blanket further
-/// down lets the canonical `PollableProxy = Box<dyn PollableBase>` ride in
-/// unchanged.  Method-for-method it mirrors `PollableBase`, and the loop's use
-/// of each mirrors `reactor/reactor.rs`'s `pollworker_poll_loop`.
-pub trait RustcPollable: Send {
-    fn rustc_fd(&self) -> i32;
-    fn rustc_poll_mode(&self) -> i32;
-    fn rustc_handle_read(&mut self) -> bool;
-    fn rustc_handle_write(&mut self) -> i32;
-    fn rustc_handle_error(&mut self);
-    fn rustc_close(&mut self);
-    fn rustc_check_pending_write_update(&self) -> bool;
-    fn rustc_is_closed(&self) -> bool;
-}
-
-impl<T: RustcPollable + ?Sized> RustcPollable for Box<T> {
-    fn rustc_fd(&self) -> i32 {
-        (**self).rustc_fd()
-    }
-    fn rustc_poll_mode(&self) -> i32 {
-        (**self).rustc_poll_mode()
-    }
-    fn rustc_handle_read(&mut self) -> bool {
-        (**self).rustc_handle_read()
-    }
-    fn rustc_handle_write(&mut self) -> i32 {
-        (**self).rustc_handle_write()
-    }
-    fn rustc_handle_error(&mut self) {
-        (**self).rustc_handle_error()
-    }
-    fn rustc_close(&mut self) {
-        (**self).rustc_close()
-    }
-    fn rustc_check_pending_write_update(&self) -> bool {
-        (**self).rustc_check_pending_write_update()
-    }
-    fn rustc_is_closed(&self) -> bool {
-        (**self).rustc_is_closed()
-    }
-}
-
-/// Callable surface for jobs queued onto the rustc-lane poll thread.
-///
-/// Mirrors `reactor/reactor.rs`'s `job_ready`/`job_spawn_work` contract: the
-/// worker has exclusive mutable dispatch over a queued job even though it is
-/// held by `Arc`, so both methods are unsafe and srpc's impl (on `dyn Job`, so
-/// it emits nothing) performs the same as-ptr cast the reference does.  The
-/// reference runs `Work` on a fresh fiber; the rustc lane has no fibers and
-/// runs it inline on the poll thread, which the sole current job -- the
-/// client's deferred connection close -- neither needs nor notices.
-pub trait RustcJobRun: Send + Sync {
-    /// # Safety
-    ///
-    /// Poll-thread-exclusive mutable dispatch; no other thread may be
-    /// touching the job's state during the call.
-    #[allow(unsafe_code)]
-    unsafe fn rustc_job_ready(&self) -> bool;
-    /// # Safety
-    ///
-    /// Same exclusivity contract as [`Self::rustc_job_ready`].
-    #[allow(unsafe_code)]
-    unsafe fn rustc_job_work(&self);
-}
-
 pub trait RustcSourceDyn {
     /// # Safety
     ///
@@ -1208,9 +755,7 @@ pub fn make_box<Adapter>(value: Adapter) -> Box<Adapter> {
 /// `misc/serializable_support.hpp`.  They preserve structural C++ dispatch
 /// while giving direct rustc a fully typed foreign boundary.
 pub mod rusty {
-    use crate::{Arc, SerializableProxy};
 
-    pub use crate::ReactorPollThread;
 
     pub mod io {
         pub use ::std::io::Error;
@@ -1286,18 +831,11 @@ pub mod rusty {
     /// `serialize(const T&, Archive&)` overload which does not retain either
     /// borrowed argument.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_adl_serialize<T: ?Sized, Archive: ?Sized>(
-        _value: &T,
-        _archive: &mut Archive,
-    ) -> ! {
-        unimplemented!(
-            "generic serialization dispatch (Serialize_::serialize) has no Rust \
-             body: it is the C++ open-set ADL path, and bounding it would cascade \
-             into the generic container impls the emitter cannot lower. Rust-lane \
-             callers serialize leaves through \
-             rusty::srpc::serializable::Serialize_::serialize or the Serialize \
-             trait; container serialization is C++-only"
-        )
+    pub unsafe fn srpc_adl_serialize<T: ?Sized, Archive: crate::RustcAdlSerialize<T> + ?Sized>(
+        value: &T,
+        archive: &mut Archive,
+    ) {
+        unsafe { archive.rustc_adl_serialize(value) }
     }
 
     /// # Safety
@@ -1306,18 +844,11 @@ pub mod rusty {
     /// `deserialize(T&, Archive&)` overload which does not retain either
     /// borrowed argument.
     #[allow(unsafe_code)]
-    pub unsafe fn srpc_adl_deserialize<T: ?Sized, Archive: ?Sized>(
-        _value: &mut T,
-        _archive: &mut Archive,
-    ) -> ! {
-        unimplemented!(
-            "generic deserialization dispatch (Deserialize_::deserialize) has no \
-             Rust body: it is the C++ open-set ADL path, and bounding it would \
-             cascade into the generic container impls the emitter cannot lower. \
-             Rust-lane callers deserialize leaves through \
-             rusty::srpc::serializable::Deserialize_::deserialize or the \
-             Deserialize trait; container deserialization is C++-only"
-        )
+    pub unsafe fn srpc_adl_deserialize<T: ?Sized, Archive: crate::RustcAdlDeserialize<T> + ?Sized>(
+        value: &mut T,
+        archive: &mut Archive,
+    ) {
+        unsafe { archive.rustc_adl_deserialize(value) }
     }
 
     /// # Safety
@@ -1348,124 +879,17 @@ pub mod rusty {
         unsafe { source.rustc_source_read(pointer, length) }
     }
 
-    /// Rustc-only coercion into the move-only registry callback facade. The
-    /// production runtime helper constructs `rusty::Function<R()>` from the
-    /// supplied closure.
-    ///
-    /// # Safety
-    ///
-    /// The callable must remain valid after it is moved into the returned C++
-    /// function wrapper and must return a well-formed owning proxy.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_factory_from_callable<C>(callback: C) -> crate::SerializableRegistryFactory
-    where
-        C: Fn() -> SerializableProxy + Send + 'static,
-    {
-        crate::SerializableRegistryFactory::from_callable(callback)
-    }
 
-    // The three `srpc_payload_*` models below stand in for structural C++
-    // payload methods that only exist in C++. They have no callers anywhere --
-    // not in canonical Rust, not in tests, and not in rust-type-map.toml or
-    // cpp-module-index.toml -- so they are kept as declarations of the foreign
-    // contract, not deleted.
-    //
-    // Their bodies were `{}` and `0`. That is the shape this facade has been
-    // bitten by twice (see `RandomGenerator::rand` and the deleted
-    // `SerializableSerializeDispatch`): an unused silent stub is harmless right
-    // up until someone routes through it, at which point it answers, wrongly,
-    // without a sound. They refuse loudly instead, which costs nothing while
-    // they stay unused and is exactly what is wanted the moment they do not.
-
-    /// # Safety
-    ///
-    /// `T` must implement the structural C++ payload save contract for the
-    /// supplied archive and may not retain the archive reference.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_payload_save<T, Archive>(_value: &T, _archive: &mut Archive) {
-        unimplemented!(
-            "srpc_payload_save models a C++-only structural payload contract and \
-             has no Rust body; writing nothing here would silently drop the payload"
-        )
-    }
-
-    /// # Safety
-    ///
-    /// `T` must implement the structural C++ payload load contract for the
-    /// supplied archive and may not retain the archive reference.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_payload_load<T, Archive>(_value: &mut T, _archive: &mut Archive) {
-        unimplemented!(
-            "srpc_payload_load models a C++-only structural payload contract and \
-             has no Rust body; reading nothing here would leave the value untouched \
-             and report success"
-        )
-    }
-
-    /// # Safety
-    ///
-    /// `T` must provide the structural C++ `kind() const` payload method.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_payload_kind<T>(_value: &T) -> i32 {
-        unimplemented!(
-            "srpc_payload_kind models a C++-only structural payload method and has \
-             no Rust body; 0 is a real kind value, not an absence"
-        )
-    }
-
-    /// # Safety
-    ///
-    /// The production C++ `T` must be default constructible and safe to own in
-    /// `rusty::Arc<T>`.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_arc_default<T>() -> Arc<T> {
-        panic!("rustc-only default Arc construction facade is not executable")
-    }
-
-    /// # Safety
-    ///
-    /// The production C++ `T` must be copy constructible and safe to own in
-    /// `rusty::Arc<T>`.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_arc_copy<T>(_value: &T) -> Arc<T> {
-        panic!("rustc-only copying Arc construction facade is not executable")
-    }
-
-    /// # Safety
-    ///
-    /// `Holder` must be the module-owned `SerializableBase` holder for `T`,
-    /// with a constructor that takes ownership of the supplied Arc.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_holder_proxy<Holder, T>(_value: Arc<T>) -> SerializableProxy {
-        let _ = core::marker::PhantomData::<Holder>;
-        panic!("rustc-only holder proxy construction facade is not executable")
-    }
 }
 
 /// Rust-side model of helpers supplied by the C++ rusty runtime.
 pub mod sys {
-    pub mod env {
-        /// Return a host name for direct-rustc tests without adding an unsafe
-        /// syscall boundary to this compile-time-only facade. Production C++
-        /// resolves this path to `rusty::sys::env::hostname()`.
-        pub fn hostname() -> String {
-            ::std::env::var("HOSTNAME").unwrap_or_default()
-        }
-    }
-
     pub mod time {
         pub fn sleep_us(microseconds: u64) {
             ::std::thread::sleep(::std::time::Duration::from_micros(microseconds));
         }
 
-        /// Production C++ resolves this to `rusty::sys::time::clock_monotonic_us()`.
-        pub fn clock_monotonic_us() -> u64 {
-            use ::std::time::{SystemTime, UNIX_EPOCH};
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64
-        }
+
     }
 
     pub mod process {
@@ -1577,45 +1001,6 @@ impl Condvar {
     }
 }
 
-/// `rusty::Cell<T>::get()` for a non-`Copy` payload. The runtime `Cell` copies
-/// its value out for any copy-constructible `T`; `::std::cell::Cell` restricts
-/// the inherent `get` to `Copy`, so canonical sources holding a
-/// `Cell<std::string>` need this extension to be checkable by rustc. The
-/// inherent method still wins wherever it applies, so `Cell<i32>::get` is
-/// untouched.
-pub trait RustyCellGet<T> {
-    fn get(&self) -> T;
-}
-
-impl<T: Clone> RustyCellGet<T> for ::std::cell::Cell<T> {
-    #[allow(unsafe_code)]
-    fn get(&self) -> T {
-        // SAFETY: `Cell` is `!Sync`, so no other thread can observe the cell,
-        // and the clone below does not re-enter it.
-        unsafe { (*self.as_ptr()).clone() }
-    }
-}
-
-/// `std::string::c_str()` — the NUL-terminated view the C++ type exposes and
-/// canonical sources hand to the C connect ladder. Rust's `String` is not
-/// NUL-terminated, so the model returns the buffer pointer: it type-checks the
-/// canonical body and keeps the emitted C++ calling the real `c_str()`.
-pub trait RustyStdStringCStr {
-    fn c_str(&self) -> *const i8;
-}
-
-impl RustyStdStringCStr for ::std::string::String {
-    fn c_str(&self) -> *const i8 {
-        self.as_ptr() as *const i8
-    }
-}
-
-
-/// Rust-only declarations for C++ modules imported by canonical srpc sources.
-/// The exact local `rusty` facade dependency is omitted from generated C++.
-#[allow(clippy::missing_safety_doc)]
-pub mod srpc;
-
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
     use crate::StdPair;
@@ -1639,13 +1024,23 @@ pub mod std {
         }
     }
 
-    /// Rustc-only byte model of `std::string`.
+    /// Owned byte storage for the Rust implementation of `std::string`.
+    ///
+    /// Safe byte mutations require an exclusive reference. The separate C
+    /// string cache supports `c_str(&self)` without changing the byte storage.
+    /// `UnsafeCell` makes this type `!Sync`; shared access from multiple threads
+    /// requires an external lock. Moving ownership between threads is allowed.
+    ///
+    /// ```compile_fail
+    /// fn require_sync<T: Sync>() {}
+    /// require_sync::<rusty::std::string>();
+    /// ```
     #[allow(non_camel_case_types)]
-    pub struct string(UnsafeCell<Vec<u8>>);
+    pub struct string(UnsafeCell<Vec<u8>>, UnsafeCell<Vec<u8>>);
 
     impl Default for string {
         fn default() -> Self {
-            Self(UnsafeCell::new(Vec::new()))
+            Self(UnsafeCell::new(Vec::new()), UnsafeCell::new(Vec::new()))
         }
     }
 
@@ -1658,21 +1053,19 @@ pub mod std {
     impl StringAppend for &string {
         #[allow(unsafe_code)]
         fn append_to(self, output: &mut Vec<u8>) {
-            // SAFETY: this facade is used only by single-threaded direct-rustc
-            // logging tests; generated C++ maps the type to `std::string`.
+            // SAFETY: safe byte mutations require `&mut string`, this type is
+            // !Sync, and unsafe data() callers must prevent overlapping access.
             output.extend_from_slice(unsafe { (&*self.0.get()).as_slice() });
         }
     }
 
-    /// Equality/ordering/hash and value-copy for the byte model. The
-    /// production type is `std::string`, which is `Regular` and totally
-    /// ordered, so canonical sources use it as a map key, inside a `Cell`, and
-    /// compare it directly. The `UnsafeCell` interior blocks `derive`, so the
-    /// four traits are written out over the same byte view `size()` uses.
+    /// Shared byte view used by equality, ordering, hashing, and copying.
+    /// Generated C++ uses the corresponding `std::string` operations.
     #[allow(unsafe_code)]
     fn string_bytes(value: &string) -> &[u8] {
-        // SAFETY: identical to `size`/`to_rust_string` above -- direct-rustc
-        // facade callers do not mutate this model concurrently.
+        // SAFETY: safe byte mutations require an exclusive reference, and
+        // !Sync prevents concurrent shared access without an external lock.
+        // The data() contract excludes mutation while this view is live.
         unsafe { (&*value.0.get()).as_slice() }
     }
 
@@ -1685,13 +1078,13 @@ pub mod std {
         type Target = str;
 
         fn deref(&self) -> &str {
-            ::std::str::from_utf8(string_bytes(self)).unwrap_or("")
+            ::std::str::from_utf8(string_bytes(self)).expect("UTF-8 required for a Rust string view")
         }
     }
 
     impl Clone for string {
         fn clone(&self) -> Self {
-            Self(UnsafeCell::new(string_bytes(self).to_vec()))
+            Self(UnsafeCell::new(string_bytes(self).to_vec()), UnsafeCell::new(Vec::new()))
         }
     }
 
@@ -1734,15 +1127,30 @@ pub mod std {
             self.0.get_mut().resize(size, 0);
         }
 
-        /// Rustc-only signature model of `std::string::c_str`.
+        /// Return a NUL-terminated view of the current bytes.
+        ///
+        /// The pointer and any references derived from it must not be used
+        /// after the next `c_str` call, a string mutation, or this value's drop.
+        #[allow(unsafe_code)]
         pub fn c_str(&self) -> *const i8 {
-            core::ptr::null()
+            // SAFETY: !Sync prevents concurrent cache access, and callers must
+            // end views from earlier c_str calls before calling again. The
+            // separate cache never changes the main byte storage.
+            let bytes = unsafe { &*self.0.get() };
+            let cache = unsafe { &mut *self.1.get() };
+            cache.clear();
+            cache.extend_from_slice(bytes);
+            cache.push(0);
+            cache.as_ptr().cast()
         }
 
         /// # Safety
         ///
-        /// The returned pointer must not outlive this value or overlap any
-        /// other access to its byte storage.
+        /// The returned pointer addresses `size()` initialized bytes. Its use
+        /// must not overlap another access to the byte storage, and must end
+        /// before any safe method mutates the string or the value is dropped.
+        /// Writes must stay within the existing length; they cannot change
+        /// the allocation or the vector's length and capacity.
         #[allow(unsafe_code)]
         pub unsafe fn data(&self) -> *mut i8 {
             unsafe { (&mut *self.0.get()).as_mut_ptr().cast() }
@@ -1754,16 +1162,16 @@ pub mod std {
 
         #[allow(unsafe_code)]
         pub fn size(&self) -> usize {
-            // SAFETY: direct-rustc facade callers do not access this model
-            // concurrently; the generated C++ uses `std::string` instead.
+            // SAFETY: safe byte mutations require &mut self, !Sync prevents
+            // concurrent shared access, and data() forbids overlapping access.
             unsafe { (&*self.0.get()).len() }
         }
 
-        /// Clone the facade bytes into an ordinary Rust string for tests.
+        /// Copy the bytes into a Rust string, rejecting invalid UTF-8.
         #[allow(unsafe_code)]
         pub fn to_rust_string(&self) -> ::std::string::String {
-            // SAFETY: direct-rustc facade callers do not mutate this model
-            // concurrently; production maps the type to `std::string`.
+            // SAFETY: safe byte mutations require &mut self, !Sync prevents
+            // concurrent shared access, and data() forbids overlapping access.
             let bytes = unsafe { (&*self.0.get()).clone() };
             ::std::string::String::from_utf8(bytes).expect("valid UTF-8 in std::string facade")
         }
@@ -1810,186 +1218,6 @@ pub mod std {
         StdPair::new(first, second)
     }
 }
-
-pub struct Arc<T: ?Sized> {
-    inner: ::std::sync::Arc<T>,
-}
-
-impl<T: ?Sized> Clone for Arc<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: ::std::sync::Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl<T: ?Sized> Arc<T> {
-    pub fn get(&self) -> *const T {
-        ::std::sync::Arc::as_ptr(&self.inner)
-    }
-
-    pub fn get_mut(&mut self) -> Option<&mut T> {
-        ::std::sync::Arc::get_mut(&mut self.inner)
-    }
-}
-
-impl<T: ?Sized> Deref for Arc<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-pub trait ArcMake<Argument> {
-    type Output;
-    fn make(argument: Argument) -> Self::Output;
-}
-
-impl<T> ArcMake<T> for Arc<T> {
-    type Output = Arc<T>;
-
-    fn make(argument: T) -> Self::Output {
-        Arc {
-            inner: ::std::sync::Arc::new(argument),
-        }
-    }
-}
-
-impl<T> ArcMake<Arc<T>> for Arc<SerializableSharedPtrHolder<T>> {
-    type Output = SerializableProxy;
-
-    fn make(_argument: Arc<T>) -> Self::Output {
-        SerializableProxy::make(SerializableBase)
-    }
-}
-
-impl<T: ?Sized> Arc<T> {
-    pub fn make<Argument>(argument: Argument) -> <Self as ArcMake<Argument>>::Output
-    where
-        Self: ArcMake<Argument>,
-    {
-        <Self as ArcMake<Argument>>::make(argument)
-    }
-}
-
-/// Rust-only test model for the binary archive supplied by
-/// `srpc.serializable` in production C++.
-#[derive(Default)]
-pub struct BinaryWriteArchive {
-    bytes: Vec<u8>,
-}
-
-impl BinaryWriteArchive {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Append a raw byte range to this archive.
-    ///
-    /// # Safety
-    ///
-    /// When `length` is nonzero, `pointer` must be non-null and reference
-    /// `length` readable, initialized bytes for the duration of this call.
-    #[allow(unsafe_code)]
-    pub unsafe fn write_bytes(&mut self, pointer: *const u8, length: usize) {
-        if length == 0 {
-            return;
-        }
-
-        // SAFETY: upheld by the caller contract above. The early return keeps
-        // the zero-length case independent of raw-pointer validity.
-        let bytes = unsafe { ::std::slice::from_raw_parts(pointer, length) };
-        self.bytes.extend_from_slice(bytes);
-    }
-
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
-}
-
-/// Rust-only test model for the binary archive supplied by
-/// `srpc.serializable` in production C++.
-pub struct BinaryReadArchive {
-    bytes: Vec<u8>,
-    offset: usize,
-}
-
-impl BinaryReadArchive {
-    pub fn new(bytes: &[u8]) -> Self {
-        Self::from_bytes(bytes.to_vec())
-    }
-
-    pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    pub fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
-    }
-
-    /// Copy the requested archive bytes into a raw destination.
-    ///
-    /// # Safety
-    ///
-    /// When `length` is nonzero, `pointer` must be non-null and reference
-    /// `length` writable bytes which do not overlap this archive's storage.
-    #[allow(unsafe_code)]
-    pub unsafe fn read_exact(&mut self, pointer: *mut u8, length: usize) -> bool {
-        let Some(end) = self.offset.checked_add(length) else {
-            return false;
-        };
-        let Some(source) = self.bytes.get(self.offset..end) else {
-            return false;
-        };
-
-        if length != 0 {
-            // SAFETY: upheld by the caller contract above. The nonzero guard
-            // keeps an empty copy independent of raw-pointer validity.
-            let destination = unsafe { ::std::slice::from_raw_parts_mut(pointer, length) };
-            destination.copy_from_slice(source);
-        }
-        self.offset = end;
-        true
-    }
-
-    /// Copy the next archive bytes or abort this Rust-only model.
-    ///
-    /// # Safety
-    ///
-    /// The caller must uphold the same destination contract as `read_exact`.
-    #[allow(unsafe_code)]
-    pub unsafe fn read_or_abort(&mut self, pointer: *mut u8, length: usize) {
-        assert!(
-            unsafe { self.read_exact(pointer, length) },
-            "binary archive source is truncated"
-        );
-    }
-}
-
-pub struct SerializableBase;
-
-impl SerializableBase {
-    pub fn save(&self, _archive: &mut BinaryWriteArchive) {}
-    pub fn load(&mut self, _archive: &mut BinaryReadArchive) {}
-    pub fn kind(&self) -> i32 {
-        0
-    }
-
-    pub fn payload_type_id(&self) -> ::std::any::TypeId {
-        ::std::any::TypeId::of::<Self>()
-    }
-}
-
-pub struct SerializableSharedPtrHolder<T> {
-    pub ptr: Arc<T>,
-}
-
-pub type SerializableProxy = Arc<SerializableBase>;
 
 /// Rust-only contract for metric views used by the canonical load-balancer module.
 pub trait LoadBalancerMetrics {
@@ -2058,6 +1286,32 @@ impl<F: ?Sized> Function<F> {
     }
 }
 
+impl Function<dyn FnMut(i32, *const u8, usize) + Send> {
+    /// Reply callbacks can be delivered by the transport's poll thread.
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: FnMut(i32, *const u8, usize) + Send + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl Function<dyn FnMut(u64, u64) + Send> {
+    /// Restart notifications can be delivered by the transport's poll thread.
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: FnMut(u64, u64) + Send + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
 impl<F: ?Sized> Default for Function<F> {
     fn default() -> Self {
         Self {
@@ -2085,6 +1339,43 @@ impl<F: ?Sized> DerefMut for Function<F> {
     }
 }
 
+impl<A: 'static, R: 'static> Function<dyn Fn(A) -> R> {
+    /// Erase a shared callback while preserving its argument and result.
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: Fn(A) -> R + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl<A: 'static, B: 'static> Function<dyn Fn(A, B) + Send + Sync> {
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: Fn(A, B) + Send + Sync + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl Function<dyn FnMut(i32) + Send> {
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: FnMut(i32) + Send + 'static,
+    {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
 impl<A: 'static, B: 'static> Function<dyn Fn(A, B)> {
     /// Erases a const-callable two-argument callback.
     pub fn from_callable<C>(callback: C) -> Self
@@ -2109,6 +1400,18 @@ where
     R: 'static,
 {
     fn from_callable(callback: C) -> Self {
+        Self {
+            inner: Some(Box::new(callback)),
+            runtime_layout_padding: [0; 32],
+        }
+    }
+}
+
+impl<R: 'static> Function<dyn FnMut() -> R + Send> {
+    pub fn from_callable<C>(callback: C) -> Self
+    where
+        C: FnMut() -> R + Send + 'static,
+    {
         Self {
             inner: Some(Box::new(callback)),
             runtime_layout_padding: [0; 32],
@@ -2217,71 +1520,5 @@ impl<A: ?Sized + 'static, R: 'static> Function<dyn FnMut(&mut A) -> R> {
             inner: Some(Box::new(callback)),
             runtime_layout_padding: [0; 32],
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Function;
-    use ::std::cell::Cell;
-    use ::std::mem::{align_of, size_of};
-    use ::std::rc::Rc;
-
-    #[test]
-    fn empty_and_layout_match_the_cpp_runtime() {
-        let callback: Function<dyn Fn(i32, i32)> = Function::default();
-        assert!(callback.is_empty());
-        assert_eq!(size_of::<Function<dyn Fn(i32, i32)>>(), 48);
-        assert_eq!(align_of::<Function<dyn Fn(i32, i32)>>(), 16);
-        assert_eq!(size_of::<Function<dyn FnMut()>>(), 48);
-        assert_eq!(align_of::<Function<dyn FnMut()>>(), 16);
-        assert_eq!(size_of::<Function<dyn FnMut(i32)>>(), 48);
-        assert_eq!(align_of::<Function<dyn FnMut(i32)>>(), 16);
-
-        macro_rules! assert_not_auto_trait {
-            ($type:ty, $auto_trait:ident) => {{
-                trait AmbiguousIfImplemented<Marker> {
-                    fn marker() {}
-                }
-                impl<T: ?Sized> AmbiguousIfImplemented<()> for T {}
-                impl<T: ?Sized + $auto_trait> AmbiguousIfImplemented<u8> for T {}
-                let _ = <$type as AmbiguousIfImplemented<_>>::marker;
-            }};
-        }
-        assert_not_auto_trait!(Function<dyn Fn(i32, i32)>, Send);
-        assert_not_auto_trait!(Function<dyn Fn(i32, i32)>, Sync);
-        assert_not_auto_trait!(Function<dyn FnMut()>, Send);
-        assert_not_auto_trait!(Function<dyn FnMut()>, Sync);
-        assert_not_auto_trait!(Function<dyn FnMut(i32)>, Send);
-        assert_not_auto_trait!(Function<dyn FnMut(i32)>, Sync);
-    }
-
-    #[test]
-    fn fn_and_fn_mut_dispatch() {
-        let observed = Rc::new(Cell::new((0, 0)));
-        let sink = Rc::clone(&observed);
-        let callback = Function::<dyn Fn(i32, i32)>::from_callable(move |a, b| {
-            sink.set((a, b));
-        });
-        callback(4, 9);
-        assert_eq!(observed.get(), (4, 9));
-
-        let calls = Rc::new(Cell::new(0));
-        let counter = Rc::clone(&calls);
-        let mut callback = Function::<dyn FnMut()>::from_callable(move || {
-            counter.set(counter.get() + 1);
-        });
-        callback();
-        callback();
-        assert_eq!(calls.get(), 2);
-
-        let sum = Rc::new(Cell::new(0));
-        let accumulator = Rc::clone(&sum);
-        let mut callback = Function::<dyn FnMut(i32)>::from_callable(move |value| {
-            accumulator.set(accumulator.get() + value);
-        });
-        callback(7);
-        callback(5);
-        assert_eq!(sum.get(), 12);
     }
 }

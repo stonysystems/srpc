@@ -1,24 +1,18 @@
 #pragma once
 
 #include <cstddef>
-#include <type_traits>
-#include <utility>
+#include <cstdint>
 
 extern "C" {
-void srpc_fd_write_all(int fd, const void* pointer, std::size_t length);
-std::size_t srpc_fd_read_upto(int fd, void* pointer, std::size_t length);
+std::int64_t srpc_fd_write_once(int fd, const void* pointer, std::size_t length);
+std::int64_t srpc_fd_read_once(int fd, void* pointer, std::size_t length);
+std::int32_t srpc_fd_last_errno();
+std::int32_t srpc_fd_interrupted_errno();
 }
 
-// C++-only support for canonical `srpc.serializable`.  These helpers model
-// operations whose Rust spelling is intentionally an inert rustc facade:
-// open-set ADL dispatch and polymorphic Arc construction.  They are templates,
-// so no extra provider ABI or C shim is introduced.
+// C++ ADL and erased sink/source call adapters. The Rust counterparts forward
+// into canonical traits; all serialization and payload ownership lives there.
 namespace rusty {
-template <typename T>
-class Arc;
-template <typename Signature>
-class Function;
-
 namespace srpc_adl_detail {
 
 // Poison ordinary lookup.  Only an overload in a payload/archive associated
@@ -56,28 +50,6 @@ void srpc_sink_write(Sink& sink, const unsigned char* pointer, std::size_t lengt
 template <typename Source>
 std::size_t srpc_source_read(Source& source, unsigned char* pointer, std::size_t length) {
     return source.read_bytes(pointer, length);
-}
-
-template <typename T>
-Arc<T> srpc_arc_default() {
-    return Arc<T>::make();
-}
-
-template <typename T>
-Arc<T> srpc_arc_copy(const T& value) {
-    return Arc<T>::make(value);
-}
-
-template <typename Holder, typename T>
-Arc<Holder> srpc_holder_proxy(Arc<T> value) {
-    return Arc<Holder>::make(std::move(value));
-}
-
-template <typename Callable>
-auto srpc_factory_from_callable(Callable&& callable) {
-    using C = std::remove_cvref_t<Callable>;
-    using R = std::invoke_result_t<C&>;
-    return Function<R()>(std::forward<Callable>(callable));
 }
 
 }  // namespace rusty

@@ -18,14 +18,6 @@ use std::sync::Arc as StdArc;
 
 use srpc::request_queue::{QueuedRequest, QueuedRequestCallback, RequestQueue, RequestQueueConfig};
 
-// The crate's clock is a C kernel (misc/srpc_timing.c) that rustc-only test
-// binaries do not link; every other test here supplies the same stub.
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    0
-}
-
 fn queue_with_capacity(max: usize) -> RequestQueue {
     let mut cfg = RequestQueueConfig::defaults();
     cfg.max_size = max;

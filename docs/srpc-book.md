@@ -221,7 +221,7 @@ stable only by scraping them back out of the header the generator is about to ov
 
 | Feature | Description |
 |---------|-------------|
-| **One source, two artifacts** | 37 canonical Rust modules; `cargo` builds the Rust library, the pinned rusty-cpp transpiler generates the C++23 module library, and an ABI gate holds them equivalent |
+| **One source, two artifacts** | 37 canonical Rust modules; `cargo` builds the Rust library and the pinned rusty-cpp transpiler generates the C++23 module library. Exact ABI checks and behavior tests cover both outputs. |
 | **Typed code generation (C++)** | `.rpc` IDL to a typed service base class, a client proxy, and per-method request/response structs |
 | **Stackful fibers** | 1 MiB mmap'd stacks with a guard page, switched by hand-written x86_64 / aarch64 assembly |
 | **`async fn` handlers** | canonical `async fn`s: Rust futures under rustc, `rusty::Task` C++ coroutines in the generated lane, one source |
@@ -236,11 +236,10 @@ stable only by scraping them back out of the header the generator is about to ov
 The Rust lane is the fast inner loop: `cargo test --locked --workspace --all-targets`
 compiles the canonical sources directly, links no C++ anywhere, and runs in seconds. It
 is also a complete runtime: the real epoll poll thread, real TCP transport, fibers
-through the same C context-switch engine the C++ lane uses, and `async fn` handlers —
-the whole four-mode dispatch matrix serves wire-compatible RPC at rates that meet or
-beat the generated C++ server (Chapter 15 has the measured table). Its documented
-boundaries: container serialization panics loudly under rustc rather than lying
-(Chapter 10), one `Client` is not shareable across threads (use one per thread, which
+through the same C context-switch engine the C++ lane uses, and `async fn` handlers.
+Behavior tests exercise the dispatch modes in both lanes. Chapter 15 records older
+benchmark results; they are not performance acceptance for the current revision. Its documented
+boundaries: one `Client` is not shareable across threads (use one per thread, which
 is what the benchmark drivers do anyway), and a single `Server` does not yet spread
 its connections across several poll threads. Reliability machinery — retries,
 reconnect, circuit breaker, buffering — is live in both lanes.
@@ -293,23 +292,18 @@ Some parts of the surface are present but not live. They are called out again wh
 belong, and collected in the shipping-status table in Chapter 11, but knowing them up
 front will save you a debugging session:
 
-- `Client::metrics()` returns a permanently zeroed stub. The live counters are on
-  `ClientConnection::metrics()`, reached through `client->connection()`, which returns an
-  `Option`. Because `ClientPool`'s `LEAST_CONNECTIONS` and `LEAST_LATENCY` strategies and
-  its health checks read the stub, they do not currently differentiate and nothing is
-  ever evicted.
-- Buffered requests are parked with a TTL and expired, never replayed after a reconnect.
+- Automatic request completion does not record latency; latency-based pool selection
+  needs explicit latency samples. Request counts and in-flight metrics are live.
 - The heartbeat protocol is implemented end to end, but nothing currently ticks the
   client-side timer.
-- `set_keepalive()` stores its configuration; pushing it to the socket is an empty stub.
 - Retries are opt-in twice over: `max_retries` does nothing unless `idempotent` is also
   set.
 
 ### Scope and requirements
 
 SRPC targets **Linux**. The poll layer is epoll and nothing else — the kqueue twin and
-the macOS branches were removed, leaving `reactor/epoll_platform_linux.cc` as the single
-platform implementation unit. Fiber context-switch assembly exists for x86_64 and
+the macOS branches were removed, with canonical policy in `reactor/epoll_wrapper.rs` and raw syscalls in
+`reactor/srpc_epoll.c`. Fiber context-switch assembly exists for x86_64 and
 aarch64.
 
 The Rust lane needs a current stable Rust toolchain and nothing else:
@@ -359,18 +353,15 @@ The build checks that equivalence rather than trusting it. The `srpc_goal0_dual_
 target recompiles every generated module on its own, links one importer program twice —
 once over those fresh objects placed ahead of `libsrpc.a`, once against `libsrpc.a` alone
 — runs both, and compares per-module `nm` strong-symbol sets. The archive must carry
-exactly what the freshly generated objects carry, plus the symbols of the one platform
-implementation unit. Today those constants are 1966 provider symbols and 5 platform
-symbols, frozen in `scripts/check_srpc_crate_mode.py`; every change to them is a
-reviewed, commented delta in that file's history.
+exactly the reviewed providers and native symbols. Current symbol expectations and
+platform ownership are maintained in `scripts/check_srpc_crate_mode.py`; changes require
+fresh measurements and review rather than copied historical totals in this book.
 
 Hand-written non-Rust does survive, but only as *seam*, never as logic:
 
-- `reactor/epoll_platform_linux.cc` — the single hand-maintained C++ translation unit,
-  supplying the Linux epoll implementation behind `srpc.epoll_wrapper`.
-- Eight plain-C syscall kernels (`base/srpc_base.c`, `misc/srpc_io.c`, `misc/srpc_rand.c`,
+- Nine plain-C kernels (`base/srpc_base.c`, `misc/srpc_io.c`, `misc/srpc_rand.c`,
   `misc/srpc_timing.c`, `reactor/srpc_fiber.c`, `rpc/srpc_connect.c`, `rpc/srpc_net.c`,
-  `rpc/srpc_server.c`) and the five `srpc_*.h` headers that declare them. Syscall numbers and build flags live here
+  `rpc/srpc_server.c`, `reactor/srpc_epoll.c`) and their ABI headers. Syscall numbers and build flags live here
   precisely because their values are arch- and build-dependent and must not be frozen into
   a Rust constant.
 - Two assembly files, `reactor/fiber_context_x86_64.S` and `reactor/fiber_context_aarch64.S`,
@@ -420,7 +411,7 @@ convention the sources honor rather than something the build enforces:
 |      Counter, Time, Timer), threading.rs, logging.rs,       |
 |      debugging.rs, misc.rs, callback_wrapper.rs             |
 +------------------------------------------------------------+
-|  Plain-C kernels + fiber assembly + epoll_platform_linux.cc |
+|  Shared native C kernels and fiber context-switch assembly |
 +------------------------------------------------------------+
 |  System: POSIX sockets, epoll, pthreads                     |
 +------------------------------------------------------------+
@@ -441,32 +432,14 @@ So the reactor's central data structure is typed by an `rpc/` module. (Do not co
 `PollableBase` with `epoll_wrapper::Pollable`; `reactor.rs` imports both, and they are
 different traits.) The layering is upside down at exactly this one seam.
 
-**Nothing uses `crate::reactor` at all.** Not `rpc/client.rs`, not `rpc/server.rs`, not
-even the sibling files `reactor/fiber.rs` and `reactor/future.rs`. Every consumer reaches
-the reactor through the foreign-module facade instead:
+Client, server, TCP, fiber helpers, and fiber futures import the canonical
+`crate::reactor` implementation. Cargo executes those Rust methods directly; rusty-cpp
+lowers them into the corresponding named modules. Explicit dependency anchors preserve
+imports where required by the compiler. `rusty-rustc` supplies standard-library and OS
+adapters, but no parallel SRPC reactor or serialization implementation.
 
-```rust
-use rusty as cpp;
-use cpp::srpc::reactor as cpp_reactor;
-```
-
-...and calls into it inside `unsafe` blocks. That is deliberate: `cpp::srpc::reactor`
-models the *C++ module boundary*, which is how the reactor is actually reached in the
-shipped library, and routing through it keeps the Rust view honest about where the
-boundary sits. `rusty` here is the `rusty-rustc` facade crate in this workspace;
-rusty-cpp omits it from generated C++ by package identity. The facade is no longer a
-mock layer: its `PollThread` is a real epoll loop, which is what lets the canonical TCP
-transport, fibers and async tasks run as plain Rust — though a handful of allowlisted
-facade items still deliberately diverge (`scripts/check_facade_shadow.py` is the
-authoritative list).
-
-Nine of the 37 modules sit outside the internal dependency graph entirely: they carry no
-`use crate::` line of their own, and no other module names them. `rpc/idempotency.rs` and
-`rpc/completion_tracker.rs` are the two that most often surprise people — consumer-facing
-utilities that neither `client.rs` nor `server.rs` uses. `rpc/utils.rs`, `misc/stat.rs`,
-`misc/any_message.rs`, `misc/serializable_envelope.rs` and `base/threading.rs` are in the
-same position, as are `reactor/fiber.rs` and `reactor/future.rs`, which reach outward only
-through the `cpp::srpc::…` facade above.
+The current ownership and adapter contracts are documented in
+[Canonical Rust runtime and migration notes](canonical-rust-runtime.md).
 
 One naming caution while reading the reactor layer. There are two unrelated "future"
 types. `reactor/future.rs` holds `FiberPromise<T>` / `FiberFuture<T>`, a fiber-blocking
@@ -548,7 +521,7 @@ srpc/
     fiber.rs                  this_fiber:: surface
     future.rs                 FiberPromise / FiberFuture
     epoll_wrapper.rs          Epoll type over the platform seam
-    epoll_platform_linux.cc   the one hand-maintained C++ TU (inline-Rust DSL)
+    srpc_epoll.c, srpc_epoll.h   raw epoll syscalls and fixed event-record ABI
     fiber_context_x86_64.S    context-switch assembly
     fiber_context_aarch64.S
     srpc_fiber.c, srpc_fiber.h   mmap+guard stacks, the ABI context seed, the
@@ -1016,9 +989,8 @@ yields a `rusty::Task` — so the generated async wrappers pass the handler's
 return value straight in.) The spawn polls the task once inline; if it completes
 immediately the callback runs right there and nothing is registered. Otherwise
 the task is parked with a stable `Waker` binding, and the reactor re-polls it
-when the waker fires — `run_loop` drains the wake queue every pass, which
-pollworker's C++ loop does natively and the Rust lane's poll thread does through
-its registered `run_loop` tick hook. Spawning must happen on the reactor's own
+when the waker fires. The canonical poll-worker loop calls `run_loop` to drain
+the wake queue in both Rust and generated C++. Spawning must happen on the reactor's own
 thread; a spawn refused during reactor teardown destroys the task and its
 callback rather than pretending to succeed, so a waiter fails instead of
 hanging.
@@ -1639,7 +1611,7 @@ The layer is four files:
 | File | Role |
 |------|------|
 | `reactor/epoll_wrapper.rs` | `PollMode` / `PollReady` constants, the `Pollable` trait, the `Epoll` RAII wrapper |
-| `reactor/epoll_platform_linux.cc` | the Linux syscall bodies (`epoll_open`, `add`, `remove`, `update`) |
+| `reactor/srpc_epoll.c` | raw Linux epoll syscalls and event-record ABI marshalling |
 | `rpc/pollable_proxy.rs` | `PollableBase`, `PollableProxy`, the `Arc`-backed shim |
 | `reactor/reactor.rs` | `PollThread`, `PollThreadWorker`, `PollCommand`, the poll loop, and job *scheduling* (the `Job` trait and `OneTimeJob` themselves live in `base/misc.rs`, module `srpc.misc`) |
 
@@ -1655,14 +1627,10 @@ import srpc.epoll_wrapper;   // trimmed from the umbrella; name it directly
 
 ### Linux only
 
-There is no kqueue path and no macOS support. `reactor/epoll_platform_linux.cc` is
-the *only* platform implementation unit in the tree, and `CMakeLists.txt` adds it
-unconditionally rather than selecting among several. The `old_mode` parameter that
-survives on `epoll_update_impl` is the last trace of a kqueue twin that was removed:
-`EPOLL_CTL_MOD` replaces the whole interest set, so Linux ignores it.
-
-Do not treat the layer as portable. It includes `<sys/epoll.h>` directly and calls
-`epoll_create` / `epoll_ctl` / `epoll_wait` with no abstraction underneath.
+There is no kqueue path or macOS support. The canonical epoll wrapper calls the Linux
+kernel through `reactor/srpc_epoll.c`, listed in the shared native source manifest.
+The `old_mode` parameter on `epoll_update_impl` remains a compatibility input;
+`EPOLL_CTL_MOD` replaces the whole interest set, so Linux does not need the old flags.
 
 ### Poll modes and readiness bits
 
@@ -1740,33 +1708,15 @@ Anything else trips `verify(result == 0)` and aborts. `Remove` is the exception:
 discards `epoll_ctl`'s return entirely and always reports `0`, on the grounds that a
 closed descriptor is already out of the epoll set.
 
-### The one hand-written C++ unit
+### The native epoll boundary
 
-`reactor/epoll_platform_linux.cc` is the only C++ translation unit in the repository
-that a human maintains, and it is the only carrier of the inline-Rust DSL. Its four
-entry points — `epoll_open`, `epoll_add_impl`, `epoll_remove_impl`,
-`epoll_update_impl` — are declared in `epoll_wrapper.rs` as
-`unsafe extern "Rust"` and defined here; a fifth block is the small
-`epoll_event_zeroed()` factory the three `epoll_ctl` bodies build on, which
-replaced a plain-C kernel. (`epoll_open` needs no event struct: it is
-`epoll_create(10)` plus a `verify`.)
+Canonical `reactor/epoll_wrapper.rs` owns epoll flags, registration recovery, error
+handling, interruption retry, and readiness dispatch. `reactor/srpc_epoll.c` performs
+individual syscalls and copies Linux event records into the fixed ABI declared by
+`reactor/srpc_epoll.h`. Rust and generated C++ link the same native source manifest.
 
-The file's structure matters if you ever edit it:
-
-```
-#if RUSTYCPP_RUST
-fn epoll_open() -> i32 { ... }        // ← this is the source
-#endif
-/*RUSTYCPP:GEN-BEGIN id=... rust_sha256=...*/
-int32_t epoll_open() { ... }          // ← this is generated; never hand-edit
-/*RUSTYCPP:GEN-END id=...*/
-```
-
-Edit the Rust inside `#if RUSTYCPP_RUST` and regenerate with
-`rusty-cpp-transpiler inline-rust`. `scripts/srpc_dsl_check.sh` hard-codes the census
-— exactly this file, exactly five blocks — and also scans `*.rs`, so introducing a
-DSL block anywhere under `base/ misc/ reactor/ rpc/` fails the check until the script
-is updated too.
+The former `reactor/epoll_platform_linux.cc` implementation has been removed. No
+production inline-Rust DSL carrier remains.
 
 ### Pollable, PollableBase, and the proxy
 
@@ -1802,9 +1752,9 @@ whose forwarding methods take `&self` on the target so several proxies can share
 `Arc`. Note that it is bounded on a *private* trait (`PollableSharedTarget`), so no
 out-of-crate Rust type can satisfy it, and no library code calls it — the TCP backend
 writes its own shims instead. It is exercised only by the test battery: `test_reactor`
-and `test_rpc_pollthread_proxy_storage`, two of the eight suites CMake builds, both
-register their pollables through it. Treat it as available surface, not as the
-production path.
+and `test_rpc_pollthread_proxy_storage` both register their pollables through it.
+Its target must keep the registered descriptor alive until the worker unregisters it.
+TCP uses dedicated proxies that retain the socket owner even when the transport closes.
 
 The method contract as the worker enforces it:
 
@@ -1861,10 +1811,9 @@ the receiver is gone, which means the worker already exited and there is no epol
 left to mutate. The code discards those errors deliberately — except `update_mode`,
 which logs at `ERROR`.
 
-`get_remove_count()` is a stub: it returns a constant `0` and reads nothing. Worker
-state is not reachable across the channel. The counter it used to expose still exists
-inside `srpc.epoll_wrapper` as `epoll_remove_count`, bumped by every
-`epoll_remove_impl`, but you have to read that static yourself.
+`get_remove_count()` returns a synchronized count of accepted `remove_fd` commands.
+It includes requests for unregistered descriptors. A call rejected after shutdown
+leaves the count unchanged. It measures command admission, not successful epoll removal.
 
 `shutdown()` is idempotent (an atomic `swap` on `shutdown_called_` returns early on
 the second call) and self-join aware: if it is invoked *from* the poll thread it sends
@@ -1892,10 +1841,8 @@ While the worker is running it publishes a raw pointer to itself into
 `pollworker_is_on_poll_thread()`. That predicate is what the TCP send path uses to
 decide between a direct flag and a channel message — see below. Like the reactor's
 other per-thread statics, `g_current_poll_worker` is a `thread_local!` slot
-(`Cell<*mut PollThreadWorker>`), per-thread in both lanes. Note that the Rust lane's
-runtime uses the facade's own poll thread rather than this canonical worker, so under
-rustc the slot stays null and the predicate reports `false` — the send path then takes
-the command-channel route, which is correct there.
+(`Cell<*mut PollThreadWorker>`), per-thread in both lanes. Cargo and generated C++
+run this same canonical worker and use the predicate to select the owner-thread path.
 
 One pass of `poll_loop` does, in order:
 
@@ -1916,9 +1863,9 @@ One pass of `poll_loop` does, in order:
 9. **Sweep `check_pending_write_update()`** over every registered fd; a `true` re-arms
    `READ | WRITE`.
 10. **Sweep `is_closed()`** over every registered fd, collecting first and mutating
-    second because `close()` can re-enter. For each closed fd: `Epoll::Remove` if it
-    is still in `mode_`, then `close()` through the proxy, then erase both table
-    entries.
+    second because `close()` can re-enter. For each closed fd, detach its proxy,
+    unregister it from epoll, and erase its mode and pending removal before invoking
+    `close()`. The local proxy keeps the descriptor alive through unregister and the callback.
 
 Both sweeps in steps 9 and 10 share one snapshot of the key set, which is sound
 because nothing between them can add an fd.
@@ -1935,9 +1882,9 @@ needs no locks.
 
 | Command | Effect on the worker |
 |---------|----------------------|
-| `AddPollable { pollable }` | drop it if `fd() < 0` or the fd is already registered; otherwise insert into `fd_to_pollable_` / `mode_` and `Epoll::Add`, rolling both back if `Add` fails |
+| `AddPollable { pollable }` | drop it if `fd() < 0`, it is closed, or a live registration already owns the fd; retire any closed registration first, then insert and call `Epoll::Add`, rolling back if `Add` fails |
 | `RemovePollable { fd }` | insert into `pending_remove_`; the actual unregistration happens later in the pass |
-| `ClosePollable { fd }` | cancel any pending removal, `Epoll::Remove`, `close()` through the proxy, erase both entries |
+| `ClosePollable { fd }` | detach the proxy, cancel pending removal, unregister from epoll, erase its mode, then call `close()` while retaining the proxy |
 | `UpdateMode { fd, new_mode }` | no-op unless the fd is registered; record `new_mode` and call `Epoll::Update` only if it differs from the old one |
 | `AddJob { job }` / `RemoveJob { job }` | insert into / erase from `jobs_` |
 | `Shutdown` | set `stop_` |
@@ -1946,32 +1893,28 @@ needs no locks.
 middle of a dispatch batch would invalidate the lookup for events already collected
 from the same `epoll_wait`, so it is parked and applied at step 6.
 
-In practice the TCP backend never sends `RemovePollable` or `ClosePollable` at all: a
-connection closes itself (`TcpConnection::close` shuts the socket down and drops its
-`OwnedFd`), and the worker notices on its next `is_closed()` sweep. That ordering is
-why `epoll_remove_impl` has to tolerate `EBADF` — by the time the worker unregisters,
-the descriptor is usually already gone, and the kernel has dropped it from the epoll
-set anyway.
+The TCP backend closes the transport directly and the worker notices on its next
+`is_closed()` sweep. Closing clears the transport's socket slot, so `fd()` returns
+`-1`, and shuts the socket down immediately. Each queued or active TCP registration
+retains a shared socket owner. The descriptor cannot be physically closed or reused
+until the worker unregisters and releases that owner. A queued registration that was
+closed before admission is rejected without calling epoll.
+
+The integer-based `remove_fd`, `request_close`, and `update_mode` APIs address the
+caller's current descriptor. The caller must keep that descriptor valid until the
+command is processed, or ask the worker to perform the close. An old integer alone
+cannot identify a previous socket after its descriptor has been reused.
 
 ### Handing write interest back to the poll thread
 
-Write interest is the one piece of state two threads race for, and the mechanism is
-worth spelling out because it explains an otherwise odd `Pollable` method.
-
 `TcpConnection::poll_mode()` reports `READ`, plus `WRITE` while the outbound buffer is
-non-empty. When something queues a frame, the connection has to get `WRITE` armed. It
-picks one of two routes:
+non-empty. Queuing a frame sets the connection's `pending_write_update_` atomic.
+The worker reads this flag through its owned proxy in the write-interest sweep and
+re-arms `READ | WRITE`. This works for sends from both the poll thread and other threads.
 
-- **Off the poll thread** — send `PollThread::update_mode(fd, READ | WRITE)` and let
-  the command channel do it.
-- **On the poll thread** (`pollworker_is_on_poll_thread()` is true, i.e. a fiber
-  running inside the loop) — set the connection's `pending_write_update_` atomic and
-  return. Sending a command here would work, but it would not be processed until the
-  *next* pass; the flag is picked up at step 9 of the current one.
-
-`check_pending_write_update()` is that flag's reader, and it is a `swap(false)` — the
-answer is consumed. That is also the route taken when a connection has no poll thread
-installed yet.
+`check_pending_write_update()` uses `swap(false)` to consume the update. Keeping the
+request on the connection avoids a delayed raw-descriptor command changing another
+socket's interest after descriptor reuse.
 
 ### The job system
 
@@ -2489,11 +2432,8 @@ Everything named here lives in `rpc/client.rs` — `srpc::client` in Rust,
 `LoadBalancingStrategy` were trimmed out of the umbrella and need
 `import srpc.request_options;` and `import srpc.load_balancer;` of their own).
 
-One lane note up front: everything below is `pub` in Rust and shown in Rust,
-with a single exception — the per-request options/retry family
-(`request_with_options`, `wait_with_options`, `set_options`), whose retry
-coordinator still depends on a facade thread the Rust lane does not spawn yet.
-That section keeps its C++ spelling and says so.
+The request and retry paths execute canonical Rust in Cargo and equivalent generated
+C++ in the C++ lane. Examples below use the language indicated by their code fences.
 
 ### Creating a client and connecting
 
@@ -2773,13 +2713,11 @@ returning.
 
 ### Reading metrics
 
-`Client::metrics()` is a permanently zeroed stub — it hands back a per-`Client`
-`ConnectionMetrics` that nothing ever writes to. The live counters are on
-`ClientConnection::metrics()`, reached through `client->connection()`, and
-`ConnectionMetrics` needs an `import srpc.connection_metrics;` of its own, being
-outside the umbrella too. Chapter 11 lists the counters, says which of them are
-never written, and covers what the zeroed stub costs the pool strategies and
-health check described below.
+`Client::metrics()` and `ClientConnection::metrics()` read the same shared counters.
+The client keeps their storage alive through close and reconnect, so a reference obtained
+from a live client remains valid through those operations. Import
+`srpc.connection_metrics` when naming `ConnectionMetrics` directly. Chapter 11 lists
+which counters the runtime updates and which still need explicit instrumentation.
 
 Note also that `Client::pending_request_count()` counts *parked* requests in
 the disconnected-request queue, not requests in flight. In-flight futures are
@@ -2805,10 +2743,7 @@ if let Some(client) = pool.get_client(&"127.0.0.1:8848".to_string()) {
 }
 ```
 
-(One Rust-lane caveat inside `get_client`: its in-place reconnect attempt for a
-client in `FAILED`/`DISCONNECTED` state rides the same facade thread the retry
-path needs, so under rustc that attempt is a no-op and the pool falls through
-to its close-everything-and-rebuild path — functional, one step blunter.)
+
 
 The constructor is `ClientPool::new(Option<Arc<PollThread>>, PoolConfig)`
 (`ClientPool::new_` in C++) — both arguments are required, and passing `None`
@@ -2837,38 +2772,29 @@ minimum / 4 maximum connections, a five-minute idle timeout, health checks on,
 a 50% success-rate floor, and `RANDOM` balancing. `set_pool_config` swaps the
 whole struct at any time.
 
-Of the four strategies, only `RANDOM` and `ROUND_ROBIN` actually
-differentiate. `LEAST_CONNECTIONS` and `LEAST_LATENCY` read
-`Client::metrics()`, which is the zeroed stub, so both always score every
-client identically and settle on index 0.
+`RANDOM` and `ROUND_ROBIN` select by their named policies. `LEAST_CONNECTIONS`
+compares live `in_flight_requests()` counters. `LEAST_LATENCY` reads latency metrics,
+but ordinary completion does not record latency samples, so it needs explicit samples
+to distinguish connections by latency.
 
-The health check has the same problem from the other direction, but only in
-its second half. It tests connectivity first; only then does it read
-`requests_sent()` off the stub, see zero, decide there is not enough data to
-judge (the threshold is `min_requests_for_health`, 10 by default) and return
-"healthy". So a *connected* client is always judged healthy — but the
-connectivity test that runs ahead of it still bites. `remove_unhealthy_clients`
-and `remove_all_unhealthy` do close and drop clients that are not connected,
-never taking an address below `min_connections`, and `get_healthy_client_count`
-does not count them. What never happens is metrics-driven eviction: a connected
-client with a terrible success rate is never removed. The idle-based helpers
-`close_idle_clients(addr, now_ms)` and `close_all_idle(now_ms)` do work: they
-go through `Client::is_idle`, which reads the connection's real activity clock.
-Both take the current time in milliseconds from you rather than reading a
-clock themselves.
+Health checks first test connectivity. Once `min_requests_for_health` requests have
+been sent, they compare the live success rate against `unhealthy_threshold_percent`.
+`remove_unhealthy_clients` and `remove_all_unhealthy` preserve `min_connections`.
+The idle helpers `close_idle_clients(addr, now_ms)` and `close_all_idle(now_ms)` use
+the connection's activity clock and take the current time in milliseconds from you.
 
-### Keepalive: configured, not applied
+### TCP keepalive
 
-`KeepaliveConfig` exists, `Client::set_keepalive` stores it, and
-`keepalive_config()` reads it back. Nothing pushes it to the socket:
-`ClientConnection::apply_keepalive_options` is an empty function body. Treat
-the whole feature as configuration that is currently inert.
+`Client::set_keepalive` stores the configuration and applies it to a live TCP channel.
+A configuration set before `connect` is applied when the channel is bound. The
+`ChannelConnectionBase::set_keepalive` capability reports whether a transport supports
+it; non-TCP channels return unsupported.
 
 ```rust
 let keepalive = KeepaliveConfig::aggressive(); // idle 10s, interval 2s, 3 probes
-cl.set_keepalive(&keepalive);                  // stored, never applied
+cl.set_keepalive(&keepalive);                  // apply now or stage before connect
 
-let stored = cl.keepalive_config();            // reads back what you stored
+let stored = cl.keepalive_config();
 ```
 
 The presets are `new_()` (enabled; 60 s idle, 10 s interval, 5 probes),
@@ -2876,13 +2802,9 @@ The presets are `new_()` (enabled; 60 s idle, 10 s interval, 5 probes),
 `disabled()`. The fields are `enabled`, `idle_sec`, `interval_sec` and `count`.
 There is no `KeepaliveConfig::defaults()`.
 
-Set it before `connect` if you set it at all: `Client` holds a pending copy and
-pushes it into the connection at connect time; setting it afterwards updates
-the live connection's stored copy instead.
-
-For liveness detection that actually does something on the wire, look at the
-heartbeat protocol in chapter 11 — though note the caveat there about what
-drives its timer.
+On Linux, enabling keepalive sets `SO_KEEPALIVE`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`,
+and `TCP_KEEPCNT`. Disabling it clears `SO_KEEPALIVE` and leaves the tuning values
+unchanged. This is separate from the RPC heartbeat protocol described in Chapter 11.
 
 ---
 
@@ -3403,31 +3325,17 @@ Unordered containers serialize in iteration order, so the exact byte sequence fo
 `std::unordered_map` is not reproducible across runs. It still decodes correctly;
 just do not hash or diff the encoded bytes and expect stability.
 
-### Where the lanes diverge
+### Shared serialization behavior
 
-Serialization is the one subsystem where the Rust and C++ lanes are deliberately
-not equivalent, and the boundary is enforced by loud panics rather than silent
-lies:
+Primitive and container serialization, archives, dynamic payload holders, registry
+factories, and envelope decoding all have canonical Rust implementations. Wire sites
+call `crate::serializable` dispatchers with real serialization trait bounds. Cargo
+executes those implementations, including nested containers and factory recovery.
+The generated C++ dispatchers retain the C++ trait/ADL boundary where required.
 
-- **Leaves are real in both lanes.** Fixed-width integers, `f64`, `v32`/`v64` and
-  the string leaves serialize identically through the `Serialize`/`Deserialize`
-  traits under rustc and through the dispatchers in C++ — the wire bytes are the
-  same, which is what makes cross-lane RPC work.
-- **The generic dispatchers are C++-only.** `Serialize_::serialize` resolves the
-  generated modules' concrete overloads via the poison-scoped dependent call
-  described below; under rustc a trait bound there would cascade into the generic
-  container impls, which the emitter cannot lower. So the canonical dispatchers
-  stay unbounded, and their rustc terminal is a loud `unimplemented!`.
-- **Container serialization panics under rustc.** Serializing a `Vec`, map or set
-  through the dispatcher chain in the Rust lane panics with a message naming the
-  alternatives; C++ container emission is byte-for-byte untouched. Rust-lane wire
-  code writes leaves (which is all the RPC headers and the benchmark payloads
-  need).
-- **The wire sites use one facade route.** Canonical code spells wire-site calls
-  as `cpp_serializable::Serialize_::serialize(...)`, which emits the same
-  qualified `::srpc::Serialize_::serialize` call C++ always made and, under
-  rustc, dispatches through a facade trait satisfied by srpc's archives over the
-  canonical traits. One source, both lanes, no shims at the call sites.
+Round-trip tests require recovered values and payloads in both lanes. A panic-only
+container dispatcher or a holder that always reports the wrong type is a failed
+implementation, not an accepted difference between the languages.
 
 ### `v32` and `v64`
 
@@ -3752,12 +3660,12 @@ up front.
 | Circuit breaker | **Works**, off by default | Gates every request through `allow_request_with_circuit_metrics`. `Client`'s staged default is `CircuitBreakerConfig::disabled()`. |
 | Server-restart detection | **Works** | Every reply carries a `server_instance_id`; a change fires the callback. But `set_on_server_restart` only reaches a live connection — see below. |
 | Per-connection counters | **Works** on `ClientConnection` | `requests_sent` / `_completed` / `_failed`, in-flight, byte counts, reconnects, circuit transitions. |
-| Latency metrics | **Not wired** | `record_request_completed_with_latency` has no caller, so `avg_latency_us`, `min_latency_us` and `max_latency_us` are always 0. |
-| `Client::metrics()` | **Inert** | Returns a per-`Client` all-zero `ConnectionMetrics` that nothing ever writes. Read the connection's instead. |
-| Request buffering while disconnected | **Partial** | Requests are parked with a TTL and then *expired*. `replay_pending_requests` returns 0 — nothing is ever re-sent. |
+| Latency metrics | **Not wired** | Ordinary completion leaves latency samples unset. Explicit `record_request_completed_with_latency` instrumentation updates the average, minimum, and maximum. |
+| `Client::metrics()` | **Works** | Shares live counters with its connection and retains their storage through close and reconnect. |
+| Request buffering while disconnected | **Works** | Encodes requests once, replays them FIFO after reconnect, and resolves expiry, overflow, and teardown errors. |
 | Heartbeat | **Partial** | The protocol is complete end to end and the server answers probes, but nothing ticks the client-side send timer, so no probe is ever emitted. |
-| TCP keepalive | **Not wired** | `set_keepalive` stores a `KeepaliveConfig`; `apply_keepalive_options` is an empty function. No socket option is set. |
-| Pool health checks, `LEAST_CONNECTIONS`, `LEAST_LATENCY` | **Inert** | All three read `Client::metrics()`. A connected client is always judged healthy, nothing is evicted, and both "smart" strategies always pick index 0. |
+| TCP keepalive | **Works** | Applies Linux keepalive socket options through the TCP channel capability. Other transports report unsupported. |
+| Pool health checks, `LEAST_CONNECTIONS`, `LEAST_LATENCY` | **Partial** | Health and in-flight selection use live metrics. Latency selection still needs explicit latency samples. |
 
 ### What is staged and what is not
 
@@ -3918,31 +3826,33 @@ client->set_buffering_config(buffering);          // AFTER connect
 `overflow_strategy`, `enabled`). Setting a new config on a live connection first drains
 whatever is queued with `ECONNABORTED` (103).
 
-**Queued requests are never replayed.** This is the single most important thing to know
-about the feature. `ClientConnection::replay_pending_requests` returns `0` — the source
-comment describes the surviving entries as waiting "for a future replay path". A parked
-request has exactly three possible ends:
+Queued requests replay after a successful reconnect. The writer runs when the request
+is queued, producing an owned RPC body containing its xid, method id, and arguments.
+Replay sends those bytes in FIFO order without invoking the writer again. The original
+future receives the reply.
 
-* **TTL expiry.** `expire_stale` resolves it with `ETIMEDOUT` (110 on Linux, 60 on
-  macOS). The sweep is not on a timer: it runs at the head of every new `request()`
-  through the channel path, and once more after a successful reconnect.
-* **Queue drain.** Closing or dropping the connection resolves everything still queued
-  with `ENOTCONN` (107); a `set_buffering_config` on a non-empty queue uses
-  `ECONNABORTED` (103).
-* **Overflow.** With `DROP_OLDEST` the front entry is evicted with `EAGAIN` (11) to make
-  room for the new one. `DROP_NEWEST` and `FAIL_FAST` are the same code path in
-  `RequestQueue::enqueue`: both reject the *incoming* request with `EAGAIN` rather than
-  touching the queue, and `request()` hands that back as `Err(11)` instead of a future.
+A parked request can also finish with an error:
 
-Either of the first two resolves the future you were handed with that error code and
-bumps `queue_dropped_requests`. Note also that `Future::wait()` is hard-capped at one
-second and latches `ETIMEDOUT` when it fires, so a synchronous caller waiting on a
-request parked with a 30-second TTL times out long before the queue ever looks at it.
+* **TTL expiry.** The request resolves with `ETIMEDOUT` (110 on Linux). Expiry is checked
+  at new requests and during reconnect replay; it is not a separate timer.
+* **Queue drain.** Closing or dropping the connection resolves queued requests with
+  `ENOTCONN` (107). Replacing the buffering configuration uses `ECONNABORTED` (103).
+* **Overflow.** `DROP_OLDEST` evicts the oldest entry with `EAGAIN` (11). `DROP_NEWEST`
+  and `FAIL_FAST` reject the incoming request with `EAGAIN`; `request()` returns
+  `Err(11)`. A queue with zero capacity rejects every incoming request.
+
+The default `Future::wait()` still uses a one-second deadline. A queued request with a
+longer TTL can outlive that wait; choose an explicit waiting budget when waiting through
+an outage. Replay does not extend the caller's deadline.
+
+These failures increment `queue_dropped_requests`. Queue callbacks run after releasing
+the queue mutex, so they can submit or clear requests without deadlocking that mutex.
+A future is transferred from queued ownership to pending-reply ownership before sending,
+including when an in-memory channel replies inline.
 
 With `DisconnectBehavior::FAIL_FAST`, or with `enabled` false, a request made while
-disconnected returns `Err(107)` immediately — which is usually what you want until the
-replay path exists. `request_async` never buffers at all: it fails with `Err(107)` the
-moment it finds the connection down, whatever the buffering config says.
+disconnected returns `Err(107)` immediately. `request_async` never buffers: it fails
+with `Err(107)` when the connection is down, regardless of buffering configuration.
 
 ### Heartbeat / keep-alive
 
@@ -3972,17 +3882,14 @@ pollable it has registered is the TCP connection's own shim, whose
 never observes a heartbeat timeout. Configure it if you like; do not depend on it to
 detect a silent peer.
 
-`set_keepalive` is a separate thing — OS-level TCP keepalive — and it is also inert:
-the config is stored, and `apply_keepalive_options` is an empty function body.
+`set_keepalive` configures OS-level TCP keepalive through the channel capability.
+It applies socket options on TCP transports independently of heartbeat scheduling.
 
 ### Connection metrics
 
-`Client::metrics()` returns a reference to a per-`Client` `ConnectionMetrics` that
-nothing ever writes to. It is a fallback for the no-connection case that ended up being
-returned unconditionally, so it reads as all zeros forever. Do not use it.
-
-The live counters are on the connection, reached through `Client::connection()`, which
-returns an `Option`:
+`Client::metrics()` reads the same shared storage as `ClientConnection::metrics()`.
+That storage remains owned by the client across close and reconnect. You can also
+read it through `Client::connection()`, which returns an `Option`:
 
 ```cpp srpc-compile-client
 auto conn_opt = client->connection();
@@ -4006,18 +3913,16 @@ if (conn_opt.is_some()) {
 
 Every field is a relaxed `AtomicU64`. Two caveats on the numbers themselves:
 
-* The latency fields — `avg_latency_us`, `min_latency_us`, `max_latency_us` — are always
-  zero. They are fed by `record_request_completed_with_latency`, which has no caller;
-  the completion path uses the plain `record_request_completed`.
+* Ordinary completion leaves `avg_latency_us`, `min_latency_us`, and `max_latency_us`
+  unset because it uses `record_request_completed`. Explicit calls to
+  `record_request_completed_with_latency` provide samples for those fields.
 * `requests_timed_out` and `retry_attempts` are only recorded by the
   `request_with_options` retry coordinator. A plain `request` that times out does not
   touch either.
 
-Because `ClientPool`'s health check and its `LEAST_CONNECTIONS` / `LEAST_LATENCY`
-strategies all read `Client::metrics()`, they read zeros: `requests_sent` is always
-below `min_requests_for_health`, so any connected client is judged healthy and nothing
-is ever evicted, and both strategies always land on index 0. `RANDOM` and
-`ROUND_ROBIN` are unaffected.
+`ClientPool` health checks and `LEAST_CONNECTIONS` read these live counters.
+`LEAST_LATENCY` can distinguish only connections with latency samples; ordinary
+request completion still does not record those samples.
 
 ### Connection callbacks
 
@@ -4648,13 +4553,10 @@ The state they share is small and deliberate:
 | `ConnectionMetrics` — 18 counters | `AtomicU64` each |
 | a TCP connection's outbound buffer and callback slots | mutexes |
 
-Everything else on the connection is `Cell`/`RefCell`, and the poll thread is the writer the
-SAFETY notes name. The circuit breaker is the exception worth knowing about: it is plain
-`Cell` state, but the gate at the head of every request
-(`allow_request_with_circuit_metrics`, which can move the state to `HALF_OPEN` and set
-`probe_in_progress`) runs on *your* thread, while the reply path updates the same cells from
-the poll thread. Its state and counters are unsynchronised across those two threads — read
-them as approximate, and do not add state of your own to that pattern.
+Shared connection state and reliability managers use atomics or mutex-protected snapshots.
+Circuit-breaker admission and reply transitions synchronize on the same canonical state;
+half-open probe admission is serialized. Callbacks run after releasing the transition
+locks. This prevents races between application request threads and the poll worker.
 
 `Future` itself is a mutex plus a condition variable, so `Future::wait()` is an OS-level
 wait, not a fiber suspension: it blocks the calling thread outright. If that thread is the
@@ -4829,46 +4731,24 @@ The house convention is that an `unsafe fn` gets a `# Safety` doc section statin
 precondition (55 of them today) and an `unsafe` block gets a `// SAFETY:` comment saying
 why it holds (138 today).
 
-### Most `unsafe` here is a module boundary, not a memory hazard
+### Unsafe boundaries and canonical calls
 
-This is the part that surprises readers who count the blocks. In the canonical Rust, a call
-into another SRPC module goes through the `cpp::` facade — `use rusty as cpp;` — and most
-functions on that facade are declared `unsafe fn` for the sole purpose of recording that the
-call crosses a C++ named-module boundary rustc cannot see through. Reading the reactor's
-thread-local current-fiber slot looks like this:
-
-```rust
-/// Return the running fiber's id, or zero outside fiber context.
-pub fn get_id() -> u64 {
-    // SAFETY: reading the reactor's thread-local current-fiber handle has
-    // no caller-side precondition.
-    let fiber: Option<Rc<rusty::ReactorFiber>> = unsafe { cpp_reactor::Fiber::current_fiber() };
-    if let Some(fiber) = fiber {
-        return fiber.id.get();
-    }
-    0_u64
-}
-```
-
-There is no pointer arithmetic there and no aliasing question — only a boundary. The
-genuinely hazardous `unsafe` is much rarer and concentrated where you would expect it: the
-fourteen `unsafe extern "C"` blocks that declare the C seam, the pthread wrappers in
-`base/threading.rs`, the raw-pointer paths in `misc/serializable.rs`, and the reactor's
-`static mut` model of C++ thread-local storage.
+Calls between SRPC modules use canonical Rust imports. Crossing a generated C++ module
+boundary does not itself require an unsafe Rust call. Unsafe contracts remain at raw
+payload pointers, native FFI, context switching, and other operations whose memory or
+ownership requirements Rust cannot express. The adapter inventory and native manifest
+record those boundaries; they do not permit alternate SRPC runtime behavior.
 
 ### The assertions rustc cannot check for you
 
 Three categories of statement in these sources are outside what the compiler proves, and
 they are where real bugs would live.
 
-**`unsafe impl Send` / `unsafe impl Sync`.** Five types carry them — `RpcServiceContext`,
-`ServerConnection`, `ClientConnection`, `TcpConnection`, `TcpListener` — because the channel
-callbacks (`Box<dyn Fn(..) + Send + Sync>`) and the reactor's `OneTimeJob`
-(`Box<dyn FnMut() + Send + Sync>`) require `Send` captures, while the captured objects hold
-`Cell`/`RefCell` state. What makes them sound is the single-dispatch-thread contract of
-chapter 13, written out in a SAFETY paragraph above each impl. If you break that contract —
-by driving one `Client` from two application threads, say — these `unsafe impl`s become
-false and nothing will tell you.
+**Thread-safety contracts.** Services and channel interfaces require `Send + Sync`.
+Shared RPC connection fields, future state, and reliability managers now use actual
+synchronization. Remaining unsafe implementations at native ownership boundaries need
+specific invariants. A `Cell` field is not safe merely because its updates are monotonic.
+Reactor fibers and events remain owner-thread values and must not cross threads.
 
 **`#[cfg_attr(any(), …)]` emitter directives.** `any()` is always false, so these attributes
 are invisible to `cargo build`, `cargo test` and clippy while being the only way to state a
@@ -4876,12 +4756,11 @@ C++ contract Rust has no syntax for: `thread_local` (all nine in `reactor/reacto
 `cpp_noexcept`, `cpp_no_fieldwise_ctor`, `cpp_no_auto_traits`, `cpp_abi`. Deleting one is
 silent in the Rust lane and changes the emitted module.
 
-**The generated object model is not Rust's.** The clearest instance is
-`#[allow(clippy::arc_with_non_send_sync)]` on `Future::create` and `Client::create`: the
-emitted C++ `Arc` erases Rust's auto traits, so the lint is correct about the Rust and wrong
-about the artifact. Several dozen `#[allow(clippy::…)]` in these sources are pins of exactly
-this kind — measured statements that taking the suggestion would change the emitted C++ —
-not style waivers.
+**Generated ownership still needs validation.** C++ guards and shared handles must preserve
+Rust lifetimes and mutation contracts. Compilation checks generic and imported ownership
+metadata; runtime tests cover inline replies, concurrent close, suspended receivers, and
+retained wakes. An allowance for a required spelling is not permission to substitute a
+constant result or weaken an ownership rule.
 
 ### The ownership types you actually hold
 
@@ -4967,52 +4846,19 @@ Do not reach for it expecting analysis. The borrow checking that happens is rust
 every build, whether you ask for it or not. The switch is a vestige of the era when hand-
 written C++ carriers still needed a separate checker pass.
 
-### The inline Rust DSL, and where it survives
+### No remaining inline Rust DSL
 
-One file still carries Rust embedded inside a C++ translation unit:
-`reactor/epoll_platform_linux.cc`, the Linux implementation unit for `srpc.epoll_wrapper`
-and the only hand-maintained C++ TU in the repository. It holds exactly five DSL blocks. The
-pattern is a `#if RUSTYCPP_RUST` block — the source — followed by transpiler-emitted C++
-between fences that carry a `rust_sha256` of the Rust they came from:
-
-```cpp srpc-no-compile
-#if RUSTYCPP_RUST
-fn epoll_event_zeroed() -> epoll_event {
-    Default::default()
-}
-#endif
-/*RUSTYCPP:GEN-BEGIN id=epoll_platform_linux.1 version=1 rust_sha256=e64905dc...*/
-epoll_event epoll_event_zeroed();
-
-epoll_event epoll_event_zeroed() {
-    return rusty::default_like<epoll_event>();
-}
-/*RUSTYCPP:GEN-END id=epoll_platform_linux.1*/
-```
-
-Edit the Rust and regenerate; never edit the C++ between the fences. The hash is what makes
-the alternative detectable — a block whose Rust was edited without regeneration is *drift*,
-and the compiler sees the stale C++ while the next extraction sees the new Rust. The drift
-guard runs in the source gate and can be run alone — it needs the pinned transpiler built
-(`cmake --build build --target build_rusty_cpp_transpiler`), and fails closed with
-`no transpiler at …` and exit 2 if it is missing:
-
-```bash srpc-no-compile
-bash scripts/srpc_dsl_check.sh third-party/rusty-cpp/target/release/rusty-cpp-transpiler
-```
-
-It hard-codes the census — exactly this one file, exactly five blocks — and it scans `*.rs`
-too, so introducing a DSL block anywhere under `base/ misc/ reactor/ rpc/` fails it until
-the script's counts are updated. That is deliberate: the DSL is a shrinking surface, not a
-place to add code.
+Production implementation is canonical `.rs` plus the reviewed native kernels. The old
+epoll DSL carrier has been removed. The source gate rejects new handwritten C++ behavior
+under the canonical directories and rejects newly introduced inline DSL carriers.
+`scripts/native-kernel-sources.txt` is the shared Cargo/CMake source manifest.
 
 ### What backs up the static story at runtime
 
 Static checking of the Rust says nothing about the emitted C++ actually running, so three
-other lanes carry that weight. All three need the submodules
-(`git submodule update --init --recursive`); without `third-party/googletest`, CMake only
-warns and quietly registers four ctest entries instead of twelve, so a green `ctest` is not
-by itself proof the battery ran.
+other lanes carry that weight. Initialize the submodules with
+`git submodule update --init --recursive`, then inspect `ctest -N -L srpc` before accepting
+an overall green result. The configured test inventory must include the runtime suites.
 
 **Sanitizers** are a whole-configuration switch, so use a separate build directory:
 
@@ -5020,10 +4866,10 @@ by itself proof the battery ran.
 cmake -S . -B build-asan -G Ninja -DSRPC_SANITIZER=address   # none|address|thread|undefined
 ```
 
-**The C++ battery** — eight binaries under `ctest -L runtime_battery` — is what actually
-exercises thread-local storage, fiber teardown and the poll thread. This matters more than
-it sounds: `reactor/reactor.rs` is deliberately not executable as Rust, so a green
-`cargo test` proves nothing about the reactor's per-thread behavior.
+**The C++ battery** under `ctest -L runtime_battery` exercises thread-local storage,
+fiber teardown, poll workers, transports, and restored client behavior. Cargo runs the
+canonical reactor with the same native kernels. The paired runtime driver compares
+independently specified observations from Rust and generated C++ executables.
 
 **Verus** proves functional contracts on two modules today — `misc/stat.rs` and
 `rpc/internal_protocol.rs` — against the real sources in place, not an extracted copy:
@@ -5085,8 +4931,12 @@ matters — but the harness above is real, and these are its numbers.
 
 ### The Rust lane, measured
 
+These measurements describe the recorded 2026-08-31 revisions, before the facade and
+runtime ownership repairs. They have not been rerun for the current implementation
+and do not establish its performance or behavioral parity.
+
 Since the rustc lane became executable end to end — first over the in-memory channel,
-then over real TCP once the facade grew a real epoll poll thread — the same question can
+then over real TCP with native epoll support — the same question can
 be asked of it directly. All numbers below are the same host as the table above
 (AMD EPYC 7702P), rustc 1.97.1, `-C opt-level=3 -C target-cpu=native`, thin LTO, `i64`
 echo through the real wire format (`v64 xid | i32 rpc_id | payload` out, the four-field
@@ -5157,9 +5007,10 @@ tick, not a rustc artifact: `tcpconn_send_frame` always queues and wakes the pol
 through the command channel, and the C++ worker drains that channel on the same 1 ms
 cadence — throughput comes from pipelining in both lanes. And serialization is noise
 (62 ns against a 3.5 µs pipelined budget); the gap to C++ lives in the poll loop and
-request-path bookkeeping, not in copying. Untested and known-untested: *sharing* one
-`Client` across rustc threads (`rusty::Arc` erases auto traits; the multi-thread numbers
-above use one client per thread, which is also what rpcbench does).
+request-path bookkeeping, not in copying. The multi-thread numbers above use one
+client per thread, which is also what rpcbench does. The current Rust `Client` is
+explicitly non-`Sync`; its shared `ClientConnection` and `Future` owners use
+synchronized state, and both Rust and generated C++ tests check those contracts.
 
 The `fiber`, `defer` and `async` modes, which an earlier revision of this section claimed
 were blocked on the reactor's TLS model, turn out to run — and win — under rustc. The
@@ -5183,7 +5034,7 @@ it overstated the lane difference. That shortcut is gone: `async fn` is now a
 first-class canonical spelling — the pinned transpiler lowers `async fn f(..) -> T` to
 a C++ coroutine returning `rusty::Task<T>` (`.await` → `co_await`, `return` →
 `co_return`), and under rustc the same source is an ordinary Rust future, bridged by
-the facade's `Task::from_future` into the same
+the standard Task adapter's `Task::from_future` into the same
 `reactor_spawn_stackless_task_with_result` call the generated C++ async wrappers make.
 The first canonical pair (`srpc::misc::async_double`, `async_double_twice`) is
 exercised by both lanes' test batteries — and its chained `co_await` immediately
@@ -5191,13 +5042,10 @@ exposed a latent runtime bug (the Task awaiter never started the lazy inner coro
 a re-poll completed with a default-constructed result), fixed with symmetric transfer
 in the rusty-cpp pin bump. Re-measured with the Rust server running the real task
 machine per request, the async row reads 1,197,856 vs 1,076,875 — ~111%, a fair
-comparison at last. Suspension works on both sides too: the facade
-`PollThread::add_tick_hook` lets a consumer register the one-line `Reactor::run_loop`
-pump (what pollworker's C++ loop does natively), and the two
-`tests/stackless_wake_*_rust.rs` binaries pin the full protocol — a future that wakes
-during its own first poll is parked by the canonical spawn, its ticket drained by the
-pump, and its result delivered through the same `on_ready` path in both lanes. The
-TLS blocker itself is gone: the reactor's nine per-thread statics migrated to Rust's
+comparison at last. The current canonical `PollThreadWorker` pumps stackless tasks in
+both lanes. `tests/stackless_wake_*_rust.rs` cover a future that wakes during its first
+poll, foreign wake admission, and owner-thread completion without a separate tick hook.
+The TLS blocker itself is gone: the reactor's nine per-thread statics migrated to Rust's
 `thread_local!`, which the transpiler now lowers to per-thread
 `rusty::LocalKey` storage — `tests/reactor_multithread_rust.rs` runs two independent
 reactors on two threads of one process, previously a deterministic crash. The
@@ -5374,22 +5222,19 @@ does all of its work there; passing `rusty::None` makes it create a poll thread 
 Scaling out therefore means creating more `PollThread`s and distributing servers and clients
 across them — there is no worker-pool setting inside a single poll thread to turn up.
 
-### Settings that look like knobs but are not
-
-Do not spend tuning effort on these; they are inert in this tree.
+### Runtime settings and their limits
 
 | Surface | What actually happens |
 | --- | --- |
-| `Client::metrics()` | Returns `&self.empty_metrics_field`, a permanently zeroed per-`Client` `ConnectionMetrics`. The live counters are on `ClientConnection::metrics()`, reached via `client->connection()` (which returns an `Option`). |
-| `PoolConfig::load_balancing = LEAST_CONNECTIONS` | Reads `in_flight_requests()` off that zeroed stub for every candidate, so nothing is ever less than the first — always selects index 0. |
-| `PoolConfig::load_balancing = LEAST_LATENCY` | Skips any candidate whose latency and completed count are both zero, which is all of them — also returns index 0. |
-| `PoolConfig` health checking | `clientpool_is_client_healthy_with` reads `requests_sent()` from the stub, gets 0, and returns "healthy" before it ever compares the success rate. A *connected* client is therefore always judged healthy; only one that has actually lost its connection is ever evicted. |
-| Offline request buffering | Requests are parked with a TTL and expired; `replay_pending_requests` returns `0`. They are never replayed after reconnect. |
-| `Client::set_keepalive` | Stores the config. `apply_keepalive_options` is an empty function — no socket option is ever set. |
+| `Client::metrics()` | Reads the connection's shared counters; the client keeps the storage alive across close and reconnect. |
+| `PoolConfig::load_balancing = LEAST_CONNECTIONS` | Selects using live in-flight request counts. |
+| `PoolConfig::load_balancing = LEAST_LATENCY` | Needs explicitly recorded latency samples; ordinary completion does not provide them. |
+| `PoolConfig` health checking | Tests connectivity and compares the live success rate once the minimum request count is reached. |
+| Offline request buffering | Encodes once, replays FIFO after reconnect, and resolves TTL, overflow, or teardown errors. |
+| `Client::set_keepalive` | Applies Linux TCP keepalive options; non-TCP transports report unsupported. |
 | Heartbeat | The protocol is complete on both ends, but nothing ticks the client-side timer, so probes are not sent on a schedule. |
 
-`RANDOM` (the default) and `ROUND_ROBIN` are the two load-balancing strategies that do what
-they say.
+`RANDOM` remains the default balancing strategy; `ROUND_ROBIN` cycles through candidates.
 
 ### What is worth measuring
 
@@ -5521,8 +5366,7 @@ class Client {
     void clear_connection_callbacks();
     void set_on_server_restart(OnServerRestartCallbackFn cb);
 
-    // Returns `&self.empty_metrics_field`: a per-Client ConnectionMetrics that is
-    // never written. The real counters are on ClientConnection::metrics().
+    // Shared live counters, retained by the Client through close and reconnect.
     const ConnectionMetrics& metrics() const;
 };
 ```
@@ -5530,8 +5374,8 @@ class Client {
 Three signature details bite at the call site. `request` takes exactly three arguments —
 there is no overload set, so a method with no input parameters still passes an empty lambda,
 which is what the generator emits. `connect` and `Server::start` take `const int8_t*`, so
-call sites write `reinterpret_cast<const int8_t*>(addr)`. And `metrics()` is the zeroed stub
-noted in the block. Chapter 8 works through what each of those means for a client.
+call sites write `reinterpret_cast<const int8_t*>(addr)`. `metrics()` returns a reference
+to shared live counters. Chapter 8 works through the client API.
 
 ### ClientConnection
 
@@ -5562,10 +5406,9 @@ class ClientConnection {
 };
 ```
 
-Two methods on this class are stubs and should not be built on: `replay_pending_requests()`
-returns `0` — queued requests are expired by TTL, never replayed — and
-`apply_keepalive_options()` has an empty body, so `set_keepalive` stores a config that is
-never turned into socket options. Chapter 11 lists the inert knobs in full.
+`replay_pending_requests()` sends unexpired queued bodies through the active channel
+and returns the number sent. Successful reconnect invokes it automatically. Keepalive
+configuration is applied through the channel's capability rather than a client-owned fd.
 
 ### Future
 
@@ -5574,13 +5417,13 @@ class Future {
     static rusty::Arc<Future> create(int64_t xid, FutureAttr attr); // attr by value
 
     bool ready() const;
-    void wait() const;              // routes through timed_wait(1.0)
+    void wait() const;              // uses the default one-second timeout
     void timed_wait(double sec) const;
     bool wait_with_options() const; // uses this future's RequestOptions
     bool timed_out() const;
 
     int32_t get_error_code() const;               // also waits
-    rusty::RefMut<ReplyBuffer> get_reply() const; // also waits
+    rusty::MutexGuard<ReplyBuffer> get_reply() const; // also waits
     int64_t get_xid() const;
 
     RequestOptions get_options() const;
@@ -5591,7 +5434,7 @@ class Future {
 
     bool add_completion_callback(rusty::Function<void()> callback) const;
 
-    static void safe_release(rusty::Arc<Future> fu); // no-op; Arc owns the lifetime
+    static void safe_release(rusty::Arc<Future> fu); // consumes and releases one Arc owner
 };
 ```
 
@@ -5601,8 +5444,8 @@ on expiry. `wait_with_options()` is the only way past the cap, and only when the
 `RequestOptions::timeout_ms` is non-zero. Chapter 8's "The one-second wall" explains the
 consequences and the escape.
 
-`get_reply()` hands back a `RefMut<ReplyBuffer>` — a borrow guard. Keep it alive for the
-whole decode; the archive built over it reads through `&guard->src`.
+`get_reply()` hands back a `MutexGuard<ReplyBuffer>`. Keep the guard alive for the
+whole decode and release it before callbacks or waits that need the same reply lock.
 
 `FutureAttr` carries one field, a completion callback, and default-constructs to empty. The
 generated proxy passes a default-constructed one.
@@ -5634,10 +5477,9 @@ class ClientPool {
 
 The factory asserts `min_connections > 0` and `max_connections >= min_connections`, and
 creates its own `PollThread` when handed `rusty::None`. Destroying the pool closes every
-cached client and shuts that poll thread down. Health checking and the
-`LEAST_CONNECTIONS` / `LEAST_LATENCY` strategies read `Client::metrics()`, the zeroed stub,
-and are therefore inert; chapters 11 and 15 give the details. `RANDOM` (the default) and
-`ROUND_ROBIN` work as documented.
+cached client and shuts that poll thread down. Health checking and `LEAST_CONNECTIONS`
+use live counters from `Client::metrics()`. `LEAST_LATENCY` still needs explicit latency
+samples; chapters 11 and 15 give the details.
 
 ### Server
 
@@ -5895,8 +5737,8 @@ Every method except `create` and `shutdown` posts a command down an mpsc channel
 worker thread, so they are fire-and-forget: if the worker has already exited, the command is
 dropped silently — except `update_mode`, which logs at `ERROR`
 ("PollThread::update_mode: send failed! Channel disconnected?") when the send fails.
-`get_remove_count()` exists but always returns 0 — worker state is not reachable across the
-channel.
+`get_remove_count()` reads an atomic count of accepted `remove_fd` commands. It includes
+unregistered descriptors and excludes commands rejected after shutdown.
 
 ### Channel layer
 
@@ -6487,9 +6329,8 @@ Don't:
 - Don't call `std::this_thread::sleep_for` or `Time::sleep` inside a fiber.
 - Don't hold a `SpinLock` across a suspension point.
 - Don't subclass a generated service that is not `abstract`.
-- Don't read `Client::metrics()` — it is a permanently zeroed stub. Go through
-  `client->connection()`, which returns an `Option`, and read
-  `metrics()` off the connection.
+- Don't treat zero latency fields as measured latency. Ordinary request completion
+  updates counts but does not record latency samples.
 
 ---
 
@@ -6551,15 +6392,15 @@ the code alone. See "the blocking call gives up after one second" in chapter 17.
 
 | Symptom | Cause | What to do |
 |---|---|---|
-| Every call returns 110 after about a second | The future's built-in 1s deadline, which latches even if the reply arrives later | `request_with_options`, then `set_options` a real budget on the returned future before `wait_with_options()` |
+| A timed wait returns 110 | Its supplied deadline expired before completion | Check the timeout passed to `timed_wait` or the request options used by `wait_with_options` |
 | The very first call returns 107 | `connect` failed, so the `Client` stored no connection at all | Read the `ERROR` log line — it names the address and the reason |
 | Calls start returning 16 and keep doing so | The breaker opened after 5 transport failures and stays open for 30s | `client->connection()`, then `circuit_breaker_state()`; it needs 3 successes after half-opening to close |
-| A call made while the link is down returns `Ok`, then times out | Disconnect buffering is on by default (queue, 1000 entries, 30s TTL), so the request was parked rather than sent, and the waiter then hit the 1s cap | Check `connected()` first, or install `BufferingConfig::disabled()` *after* connect to get 107 immediately |
-| Requests vanish across a reconnect | Buffered requests are parked with a TTL and expired, never replayed | Treat a disconnect as a failure and re-issue at your layer |
+| A call made while the link is down returns `Ok`, then times out | The request was queued and its TTL or explicit wait deadline expired | Check the reconnect result and buffering TTL, or disable buffering after connect to fail immediately |
+| Queued requests fail during reconnect | Their TTL expired, the queue overflowed, or teardown drained them | Inspect the future error and `queue_dropped_requests`; size the TTL and queue for the outage budget |
 | The connection dies and nothing reconnects | Auto-reconnect only fires when a reconnect address was recorded and the policy allows it | Check for `auto-reconnect triggered after connection failure` at `INFO` |
 | Heartbeats are configured but never sent | Nothing ticks the client-side heartbeat timer; the protocol is complete but unwired | Do not rely on heartbeats to detect a dead peer |
-| Every metric reads zero | `Client::metrics()` returns a permanently empty stub | Unwrap `client->connection()` — it is an `Option` — and read `metrics()` off the connection |
-| `LEAST_CONNECTIONS` / `LEAST_LATENCY` pooling never differentiates | Both strategies, and the pool's health check, read that same stub | Use `ROUND_ROBIN` or `RANDOM` |
+| Latency metrics read zero despite traffic | Ordinary completion records counters but not latency samples | Add latency instrumentation before using these fields for selection |
+| Pool selection never differentiates | In-flight counts may be equal, or latency samples may be absent | Inspect live counts and record latency samples, or use `ROUND_ROBIN` or `RANDOM` |
 
 ### Server symptoms
 
@@ -6708,7 +6549,7 @@ The build is CMake and Ninja; there is no makefile and no debug/release
 environment switch:
 
 ```sh
-# Rust lane — no C++ toolchain, no submodules, seconds not minutes.
+# Rust lane, including the shared native C and assembly kernels.
 cargo test --locked --workspace --all-targets
 
 # C++ lane.
@@ -6729,23 +6570,22 @@ type, so `gdb ./build/test_fiber` gives usable frames without a special build.
 Those flags are exported `PUBLIC`, which is also why your own warnings disappear
 once you link srpc: the `-w` in that same list comes along.
 
-Three caveats about the tests themselves. Filter with `-L srpc`: the vendored
-rusty-cpp subdirectory registers about 69 tests whose binaries are not in `ALL`,
-so a bare `ctest` reports them as "Not Run" and exits non-zero. `ctest -L srpc`
-selects the 16 this project owns, of which 8 are the runtime battery — and if the
-googletest submodule is missing, CMake only warns and registers 6, so a green run
-is not proof the battery ran. And of the 76 `.cc` files in `tests/`, CMake builds
-exactly 9; the rest are not compiled
-by anything and several no longer build at all. Do not use them as a reference
-for current API.
+Inspect the configured inventory with `ctest --test-dir build -N -L srpc`
+before running it. The `SRPC_RUNTIME_BATTERY` and `SRPC_DOCS_BATTERY` lists in
+`CMakeLists.txt` identify the compiled suites; other labeled tests check source
+and build contracts. Vendored tests can require targets outside `ALL`, so a
+bare `ctest` can report unbuilt executables as "Not Run". If GoogleTest is
+missing, CMake warns and omits the runtime battery. Initialize that submodule
+and reconfigure before claiming runtime acceptance. A file under `tests/` is
+not necessarily part of the configured build or a current API example.
 
 ---
 
 ## 19. The C++ Lane: One Source, Two Compilers
 
 Everything before Part II described the framework in its source language. This
-chapter describes how the same sources become the shipped C++ library, and what
-holds the two artifacts equivalent. It is a reader's guide to machinery that
+chapter describes how the same sources become the shipped C++ library, and the
+checks applied to both artifacts. It is a reader's guide to machinery that
 Chapter 2 introduced and `CLAUDE.md` operationalizes; nothing here is needed to
 *use* either lane.
 
@@ -6777,47 +6617,46 @@ smaller families; `CLAUDE.md` keeps the authoritative list. The mirror form
 applies that the emitter must not see, which is how a C++ `operator==` can be
 deliberately withheld while the Rust side keeps `PartialEq`.
 
-A handful of hand-written files remain, all seam: `reactor/epoll_platform_linux.cc`
-(the one maintained C++ TU, carrying the inline-Rust DSL), eight plain-C syscall
-kernels shared byte-for-byte by both lanes, the two fiber context-switch assembly
-files, and the umbrella/shim headers Chapter 2 lists. Finding a `.hpp` beside a
-`.rs` never means a second implementation.
+Handwritten native code is limited to the shared nine-C manifest and architecture-selected
+fiber context-switch assembly, plus the ABI/import headers described in Chapter 2.
+Canonical Rust owns runtime and protocol decisions. A neighboring header does not supply
+a second implementation.
 
 ### What the gates hold
 
-There is no CI; the gates are the safety net, and they run inside every C++
-build.
+The normal CMake `ALL` build includes the source and dual-compile gates.
 
 The **source gate** (`srpc_goal0_source_gate`) runs the DSL census, the
-extraction check (`src/lib.rs` must match `rust-modules.toml`), both Python
-contract suites, the facade-shadow check, and the whole Cargo test suite with
-warnings denied — so a new clippy warning breaks the C++ build by design.
+extraction check (`src/lib.rs` must match `rust-modules.toml`), contract negative
+controls, the facade AST audit, the native-kernel inventory check, Cargo tests,
+and clippy with warnings denied. A new clippy warning breaks the C++ build.
 
 The **dual-compile gate** (`srpc_goal0_dual_compile`) is the ABI oracle. It
 recompiles every generated module into its own object, links one importer
 program twice — once over the fresh objects placed ahead of `libsrpc.a`, once
 over the archive alone — runs both, and compares per-module `nm` strong-symbol
-sets against a frozen census (`scripts/check_srpc_crate_mode.py`). Every change
-to the constants is a reviewed, commented delta. The practical consequence for a
-contributor is the one Chapter 2 stated: a green `cargo test` proves nothing
-about the C++ lane, and a real fix normally touches the `.rs`, its test, and the
-oracle's tables in one commit.
+sets against an exact reviewed inventory (`scripts/check_srpc_crate_mode.py`).
+Changes to that inventory require a measured, explained delta. Passing Cargo
+tests does not establish C++ behavior. Verify changes in both lanes and update
+the expected ABI only when the measured public contracts change.
 
 Byte digests of the generated C++ are advisory only; symbol sets, import lists
-and the zero-hand-slot requirement are not. The transpiler refuses to emit
-anything it cannot lower faithfully — an exotic construct is a gate failure, not
-a silent degradation.
+and the zero-hand-slot requirement are mandatory. Unsupported-lowering markers
+fail the gate, but their absence does not prove faithful translation. Compile
+tests must instantiate the relevant templates, and runtime tests must check the
+resulting behavior. The ABI/import checks and paired runtime fixtures provide
+bounded evidence; they do not prove equivalence for every input or interleaving.
 
-### The facade, from the C++ side
+### Standard adapters, from the C++ side
 
-`rusty-rustc/` — the crate Rust code names as `rusty` — never reaches C++ at
-all: the transpiler omits it by package identity and resolves the same paths
-against the real `rusty` runtime headers instead. That is the trick that lets
-one source name `rusty::Task` or `cpp::srpc::reactor` and mean the Rust facade
-under rustc and the C++ runtime in the generated lane.
-`scripts/check_facade_shadow.py` polices the boundary: a facade item may not
-share a name with a canonical implementation unless it is on the measured
-allowlist, so the facade cannot silently mock what the library actually ships.
+The transpiler omits `rusty-rustc` by authenticated package identity and maps its standard
+values, ownership types, synchronization, and task representation to the real C++ runtime
+headers. SRPC scheduling, events, archives, and protocol policy stay in canonical Rust.
+
+The shared AST audit checks normalized declarations against the reviewed adapter inventory
+and rejects canonical ownership shadows. A separate constant-function inventory checks
+otherwise plausible empty or constant-returning bodies in canonical Rust. Both guards
+complement behavioral tests; neither permits a second runtime behind familiar names.
 
 ---
 
