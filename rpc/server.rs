@@ -816,7 +816,6 @@ impl Drop for Server {
                 // writes `...conns[i].close()` -- "no member named 'close' in
                 // 'rusty::Arc<srpc::ServerConnection>'". The `*` is what emits
                 // the `deref_if_pointer_like` the call needs.
-                #[allow(clippy::explicit_auto_deref)]
                 (*guard.conns[i]).close();
                 i += 1usize;
             }

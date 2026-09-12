@@ -1288,32 +1288,28 @@ fn registry<T>() -> &'static rusty::Mutex<SerializableRegistryMap> {
     &R
 }
 
-#[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_register_factory(
     kind: i32,
     factory: SerializableRegistryFactory,
 ) {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    (*guard).map.insert(kind, factory);
+    guard.map.insert(kind, factory);
 }
 
-#[allow(clippy::explicit_auto_deref)]
 #[allow(unsafe_code)]
 pub fn serializable_registry_create_impl(kind: i32) -> SerializableProxy {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    let entry = (*guard).map.get_mut(&kind);
+    let entry = guard.map.get_mut(&kind);
     verify_at(entry.is_some(), file!(), line!());
     entry.unwrap()()
 }
 
-#[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_is_registered_impl(kind: i32) -> bool {
     let guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    (*guard).map.get(&kind).is_some()
+    guard.map.get(&kind).is_some()
 }
 
-#[allow(clippy::explicit_auto_deref)]
 pub fn serializable_registry_clear_impl() {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    (*guard).map.clear();
+    guard.map.clear();
 }

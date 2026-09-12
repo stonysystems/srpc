@@ -2378,8 +2378,11 @@ impl QuorumEventWrapper {
     // "no viable conversion from returned value of type
     // 'const rusty::Arc<QuorumEvent>' to function return type
     // 'const QuorumEvent'" (R/M/obj-D1.log).  The explicit `&(*self.q_)`
-    // lowers to `return *this->q_;`, which is the historical accessor.
+    // lowered to `return *this->q_;` when this was first measured and lowers
+    // to `return (rusty::detail::deref_if_pointer_like(this->q_));` under
+    // rusty-cpp 3e1d9505 -- a dereference either way, which is the point.
     // The C++ ABI contract wins; scoped to this one item.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it returns `this->q_` -- the handle -- where `const QuorumEvent&` is declared, dropping the deref_if_pointer_like unwrap the accessor lowers to today (2 emitted lines in srpc.reactor.cppm).
     #[allow(clippy::explicit_auto_deref)]
     pub fn q(&self) -> &QuorumEvent {
         &(*self.q_)

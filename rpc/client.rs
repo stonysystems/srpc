@@ -10,33 +10,51 @@
 //!
 //! This file is the canonical Rust the C++ provider is generated FROM, so a
 //! lint is only free when taking it leaves the emitted `srpc.client.cppm`
-//! unchanged. Every finding below was measured the same way: apply the lint's
-//! own suggestion, regenerate all 36 providers, and byte-compare the emitted
-//! module.
+//! unchanged. Every number below was measured the same way: lift the
+//! `#[allow]`, let `cargo clippy --fix` apply the lint's own suggestion,
+//! regenerate all 37 providers with the pinned transpiler, and byte-compare
+//! the emitted modules. Last measured 2026-09-11 with clippy 0.1.97 and
+//! rusty-cpp 3e1d9505. Re-measure after any transpiler or toolchain bump:
+//! the figures recorded here before that pass (68 sites, 42 emission
+//! changes, 80 findings across 14 families on 35 items) had been taken
+//! against an older pin and had drifted on every count.
 //!
-//! Taken (26 sites, all `clippy::explicit_auto_deref` on a lock guard):
-//! measured individually AND together — the emitted module is byte-identical
-//! either way, so the `(*guard)` spellings are simply gone.
+//! Taken: `(*x)` spellings whose pin proved emission-neutral -- byte-identical
+//! emitted modules with the lint applied, checked one pin at a time and then
+//! all together -- are simply gone. The 2026-09-11 pass took one here
+//! (`deserialize_from`) and four in `misc/serializable.rs`, and removed seven
+//! `explicit_auto_deref` pins whose lint no longer fires on this code at all
+//! (six here, one in `rpc/server.rs`): an allow that suppresses nothing is
+//! clutter that reads as a warning.
 //!
-//! Pinned with an item-scoped `#[allow]` (80 findings across 14 families, 35
-//! items). Not one of them is emission-neutral; each attribute carries the
-//! specific measured consequence. Four are worse than churn — they change the
-//! provider's ABI:
+//! Pinned with an item-scoped `#[allow]`: 43 attributes on 42 items across 15
+//! families. Lifting every one of them yields 70 findings across 11 families
+//! on 33 items. Four pinned families -- `borrowed_box`, `unnecessary_cast`,
+//! `upper_case_acronyms`, `wrong_self_convention` -- produce no finding under
+//! this clippy, so those pins are inert today, and the two ABI hazards they
+//! once guarded (renaming the emitted enumerator and `DisconnectBehavior_QUEUE()`
+//! accessor; changing an emitted method signature) cannot currently be
+//! re-measured because `--fix` has nothing to apply. Two live families still
+//! change the provider's ABI when taken, both re-verified 2026-09-11:
 //!
-//!   * `upper_case_acronyms` renames the emitted enumerator and the exported
-//!     `DisconnectBehavior_QUEUE()` accessor;
 //!   * `ptr_arg` retypes exported `clientpool_select` from
-//!     `const rusty::Vec<..>&` to `std::span<..>`;
-//!   * `wrong_self_convention` changes an emitted method signature;
+//!     `const rusty::Vec<rusty::Arc<Client>>&` to
+//!     `std::span<const rusty::Arc<Client>>` -- declaration, definition and
+//!     the call site (6 emitted lines). Its suggestion is not
+//!     `MachineApplicable`, so measuring it means applying it by hand;
 //!   * `derivable_impls` inlines `FutureAttr::default_()` into the class and
-//!     deletes its out-of-line definition, i.e. removes a provider symbol.
+//!     deletes its out-of-line definition, i.e. removes a provider symbol
+//!     (7 emitted lines).
 //!
-//! And the largest family is also the most dangerous to take blindly: of the
-//! 68 `explicit_auto_deref` sites, 42 change emitted C++, including inserting
-//! a `std::move` out of a shared `Arc`'s field, binding a `RefMut` borrow
-//! guard by value instead of by reference, and passing a pointer where a
-//! value was passed. `clippy --fix` cannot help here — those suggestions are
-//! `MachineApplicable` but the emitted-C++ consequence is invisible to it.
+//! And the largest family: 40 `explicit_auto_deref` sites in this file (43
+//! crate-wide) under 16 item-scoped pins (19 crate-wide), every one of which
+//! changes emitted C++ when taken. Three shapes, each named at its pin below:
+//! a `const T&` that binds to the `Arc`/`Box`/guard handle instead of the
+//! pointee once the emitter's `deref_if_pointer_like` unwrap is gone (the
+//! common case -- `const FiberChannel& fiber = fc;`); a lock guard bound by
+//! value, `auto` in place of `const auto&&`; and a `std::move` out of a
+//! shared `Arc`'s field. `clippy --fix` cannot help here -- those suggestions
+//! are `MachineApplicable` but the emitted-C++ consequence is invisible to it.
 //!
 //! No blanket `#![allow]` is used: the pins are per item so a future edit to
 //! any other function is still linted.
@@ -286,11 +304,9 @@ pub fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
     rb.src = BufferSource::new(rb.body.as_ptr(), rb.body.len());
 }
 
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
-#[allow(clippy::explicit_auto_deref)]
 pub fn deserialize_from<T: crate::serializable::Deserialize>(mut src: MutexGuard<ReplyBuffer>, value: &mut T) {
     let mut ar = BinaryReadArchive {
-        source_: client_source_proxy(&mut (*src).src),
+        source_: client_source_proxy(&mut src.src),
     };
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
@@ -541,7 +557,7 @@ impl Future {
         let _reacquired = self.ready_cond_.wait_while(guard, |s| !s.ready && !s.timed_out).unwrap();
     }
 
-    // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it replaces the guard's `.ready`/`.timed_out` accesses with structural-dispatch `decltype(auto)` lambdas instead of `deref_if_pointer_like(guard)` (4 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     fn timed_wait(&self, sec: f64) {
         let guard = self.state_.lock().unwrap();
@@ -840,15 +856,15 @@ impl ClientConnection {
     // fiber/job/channel-callback spawn sites).
     fn run_recv_loop(&self) { clientconn_run_recv_loop(self); }
     fn decode_response_and_notify(&self, bytes: *const u8, size: usize) { clientconn_decode_response_and_notify(self, bytes, size); }
-    // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
     // clippy::unnecessary_cast -- measured: drops the emitted rusty::detail::ptr_cast<const int8_t*>. See the Task-2 measurement block above.
-    #[allow(clippy::explicit_auto_deref, clippy::unnecessary_cast)]
+    #[allow(clippy::unnecessary_cast)]
     fn on_channel_closed_fan_out(&self) {
         let generation = self.lifecycle_.lock().unwrap().generation;
         self.on_binding_closed(generation);
     }
 
     // Keep the explicit Arc payload accesses used by the existing reconnect worker.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it replaces the deref_if_pointer_like unwraps on `conn` with a raw `(*conn)` and wraps the resulting bool in a pointer-like check (4 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     fn on_binding_closed(&self, generation: u64) {
         let batch;
@@ -911,7 +927,6 @@ impl ClientConnection {
     }
     // Shared connection operations synchronize channel slots and configuration.
     fn connect_via_factory(&self, addr: *const i8) -> i32 { clientconn_connect_via_factory(self, addr) }
-    #[allow(clippy::explicit_auto_deref)]
     fn reset_channel_mode_for_reconnect(&self) {
         self.close();
     }
@@ -993,6 +1008,7 @@ impl ClientConnection {
         self.fiber_channel_.lock().unwrap().clone()
     }
     // Callback installation needs exclusive Box access before Arc publication.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber` to the Arc<Box<..>> handle `old` instead of the channel; both unwraps dropped (2 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref, clippy::redundant_allocation)]
     fn replace_fiber_channel(&self, channel: ChannelConnectionProxy) -> Arc<Box<FiberChannel>> {
         let config = self.keepalive_config_.get();
@@ -1037,6 +1053,7 @@ impl ClientConnection {
     // Each dispatch clones the channel's Arc before releasing the slot lock.
     // Removing the slot cannot destroy a channel still executing a callback.
     // clippy::type_complexity -- the same spelling rpc/fiber_channel.cpp uses for this callback; factoring it into an alias would emit a new `using`. See the Task-2 measurement block above.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const ClientConnection& receiver` to the `owner` handle (twice) and `const FiberChannel& fiber` to the `old` handle instead of their pointees (6 emitted lines in srpc.client.cppm).
     #[allow(clippy::type_complexity, clippy::explicit_auto_deref)]
     fn bind_channel_direct(&self, mut channel: ChannelConnectionProxy, generation: u64) -> bool {
         if !channel.is_valid() {
@@ -1133,8 +1150,6 @@ impl ClientConnection {
     }
 
     // --- delegating methods (&self → const free fns) ---
-    // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
-    #[allow(clippy::explicit_auto_deref)]
     fn invalidate_pending_futures(&self) {
         let batch = {
             let _lifecycle = self.lifecycle_.lock().unwrap();
@@ -1182,7 +1197,7 @@ impl ClientConnection {
             future.notify_ready(future.clone());
         }
     }
-    // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it replaces the deref_if_pointer_like unwrap on `fu` with a raw `(*fu)` for the `error_code_` store (2 emitted lines in srpc.client.cppm).
     // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
     #[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap)]
     fn fail_pending_future(&self, xid: i64, err: i32) {
@@ -1202,11 +1217,11 @@ impl ClientConnection {
             (*fu).notify_ready(fu.clone());
         }
     }
-    #[allow(clippy::explicit_auto_deref)]
     pub fn close(&self) {
         self.close_binding(None);
     }
 
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber_ref` to the handle `channel` instead of the channel (2 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     fn close_binding(&self, expected_generation: Option<u64>) {
         let direct;
@@ -1374,7 +1389,7 @@ impl ClientConnection {
     unsafe fn dispatch_frame_via_channel(&self, body_bytes: *const u8, body_size: usize) -> ChannelError {
         clientconn_dispatch_frame_via_channel(self, body_bytes, body_size)
     }
-    // clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it replaces the deref_if_pointer_like unwraps on `conn` with a raw `(*conn)` and wraps the resulting bool in a pointer-like check (4 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     fn handle_error(&self) {
         let prev_state = self.state_machine_.state();
@@ -1471,6 +1486,7 @@ impl ClientConnection {
         }
         false
     }
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber` to the handle `channel` instead of the channel (2 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     pub fn set_keepalive(&self, config: &KeepaliveConfig) {
         self.keepalive_config_.set(*config);
@@ -1538,6 +1554,7 @@ impl ClientConnection {
     }
     fn validate_connection(&self) -> bool { self.state_machine_.is_connected() }
     // Explicit Arc dereference preserves the borrowed counter reference in C++.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it returns the `metrics_` Arc handle where `const ConnectionMetrics&` is declared (2 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     pub fn metrics(&self) -> &ConnectionMetrics { &*self.metrics_ }
     pub fn replay_pending_requests(&self) -> usize { clientconn_replay_pending_requests(self) }
@@ -1897,6 +1914,7 @@ impl Client {
     }
 
     // Explicit Arc dereference preserves the borrowed counter reference in C++.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it returns the `metrics_field` Arc handle where `const ConnectionMetrics&` is declared (2 emitted lines in srpc.client.cppm).
     #[allow(clippy::explicit_auto_deref)]
     pub fn metrics(&self) -> &ConnectionMetrics { &*self.metrics_field }
 
@@ -2150,7 +2168,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
 }
 
 // clippy::borrowed_box -- the concrete Box spelling is load-bearing: through &T the pointer-like check fails and the calls lower to `.` instead of `->` (docs 7.50); measured. See the Task-2 measurement block above.
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
+// clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber` to the handle `fc`, and turns three `fu.xid_` reads into `std::move((*fu).xid_)` / `&(*fu).xid_` -- a move out of a shared Arc's field (8 emitted lines in srpc.client.cppm).
 #[allow(clippy::borrowed_box, clippy::explicit_auto_deref)]
 pub fn clientconn_request_via_channel<F>(conn: &ClientConnection, rpc_id: i32,
                                      attr: &FutureAttr, mut write_fn: F) -> FutureResult
@@ -2381,6 +2399,7 @@ fn clientconn_replay_pending_for_binding(conn: &ClientConnection, expected_gener
 }
 
 // clippy::borrowed_box -- the concrete Box spelling is load-bearing: through &T the pointer-like check fails and the calls lower to `.` instead of `->` (docs 7.50); measured. See the Task-2 measurement block above.
+// clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber` to the handle `fc` instead of the channel (2 emitted lines in srpc.client.cppm).
 #[allow(clippy::borrowed_box, clippy::explicit_auto_deref)]
 pub fn clientconn_request_async<F>(conn: &ClientConnection, rpc_id: i32,
                                mut write_fn: F, on_reply: AsyncReplyCallback)
@@ -2491,7 +2510,7 @@ pub fn make_write_archive(sink: *mut BufferSink) -> BinaryWriteArchive {
 // excuse. Takes REFERENCES, not pointers: `&Arc<Future>` lowers to
 // `const Arc<Future>&`, and the caller's `&attempt_fu` collapses to
 // the handle itself.
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
+// clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds the reply lock guards by value (`auto` in place of `const auto&&` through deref_call) and reads their fields through a raw `(*x)` (10 emitted lines in srpc.client.cppm).
 #[allow(clippy::explicit_auto_deref)]
 pub fn request_copy_reply(final_fu: &Arc<Future>, attempt_fu: &Arc<Future>) {
     let attempt_reply = (*attempt_fu).reply_.lock().unwrap();
@@ -2525,7 +2544,7 @@ pub fn classify_request_failure(err: i32) -> TimeoutType {
     TimeoutType::NONE
 }
 
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
+// clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds the state and reply lock guards by value (`auto` in place of `const auto&&`) and turns every unwrap into a raw `(*x)` (22 emitted lines in srpc.client.cppm).
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap)]
 pub fn clientconn_request_with_options<F>(self_: &ClientConnection, rpc_id: i32,
@@ -2682,7 +2701,6 @@ where F: FnMut(&mut BinaryWriteArchive) {
 ///
 /// `body_bytes` must point at `body_size` readable bytes that stay live for
 /// the duration of the call; the channel copies out of them synchronously.
-#[allow(clippy::explicit_auto_deref)]
 pub unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
                                                 body_bytes: *const u8,
                                                 body_size: usize) -> ChannelError {
@@ -2691,6 +2709,7 @@ pub unsafe fn clientconn_dispatch_frame_via_channel(conn: &ClientConnection,
 }
 
 // Arc<Box<FiberChannel>> needs both payload dereferences in the generated C++ call.
+// clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber_ref` to the handle `channel` instead of the channel (2 emitted lines in srpc.client.cppm).
 #[allow(clippy::explicit_auto_deref)]
 unsafe fn clientconn_dispatch_frame_for_binding(conn: &ClientConnection, generation: u64,
                                               body_bytes: *const u8, body_size: usize) -> ChannelError {
@@ -2883,6 +2902,7 @@ pub fn clientconn_run_recv_loop(conn: &ClientConnection) {
     }
 }
 
+// clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const FiberChannel& fiber` to the handle `channel` instead of the channel (2 emitted lines in srpc.client.cppm).
 #[allow(clippy::explicit_auto_deref)]
 pub fn clientconn_run_recv_loop_on_channel(conn: &ClientConnection, channel: Arc<Box<FiberChannel>>) {
     loop {
@@ -2908,14 +2928,13 @@ pub fn clientconn_run_recv_loop_on_channel(conn: &ClientConnection, channel: Arc
     }
 }
 
-// clippy::explicit_auto_deref -- measured: 42 of the 68 sites change emitted C++ (std::move out of an Arc field, a by-value bind of a borrow guard, a pointer where a value was passed). See the Task-2 measurement block above.
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 // clippy::not_unsafe_ptr_arg_deref -- this became public with the module's
 // surface; the raw-pointer contract is the historical C++ one and is
 // documented at the deref itself. Marking the fn `unsafe` instead would
 // wrap every call site in an `unsafe` block, which the emitter renders as an
 // @unsafe comment block -- measured: changes emitted C++.
-#[allow(clippy::explicit_auto_deref, clippy::unnecessary_unwrap, clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::unnecessary_unwrap, clippy::not_unsafe_ptr_arg_deref)]
 pub fn clientconn_decode_response_and_notify(conn: &ClientConnection,
                                          bytes: *const u8, size: usize) {
     let generation = conn.lifecycle_.lock().unwrap().generation;

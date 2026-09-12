@@ -32,6 +32,7 @@ pub mod this_fiber {
 
     /// Suspend until the owner resumes this fiber; outside a fiber this is a
     /// no-op. The raw identifier retains the public C++ spelling `yield`.
+    // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it lowers `fiber.yield_()` to `(&fiber)->yield_()` in place of `deref_if_pointer_like(fiber).yield_()` (2 emitted lines in srpc.fiber.cppm).
     #[allow(clippy::explicit_auto_deref)]
     pub fn r#yield() {
         let fiber: Option<Rc<crate::reactor::Fiber>> = crate::reactor::Fiber::current_fiber();
