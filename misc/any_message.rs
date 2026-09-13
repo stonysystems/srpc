@@ -21,11 +21,10 @@ use std::sync::Arc;
 use rusty::StdArcGetMutExt as _;
 use std::any::TypeId;
 
-type LegacyStdString = String;
 
 #[cfg_attr(not(any()), derive(Clone, Default))]
 pub struct AnyMessage {
-    pub type_name_: LegacyStdString,
+    pub type_name_: String,
     pub payload_: Option<SerializableProxy>,
 }
 
@@ -59,7 +58,7 @@ impl AnyMessage {
         anymessage_unpack::<T>(self)
     }
 
-    pub fn pack_as<T: SerializablePayload + 'static>(name: LegacyStdString, value: Arc<T>) -> AnyMessage {
+    pub fn pack_as<T: SerializablePayload + 'static>(name: String, value: Arc<T>) -> AnyMessage {
         anymessage_pack_as::<T>(name, value)
     }
 
@@ -69,7 +68,6 @@ impl AnyMessage {
 }
 
 pub mod any_message_registry {
-    use super::LegacyStdString;
     use crate::debugging::verify_at;
     use crate::serializable::SerializableProxy;
     use std::any::TypeId;
@@ -79,13 +77,13 @@ pub mod any_message_registry {
     pub type Factory = Box<dyn FnMut() -> SerializableProxy + Send + Sync>;
 
     struct RegistryMap {
-        by_name: HashMap<LegacyStdString, Factory>,
-        name_by_type: HashMap<TypeId, LegacyStdString>,
+        by_name: HashMap<String, Factory>,
+        name_by_type: HashMap<TypeId, String>,
     }
 
     static REGISTRY: Mutex<Option<RegistryMap>> = Mutex::new(None);
 
-    pub fn register_type(name: LegacyStdString, type_id: TypeId, factory: self::Factory) -> i32 {
+    pub fn register_type(name: String, type_id: TypeId, factory: self::Factory) -> i32 {
         let mut guard = REGISTRY.lock().unwrap();
         if guard.is_none() {
             *guard = Some(RegistryMap {
@@ -102,7 +100,7 @@ pub mod any_message_registry {
         0_i32
     }
 
-    pub fn create(name: &LegacyStdString) -> Option<SerializableProxy> {
+    pub fn create(name: &String) -> Option<SerializableProxy> {
         let mut guard = REGISTRY.lock().unwrap();
         if guard.is_none() {
             *guard = Some(RegistryMap {
@@ -117,7 +115,7 @@ pub mod any_message_registry {
         Some(payload)
     }
 
-    pub fn name_for_type_owned(type_id: TypeId) -> LegacyStdString {
+    pub fn name_for_type_owned(type_id: TypeId) -> String {
         let mut guard = REGISTRY.lock().unwrap();
         if guard.is_none() {
             *guard = Some(RegistryMap {
@@ -132,7 +130,7 @@ pub mod any_message_registry {
         }
     }
 
-    pub fn is_registered_name(name: &LegacyStdString) -> bool {
+    pub fn is_registered_name(name: &String) -> bool {
         let mut guard = REGISTRY.lock().unwrap();
         if guard.is_none() {
             *guard = Some(RegistryMap {
@@ -168,7 +166,7 @@ pub mod any_message_registry {
     }
 }
 
-pub fn reg_any_message_as<T>(name: LegacyStdString) -> i32
+pub fn reg_any_message_as<T>(name: String) -> i32
 where
     T: SerializablePayload + Default + 'static,
 {
@@ -199,7 +197,7 @@ pub fn anymessage_unpack<T: 'static>(message: &AnyMessage) -> Option<Arc<T>> {
     Some(unsafe { (*holder).ptr.clone() })
 }
 
-pub fn anymessage_pack_as<T: SerializablePayload + 'static>(name: LegacyStdString, value: Arc<T>) -> AnyMessage {
+pub fn anymessage_pack_as<T: SerializablePayload + 'static>(name: String, value: Arc<T>) -> AnyMessage {
     let payload: SerializableProxy =
         crate::serializable::make_serializable_proxy(value);
     AnyMessage {

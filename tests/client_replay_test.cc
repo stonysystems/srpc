@@ -4,6 +4,7 @@
 #include <rusty/arc.hpp>
 #include <rusty/box.hpp>
 #include <rusty/sync/weak.hpp>
+#include <rusty/string.hpp>
 #include "../srpc.hpp"
 #include "reactor_watchdog.h"
 
@@ -232,7 +233,7 @@ public:
         }
     }
     bool is_closed() const override { return state_->closed.load(); }
-    std::string peer_address() const override { return "retained-channel"; }
+    rusty::String peer_address() const override { return "retained-channel"; }
     void set_on_frame(OnFrameCallback callback) override {
         std::lock_guard<std::mutex> guard(state_->mutex);
         state_->on_frame = std::move(callback);
@@ -278,7 +279,7 @@ public:
         return {.connection = rusty::Some(std::move(channel)), .error = ChannelError::None};
     }
     rusty::Option<ChannelListenerProxy> make_listener() override { return rusty::None; }
-    std::string backend_name() const override { return "retained-callback-test"; }
+    rusty::String backend_name() const override { return "retained-callback-test"; }
 private:
     std::shared_ptr<RetainedChannels> channels_;
 };

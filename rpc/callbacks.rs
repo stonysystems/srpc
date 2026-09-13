@@ -18,11 +18,10 @@ use crate::errors as _;
 // Native Rust uses `String`. The SRPC consumer profile maps this private alias
 // to `std::string`, preserving the legacy callback and method signatures rather
 // than exposing rusty-cpp's distinct `rusty::String` type.
-type LegacyStdString = String;
 type LegacyRpcError = crate::errors::RpcError;
 
 pub type ConnectionCallback = Arc<Box<dyn Fn() + Send + Sync>>;
-pub type ErrorCallback = Arc<Box<dyn Fn(LegacyRpcError, &LegacyStdString) + Send + Sync>>;
+pub type ErrorCallback = Arc<Box<dyn Fn(LegacyRpcError, &String) + Send + Sync>>;
 pub type ReconnectCallback = Arc<Box<dyn Fn(bool) + Send + Sync>>;
 
 fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
@@ -37,7 +36,7 @@ fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
 fn invoke_error_callback_safely(
     callback: &ErrorCallback,
     error: LegacyRpcError,
-    message: &LegacyStdString,
+    message: &String,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         (**callback)(error, message);
@@ -129,7 +128,7 @@ impl CallbackManager {
     #[allow(clippy::type_complexity)]
     pub fn add_on_error(
         &self,
-        callback: Box<dyn Fn(LegacyRpcError, &LegacyStdString) + Send + Sync>,
+        callback: Box<dyn Fn(LegacyRpcError, &String) + Send + Sync>,
     ) {
         let callback: ErrorCallback = Arc::new(callback);
         let mut guard = self.callbacks_field.lock().unwrap();
@@ -178,7 +177,7 @@ impl CallbackManager {
         self.inflight_exit();
     }
 
-    pub fn invoke_on_error(&self, error: LegacyRpcError, message: &LegacyStdString) {
+    pub fn invoke_on_error(&self, error: LegacyRpcError, message: &String) {
         self.inflight_enter();
         let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();

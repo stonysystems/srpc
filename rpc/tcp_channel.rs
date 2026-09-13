@@ -29,7 +29,6 @@ use crate::pollable_proxy::{PollableBase, PollableProxy};
 
 use rusty as cpp;
 
-type LegacyStdString = String;
 type TcpOutBuf = rusty::StdVector<u8>;
 type LegacyOwnedFd = cpp::RustcOwnedFd;
 type LegacyTcpListener = cpp::RustcTcpListener;
@@ -93,7 +92,7 @@ pub struct TcpConnection {
     // Logical close clears this slot and shuts down the socket immediately;
     // the last registration lease releases the actual descriptor.
     fd_: UnsafeCell<Option<Arc<LegacyOwnedFd>>>,
-    peer_address_: LegacyStdString,
+    peer_address_: String,
     outbound_high_water_: usize,
     outbound_: std::sync::Mutex<TcpOutBuf>,
     inbound_: RefCell<FrameStreamReader>,
@@ -128,7 +127,7 @@ impl TcpConnection {
     ///
     /// `fd` must be a live connected descriptor whose ownership is transferred
     /// exactly once. The caller must not close or otherwise use it afterward.
-    pub unsafe fn new(fd: i32, peer_address: LegacyStdString) -> TcpConnection {
+    pub unsafe fn new(fd: i32, peer_address: String) -> TcpConnection {
         TcpConnection {
             // SAFETY: callers transfer a freshly connected descriptor.
             fd_: UnsafeCell::new(Some(Arc::new(unsafe { LegacyOwnedFd::from_raw_fd(fd) }))),
@@ -170,7 +169,7 @@ impl TcpConnection {
         self.closed_.load(Ordering::Acquire)
     }
 
-    pub fn peer_address(&self) -> LegacyStdString {
+    pub fn peer_address(&self) -> String {
         self.peer_address_.clone()
     }
 
@@ -285,7 +284,7 @@ impl ChannelConnectionBase for TcpChannelShim {
     fn is_closed(&self) -> bool {
         self.conn_.is_closed()
     }
-    fn peer_address(&self) -> LegacyStdString {
+    fn peer_address(&self) -> String {
         self.conn_.peer_address()
     }
     fn set_keepalive(&self, enabled: bool, idle_sec: i32, interval_sec: i32, count: i32) -> bool {
@@ -421,7 +420,7 @@ pub struct TcpListener {
     // owner until unregister, so close cannot race epoll through a reused fd.
     // Callback invocation always occurs after the gate has been released.
     listener_: RefCell<Option<Arc<LegacyTcpListener>>>,
-    bound_address_: RefCell<LegacyStdString>,
+    bound_address_: RefCell<String>,
     closed_: AtomicBool,
     listened_: AtomicBool,
     // Reuses the historical padding bytes between the one-byte latches and
@@ -449,7 +448,7 @@ impl TcpListener {
     pub fn new() -> TcpListener {
         TcpListener {
             listener_: RefCell::new(None),
-            bound_address_: RefCell::<LegacyStdString>::new(Default::default()),
+            bound_address_: RefCell::<String>::new(Default::default()),
             closed_: AtomicBool::new(false),
             listened_: AtomicBool::new(false),
             accept_callback_thread_: AtomicU32::new(0),
@@ -506,7 +505,7 @@ impl TcpListener {
         // following MutexGuard assignment context leak into the match lambda's
         // return type.
         #[allow(clippy::needless_late_init)]
-        let address_string: LegacyStdString;
+        let address_string: String;
         match local_result {
             Ok(value) => {
                 address_string = cpp::rusty::net::socket_addr_v4_to_string(value);
@@ -568,7 +567,7 @@ impl TcpListener {
         self.closed_.load(Ordering::Acquire)
     }
 
-    pub fn local_address(&self) -> LegacyStdString {
+    pub fn local_address(&self) -> String {
         let _lifecycle_gate = self.on_accept_.lock().unwrap();
         let g = self.bound_address_.borrow();
         (*g).clone()
@@ -657,7 +656,7 @@ unsafe impl ChannelListenerBase for TcpListenerChannelShim {
     fn is_closed(&self) -> bool {
         self.listener_.is_closed()
     }
-    fn local_address(&self) -> LegacyStdString {
+    fn local_address(&self) -> String {
         self.listener_.local_address()
     }
     fn set_on_accept(&mut self, cb: OnAcceptCallback) {
@@ -742,7 +741,7 @@ impl TcpFactory {
         }
     }
 
-    pub fn backend_name(&self) -> LegacyStdString {
+    pub fn backend_name(&self) -> String {
         "tcp".to_string()
     }
 
@@ -772,7 +771,7 @@ impl ChannelFactoryBase for TcpFactoryShim {
     fn make_listener(&mut self) -> Option<ChannelListenerProxy> {
         self.factory_.make_listener()
     }
-    fn backend_name(&self) -> LegacyStdString {
+    fn backend_name(&self) -> String {
         self.factory_.backend_name()
     }
 }

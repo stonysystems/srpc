@@ -1,6 +1,5 @@
 LegacyAddrInfo = "addrinfo"
 LegacyCChar = "std::string::value_type"
-LegacyStdString = "std::string"
 LegacyCallbackWrapper = "::srpc::detail::CallbackWrapper"
 LegacyChannelConnectionBase = "srpc::ChannelConnectionBase"
 LegacyStdDeque = "std::deque"

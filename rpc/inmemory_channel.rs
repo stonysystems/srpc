@@ -23,7 +23,6 @@ use crate::channel::{
 // The consumer profile maps this private carrier to `std::string`, retaining
 // the established C++ surface instead of exposing rusty-cpp's distinct
 // `rusty::String` owner.
-type LegacyStdString = String;
 
 // Cross-module unit variants are currently rendered as constructor calls when
 // they appear in unconstrained expression positions. ChannelError has a fixed
@@ -53,7 +52,7 @@ fn channel_error_internal() -> ChannelError {
 /// Registry mapping an in-memory bind address to its live listener.
 #[repr(C)]
 pub struct InMemorySwitchboard {
-    pub listeners_: Mutex<HashMap<LegacyStdString, std::sync::Weak<InMemoryListener>>>,
+    pub listeners_: Mutex<HashMap<String, std::sync::Weak<InMemoryListener>>>,
 }
 
 impl InMemorySwitchboard {
@@ -65,7 +64,7 @@ impl InMemorySwitchboard {
 
     pub fn register_listener(
         &self,
-        address: LegacyStdString,
+        address: String,
         listener: std::sync::Weak<InMemoryListener>,
     ) -> bool {
         let mut guard = self.listeners_.lock().unwrap();
@@ -76,12 +75,12 @@ impl InMemorySwitchboard {
         true
     }
 
-    pub fn unregister_listener(&self, address: &LegacyStdString) {
+    pub fn unregister_listener(&self, address: &String) {
         let mut guard = self.listeners_.lock().unwrap();
         guard.remove(address);
     }
 
-    pub fn find_listener(&self, address: &LegacyStdString) -> Option<Arc<InMemoryListener>> {
+    pub fn find_listener(&self, address: &String) -> Option<Arc<InMemoryListener>> {
         let mut guard = self.listeners_.lock().unwrap();
         let upgraded: Option<Arc<InMemoryListener>> = match guard.get(address) {
             Some(listener) => listener.upgrade(),
@@ -97,12 +96,12 @@ impl InMemorySwitchboard {
 /// Mutable state shared by both halves of a connected pair.
 #[repr(C)]
 pub struct InMemoryConnectionStateInner {
-    pub a_peer_address: LegacyStdString,
+    pub a_peer_address: String,
     pub a_on_frame: OnFrameCallback,
     pub a_on_closed: OnClosedCallback,
     pub a_on_error: OnErrorCallback,
     pub a_closed: bool,
-    pub b_peer_address: LegacyStdString,
+    pub b_peer_address: String,
     pub b_on_frame: OnFrameCallback,
     pub b_on_closed: OnClosedCallback,
     pub b_on_error: OnErrorCallback,
@@ -146,8 +145,8 @@ pub struct InMemoryConnectionState {
 }
 
 fn make_connection_state(
-    a_address: LegacyStdString,
-    b_address: LegacyStdString,
+    a_address: String,
+    b_address: String,
 ) -> Arc<InMemoryConnectionState> {
     let mut inner: InMemoryConnectionStateInner = empty_connection_inner();
     inner.a_peer_address = a_address;
@@ -218,7 +217,7 @@ impl InMemoryChannel {
         guard.a_closed || guard.b_closed
     }
 
-    pub fn peer_address(&self) -> LegacyStdString {
+    pub fn peer_address(&self) -> String {
         let guard = self.state_.inner.lock().unwrap();
         if self.is_a_side_ {
             guard.b_peer_address.clone()
@@ -415,7 +414,7 @@ impl ChannelConnectionBase for InMemoryChannelShim {
         self.conn_.is_closed()
     }
 
-    fn peer_address(&self) -> LegacyStdString {
+    fn peer_address(&self) -> String {
         self.conn_.peer_address()
     }
 
@@ -439,7 +438,7 @@ pub fn make_inmemory_channel_proxy(connection: Arc<InMemoryChannel>) -> ChannelC
 /// Mutex-owned mutable listener state.
 #[repr(C)]
 pub struct InMemoryListenerInnerState {
-    pub local_address: LegacyStdString,
+    pub local_address: String,
     pub closed: bool,
     pub on_accept: OnAcceptCallback,
     pub on_error: OnErrorCallback,
@@ -481,7 +480,7 @@ impl InMemoryListener {
             return;
         }
         guard.closed = true;
-        let address_to_unregister: LegacyStdString = guard.local_address.clone();
+        let address_to_unregister: String = guard.local_address.clone();
         drop(guard);
         if !address_to_unregister.is_empty() {
             // Keep the cross-object lock acquisition after dropping the
@@ -522,7 +521,7 @@ impl InMemoryListener {
         guard.closed
     }
 
-    pub fn local_address(&self) -> LegacyStdString {
+    pub fn local_address(&self) -> String {
         let guard = self.inner_.lock().unwrap();
         guard.local_address.clone()
     }
@@ -582,10 +581,10 @@ fn inmemory_listener_listen_with_weak(
 
 pub fn inmemory_listener_accept_for_connect(
     listener: &InMemoryListener,
-    client_address: &LegacyStdString,
+    client_address: &str,
 ) -> Option<Arc<InMemoryChannel>> {
     let callback: OnAcceptCallback;
-    let server_address: LegacyStdString;
+    let server_address: String;
     {
         let guard = listener.inner_.lock().unwrap();
         if guard.closed || guard.local_address.is_empty() {
@@ -599,7 +598,7 @@ pub fn inmemory_listener_accept_for_connect(
     }
 
     let state: Arc<InMemoryConnectionState> =
-        make_connection_state(client_address.clone(), server_address);
+        make_connection_state(client_address.to_string(), server_address);
     let client_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), true));
     let server_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), false));
 
@@ -629,7 +628,7 @@ unsafe impl ChannelListenerBase for InMemoryListenerShim {
         self.listener_.is_closed()
     }
 
-    fn local_address(&self) -> LegacyStdString {
+    fn local_address(&self) -> String {
         self.listener_.local_address()
     }
 
@@ -661,7 +660,7 @@ impl InMemoryFactory {
         }
     }
 
-    pub fn backend_name(&self) -> LegacyStdString {
+    pub fn backend_name(&self) -> String {
         "inmemory".to_string()
     }
 
@@ -675,7 +674,7 @@ impl InMemoryFactory {
 }
 
 pub fn inmemory_factory_connect(factory: &InMemoryFactory, address: &str) -> ConnectResult {
-    let address_string: LegacyStdString = address.to_string();
+    let address_string: String = address.to_string();
     let listener_option: Option<Arc<InMemoryListener>> =
         factory.switchboard_.find_listener(&address_string);
     if listener_option.is_none() {
@@ -688,7 +687,7 @@ pub fn inmemory_factory_connect(factory: &InMemoryFactory, address: &str) -> Con
 
     static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(0_u64);
     let client_id: u64 = CLIENT_COUNTER.fetch_add(1_u64, Ordering::Relaxed);
-    let mut client_address: LegacyStdString = "inmemory://client-".to_string();
+    let mut client_address: String = "inmemory://client-".to_string();
     client_address += &client_id.to_string();
     let client_side_option: Option<Arc<InMemoryChannel>> =
         inmemory_listener_accept_for_connect(&listener, &client_address);
@@ -728,7 +727,7 @@ impl ChannelFactoryBase for InMemoryFactoryShim {
         self.factory_.make_listener()
     }
 
-    fn backend_name(&self) -> LegacyStdString {
+    fn backend_name(&self) -> String {
         self.factory_.backend_name()
     }
 }
@@ -739,8 +738,8 @@ pub fn make_inmemory_factory_proxy(factory: Arc<InMemoryFactory>) -> ChannelFact
 
 /// Build a raw pair for fault-injection tests without a listener/factory.
 pub fn make_channel_pair_for_testing(
-    a_address: LegacyStdString,
-    b_address: LegacyStdString,
+    a_address: String,
+    b_address: String,
 ) -> (Arc<InMemoryChannel>, Arc<InMemoryChannel>) {
     let state: Arc<InMemoryConnectionState> = make_connection_state(a_address, b_address);
     let a_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), true));

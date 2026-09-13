@@ -10,9 +10,9 @@ use std::cell::Cell;
 
 use rusty::cpp_inherit;
 
-// Consumer type mappings restore the historical `std::string` spelling. The
-// rustc-only byte model also exposes the C++-spelled `push_back` operation.
-type LegacyStdString = rusty::LoggingString;
+// `rusty::LoggingString` is the rustc-only byte model of C++ `std::string`
+// (it exposes the C++-spelled `push_back`); the checked type map spells it
+// `std::string`.
 
 /// Clamp a value between potentially heterogeneous bounds.
 //
@@ -128,7 +128,7 @@ unsafe impl Job for OneTimeJob {
 /// Format a number with two fractional digits and comma-separated thousands.
 #[allow(clippy::manual_is_multiple_of)]
 #[allow(unsafe_code)]
-pub fn format_thousands(val: f64) -> LegacyStdString {
+pub fn format_thousands(val: f64) -> rusty::LoggingString {
     // A fixed buffer covers the longest finite f64 rendered with two decimal
     // places (sign + 309 integer digits + separator + two fraction digits).
     let mut bytes = [0_i8; 384];
@@ -155,7 +155,7 @@ pub fn format_thousands(val: f64) -> LegacyStdString {
         && bytes[2] == b'.' as i8
         && bytes[3] == b'0' as i8
         && bytes[4] == b'0' as i8;
-    let mut out: LegacyStdString = Default::default();
+    let mut out: rusty::LoggingString = Default::default();
     let mut index = if negative_zero { 1usize } else { 0usize };
     while index < dot {
         if (dot - index) % 3 == 0 && index != 0 && bytes[index - 1] != b'-' as i8 {

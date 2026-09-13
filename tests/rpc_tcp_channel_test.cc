@@ -104,7 +104,9 @@ static_assert(alignof(TcpFactory) == 8);
 static_assert(offsetof(TcpFactory, poll_thread_) == 0);
 static_assert(offsetof(TcpFactory, connect_timeout_ms_) == 8);
 
-int connect_to_listener(const std::string& address) {
+int connect_to_listener(const rusty::String& listener_address) {
+    // The listener reports its address as a rusty::String; parse it as std::string.
+    const std::string address(listener_address.c_str());
     const auto colon = address.rfind(':');
     if (colon == std::string::npos) return -1;
     const int port = std::atoi(address.c_str() + colon + 1);

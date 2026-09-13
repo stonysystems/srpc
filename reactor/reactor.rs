@@ -45,7 +45,6 @@ use crate::debugging::verify_at;
 use cpp::std as cpp_std;
 use rusty as cpp;
 
-type LegacyStdString = String;
 pub type SrcFileCStr = &'static str;
 pub type EventTestFn = rusty::Function<dyn Fn(i32) -> bool>;
 pub type FiberFn = rusty::Function<dyn FnMut()>;
@@ -129,12 +128,8 @@ fn reactor_verify(value: bool) {
 
 // NOT named `log_line`: the imported `srpc::logging::log_line` lands in the
 // same C++ namespace `srpc`, so a same-named local wrapper joins its overload
-// set and the forwarding call below resolves back to ITSELF. The parameter is
-// `LegacyStdString` (the established alias every other module uses for a
-// value that crosses into the C++ logger) rather than `String`, so the
-// forward is a plain `const std::string&` bind instead of an impossible
-// `rusty::String` -> `std::string` conversion.
-fn reactor_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
+// set and the forwarding call below resolves back to ITSELF.
+fn reactor_log_line(level: i32, line: i32, file: *const i8, message: String) {
     // The production logger consumes the message synchronously and retains no
     // borrow; the owned Rust value therefore has exactly the required extent.
     unsafe { log_line(level, line, file, &message) };

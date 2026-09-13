@@ -3296,6 +3296,7 @@ frames from peers you trust.
 | `v32` | SparseInt varint, 1–5 bytes |
 | `v64` | SparseInt varint, 1–9 bytes |
 | `std::string` | `v64` length, then the bytes |
+| `rusty::String` | identical to `std::string`: `v64` length, then the bytes |
 | `std::string_view` | same bytes — **write side only** |
 | `std::pair<A, B>` | `A` then `B`, no prefix |
 | `std::vector`, `std::list`, `std::set`, `std::unordered_set`, `rusty::Vec`, `rusty::BTreeSet`, `rusty::HashSet` | `v64` count, then each element |
@@ -3933,7 +3934,7 @@ invocation is wrapped so a throwing callback cannot take down the dispatch.
 ```cpp srpc-compile-client
 client.add_on_connected([]() { /* connect succeeded */ });
 client.add_on_disconnected([]() { /* channel closed or transport error */ });
-client.add_on_error([](RpcError err, const std::string& msg) { /* ... */ });
+client.add_on_error([](RpcError err, const rusty::String& msg) { /* ... */ });
 client.add_on_reconnecting([]() { /* a reconnect attempt is starting */ });
 client.add_on_reconnected([](bool success) { /* attempt finished */ });
 ```
@@ -5331,7 +5332,7 @@ class Client {
     ConnectionState connection_state() const;
     bool is_reconnecting() const;
     bool validate_connection() const;
-    std::string host() const;
+    rusty::String host() const;
     uint64_t server_instance_id() const;
     bool is_idle(uint64_t idle_ms, uint64_t current_time_ms) const;
 
@@ -5390,7 +5391,7 @@ class ClientConnection {
     ConnectionState connection_state() const;
     bool is_closed() const;
     bool is_reconnecting() const;
-    std::string host() const;
+    rusty::String host() const;
     uint64_t server_instance_id() const;
 
     size_t pending_future_count() const;  // outstanding Futures
@@ -5457,18 +5458,18 @@ class ClientPool {
     static ClientPool new_(rusty::Option<rusty::Arc<PollThread>> poll_thread,
                            PoolConfig config);
 
-    rusty::Option<rusty::Arc<Client>> get_client(const std::string& addr);
+    rusty::Option<rusty::Arc<Client>> get_client(const rusty::String& addr);
 
     void set_pool_config(PoolConfig config);
     PoolConfig pool_config() const;
 
     size_t total_client_count() const;
     size_t address_count() const;
-    size_t get_healthy_client_count(const std::string& addr) const;
+    size_t get_healthy_client_count(const rusty::String& addr) const;
 
-    size_t remove_unhealthy_clients(const std::string& addr);
+    size_t remove_unhealthy_clients(const rusty::String& addr);
     size_t remove_all_unhealthy();
-    size_t close_idle_clients(const std::string& addr, uint64_t current_time_ms);
+    size_t close_idle_clients(const rusty::String& addr, uint64_t current_time_ms);
     size_t close_all_idle(uint64_t current_time_ms);
 
     bool is_client_healthy(const rusty::Arc<Client>& client) const;
@@ -5503,7 +5504,7 @@ class Server {
 
     int32_t start(const int8_t* bind_addr); // 0 on success, -1 on failure
     int32_t get_bound_port() const;         // -1 if unparseable
-    std::string addr() const;               // only after start()
+    rusty::String addr() const;             // only after start()
 
     // Shutdown. kDefaultDrainTimeoutMs is 30000.
     void stop_accepting();
@@ -5760,17 +5761,17 @@ class ChannelConnectionBase {
     virtual void flush() = 0;
     virtual void close() = 0;
     virtual bool is_closed() const = 0;
-    virtual std::string peer_address() const = 0;
+    virtual rusty::String peer_address() const = 0;
     virtual void set_on_frame(OnFrameCallback cb) = 0;
     virtual void set_on_closed(OnClosedCallback cb) = 0;
     virtual void set_on_error(OnErrorCallback cb) = 0;
 };
 
 class ChannelListenerBase {
-    virtual ChannelError listen(const std::string& address) = 0;
+    virtual ChannelError listen(const rusty::String& address) = 0;
     virtual void close() = 0;
     virtual bool is_closed() const = 0;
-    virtual std::string local_address() const = 0;
+    virtual rusty::String local_address() const = 0;
     virtual void set_on_accept(OnAcceptCallback cb) = 0;
     virtual void set_on_error(OnErrorCallback cb) = 0;
 };
@@ -5781,9 +5782,9 @@ struct ConnectResult {
 };
 
 class ChannelFactoryBase {
-    virtual ConnectResult connect(const std::string& address) = 0;
+    virtual ConnectResult connect(const rusty::String& address) = 0;
     virtual rusty::Option<ChannelListenerProxy> make_listener() = 0;
-    virtual std::string backend_name() const = 0;
+    virtual rusty::String backend_name() const = 0;
 };
 ```
 

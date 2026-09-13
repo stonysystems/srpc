@@ -12,7 +12,6 @@ use crate::callback_wrapper as _;
 // Native Rust owns a String.  The C++ consumer maps this private alias to
 // std::string so trait return types remain byte-for-byte compatible with the
 // existing channel implementations.
-type LegacyStdString = String;
 type LegacyCallbackWrapper<F> = crate::callback_wrapper::detail::CallbackWrapper<F>;
 
 /// Transport error returned by every channel tier.
@@ -85,7 +84,7 @@ pub trait ChannelConnectionBase: Send + Sync {
     fn flush(&self);
     fn close(&self);
     fn is_closed(&self) -> bool;
-    fn peer_address(&self) -> LegacyStdString;
+    fn peer_address(&self) -> String;
     /// Apply TCP keepalive settings. Returns false when this transport has no
     /// TCP socket or the OS rejects an option. Non-TCP transports do not use
     /// TCP keepalive and inherit the unsupported result.
@@ -117,7 +116,7 @@ pub unsafe trait ChannelListenerBase: Send + Sync {
     fn listen(&mut self, address: &str) -> self::ChannelError;
     fn close(&mut self);
     fn is_closed(&self) -> bool;
-    fn local_address(&self) -> LegacyStdString;
+    fn local_address(&self) -> String;
     fn set_on_accept(&mut self, callback: self::OnAcceptCallback);
     fn set_on_error(&mut self, callback: self::OnErrorCallback);
 }
@@ -136,7 +135,7 @@ pub struct ConnectResult {
 pub trait ChannelFactoryBase: Send {
     fn connect(&mut self, address: &str) -> self::ConnectResult;
     fn make_listener(&mut self) -> Option<self::ChannelListenerProxy>;
-    fn backend_name(&self) -> LegacyStdString;
+    fn backend_name(&self) -> String;
 }
 
 /// Owned, non-nullable factory handle.

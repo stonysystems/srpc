@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 // Consumer type mappings restore the historical C++ spellings.
 type LegacyCChar = i8;
-type LegacyStdString = String;
 
 /// Process-wide maximum enabled severity. The default keeps DEBUG enabled.
 pub static LOG_LEVEL_S: AtomicI32 = AtomicI32::new(4_i32);
@@ -50,7 +49,7 @@ pub fn log_level_tag(level: i32) -> &'static str {
 /// `file` must be null or point to a valid NUL-terminated path for the
 /// duration of the call. The logger scans any non-null path.
 #[allow(unsafe_code)]
-pub unsafe fn log_line(level: i32, line: i32, file: *const i8, msg: &LegacyStdString) {
+pub unsafe fn log_line(level: i32, line: i32, file: *const i8, msg: &String) {
     if level > Log::DEBUG {
         // SAFETY: the indexed verifier has no caller-side precondition.
         verify_at(false, file!(), line!());

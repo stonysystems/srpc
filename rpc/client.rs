@@ -117,9 +117,8 @@ pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize) +
 pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool) + Send>;
 pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64) + Send>;
 pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
-pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &LegacyStdString) + Send + Sync>;
+pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &String) + Send + Sync>;
 pub type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
-pub type LegacyStdString = String;
 
 // Use the canonical sparse integer values for wire headers.
 type v32 = crate::basetypes::v32;
@@ -186,30 +185,24 @@ pub fn client_verify(value: bool) {
 // wrap every call site in an `unsafe` block, which the emitter renders
 // as an @unsafe comment block -- measured: changes emitted C++.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn client_log_line(level: i32, line: i32, file: *const i8, message: LegacyStdString) {
+pub fn client_log_line(level: i32, line: i32, file: *const i8, message: String) {
     // SAFETY: all canonical callers currently pass a null file pointer; the
     // owned message remains live through the synchronous logging call.
     unsafe { log_line(level, line, file, &message) }
 }
 
-pub fn client_text(text: &str) -> LegacyStdString {
+pub fn client_text(text: &str) -> String {
     text.to_string()
 }
 
-pub fn client_text_str(prefix: &str, value: &str, suffix: &str) -> LegacyStdString {
-    // The `LegacyStdString` annotation is load-bearing, not decoration: the
-    // checked type map spells this alias `std::string`, and only a DECLARED
-    // type carries that mapping onto a local. Left inferred, `to_string()`
-    // lowers the local to `rusty::String` while the signature still says
-    // `std::string` — the same Rust type in two C++ spellings.
-    // `base/misc.cpp` annotates its own `LegacyStdString` local likewise.
-    let mut message: LegacyStdString = prefix.to_string();
+pub fn client_text_str(prefix: &str, value: &str, suffix: &str) -> String {
+    let mut message: String = prefix.to_string();
     message += value;
     message += suffix;
     message
 }
 
-pub fn client_text_i32(prefix: &str, value: i32, suffix: &str) -> LegacyStdString {
+pub fn client_text_i32(prefix: &str, value: i32, suffix: &str) -> String {
     client_text_str(prefix, &value.to_string(), suffix)
 }
 
@@ -219,7 +212,7 @@ pub fn client_text_u32_str(
     middle: &str,
     text: &str,
     suffix: &str,
-) -> LegacyStdString {
+) -> String {
     let mut message = client_text_str(prefix, &value.to_string(), middle);
     message += text;
     message += suffix;
@@ -232,7 +225,7 @@ pub fn client_text_u64_pair(
     middle: &str,
     second: u64,
     suffix: &str,
-) -> LegacyStdString {
+) -> String {
     let mut message = client_text_str(prefix, &first.to_string(), middle);
     message += &second.to_string();
     message += suffix;
@@ -245,7 +238,7 @@ pub fn client_text_str_i32(
     middle: &str,
     value: i32,
     suffix: &str,
-) -> LegacyStdString {
+) -> String {
     let mut message = client_text_str(prefix, text, middle);
     message += &value.to_string();
     message += suffix;
@@ -258,7 +251,7 @@ pub fn client_text_str_pair(
     middle: &str,
     second: &str,
     suffix: &str,
-) -> LegacyStdString {
+) -> String {
     let mut message = client_text_str(prefix, first, middle);
     message += second;
     message += suffix;
@@ -752,7 +745,7 @@ pub struct ClientConnection {
     state_machine_: ConnectionStateMachine,
     reconnect_policy_: ClientCloneCell<ReconnectPolicy>,
     reconnect_: ReconnectState,
-    reconnect_address_: ClientCloneCell<LegacyStdString>,
+    reconnect_address_: ClientCloneCell<String>,
     buffering_config_: ClientCloneCell<BufferingConfig>,
     pending_queue_: RequestQueue,
     server_instance_id_: ClientCloneCell<u64>,
@@ -764,7 +757,7 @@ pub struct ClientConnection {
     last_activity_time_: ClientCloneCell<u64>,
     metrics_: Arc<ConnectionMetrics>,
     weak_self_: WeakClientConnection,
-    host_: LegacyStdString,
+    host_: String,
     packets_: u64,
     paused_: ClientCloneCell<bool>,
     is_client_mode_: bool,
@@ -825,13 +818,10 @@ impl ClientConnection {
                 reconnect_abort_: AtomicBool::new(false),
                 channel_reconnect_attempts_: AtomicU64::new(0),
             },
-            // `Default::default()` (not `LegacyStdString::default()`): the
-            // alias is spelled `std::string` by the checked type map, and an
-            // associated-function path on it emits `std::string::default_`,
-            // which does not exist. In expected-type position the emitter
-            // lowers `Default::default()` to `rusty::default_like<T>()`, the
-            // same shape the `on_server_restart_` field below already uses.
-            reconnect_address_: ClientCloneCell::<LegacyStdString>::new(Default::default()),
+            // In expected-type position the emitter lowers `Default::default()`
+            // to `rusty::default_like<T>()`, the same shape the
+            // `on_server_restart_` field below already uses.
+            reconnect_address_: ClientCloneCell::<String>::new(Default::default()),
             buffering_config_: ClientCloneCell::<BufferingConfig>::new(BufferingConfig::defaults()),
             pending_queue_: make_pending_queue(&BufferingConfig::defaults().to_queue_config()),
             server_instance_id_: ClientCloneCell::<u64>::new(0u64),
@@ -898,7 +888,7 @@ impl ClientConnection {
         // counter is bumped the moment the fan-out reaches this branch (the
         // observability signal tests assert), then a spawn does the work
         // unless reconnect was aborted.
-        let addr: LegacyStdString = self.reconnect_address_.get();
+        let addr: String = self.reconnect_address_.get();
         if self.reconnect_policy_.get().auto_reconnect && !addr.is_empty() {
             self.reconnect_.channel_reconnect_attempts_.fetch_add(1, rusty::sync::atomic::Ordering::AcqRel);
 
@@ -1350,13 +1340,10 @@ impl ClientConnection {
         let after = self.circuit_breaker_.state();
         self.record_circuit_state_transition(before, after);
     }
-    // `&LegacyStdString`, NOT `&str`: the incumbent module exported
-    // `invoke_error_callback(int, std::string const&) const`, and `&str`
-    // re-signatures it to `std::string_view`. That is the classic
-    // natural-looking Rust-port improvement that silently breaks the C++ ABI,
-    // so the parameter keeps the mapped `const std::string&` spelling and the
-    // literal call sites build the owned string the incumbent also built.
-    fn invoke_error_callback(&self, err: i32, message: &LegacyStdString) {
+    // Takes the owned string by reference (`const rusty::String&` in C++),
+    // matching the `OnErrorCallbackFn` surface it forwards to; the literal
+    // call sites build the owned string.
+    fn invoke_error_callback(&self, err: i32, message: &String) {
         if !self.callback_manager_.is_valid() {
             return;
         }
@@ -1413,7 +1400,7 @@ impl ClientConnection {
         // Trigger policy-driven reconnect automatically after transport failures.
         let reconnect_aborted: bool = self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
         if self.reconnect_policy_.get().auto_reconnect && !reconnect_aborted {
-            let addr: LegacyStdString = self.reconnect_address_.get();
+            let addr: String = self.reconnect_address_.get();
             if addr.is_empty() {
                 return;
             }
@@ -1507,7 +1494,7 @@ impl ClientConnection {
         self.metrics_.record_bytes_received(bytes as u64);
         self.update_last_activity(clientconn_monotonic_ms_now());
     }
-    fn host(&self) -> LegacyStdString { self.host_.clone() }
+    fn host(&self) -> String { self.host_.clone() }
 
     // --- static delegators ---
     fn should_trip_circuit_for_error(err: i32) -> bool {
@@ -1535,7 +1522,7 @@ impl ClientConnection {
     fn is_channel_mode(&self) -> bool { self.channel_mode_.get() }
     fn install_self_weak_for_testing(&mut self, weak: WeakClientConnection) { self.weak_self_ = weak; }
     fn force_connected_for_testing(&mut self) { self.state_machine_.force_state(ConnectionState::CONNECTED); }
-    fn set_reconnect_address_for_testing(&self, addr: LegacyStdString) { self.reconnect_address_.set(addr); }
+    fn set_reconnect_address_for_testing(&self, addr: String) { self.reconnect_address_.set(addr); }
     pub fn connected(&self) -> bool { self.state_machine_.is_connected() }
     pub fn connection_state(&self) -> ConnectionState { self.state_machine_.state() }
     fn reconnect_policy(&self) -> ReconnectPolicy { self.reconnect_policy_.get() }
@@ -1775,12 +1762,10 @@ impl Client {
         guard.is_some() && guard.as_ref().unwrap().is_reconnecting()
     }
 
-    fn host(&self) -> LegacyStdString {
+    fn host(&self) -> String {
         if let Some(conn) = self.connection() {
             return conn.host();
         }
-        // See `ClientConnection::new`: the alias maps to `std::string`, so
-        // `LegacyStdString::new()` would emit `std::string::new_`.
         Default::default()
     }
 
@@ -1944,15 +1929,15 @@ impl Client {
 }
 
 pub struct PoolState {
-    cache: BTreeMap<LegacyStdString, Vec<Arc<Client>>>,
-    lb_state: BTreeMap<LegacyStdString, LoadBalancerState>,
+    cache: BTreeMap<String, Vec<Arc<Client>>>,
+    lb_state: BTreeMap<String, LoadBalancerState>,
 }
 
 impl PoolState {
     fn new() -> PoolState {
         PoolState {
-            cache: BTreeMap::<LegacyStdString, Vec<Arc<Client>>>::new(),
-            lb_state: BTreeMap::<LegacyStdString, LoadBalancerState>::new(),
+            cache: BTreeMap::<String, Vec<Arc<Client>>>::new(),
+            lb_state: BTreeMap::<String, LoadBalancerState>::new(),
         }
     }
 }
@@ -2024,7 +2009,7 @@ impl ClientPool {
         clientpool_is_client_healthy_with(self.pool_config(), client)
     }
 
-    pub fn get_healthy_client_count(&self, addr: &LegacyStdString) -> usize {
+    pub fn get_healthy_client_count(&self, addr: &String) -> usize {
         clientpool_get_healthy_client_count(self, addr)
     }
 
@@ -2044,11 +2029,11 @@ impl ClientPool {
         guard.cache.len()
     }
 
-    pub fn remove_unhealthy_clients(&self, addr: &LegacyStdString) -> usize {
+    pub fn remove_unhealthy_clients(&self, addr: &String) -> usize {
         clientpool_remove_unhealthy_clients(self, addr)
     }
 
-    pub fn close_idle_clients(&self, addr: &LegacyStdString, current_time_ms: u64) -> usize {
+    pub fn close_idle_clients(&self, addr: &String, current_time_ms: u64) -> usize {
         clientpool_close_idle_clients(self, addr, current_time_ms)
     }
 
@@ -2060,7 +2045,7 @@ impl ClientPool {
         clientpool_close_all_idle(self, current_time_ms)
     }
 
-    pub fn get_client(&self, addr: &LegacyStdString) -> Option<Arc<Client>> {
+    pub fn get_client(&self, addr: &String) -> Option<Arc<Client>> {
         clientpool_get_client(self, addr)
     }
 }
@@ -2560,7 +2545,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     let ar_ref: &mut BinaryWriteArchive = &mut ar;
     write_fn(ar_ref);
     // Keep the replay payload as bytes (was a reinterpret_cast'd
-    // LegacyStdString round-trip).
+    // std::string round-trip).
     let args_bytes: Vec<u8> = args_sink.bytes.clone();
 
     // Non-idempotent operations must never be retried even if max_retries is set.
@@ -2762,7 +2747,7 @@ pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
 // wrap every call site in an `unsafe` block, which the emitter renders
 // as an @unsafe comment block -- measured: changes emitted C++.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
+pub fn clientconn_addr_to_string(addr: *const i8) -> String {
     if addr.is_null() {
         // See `ClientConnection::new`: the alias maps to `std::string`.
         return Default::default();
@@ -2776,9 +2761,8 @@ pub fn clientconn_addr_to_string(addr: *const i8) -> LegacyStdString {
     // function emits the non-existent `std::string::from_ptr`, and every
     // `CStr` method behind it has the same problem. `rusty::LoggingString` is
     // the byte model that maps to `std::string` and carries C++'s
-    // `push_back`; `client_text` then hands back the module's own
-    // `LegacyStdString` (`&LoggingString` derefs to `&str` in rustc and
-    // converts to `std::string_view` in C++).
+    // `push_back`; `client_text` then hands back a `String` (`&LoggingString`
+    // derefs to `&str` in rustc and converts to `std::string_view` in C++).
     let mut scratch: rusty::LoggingString = Default::default();
     let mut index: usize = 0;
     // SAFETY: all callers uphold the historical C-string input contract;
@@ -2803,7 +2787,7 @@ pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i
 
 fn clientconn_connect_factory_for_binding(conn: &ClientConnection, addr_i8: *const i8,
                                          generation: u64) -> i32 {
-    let addr_str: LegacyStdString = clientconn_addr_to_string(addr_i8);
+    let addr_str: String = clientconn_addr_to_string(addr_i8);
     let factory = conn.factory_.lock().unwrap().clone();
     if factory.is_none() {
         conn.invoke_error_callback(CLIENT_ERR_NOT_CONNECTED, &client_text("factory unbound"));
@@ -3044,7 +3028,7 @@ pub fn clientpool_is_client_healthy_with(cfg: PoolConfig, client: &Arc<Client>) 
 
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_unwrap)]
-pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &LegacyStdString) -> usize {
+pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &String) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant.
     let cfg: PoolConfig = self_.pool_config();
     let guard = self_.state_.lock().unwrap();
@@ -3066,7 +3050,7 @@ pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &LegacyStdS
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &LegacyStdString) -> usize {
+pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &String) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant.
     let cfg: PoolConfig = self_.pool_config();
     let mut guard = self_.state_.lock().unwrap();
@@ -3109,7 +3093,7 @@ pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &LegacyStdS
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-pub fn clientpool_close_idle_clients(self_: &ClientPool, addr: &LegacyStdString, current_time_ms: u64) -> usize {
+pub fn clientpool_close_idle_clients(self_: &ClientPool, addr: &String, current_time_ms: u64) -> usize {
     let cfg: PoolConfig = self_.pool_config();
 
     // If idle timeout is 0, no timeout
@@ -3161,7 +3145,7 @@ pub fn clientpool_remove_all_unhealthy(self_: &ClientPool) -> usize {
     let mut guard = self_.state_.lock().unwrap();
     let mut total_removed: usize = 0usize;
 
-    let mut keys: Vec<LegacyStdString> = Vec::<LegacyStdString>::new();
+    let mut keys: Vec<String> = Vec::<String>::new();
     {
         let mut it = guard.cache.iter();
         loop {
@@ -3173,10 +3157,10 @@ pub fn clientpool_remove_all_unhealthy(self_: &ClientPool) -> usize {
             keys.push(kv.0.clone());
         }
     }
-    let mut empty_keys: Vec<LegacyStdString> = Vec::<LegacyStdString>::new();
+    let mut empty_keys: Vec<String> = Vec::<String>::new();
     let mut k: usize = 0usize;
     while k < keys.len() {
-        let addr: &LegacyStdString = &keys[k];
+        let addr: &String = &keys[k];
         let has_entry: bool = guard.cache.get(addr).is_some();
         if !has_entry {
             k += 1usize;
@@ -3211,7 +3195,7 @@ pub fn clientpool_remove_all_unhealthy(self_: &ClientPool) -> usize {
     }
     let mut j: usize = 0usize;
     while j < empty_keys.len() {
-        let key: &LegacyStdString = &empty_keys[j];
+        let key: &String = &empty_keys[j];
         guard.cache.remove(key);
         j += 1usize;
     }
@@ -3230,7 +3214,7 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
     let mut guard = self_.state_.lock().unwrap();
     let mut total_closed: usize = 0usize;
 
-    let mut keys: Vec<LegacyStdString> = Vec::<LegacyStdString>::new();
+    let mut keys: Vec<String> = Vec::<String>::new();
     {
         let mut it = guard.cache.iter();
         loop {
@@ -3242,10 +3226,10 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
             keys.push(kv.0.clone());
         }
     }
-    let mut empty_keys: Vec<LegacyStdString> = Vec::<LegacyStdString>::new();
+    let mut empty_keys: Vec<String> = Vec::<String>::new();
     let mut k: usize = 0usize;
     while k < keys.len() {
-        let addr: &LegacyStdString = &keys[k];
+        let addr: &String = &keys[k];
         let has_entry: bool = guard.cache.get(addr).is_some();
         if !has_entry {
             k += 1usize;
@@ -3280,7 +3264,7 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
     }
     let mut j: usize = 0usize;
     while j < empty_keys.len() {
-        let key: &LegacyStdString = &empty_keys[j];
+        let key: &String = &empty_keys[j];
         guard.cache.remove(key);
         j += 1usize;
     }
@@ -3289,7 +3273,7 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
 
 // The owned NUL terminator keeps the C address valid for the synchronous
 // connect call in Rust and generated C++ alike.
-pub fn clientpool_connect_client(client: &Arc<Client>, addr: &LegacyStdString) -> i32 {
+pub fn clientpool_connect_client(client: &Arc<Client>, addr: &String) -> i32 {
     let mut address_bytes = addr.as_bytes().to_vec();
     address_bytes.push(0u8);
     client.connect(address_bytes.as_ptr() as *const i8, true)
@@ -3344,7 +3328,7 @@ pub fn clientpool_select(
 
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_get_then_check)]
-pub fn clientpool_get_client(self_: &ClientPool, addr: &LegacyStdString) -> Option<Arc<Client>> {
+pub fn clientpool_get_client(self_: &ClientPool, addr: &String) -> Option<Arc<Client>> {
     let mut sp_cl: Option<Arc<Client>> = None;
     let cfg: PoolConfig = self_.pool_config();
     let num_connections: i32 = cfg.min_connections;

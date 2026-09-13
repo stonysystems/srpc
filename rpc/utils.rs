@@ -6,7 +6,6 @@ use std::cell::Cell;
 // The emitter maps these source-level aliases back to the exact legacy C++
 // spellings (`addrinfo` and `std::string`) through the checked type-map.
 type LegacyAddrInfo = core::ffi::c_void;
-type LegacyStdString = String;
 
 #[allow(unsafe_code)]
 mod utils_ffi {
@@ -114,14 +113,14 @@ fn scan_open_port() -> i32 {
 pub fn find_open_port() -> i32 {
     let port = scan_open_port();
     if port > 0 {
-        let mut message: LegacyStdString = "Found open port: ".to_string();
+        let mut message: String = "Found open port: ".to_string();
         message += &port.to_string();
         // SAFETY: the file pointer is null, so the logger performs no path scan.
         unsafe { log_line(3, 0, core::ptr::null(), &message) };
         return port;
     }
 
-    let message: LegacyStdString = "Failed to find open port.".to_string();
+    let message: String = "Failed to find open port.".to_string();
     // SAFETY: the file pointer is null, so the logger performs no path scan.
     unsafe { log_line(1, 0, core::ptr::null(), &message) };
     -1
@@ -129,7 +128,7 @@ pub fn find_open_port() -> i32 {
 
 /// Return the host name, logging and preserving an empty result on failure.
 #[allow(unsafe_code)]
-pub fn get_host_name() -> LegacyStdString {
+pub fn get_host_name() -> String {
     let mut bytes: [u8; 256] = [0; 256];
     let status = unsafe { utils_ffi::srpc_net_hostname(bytes.as_mut_ptr(), 255) };
     let mut length: usize = 0;
@@ -138,9 +137,9 @@ pub fn get_host_name() -> LegacyStdString {
             length += 1;
         }
     }
-    let name: LegacyStdString = String::from_utf8_lossy(&bytes[..length]).to_string();
+    let name: String = String::from_utf8_lossy(&bytes[..length]).to_string();
     if name.is_empty() {
-        let message: LegacyStdString = "Failed to get hostname.".to_string();
+        let message: String = "Failed to get hostname.".to_string();
         // SAFETY: the file pointer is null, so the logger performs no path scan.
         unsafe { log_line(1, 0, core::ptr::null(), &message) };
     }

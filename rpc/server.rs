@@ -45,11 +45,6 @@ use crate::debugging::verify_at;
 #[allow(unused_imports)]
 use crate::internal_protocol as _;
 
-// The consumer profile maps this private carrier to `std::string`, retaining
-// the established C++ surface instead of exposing rusty-cpp's distinct
-// `rusty::String` owner.
-type LegacyStdString = String;
-
 // Use the canonical reactor worker in both Rust and generated C++.
 type PollThread = crate::reactor::PollThread;
 
@@ -234,7 +229,7 @@ pub struct RpcServiceContext {
     pub rpc_to_service: HashMap<i32, usize>,
     pub fast_rpc_ids: HashSet<i32>,
     pub services: Vec<ServiceProxy>,
-    pub addr: LegacyStdString,
+    pub addr: String,
     pub pending_requests: Arc<ServerPendingRequestsAtomic>,
     pub drop_heartbeat_replies: Arc<ServerDropHeartbeatRepliesAtomic>,
     pub server_instance_id: u64,
@@ -245,7 +240,7 @@ impl RpcServiceContext {
         rpc_map: HashMap<i32, usize>,
         fast_rpc_set: HashSet<i32>,
         svcs: Vec<ServiceProxy>,
-        address: LegacyStdString,
+        address: String,
         pending_counter: Arc<ServerPendingRequestsAtomic>,
         drop_heartbeats: Arc<ServerDropHeartbeatRepliesAtomic>,
         instance_id: u64,
@@ -337,7 +332,7 @@ impl ServerConnection {
         if self.status_.swap(ServerConnStatus::CLOSED as i32, Ordering::AcqRel)
             == ServerConnStatus::CONNECTED as i32
         {
-            let message: LegacyStdString =
+            let message: String =
                 format!("server@{} close ServerConnection", self.ctx_.addr);
             // SAFETY: the file pointer is null, so the logger performs no path scan.
             unsafe { log_line(4, 0, core::ptr::null(), &message) };
@@ -395,7 +390,7 @@ impl ServerConnection {
 
     pub fn run_async(&self, mut f: Box<dyn FnMut()>) -> i32 {
         if f.is_empty() {
-            let message: LegacyStdString =
+            let message: String =
                 "srpc::ServerConnection::run_async called with empty callback".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(2, 0, core::ptr::null(), &message) };
@@ -451,7 +446,7 @@ impl DeferredReply {
     pub fn reply(&mut self) {
         let cb_opt = self.archive_reply_field.take();
         if cb_opt.is_none() {
-            let message: LegacyStdString =
+            let message: String =
                 "DeferredReply::reply() called multiple times, ignoring".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(2, 0, core::ptr::null(), &message) };
@@ -462,7 +457,7 @@ impl DeferredReply {
         if let Some(sconn) = sconn_opt {
             (*sconn).reply(&self.req_field, 0i32, cb);
         } else {
-            let message: LegacyStdString =
+            let message: String =
                 "Connection closed before reply sent, dropping reply".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(4, 0, core::ptr::null(), &message) };
@@ -471,7 +466,7 @@ impl DeferredReply {
 
     pub fn reply_error(&mut self, error_code: i32) {
         if self.archive_reply_field.take().is_none() {
-            let message: LegacyStdString =
+            let message: String =
                 "DeferredReply::reply_error() called multiple times, ignoring".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(2, 0, core::ptr::null(), &message) };
@@ -482,7 +477,7 @@ impl DeferredReply {
             let no_writer: ServerReplyFn = no_reply_writer();
             (*sconn).reply(&self.req_field, error_code, no_writer);
         } else {
-            let message: LegacyStdString =
+            let message: String =
                 "Connection closed before error reply sent, dropping reply".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(4, 0, core::ptr::null(), &message) };
@@ -544,7 +539,7 @@ pub fn server_resolve_poll_thread(
 /// # Safety
 ///
 /// `addr` must be a NUL-terminated readable C string for this call.
-pub unsafe fn server_dsl_addr_to_string(addr: *const i8) -> LegacyStdString {
+pub unsafe fn server_dsl_addr_to_string(addr: *const i8) -> String {
     let bytes: *const u8 = addr as *const u8;
     // SAFETY: the caller pins a NUL-terminated readable string, so the C
     // kernel's scan stays inside it and the slice below covers exactly the
@@ -553,7 +548,7 @@ pub unsafe fn server_dsl_addr_to_string(addr: *const i8) -> LegacyStdString {
     // SAFETY: the scan above proved `len` bytes readable, and an address
     // string is ASCII by construction.
     let text: &str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(bytes, len)) };
-    let out: LegacyStdString = text.to_string();
+    let out: String = text.to_string();
     out
 }
 
@@ -587,7 +582,7 @@ pub fn server_wait_for_shutdown_impl(
     state: &std::sync::Mutex<ShutdownState>,
     cond: &Box<std::sync::Condvar>,
 ) {
-    let entering: LegacyStdString = "Server::wait_for_shutdown".to_string();
+    let entering: String = "Server::wait_for_shutdown".to_string();
     // SAFETY: the file pointer is null.
     unsafe { log_line(4, 0, core::ptr::null(), &entering) };
     let mut guard = state.lock().unwrap();
@@ -595,7 +590,7 @@ pub fn server_wait_for_shutdown_impl(
         .wait_while(guard, |s: &mut ShutdownState| !s.shutdown)
         .unwrap();
     drop(guard);
-    let leaving: LegacyStdString = "Server::wait_for_shutdown - done".to_string();
+    let leaving: String = "Server::wait_for_shutdown - done".to_string();
     // SAFETY: the file pointer is null.
     unsafe { log_line(4, 0, core::ptr::null(), &leaving) };
 }
@@ -611,7 +606,7 @@ pub fn server_generate_instance_id() -> u64 {
     if id == 0u64 {
         id = 1u64;
     }
-    let message: LegacyStdString = format!("Server: generated instance_id={}", id);
+    let message: String = format!("Server: generated instance_id={}", id);
     // SAFETY: the file pointer is null.
     unsafe { log_line(4, 0, core::ptr::null(), &message) };
     id
@@ -625,7 +620,7 @@ pub fn server_drain_impl(
 ) -> bool {
     let current_phase = phase.get();
     if current_phase != ShutdownPhase::RUNNING && current_phase != ShutdownPhase::STOP_ACCEPTING {
-        let message: LegacyStdString = format!(
+        let message: String = format!(
             "Server::drain: already past the draining phases ({})",
             shutdown_phase_to_string(current_phase)
         );
@@ -633,7 +628,7 @@ pub fn server_drain_impl(
         unsafe { log_line(4, 0, core::ptr::null(), &message) };
         return pending.load(Ordering::Relaxed) == 0i32;
     }
-    let entering: LegacyStdString = format!(
+    let entering: String = format!(
         "Server::drain: transitioning to DRAINING, pending={}",
         pending.load(Ordering::Relaxed)
     );
@@ -645,7 +640,7 @@ pub fn server_drain_impl(
     while pending.load(Ordering::Relaxed) > 0i32 {
         let elapsed_us = crate::basetypes::Time::now(true) - start_us;
         if elapsed_us >= timeout_us {
-            let expired: LegacyStdString = format!(
+            let expired: String = format!(
                 "Server::drain: timeout after {} ms, pending={}",
                 timeout_ms,
                 pending.load(Ordering::Relaxed)
@@ -656,7 +651,7 @@ pub fn server_drain_impl(
         }
         rusty::sys::time::sleep_us(1000u64);
     }
-    let done: LegacyStdString = "Server::drain: completed, all requests drained".to_string();
+    let done: String = "Server::drain: completed, all requests drained".to_string();
     // SAFETY: the file pointer is null.
     unsafe { log_line(3, 0, core::ptr::null(), &done) };
     true
@@ -665,7 +660,7 @@ pub fn server_drain_impl(
 /// NOTE: hooks run WHILE the mutex is held. That is the pre-existing
 /// behaviour and is preserved deliberately.
 pub fn server_run_shutdown_hooks(hooks: &std::sync::Mutex<Vec<ShutdownHook>>) {
-    let message: LegacyStdString =
+    let message: String =
         "Server::graceful_shutdown: transitioning to CLOSING, executing hooks".to_string();
     // SAFETY: the file pointer is null.
     unsafe { log_line(3, 0, core::ptr::null(), &message) };
@@ -678,7 +673,7 @@ pub fn server_run_shutdown_hooks(hooks: &std::sync::Mutex<Vec<ShutdownHook>>) {
 /// Parse the decimal prefix accepted by the historical `std::stoi` path.
 /// Leading ASCII whitespace and a sign are permitted; trailing text is ignored.
 /// Keep the old 63-byte limit and reject missing digits or int32 overflow.
-pub fn server_parse_port(text: &LegacyStdString) -> Option<i32> {
+pub fn server_parse_port(text: &String) -> Option<i32> {
     let bytes = text.as_bytes();
     if bytes.len() > 63 {
         return None;
@@ -737,14 +732,14 @@ pub fn server_invoke_shutdown_hook_safely(hook: &mut ShutdownHook) {
     }
     let msg = rusty::panic::payload_message(r.unwrap_err());
     if let Some(text) = msg {
-        let message: LegacyStdString = format!(
+        let message: String = format!(
             "Server::graceful_shutdown: hook threw exception: {}",
             text
         );
         // SAFETY: the file pointer is null.
         unsafe { log_line(1, 0, core::ptr::null(), &message) };
     } else {
-        let message: LegacyStdString =
+        let message: String =
             "Server::graceful_shutdown: hook threw unknown exception".to_string();
         // SAFETY: the file pointer is null.
         unsafe { log_line(1, 0, core::ptr::null(), &message) };
@@ -986,7 +981,7 @@ impl Server {
         self.pending_services_field.len()
     }
 
-    pub fn addr(&self) -> LegacyStdString {
+    pub fn addr(&self) -> String {
         self.ctx_field.as_ref().unwrap().addr.clone()
     }
 
@@ -1000,14 +995,14 @@ impl Server {
     /// readable for the duration of the call.
     pub unsafe fn start(&mut self, bind_addr: *const i8) -> i32 {
         if bind_addr.is_null() {
-            let message: LegacyStdString = "srpc::Server::start: bind_addr is NULL!".to_string();
+            let message: String = "srpc::Server::start: bind_addr is NULL!".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(1, 0, core::ptr::null(), &message) };
             return -1i32;
         }
         // SAFETY: the caller guarantees a NUL-terminated readable string that
         // stays alive for this call.
-        let addr_str: LegacyStdString = unsafe { server_dsl_addr_to_string(bind_addr) };
+        let addr_str: String = unsafe { server_dsl_addr_to_string(bind_addr) };
 
         // Registration is complete. Publish the owning service vector without
         // mutable borrow state so concurrent and suspended handlers share it.
@@ -1040,7 +1035,7 @@ impl Server {
                 factory.make_listener()
             };
             if listener_opt.is_none() {
-                let message: LegacyStdString = format!(
+                let message: String = format!(
                     "srpc::Server::start: factory->make_listener() returned a null proxy (factory backend={})",
                     "unknown"
                 );
@@ -1107,7 +1102,7 @@ impl Server {
                 ch.set_on_error(OnErrorCallback::from_callable(Box::new(
                     move |err: ChannelError, msg: &str| {
                         let reason: &str = channel_error_to_string(err);
-                        let message: LegacyStdString =
+                        let message: String =
                             format!("srpc::Server: channel listener error {}: {}", reason, msg);
                         // SAFETY: the file pointer is null.
                         unsafe { log_line(2, 0, core::ptr::null(), &message) };
@@ -1121,7 +1116,7 @@ impl Server {
             };
             if listen_err != ChannelError::None {
                 let reason: &str = channel_error_to_string(listen_err);
-                let message: LegacyStdString = format!(
+                let message: String = format!(
                     "srpc::Server::start: channel listener failed to bind {}: {}",
                     addr_str, reason
                 );
@@ -1155,19 +1150,19 @@ impl Server {
         }
         let listener: &Box<dyn ChannelListenerBase> =
             self.channel_listener_field.as_ref().unwrap();
-        let local: LegacyStdString = listener.local_address();
+        let local: String = listener.local_address();
         let colon = local.rfind(':');
         if colon.is_none() {
-            let message: LegacyStdString =
+            let message: String =
                 format!("Server::get_bound_port: malformed local_address {}", local);
             // SAFETY: the file pointer is null.
             unsafe { log_line(1, 0, core::ptr::null(), &message) };
             return -1i32;
         }
-        let tail: LegacyStdString = local[colon.unwrap() + 1usize..].to_string();
+        let tail: String = local[colon.unwrap() + 1usize..].to_string();
         let parsed = server_parse_port(&tail);
         if parsed.is_none() {
-            let message: LegacyStdString = format!(
+            let message: String = format!(
                 "Server::get_bound_port: failed to parse port from {}",
                 local
             );
@@ -1289,7 +1284,7 @@ pub fn sconn_on_channel_error(weak: &ArcWeak<ServerConnection>, err: ChannelErro
     }
     let sconn = sconn_opt.unwrap();
     let reason: &str = channel_error_to_string(err);
-    let message: LegacyStdString =
+    let message: String =
         format!("srpc::ServerConnection: channel error {}: {}", reason, msg);
     // SAFETY: the file pointer is null.
     unsafe { log_line(2, 0, core::ptr::null(), &message) };
@@ -1360,7 +1355,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     // valid xid to reply against. v64 is 1-8 bytes; an empty body means
     // there is no xid at all.
     if req_box.src.remaining() == 0usize {
-        let message: LegacyStdString =
+        let message: String =
             "srpc::ServerConnection: empty channel-mode request frame, dropping".to_string();
         // SAFETY: the file pointer is null.
         unsafe { log_line(2, 0, core::ptr::null(), &message) };
@@ -1410,7 +1405,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
             }
         }
         if !surpress_warning {
-            let message: LegacyStdString = format!(
+            let message: String = format!(
                 "srpc::ServerConnection: no handler for rpc_id = {} (channel-mode dispatch)",
                 rpc_id
             );
