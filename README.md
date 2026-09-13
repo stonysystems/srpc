@@ -124,20 +124,20 @@ re-exports each one with a `using`, which is why the client code below says
     };
 
     // typed service signatures
-    virtual rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req);
+    virtual rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) const = 0;
 ```
 
-One thing to fix up: the generated header opens with `#include "srpc/srpc.hpp"`, which
-assumes SRPC sits in a directory named `srpc` on your include path. For a header
-generated into `tests/`, change that line to `#include "../srpc.hpp"`. The generator
-rewrites the line on every run, so re-apply the edit after each regeneration. The
-committed `tests/benchmark_service.h` still carries the unedited form — nothing in the
-build compiles it, so nothing catches it there.
+The generated header opens with `#include "srpc/srpc.hpp"`. Add an include directory
+whose `srpc/` entry points to this repository. The `rpcbench` CMake target creates
+`build/bench-include/srpc` as a symlink to the source tree and adds
+`build/bench-include` to its include path. This lets it compile the committed
+`tests/benchmark_service.h` with the generated include intact. Build that target
+explicitly with `cmake --build build --target rpcbench`.
 
 ## Implementing the server side
 
 Those functions are to be implemented by you. Inherit from the generated service and
-override them:
+override them. Generated service methods are `const`, so each override must be too:
 
 ```cpp
 #include "demo.h"
@@ -147,25 +147,25 @@ using namespace demo;
 
 class MyDemoService : public DemoService {
 public:
-    rusty::Result<RpcSayhiResponse, i32> sayhi(const RpcSayhiRequest& req) override {
+    rusty::Result<RpcSayhiResponse, i32> sayhi(const RpcSayhiRequest& req) const override {
         printf("%s\n", req.hi.c_str());
         return rusty::Result<RpcSayhiResponse, i32>::Ok(RpcSayhiResponse{});
     }
 
-    rusty::Result<RpcSumResponse, i32> sum(const RpcSumRequest& req) override {
+    rusty::Result<RpcSumResponse, i32> sum(const RpcSumRequest& req) const override {
         RpcSumResponse resp{};
         resp.result = req.a + req.b + req.c;
         return rusty::Result<RpcSumResponse, i32>::Ok(resp);
     }
 
-    rusty::Result<RpcDotProdResponse, i32> dot_prod(const RpcDotProdRequest& req) override {
+    rusty::Result<RpcDotProdResponse, i32> dot_prod(const RpcDotProdRequest& req) const override {
         RpcDotProdResponse resp{};
         resp.v = req.p1.x * req.p2.x + req.p1.y * req.p2.y + req.p1.z * req.p2.z;
         return rusty::Result<RpcDotProdResponse, i32>::Ok(resp);
     }
 
     void slow_echo(const RpcSlowEchoRequest& req, RpcSlowEchoResponse& resp,
-                   DeferredReply defer) override {
+                   DeferredReply defer) const override {
         resp.echoed = req.msg;
         defer.reply();
     }
@@ -451,11 +451,11 @@ The keyword before a method name decides how the server runs your handler.
 
 | Attribute | Handler signature | Runs |
 | --- | --- | --- |
-| *(none)* | `rusty::Result<Resp, i32> m(const Req&)` | in a fresh fiber — may block or make nested RPC calls |
+| *(none)* | `rusty::Result<Resp, i32> m(const Req&) const` | in a fresh fiber — may block or make nested RPC calls |
 | `fast` / `prefix` | same | inline on the poll thread, no fiber |
-| `defer` | `void m(const Req&, Resp& resp, srpc::DeferredReply defer)` | in a fiber; you reply whenever you like |
-| `async` | `rusty::Task<rusty::Result<Resp, i32>> m(const Req&)` | entered inline on the poll thread, then resumed as a stackless coroutine |
-| `raw` | `void m(rusty::Box<srpc::Request>, srpc::WeakServerConnection)` | you decode and reply yourself |
+| `defer` | `void m(const Req&, Resp& resp, srpc::DeferredReply defer) const` | in a fiber; you reply whenever you like |
+| `async` | `rusty::Task<rusty::Result<Resp, i32>> m(const Req&) const` | entered inline on the poll thread, then resumed as a stackless coroutine |
+| `raw` | `void m(rusty::Box<srpc::Request>, srpc::WeakServerConnection) const` | you decode and reply yourself |
 
 `fast` and `prefix` are the same thing; `fast` is just an alias. A `fast` handler is
 the cheapest option, but it runs on the poll thread with no fiber to yield from, so it

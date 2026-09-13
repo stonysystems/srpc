@@ -6,14 +6,14 @@ current working tree. For example, inspect a removed source with
 `git show 9bba8a7:rusty-rustc/src/srpc.rs`. Links identify logical source locations; current files may
 have changed or been deleted.
 
-The repair now routes runtime and serialization calls to canonical Rust, links shared native kernels,
-adds synchronized connection ownership, and replaces facade exceptions with reviewed adapter
-inventories. The repaired working tree passed fresh whole-crate C++ generation and compilation, both
-ABI/importer lanes, all 26 configured SRPC CTests, and the paired runtime comparison.
-[Canonical runtime and migration notes](canonical-rust-runtime.md) record the implementation,
-toolchain, measured checks, and limits. The address sanitizer battery also passed with the recorded
-stack-warning and leak-suppression limits. Thread and undefined-behavior sanitizer acceptance remains
-pending. This status annotation does not change the baseline findings below.
+The completed repair routes runtime and serialization calls to canonical Rust, links the shared
+C/assembly kernel, and removes the Rust facade packages. Cargo uses std and that kernel without
+a C++ runtime or transpiler. Final acceptance on 2026-09-13 includes all 31 configured SRPC CTests
+and all 17 runtime suites under each of AddressSanitizer, UndefinedBehaviorSanitizer and
+ThreadSanitizer. [Rust lane independence](dev/facade-and-runtime-remaining.md) records the toolchain,
+checks and limits, including the existing fiber suppressions and stack warnings in the address run.
+[Canonical runtime notes](canonical-rust-runtime.md) describe the implementation and earlier
+validation. This status annotation does not change the historical baseline findings below.
 
 ## Audited baseline
 
