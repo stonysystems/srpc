@@ -7,17 +7,12 @@
     "context-switch": "Machine registers, guarded stack allocation, TLS active context, and stack transfer.",
     "c-declarations": "Declarations and C layouts for reviewed native leaves.",
     "import-shim": "Legacy include compatibility that imports generated canonical modules.",
-    "trait-dispatch": "C++ ADL or erased trait forwarding and native declarations; no serialization algorithm.",
-    "marker": "Compile-time marker declaration without runtime behavior."
+    "trait-dispatch": "C++ ADL or erased trait forwarding and native declarations; no serialization algorithm."
   },
   "files": {
     "base/all.hpp": {
       "role": "import-shim",
       "sha256": "fe2c4b5768c56c1f6422c70a25c420c7503fb70d528787187389aad82711697c"
-    },
-    "base/rustc_markers.hpp": {
-      "role": "marker",
-      "sha256": "fefd4b1bd5a2d9f93e67cc083c3dc13199d455f9e497338afcb27a0f0f86032a"
     },
     "base/srpc_base.c": {
       "role": "os-leaf",

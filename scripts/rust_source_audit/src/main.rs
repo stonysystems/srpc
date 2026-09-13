@@ -132,60 +132,8 @@ fn inert_block(block: &syn::Block) -> bool {
             })
 }
 
-fn missing_expression(expression: &syn::Expr) -> bool {
-    match expression {
-        syn::Expr::Macro(mac) => matches!(
-            mac.mac
-                .path
-                .segments
-                .last()
-                .unwrap()
-                .ident
-                .to_string()
-                .as_str(),
-            "panic" | "unreachable" | "todo" | "unimplemented"
-        ),
-        syn::Expr::Tuple(tuple) => tuple.elems.is_empty(),
-        syn::Expr::Paren(paren) => missing_expression(&paren.expr),
-        syn::Expr::Return(ret) => ret
-            .expr
-            .as_ref()
-            .is_none_or(|expr| missing_expression(expr)),
-        syn::Expr::Block(block) => missing_block(&block.block),
-        _ => false,
-    }
-}
-
-fn missing_block(block: &syn::Block) -> bool {
-    block.stmts.is_empty()
-        || (block.stmts.len() == 1
-            && match &block.stmts[0] {
-                syn::Stmt::Expr(expr, _) => missing_expression(expr),
-                syn::Stmt::Macro(mac) => matches!(
-                    mac.mac
-                        .path
-                        .segments
-                        .last()
-                        .unwrap()
-                        .ident
-                        .to_string()
-                        .as_str(),
-                    "panic" | "unreachable" | "todo" | "unimplemented"
-                ),
-                _ => false,
-            })
-}
-struct Bodies<'a> {
-    path: &'a str,
-    file: &'a Path,
-    findings: &'a mut Vec<Value>,
-    constant_bodies: Vec<String>,
-    owner: String,
-}
-
-// Canonical Rust must not become a new home for the substitutes removed from
-// the excluded adapter crate. Record inert production function bodies without
-// applying the adapter-only restrictions on attributes or macros.
+// Record inert production function bodies and missing behavior. Test-only
+// helpers do not form part of the production implementation.
 #[derive(Default)]
 struct CanonicalBodies {
     records: Vec<Value>,
@@ -227,171 +175,31 @@ impl<'ast> Visit<'ast> for CanonicalBodies {
         syn::visit::visit_macro(self, mac);
     }
 }
-impl Bodies<'_> {
-    fn finding(&mut self, node: &impl Spanned, message: String) {
-        self.findings.push(json!({"file":self.file,"line":node.span().start().line,"path":self.path,"message":message}));
-    }
-    fn body(&mut self, signature: &syn::Signature, block: &syn::Block) {
-        if missing_block(block) {
-            self.finding(
-                signature,
-                format!(
-                    "missing runtime behavior in {}: empty or unconditional failure body",
-                    signature.ident
-                ),
-            );
-        }
-        if inert_block(block) {
-            self.constant_bodies
-                .push(format!("{}::{}", self.owner, signature.ident));
-        }
-    }
-}
-impl<'ast> Visit<'ast> for Bodies<'_> {
-    fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
-    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        self.body(&item.sig, &item.block);
-        syn::visit::visit_item_fn(self, item);
-    }
-    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        self.body(&item.sig, &item.block);
-        syn::visit::visit_impl_item_fn(self, item);
-    }
-    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
-        if let Some(body) = &item.default {
-            self.body(&item.sig, body);
-        }
-        syn::visit::visit_trait_item_fn(self, item);
-    }
-    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        let name = mac.path.segments.last().unwrap().ident.to_string();
-        if matches!(name.as_str(), "todo" | "unimplemented") {
-            self.finding(
-                mac,
-                format!("missing runtime behavior: {name}! is forbidden"),
-            );
-        } else if !matches!(
-            name.as_str(),
-            "assert"
-                | "assert_eq"
-                | "assert_ne"
-                | "debug_assert"
-                | "debug_assert_eq"
-                | "debug_assert_ne"
-                | "panic"
-                | "unreachable"
-                | "format"
-                | "vec"
-                | "write"
-                | "writeln"
-                | "matches"
-                | "file"
-                | "line"
-                | "column"
-                | "stringify"
-        ) {
-            self.finding(
-                mac,
-                format!("opaque macro {name}! requires expansion into audited Rust"),
-            );
-        }
-    }
-    fn visit_attribute(&mut self, attr: &'ast Attribute) {
-        let name = attr.path().to_token_stream().to_string();
-        if !matches!(
-            name.as_str(),
-            "doc"
-                | "cfg"
-                | "repr"
-                | "derive"
-                | "allow"
-                | "deny"
-                | "warn"
-                | "forbid"
-                | "expect"
-                | "inline"
-                | "must_use"
-                | "track_caller"
-                | "deprecated"
-                | "non_exhaustive"
-        ) {
-            self.finding(
-                attr,
-                format!("opaque or exported-runtime attribute {name} is forbidden"),
-            );
-        }
-        if attr.path().is_ident("derive") {
-            let allowed: BTreeSet<&str> = [
-                "Clone",
-                "Copy",
-                "Debug",
-                "Default",
-                "Eq",
-                "PartialEq",
-                "Ord",
-                "PartialOrd",
-                "Hash",
-            ]
-            .into();
-            if let Ok(paths) = attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
-            ) {
-                for path in paths {
-                    if path.segments.len() != 1
-                        || !allowed.contains(path.segments[0].ident.to_string().as_str())
-                    {
-                        self.finding(
-                            attr,
-                            "opaque derive macro requires explicit audited implementation"
-                                .to_owned(),
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
 struct Scanner {
     root: PathBuf,
     visited: BTreeSet<PathBuf>,
     records: Vec<Value>,
-    findings: Vec<Value>,
-    facade: bool,
 }
 impl Scanner {
     fn file(&mut self, file: &Path, namespace: &str, child_dir: &Path) -> Result<(), String> {
         let physical = file
             .canonicalize()
             .map_err(|error| format!("{}: {error}", file.display()))?;
-        if self.facade && !physical.starts_with(&self.root) {
+        if !physical.starts_with(&self.root) {
             return Err(format!(
-                "facade module escapes its source directory: {}",
+                "Rust source module escapes its source directory: {}",
                 file.display()
             ));
         }
         if !self.visited.insert(physical.clone()) {
             return Err(format!(
-                "facade module is loaded more than once: {}",
+                "Rust source module is loaded more than once: {}",
                 file.display()
             ));
         }
         let source = std::fs::read_to_string(&physical).map_err(|error| error.to_string())?;
         let parsed =
             syn::parse_file(&source).map_err(|error| format!("{}: {error}", file.display()))?;
-        if self.facade && !parsed.attrs.is_empty() {
-            let mut bodies = Bodies {
-                path: namespace,
-                file: &physical,
-                findings: &mut self.findings,
-                constant_bodies: Vec::new(),
-                owner: String::new(),
-            };
-            for attr in &parsed.attrs {
-                bodies.visit_attribute(attr);
-            }
-            self.records.push(json!({"kind":"file-attributes","name":"@attributes","path":namespace,
-                "file":physical,"line":1,"tokens":parsed.attrs.iter().filter(|a|!a.path().is_ident("doc")).map(|a|a.to_token_stream().to_string()).collect::<Vec<_>>().join(" "),"constant_bodies":[]}));
-        }
         self.items(&parsed.items, namespace, &physical, child_dir)
     }
     fn items(
@@ -402,7 +210,7 @@ impl Scanner {
         child_dir: &Path,
     ) -> Result<(), String> {
         for item in items {
-            if !self.facade && test_only(attrs(item)) {
+            if test_only(attrs(item)) {
                 continue;
             }
             let (kind, name) = identity(item);
@@ -411,29 +219,10 @@ impl Scanner {
             } else {
                 format!("{namespace}::{name}")
             };
-            let mut bodies = Bodies {
-                path: &path,
-                file,
-                findings: &mut self.findings,
-                constant_bodies: Vec::new(),
-                owner: name.clone(),
-            };
-            if self.facade {
-                if matches!(item, Item::Macro(_)) || kind == "unsupported" {
-                    bodies.finding(
-                        item,
-                        format!("opaque {kind} declaration must be explicit Rust"),
-                    );
-                }
-                for attr in attrs(item) {
-                    bodies.visit_attribute(attr);
-                }
-                bodies.visit_item(item);
-            }
             let mut canonical_bodies = CanonicalBodies::default();
-            if !self.facade { canonical_bodies.visit_item(item); }
+            canonical_bodies.visit_item(item);
             self.records.push(json!({"kind":kind,"name":name,"path":path,"file":file,"line":item.span().start().line,
-                "tokens":tokens(item),"constant_bodies":bodies.constant_bodies,
+                "tokens":tokens(item),
                 "native_binding":attrs(item).iter().any(|attr| mentions_native_marker(attr.to_token_stream())),
                 "constant_functions":canonical_bodies.records,
                 "missing_macros":canonical_bodies.missing_macros,
@@ -449,7 +238,7 @@ impl Scanner {
                 } else {
                     if module.attrs.iter().any(|attr| attr.path().is_ident("path")) {
                         return Err(format!(
-                            "explicit module path is not permitted in facade: {path}"
+                            "explicit module path is not permitted in canonical source: {path}"
                         ));
                     }
                     let direct = child_dir.join(format!("{}.rs", module.ident));
@@ -464,7 +253,11 @@ impl Scanner {
 }
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mode = args.next().expect("mode: facade or canonical");
+    let mode = args.next().expect("mode: canonical");
+    if mode != "canonical" {
+        eprintln!("unknown Rust source audit mode: {mode}");
+        std::process::exit(2);
+    }
     let entry = PathBuf::from(args.next().expect("entry file"));
     let namespace = args.next().unwrap_or_default();
     let root = entry
@@ -476,8 +269,6 @@ fn main() {
         root: root.clone(),
         visited: BTreeSet::new(),
         records: Vec::new(),
-        findings: Vec::new(),
-        facade: mode == "facade",
     };
     if let Err(error) = scanner.file(&entry, &namespace, &root) {
         eprintln!("{error}");
@@ -485,6 +276,6 @@ fn main() {
     }
     println!(
         "{}",
-        json!({"declarations":scanner.records,"findings":scanner.findings,"files":scanner.visited})
+        json!({"declarations":scanner.records,"findings":[],"files":scanner.visited})
     );
 }

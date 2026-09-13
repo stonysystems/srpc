@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import tomllib
 
-import facade_audit
+import rust_source_audit
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,11 +26,11 @@ def audit(repo: Path, binary: Path) -> list[str]:
     findings: list[str] = []
     seen: set[str] = set()
     for module in modules:
-        parsed = facade_audit.parse(binary, "canonical", repo / module["source"], module["cpp_module"])
+        parsed = rust_source_audit.parse(binary, "canonical", repo / module["source"], module["cpp_module"])
         for record in parsed["declarations"]:
             if not record["native_binding"]:
                 continue
-            key = module["source"] + ":" + facade_audit.declaration_key(record)
+            key = module["source"] + ":" + rust_source_audit.declaration_key(record)
             if key in seen:
                 findings.append(f"duplicate native ABI binding: {key}")
             seen.add(key)
@@ -38,7 +38,7 @@ def audit(repo: Path, binary: Path) -> list[str]:
             if not isinstance(entry, dict) or set(entry) != {"sha256", "c_type", "header"}:
                 findings.append(f"unreviewed native ABI binding: {key}")
                 continue
-            if facade_audit.digest(record) != entry["sha256"]:
+            if rust_source_audit.digest(record) != entry["sha256"]:
                 findings.append(f"changed native ABI declaration: {key}")
             if type_map.get(record["name"]) != entry["c_type"]:
                 findings.append(f"changed native C type map: {key}")
@@ -52,7 +52,7 @@ def audit(repo: Path, binary: Path) -> list[str]:
 def main() -> int:
     repo = Path(os.environ.get("SRPC_REPO", ROOT)).resolve()
     try:
-        findings = audit(repo, facade_audit.scanner_binary())
+        findings = audit(repo, rust_source_audit.scanner_binary())
     except (OSError, ValueError, KeyError) as error:
         findings = [str(error)]
     if findings:

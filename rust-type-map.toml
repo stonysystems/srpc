@@ -31,12 +31,3 @@ NullableCallbackManager = "rusty::Arc<::srpc::CallbackManager>"
 NullablePendingCounter = "rusty::Arc<rusty::sync::atomic::AtomicI32>"
 NullableChannelConnectionProxy = "::srpc::ChannelConnectionProxy"
 NullableChannelFactoryProxy = "::srpc::ChannelFactoryProxy"
-
-[rusty]
-BTreeSet = "rusty::BTreeSet"
-BTreeMap = "rusty::BTreeMap"
-HashSet = "rusty::HashSet"
-HashMap = "rusty::HashMap"
-LegacyTcpListener = "rusty::net::TcpListener"
-"errors::RpcError" = "::srpc::RpcError"
-LegacyRpcError = "::srpc::RpcError"

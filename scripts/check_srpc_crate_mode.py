@@ -2846,7 +2846,6 @@ ABI_SPECS = {
     "srpc.misc": AbiSpec(
         surface=frozenset(
             {
-                '#include "base/rustc_markers.hpp"',
                 "export module srpc.misc;",
                 "export class Job;",
                 "export struct OneTimeJob;",
@@ -3045,7 +3044,6 @@ ABI_SPECS = {
     "srpc.inmemory_channel": AbiSpec(
         surface=frozenset(
             {
-                '#include "base/rustc_markers.hpp"',
                 "export struct InMemoryChannel;",
                 "export struct InMemorySwitchboard;",
                 "export struct InMemoryListener;",
@@ -5602,37 +5600,8 @@ def require_cpp_surfaces(
                 raise GateError(
                     "rustc-only StdVector facade leaked into generated FrameCodec"
                 )
-        marker_preamble = '#include "base/rustc_markers.hpp"'
-        # module-preambles.toml is the source of truth; srpc.server is
-        # the fourth declared owner of the rustc-marker preamble (it uses
-        # `#[cpp_inherit]` for the Service trait's C++ inheritance).
-        marker_preamble_owners = {
-            "srpc.misc",
-            "srpc.inmemory_channel",
-            "srpc.tcp_channel",
-            "srpc.server",
-        }
-        if module.cpp_module in marker_preamble_owners:
-            if text.count(marker_preamble) != 1:
-                raise GateError(
-                    f"generated {module.cpp_module} must contain exactly one structured "
-                    "rustc-marker preamble include"
-                )
-            ordered = (
-                text.find("\nmodule;\n"),
-                text.find(marker_preamble),
-                text.find("#include <cstdint>"),
-                text.find(f"export module {module.cpp_module};"),
-            )
-            if -1 in ordered or list(ordered) != sorted(ordered):
-                raise GateError(
-                    f"generated {module.cpp_module} marker preamble is not between the "
-                    "global module fragment and standard includes"
-                )
-        elif marker_preamble in text:
-            raise GateError(
-                f"rustc-marker preamble leaked into {module.cpp_module}"
-            )
+        if '#include "base/rustc_markers.hpp"' in text:
+            raise GateError(f"retired rustc-marker preamble leaked into {module.cpp_module}")
 
         # Leakage checks must be independent of module-specific dependency
         # handling above. Keeping them in that if/elif chain allowed several
@@ -5661,7 +5630,7 @@ def require_cpp_surfaces(
     if "#include <rusty/io.hpp>" in root_text:
         raise GateError("FrameCodec io preamble leaked into the crate root")
     if '#include "base/rustc_markers.hpp"' in root_text:
-        raise GateError("misc rustc-marker preamble leaked into the crate root")
+        raise GateError("retired rustc-marker preamble leaked into the crate root")
     root_required = {
         "export module srpc;",
         "namespace srpc {",

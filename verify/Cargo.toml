@@ -24,7 +24,6 @@ publish = false
 
 [dependencies]
 vstd = "=0.0.0-2026-08-30-0159"
-rusty = { path = "../rusty-rustc" }
 
 [package.metadata.verus]
 verify = true

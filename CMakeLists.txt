@@ -659,7 +659,13 @@ add_custom_target(srpc_goal0_source_gate
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_runtime_parity.py"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_facade_audit.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_rust_source_audit.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_native_kernels.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_rust_independence.py"
     COMMAND
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_kernels.py"
@@ -671,10 +677,10 @@ add_custom_target(srpc_goal0_source_gate
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_native_abi_bindings.py"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rust_source_audit.py"
     COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_stubs.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_rust_independence.py"
     COMMAND
         "${CMAKE_COMMAND}"
         -E env
@@ -765,9 +771,8 @@ set(SRPC_GOAL0_TYPE_MAP
 set(SRPC_GOAL0_CPP_MODULE_INDEX
     ${CMAKE_CURRENT_SOURCE_DIR}/cpp-module-index.toml
 )
-# Keep the crate manifest absolute at the process boundary. The crate
-# dependency validator deliberately resolves the exact local `rusty` facade;
-# an absolute entry manifest makes that walk independent of WORKING_DIRECTORY.
+# Keep the crate manifest absolute so Cargo metadata and module discovery
+# remain independent of WORKING_DIRECTORY.
 get_filename_component(
     SRPC_GOAL0_CRATE_MANIFEST
     "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
@@ -791,8 +796,6 @@ add_custom_command(
         "${SRPC_GOAL0_TRANSPILER_FINGERPRINT}"
         "${SRPC_GOAL0_CRATE_MANIFEST}"
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
-        "${CMAKE_CURRENT_SOURCE_DIR}/rusty-rustc/Cargo.toml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/rusty-rustc/src/lib.rs"
         "${CMAKE_CURRENT_SOURCE_DIR}/rust-modules.toml"
         "${SRPC_GOAL0_MODULE_PREAMBLE}"
         "${SRPC_GOAL0_TYPE_MAP}"
@@ -1255,24 +1258,46 @@ if(BUILD_TESTING)
     set_tests_properties(srpc_native_abi_binding_controls PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
-    # Both legacy entry points run the shared Rust AST ownership/body audit.
-    # Cargo builds its small syn-based scanner independently of the transpiler.
+    # The canonical body audit builds its AST scanner independently of the transpiler.
     add_test(
-        NAME srpc_facade_shadow
+        NAME srpc_canonical_runtime_controls
         COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_rust_source_audit.py"
     )
-    set_tests_properties(srpc_facade_shadow PROPERTIES
+    set_tests_properties(srpc_canonical_runtime_controls PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
-    # Keep the existing stub-check entry point for downstream callers; it uses
-    # the same reviewed adapter and canonical constant-function inventories.
     add_test(
-        NAME srpc_facade_stubs
+        NAME srpc_native_kernel_controls
         COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_stubs.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_native_kernels.py"
     )
-    set_tests_properties(srpc_facade_stubs PROPERTIES
+    set_tests_properties(srpc_native_kernel_controls PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    add_test(
+        NAME srpc_rust_independence_controls
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_rust_independence.py"
+    )
+    set_tests_properties(srpc_rust_independence_controls PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    add_test(
+        NAME srpc_canonical_runtime
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rust_source_audit.py"
+    )
+    set_tests_properties(srpc_canonical_runtime PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    # Build a copied Cargo tree containing no facade, C++ runtime or compiler.
+    add_test(
+        NAME srpc_rust_independence
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_rust_independence.py"
+    )
+    set_tests_properties(srpc_rust_independence PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
     add_test(

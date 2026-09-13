@@ -8,13 +8,13 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_native_abi_bindings as gate
-import facade_audit
+import rust_source_audit
 
 
 class NativeBindingAuditTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.binary = facade_audit.scanner_binary()
+        cls.binary = rust_source_audit.scanner_binary()
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="srpc-native-audit-")

@@ -5,7 +5,6 @@ edition = "2021"
 publish = false
 
 [workspace]
-members = ["rusty-cpp-markers", "rusty-rustc"]
 # verify/ is the Verus harness; it pulls vstd and must never enter the
 # production build or the rusty-cpp transpile, so keep it out of the workspace.
 # bench/ is the microbenchmark harness, excluded for the same reason in the
@@ -17,9 +16,6 @@ resolver = "2"
 
 [lib]
 path = "src/lib.rs"
-
-[dependencies]
-rusty = { path = "rusty-rustc" }
 
 [dev-dependencies]
 # Property-based testing for the wire codecs (tests only; not linked into the

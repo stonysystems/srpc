@@ -29,7 +29,6 @@ ROLES = {
     "c-declarations": "Declarations and C layouts for reviewed native leaves.",
     "import-shim": "Legacy include compatibility that imports generated canonical modules.",
     "trait-dispatch": "C++ ADL or erased trait forwarding and native declarations; no serialization algorithm.",
-    "marker": "Compile-time marker declaration without runtime behavior.",
 }
 
 

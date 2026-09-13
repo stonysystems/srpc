@@ -121,17 +121,19 @@ machine- and thermal-dependent; only the back-to-back delta means anything. A ca
 uncommitted harness, and vanished the moment a committed one re-took it.
 
 **Individual gates.** The source gate checks canonical inventory, compiler contracts, native kernel
-ownership, facade declarations, negative controls, Rust tests, and clippy. The extraction check needs the
+ownership, canonical Rust bodies, Cargo independence, negative controls, Rust tests, and clippy. The extraction check needs the
 built transpiler; build it with `cmake --build build --target build_rusty_cpp_transpiler`. The DSL check no
 longer does — it still accepts a transpiler path for CMake compatibility, but never runs it.
 
 ```sh
 python3 scripts/tests/test_goal0_standalone.py
 python3 scripts/tests/test_goal0_contracts.py
-python3 scripts/check_facade_shadow.py
-python3 scripts/check_facade_stubs.py
+python3 scripts/rust_source_audit.py
+python3 scripts/check_rust_independence.py
 python3 scripts/check_native_kernels.py
-python3 scripts/tests/test_facade_audit.py
+python3 scripts/tests/test_rust_source_audit.py
+python3 scripts/tests/test_native_kernels.py
+python3 scripts/tests/test_rust_independence.py
 python3 scripts/tests/test_runtime_parity.py
 python3 scripts/extract_srpc_rust.py --check
 bash scripts/srpc_dsl_check.sh
@@ -143,18 +145,20 @@ gate*, not just the standalone script:
 - `scripts/srpc_dsl_check.sh` shells out to `rg` (ripgrep) under `set -euo pipefail`. Without `rg` on
   `PATH` the command substitution exits 127, the script reports `canonical source scan failed` and
   propagates that status — it fails closed rather than reporting zero carriers.
-- `scripts/facade_audit.py` — the shared engine behind both `check_facade_shadow.py` and
-  `check_facade_stubs.py` — builds its `syn` AST scanner with
+- `scripts/rust_source_audit.py` builds its `syn` AST scanner with
   `cargo build --quiet --locked --offline --manifest-path scripts/rust_source_audit/Cargo.toml` and
   `check=True`. `--offline` means the crates in `scripts/rust_source_audit/Cargo.lock` (`syn`, `quote`,
   `proc-macro2`, `serde_json` and their transitive deps) must already be in the local Cargo registry; on a
   cold machine, warm it once with network access before running the gate offline.
 
-The two facade entry points share the `syn` AST audit and reviewed `scripts/facade-adapters.json`
-inventory. Renaming a substitute, moving it into a private method, or making it panic does not excuse
-it. Native source/header changes require review against `scripts/native-kernels.json`. These inventories
-have no automatic approval command. Check test output for skips: missing compiler dependencies can
-skip contract tests and cannot establish acceptance.
+The canonical Rust AST audit rejects missing implementations and pins reviewed constant functions in
+`scripts/canonical-constant-functions.json`. It scans private and nested production bodies too.
+`scripts/check_rust_independence.py` copies only Cargo sources, tests and the C/assembly kernel into a
+fresh tree, then runs Rust tests and doctests with no C++ runtime or compiler on its tool path. Production
+Cargo dependencies and extra workspace packages are rejected. Native source/header changes require
+review against `scripts/native-kernels.json`. These inventories have no automatic approval command.
+Check test output for skips: missing compiler dependencies can skip contract tests and cannot establish
+acceptance.
 
 **Verus** (separate lane, not wired into CMake or ctest):
 
@@ -316,9 +320,9 @@ negative control**: perturb the body, confirm it goes red, revert. A green that 
 
 Layering is `base/` → `misc/` → `reactor/` → `rpc/`, within one flat `srpc` crate.
 `reactor/reactor.rs` imports the pollable contract from `rpc/pollable_proxy.rs`. Its callers use canonical
-`crate::reactor` types and functions; the omitted `rusty-rustc` package contains standard-library,
-C-layout, trait-forwarding, and Rust Future representation adapters only. Scheduling and wake admission
-remain canonical. See [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) for ownership boundaries.
+`crate::reactor` types and functions. Cargo uses the Rust standard library and the reviewed C/assembly
+kernel; no facade package or generated C++ runtime enters that dependency graph. C-layout declarations,
+scheduling and wake admission remain canonical Rust. See [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) for ownership boundaries.
 
 **Request path.** Generated proxy → `Client::request` → `ClientConnection::request` →
 `clientconn_request_via_channel` (circuit-breaker gate → stale-request expiry → offline-queue check →
@@ -360,8 +364,10 @@ connection exists, so it must be called *after* `connect`. `LoadBalancer` is use
 
 `srpc.hpp` and compatibility headers import generated modules. Their include/import ordering matters
 for libc++ module declarations; keep textual includes before named-module imports.
-`misc/serializable_support.hpp` forwards external C++ ADL and erased trait calls. Canonical Rust owns
-serialization algorithms and concrete holders. `base/rustc_markers.hpp` supplies compile-time markers.
+`misc/serializable_support.hpp` supplies C++ ADL and individual STL operations. The exported
+`misc/serializable_adapters.hpp` epilogue supplies erased trait dispatch. Canonical Rust owns byte
+handling, collection loops, errors and concrete holders. Compiler attributes use inert `cfg_attr`
+markers and require no Cargo package or C++ marker header.
 Global C declarations enter generated modules through `module-preambles.toml`, including
 `reactor/srpc_epoll.h` and `reactor/srpc_fiber.h`.
 

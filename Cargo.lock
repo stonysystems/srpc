@@ -229,17 +229,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusty"
-version = "0.0.0"
-dependencies = [
- "rusty-cpp-markers",
-]
-
-[[package]]
-name = "rusty-cpp-markers"
-version = "0.0.0"
-
-[[package]]
 name = "rusty-fork"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -256,7 +245,6 @@ name = "srpc"
 version = "0.0.0"
 dependencies = [
  "proptest",
- "rusty",
 ]
 
 [[package]]

@@ -177,18 +177,6 @@ namespace = "rusty"
 kind = "method"
 callable_signatures = ["const T*()"]
 
-[modules.rusty.symbols.arc_make_default]
-kind = "function_template"
-callable_signatures = ["rusty::Arc<T>()"]
-
-[modules.std]
-cpp_module = "std"
-namespace = "std"
-
-[modules.std.symbols.cout]
-kind = "object"
-callable_signatures = []
-
 [modules.rusty.symbols."os::fd::OwnedFd"]
 kind = "type"
 callable_signatures = []
@@ -196,19 +184,3 @@ callable_signatures = []
 [modules.rusty.symbols."os::fd::OwnedFd::from_raw_fd"]
 kind = "function"
 callable_signatures = ["OwnedFd(int)"]
-
-[modules.rusty.symbols.srpc_arc_default]
-kind = "function_template"
-callable_signatures = ["rusty::Arc<T>()"]
-
-[modules.rusty.symbols.srpc_arc_copy]
-kind = "function_template"
-callable_signatures = ["rusty::Arc<T>(const T&)"]
-
-[modules.rusty.symbols.srpc_holder_proxy]
-kind = "function_template"
-callable_signatures = ["srpc::SerializableProxy(rusty::Arc<T>)"]
-
-[modules.rusty.symbols.srpc_factory_from_callable]
-kind = "function_template"
-callable_signatures = ["rusty::Function<R()>(Callable)"]

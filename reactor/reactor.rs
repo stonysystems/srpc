@@ -45,8 +45,6 @@ use crate::pollable_proxy::{PollableBase, PollableProxy};
 use crate::logging::{log_line, Log};
 use crate::threading as _;
 use crate::debugging::verify_at;
-use cpp::std as cpp_std;
-use rusty as cpp;
 
 pub type SrcFileCStr = &'static str;
 pub type EventTestFn = Option<Box<dyn Fn(i32) -> bool>>;
