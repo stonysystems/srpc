@@ -12,7 +12,7 @@ new directory. It copies no facade, C++ runtime, C++ source or transpiler, and
 runs Cargo with a restricted tool path and `CXX=/bin/false`.
 
 The isolated copy passes 266 Rust tests and two doctests, with one existing layout
-test ignored, plus clippy with warnings denied. The canonical body audit,
+test ignored. The canonical body audit,
 native source audit, native ABI audit and 47 negative controls also pass.
 The regular workspace tests, doctests and clippy also pass on the integrated
 tree. Complete generated-C++ validation is still in progress.
@@ -98,13 +98,20 @@ Fresh combined objects also establish the reviewed reactor change. Standard wake
 and job handling add four helpers; two private, non-exported thread-ID conversion
 functions disappear. Their only callers were inside worker creation and shutdown,
 which now store kernel thread IDs directly. No consumer called those functions.
+The server's private, non-exported `no_reply_writer` also disappears: its four
+internal callers now use an absent callback. Public reply signatures are preserved.
 The load-balancer traits add eight RTTI/vtable/destructor symbols. The exact
 inventories record these changes and the serialization helper addition.
 
-Combined C++ compilation has isolated the remaining errors to nullable callback
-alias and result-type inference in the transpiler. The fixes retain standard Rust
-source and the existing C++ callback representation. Complete C++ and sanitizer
-acceptance remains pending.
+Combined C++ compilation now passes owner and result-type inference checks.
+The two remaining callback construction errors in `fiber_channel` and `server`
+are fixed with explicit standard type paths and imported callback aliases.
+These let the compiler prove the aliases' identities in the reactor module's
+macro-containing scope. Both providers compile, and Rust tests and clippy pass.
+The full build now compiles all providers except `client`, where three callback
+expressions and a missing threading import remain. Complete C++ and sanitizer
+acceptance remains pending. All 36 compiled production providers match the
+reviewed unique and raw symbol inventories.
 
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).

@@ -150,14 +150,16 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # In the same change log_line/log_sink_write take std::string_view and the
 # string-returning logging/misc functions return rusty::String (row
 # replacements, count-neutral).
-# 2045 -> 2056: facade retirement adds eight load-balancer trait RTTI/vtable/
+# 2045 -> 2055: facade retirement adds eight load-balancer trait RTTI/vtable/
 # destructor symbols, serialize_bytes, and four canonical wake/job helpers.
-# It removes only thread_id_to_u64 and u64_to_thread_id, private non-exported
-# reactor functions with no callers outside pollthread_create/shutdown. Workers
-# now store native gettid values directly. No C++ consumer entry point is removed.
+# It removes private non-exported thread_id_to_u64, u64_to_thread_id and
+# no_reply_writer. Their only callers were inside the reactor/server providers;
+# workers now store native gettid values and absent reply writers use None.
+# No C++ consumer entry point is removed.
 # Fresh objects: load_balancer 14 unique/19 raw, serializable 597/734,
-# reactor 365/386. The four extra raw load-balancer entries are destructor aliases.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2056
+# reactor 365/386, server 85/97. The four extra raw load-balancer entries are
+# destructor aliases.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2055
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: surviving historical additions plus current canonical helpers.
@@ -731,9 +733,7 @@ EXPECTED_IMPORTS = {
         "srpc.pollable_proxy",
         "srpc.reactor",
     ],
-    # MEASURED from build/goal0-crate-cpp/srpc.reactor.cppm, not declared:
-    # the emitter writes `import rusty;` first and then the srpc.* set
-    # alphabetically, with `import std;` last.
+    # Measured ordered private imports from the generated reactor provider.
     "srpc.reactor": [
         'vec_port.vec',
         'rc_port',
@@ -748,18 +748,16 @@ EXPECTED_IMPORTS = {
         'srpc.threading',
         'srpc.debugging',
     ],
-    # MEASURED from build/goal0-crate-cpp/srpc.server.cppm, not declared: the
-    # emitter writes `import rusty;` first and then the srpc.* set
-    # alphabetically. srpc.server needs no `import std;`.
+    # The explicit FiberFn import moves reactor before serializable.
     "srpc.server": [
         'vec_port.vec',
         'std_port',
         'srpc.basetypes',
         'srpc.channel',
         'srpc.misc',
+        'srpc.reactor',
         'srpc.serializable',
         'srpc.tcp_channel',
-        'srpc.reactor',
         'srpc.logging',
         'srpc.debugging',
         'srpc.internal_protocol',
@@ -3749,7 +3747,6 @@ ABI_SPECS = {
             ('T', 'srpc::Service@srpc.server::~Service()'),
             ('T', 'srpc::make_empty_request_box@srpc.server()'),
             ('T', 'srpc::make_service_proxy_from_box@srpc.server(rusty::Box<srpc::Service@srpc.server, rusty::alloc::Global>)'),
-            ('T', 'srpc::no_reply_writer@srpc.server()'),
             ('T', 'srpc::request_fill_body@srpc.server(srpc::Request@srpc.server&, std::__1::span<unsigned char const, 18446744073709551615ul>)'),
             ('T', 'srpc::sconn_decode_request_and_dispatch@srpc.server(srpc::ServerConnection@srpc.server const&, unsigned char const*, unsigned long)'),
             ('T', 'srpc::sconn_dispatch_in_fiber@srpc.server(rusty::Arc<srpc::RpcServiceContext@srpc.server>, unsigned long, int, rusty::Box<srpc::Request@srpc.server, rusty::alloc::Global>, rusty::sync::Weak<srpc::ServerConnection@srpc.server>)'),

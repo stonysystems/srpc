@@ -47,6 +47,8 @@ use crate::threading as _;
 use crate::debugging::verify_at;
 
 pub type SrcFileCStr = &'static str;
+// Explicit standard identities let the C++ emitter prove imported callback
+// aliases despite this module's thread_local! declarations.
 pub type EventTestFn = ::core::option::Option<
     ::std::boxed::Box<dyn ::core::ops::Fn(::core::primitive::i32) -> ::core::primitive::bool>,
 >;

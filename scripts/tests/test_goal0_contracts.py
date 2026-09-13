@@ -86,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2056
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2055
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2056)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2055)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -113,6 +113,7 @@ class GateStaticContractTests(unittest.TestCase):
             "srpc.load_balancer": (14, 19),
             "srpc.serializable": (597, 734),
             "srpc.reactor": (365, 386),
+            "srpc.server": (85, 97),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
             "srpc.channel": (14, 21),
@@ -201,7 +202,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2056)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2055)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -324,6 +325,7 @@ class GateContractTests(unittest.TestCase):
             "srpc.load_balancer": (14, 19),
             "srpc.serializable": (597, 734),
             "srpc.reactor": (365, 386),
+            "srpc.server": (85, 97),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
             "srpc.serializable_envelope": (0, 1),
