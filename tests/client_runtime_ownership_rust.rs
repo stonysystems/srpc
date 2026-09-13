@@ -85,11 +85,11 @@ fn server_restart_callback_can_replace_itself() {
     let connection = client.connection().unwrap();
     let weak = Arc::downgrade(&connection);
     let (sender, receiver) = mpsc::channel();
-    connection.set_on_server_restart(OnServerRestartCallbackFn::from_callable(move |old, new| {
+    connection.set_on_server_restart(Some(Box::new(move |old, new| {
         let connection = weak.upgrade().unwrap();
         connection.set_on_server_restart(OnServerRestartCallbackFn::default());
         sender.send((old, new)).unwrap();
-    }));
+    })));
     let decoding = connection.clone();
     let worker = std::thread::spawn(move || {
         // Canonical variable integers 0, 0, id encode xid, error, server id.
@@ -208,7 +208,7 @@ fn retired_direct_channel_close_callback_preserves_the_reconnected_request() {
     assert!(old_channel.dropped.load(Ordering::Acquire));
 
     let (completed, completion) = mpsc::channel();
-    let callback = srpc::client::OnReconnectCompleteCallbackFn::from_callable(Box::new(move |ok| {
+    let callback: srpc::client::OnReconnectCompleteCallbackFn = Some(Box::new(move |ok| {
         completed.send(ok).unwrap();
     }));
     assert_eq!(client.reconnect(callback), 0);
@@ -304,7 +304,7 @@ fn close_completion_can_reconnect_without_draining_the_new_future() {
     let old_future = client.request(RPC, &FutureAttr::default(), |_| {}).unwrap();
     let callback_connection = connection.clone();
     let (completed, completion) = mpsc::channel();
-    connection.request_async(RPC, |_| {}, AsyncReplyCallback::from_callable(Box::new(move |error, _, _| {
+    connection.request_async(RPC, |_| {}, Some(Box::new(move |error, _, _| {
         assert_eq!(error, srpc::client::CLIENT_ERR_NOT_CONNECTED);
         assert_eq!(callback_connection.reconnect(Default::default()), 0);
         let new_future = srpc::client::clientconn_request_via_channel(
@@ -341,14 +341,14 @@ fn admitted_frame_finishes_its_old_future_after_a_restart_callback_reconnects() 
     let old_future = client.request(RPC, &FutureAttr::default(), |_| {}).unwrap();
     let reconnecting = connection.clone();
     let (completed, completion) = mpsc::channel();
-    connection.set_on_server_restart(OnServerRestartCallbackFn::from_callable(move |before, after| {
+    connection.set_on_server_restart(Some(Box::new(move |before, after| {
         assert_eq!((before, after), (1, 2));
         reconnecting.close();
         assert_eq!(reconnecting.reconnect(Default::default()), 0);
         let replacement = srpc::client::clientconn_request_via_channel(
             &reconnecting, RPC, &FutureAttr::default(), |_| {}).unwrap();
         completed.send(replacement).unwrap();
-    }));
+    })));
     let reply = reply_to_last_request(&old, 2);
     let worker = std::thread::spawn(move || {
         frame_callback.callable()(&ChannelFrame { payload: reply.as_ptr(), size: reply.len() });
@@ -736,9 +736,9 @@ fn retired_restart_callback_capture_can_replace_the_callback_when_dropped() {
     let connection = client.connection().unwrap();
     let (completed, completion) = mpsc::channel();
     let capture = ReenterRestartOnDrop { connection: Arc::downgrade(&connection), completed };
-    connection.set_on_server_restart(OnServerRestartCallbackFn::from_callable(move |_, _| {
+    connection.set_on_server_restart(Some(Box::new(move |_, _| {
         let _capture = &capture;
-    }));
+    })));
     let replacing = connection.clone();
     let worker = std::thread::spawn(move || replacing.set_on_server_restart(Default::default()));
     completion.recv_timeout(Duration::from_secs(3))
@@ -843,7 +843,7 @@ fn rejected_async_callback_capture_can_reenter_when_dropped() {
     let (finished, observed) = mpsc::channel();
     let capture = ReenterOnDrop { connection: Arc::downgrade(&connection), finished };
     let worker = std::thread::spawn(move || {
-        let callback = AsyncReplyCallback::from_callable(Box::new(move |_, _, _| {
+        let callback: AsyncReplyCallback = Some(Box::new(move |_, _, _| {
             let _owned_capture = &capture;
             panic!("rejected sends do not invoke the reply callback");
         }));

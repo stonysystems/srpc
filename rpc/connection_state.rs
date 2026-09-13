@@ -29,7 +29,7 @@ pub fn connection_state_to_string(state: ConnectionState) -> &'static str {
     }
 }
 
-pub type StateChangeCallback = rusty::Function<dyn Fn(ConnectionState, ConnectionState) + Send + Sync>;
+pub type StateChangeCallback = Option<Box<dyn Fn(ConnectionState, ConnectionState) + Send + Sync>>;
 
 #[repr(C)]
 pub struct ConnectionStateMachine {
@@ -65,8 +65,8 @@ impl ConnectionStateMachine {
         }
         self.state_field.set(new_state);
         drop(transition);
-        if !self.on_state_change.is_empty() {
-            (self.on_state_change)(current, new_state);
+        if let Some(callback) = self.on_state_change.as_ref() {
+            callback(current, new_state);
         }
         true
     }
@@ -76,8 +76,8 @@ impl ConnectionStateMachine {
         let current: ConnectionState = self.state_field.get();
         self.state_field.set(new_state);
         drop(transition);
-        if !self.on_state_change.is_empty() {
-            (self.on_state_change)(current, new_state);
+        if let Some(callback) = self.on_state_change.as_ref() {
+            callback(current, new_state);
         }
     }
 

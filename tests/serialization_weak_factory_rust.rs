@@ -1,6 +1,6 @@
 use srpc::serializable::{
     BinaryReadArchive, BinaryWriteArchive, BufferSource, SerializablePayload, SerializableRegistry,
-    SerializableRegistryFactory, make_serializable_proxy, make_source_proxy_buffer,
+    make_serializable_proxy, make_source_proxy_buffer,
     serializable_registry_register_factory,
 };
 use std::sync::{Arc, Mutex, Weak};
@@ -25,7 +25,7 @@ fn factory_retaining_weak_payload_cannot_open_a_mutation_window() {
     let factory_retained = retained.clone();
     serializable_registry_register_factory(
         196601,
-        SerializableRegistryFactory::from_callable(move || {
+        Box::new(move || {
             let payload = Arc::new(Payload { value: 7 });
             *factory_retained.lock().unwrap() = Some(Arc::downgrade(&payload));
             make_serializable_proxy(payload)

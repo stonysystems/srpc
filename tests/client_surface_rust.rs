@@ -84,7 +84,7 @@ fn request_async_delivers_the_reply_to_the_callback() {
     // request call and a plain shared cell can observe it.
     let got = Arc::new(AtomicI64::new(0));
     let got_in = got.clone();
-    let on_reply = srpc::client::AsyncReplyCallback::from_callable(Box::new(
+    let on_reply: srpc::client::AsyncReplyCallback = Some(Box::new(
         move |err: i32, payload: *const u8, size: usize| {
             assert_eq!(err, 0);
             // SAFETY: the callback contract borrows `size` bytes at `payload`

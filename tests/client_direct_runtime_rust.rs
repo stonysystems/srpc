@@ -70,13 +70,13 @@ fn inline_reply_callback_can_send_again_and_close_the_client_connection() {
     let callback_connection = connection.clone();
     let (done_tx, done_rx) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let callback =
-            AsyncReplyCallback::from_callable(Box::new(move |error, _payload, _size| {
+        let callback: AsyncReplyCallback =
+            Some(Box::new(move |error, _payload, _size| {
                 assert_eq!(error, 0);
                 let nested = callback_connection.request_async(
                     RPC,
                     |_| {},
-                    AsyncReplyCallback::from_callable(Box::new(|nested_error, _, _| {
+                    Some(Box::new(|nested_error, _, _| {
                         assert_eq!(nested_error, 0)
                     })),
                 );
@@ -117,7 +117,7 @@ fn concurrent_close_detaches_the_slot_while_an_inflight_send_owns_the_channel() 
         let result = sending.request_async(
             RPC,
             |_| {},
-            AsyncReplyCallback::from_callable(Box::new(|error, _, _| {
+            Some(Box::new(|error, _, _| {
                 assert_eq!(error, CLIENT_ERR_NOT_CONNECTED)
             })),
         );

@@ -92,14 +92,14 @@ use crate::connection_state::{connection_state_to_string, ConnectionState, Conne
 use crate::debugging::verify_failed;
 use crate::errors::RpcError;
 use crate::fiber_channel::{FiberChannel, OwnedFrame};
-use crate::heartbeat::{HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback};
+use crate::heartbeat::{HeartbeatConfig, HeartbeatManager};
 use crate::load_balancer::{LoadBalancer, LoadBalancerState, LoadBalancingStrategy};
 use crate::logging::{log_line, Log};
 use crate::misc::OneTimeJob;
 use crate::reconnect_policy::{ReconnectPolicy};
 use crate::request_options::{RequestOptions, TimeoutType};
 use crate::request_queue::{
-    OverflowStrategy, QueuedRequest, QueuedRequestCallback, RequestQueue, RequestQueueConfig,
+    OverflowStrategy, QueuedRequest, RequestQueue, RequestQueueConfig,
     kRequestQueueExpiredError, rq_invoke_callback_safely,
 };
 use crate::serializable::{
@@ -113,9 +113,9 @@ pub type PollThread = crate::reactor::PollThread;
 
 pub type WeakClientConnection = Weak<ClientConnection>;
 pub type FutureResult = Result<Arc<Future>, i32>;
-pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize) + Send>;
-pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool) + Send>;
-pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64) + Send>;
+pub type AsyncReplyCallback = Option<Box<dyn FnMut(i32, *const u8, usize) + Send>>;
+pub type OnReconnectCompleteCallbackFn = Option<Box<dyn FnMut(bool) + Send>>;
+pub type OnServerRestartCallbackFn = Option<Box<dyn FnMut(u64, u64) + Send>>;
 pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
 pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &str) + Send + Sync>;
 pub type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
@@ -456,7 +456,7 @@ impl PoolConfig {
     }
 }
 
-pub type FutureCallback = LegacyCallbackWrapper<rusty::Function<dyn Fn(Arc<Future>) + Send + Sync>>;
+pub type FutureCallback = LegacyCallbackWrapper<Box<dyn Fn(Arc<Future>) + Send + Sync>>;
 
 pub struct FutureAttr {
     callback: FutureCallback,
@@ -489,12 +489,12 @@ impl Default for FutureAttr {
 pub struct FutureState {
     ready: bool,
     timed_out: bool,
-    completion_callbacks: Vec<rusty::Function<dyn FnMut() + Send>>,
+    completion_callbacks: Vec<Option<Box<dyn FnMut() + Send>>>,
 }
 
 impl FutureState {
     fn new() -> FutureState {
-        FutureState { ready: false, timed_out: false, completion_callbacks: Vec::<rusty::Function<dyn FnMut() + Send>>::new() }
+        FutureState { ready: false, timed_out: false, completion_callbacks: Vec::<Option<Box<dyn FnMut() + Send>>>::new() }
     }
 }
 
@@ -587,7 +587,7 @@ impl Future {
         guard.timed_out
     }
 
-    fn add_completion_callback(&self, callback: rusty::Function<dyn FnMut() + Send>) -> bool {
+    fn add_completion_callback(&self, callback: Option<Box<dyn FnMut() + Send>>) -> bool {
         let mut guard = self.state_.lock().unwrap();
         if guard.ready || guard.timed_out {
             return false;
@@ -648,7 +648,7 @@ impl Future {
 
     fn notify_ready(&self, self_arc: Arc<Future>) {
         let should_callback: bool;
-        let mut completion_callbacks: Vec<rusty::Function<dyn FnMut() + Send>>;
+        let mut completion_callbacks: Vec<Option<Box<dyn FnMut() + Send>>>;
         {
             let mut guard = self.state_.lock().unwrap();
             if !guard.timed_out {
@@ -660,8 +660,8 @@ impl Future {
         // Notify waiters after dropping the lock.
         self.ready_cond_.notify_all();
         for callback in &mut completion_callbacks {
-            if !callback.is_empty() {
-                callback();
+            if callback.is_some() {
+                callback.as_mut().unwrap()();
             }
         }
         if should_callback && self.attr_.callback.has_value() {
@@ -1178,7 +1178,7 @@ impl ClientConnection {
         }
         for mut callback in batch.callbacks {
             self.metrics_.record_request_dropped();
-            callback(CLIENT_ERR_NOT_CONNECTED, core::ptr::null(), 0);
+            callback.as_mut().unwrap()(CLIENT_ERR_NOT_CONNECTED, core::ptr::null(), 0);
         }
         for (_xid, future) in batch.futures {
             self.metrics_.record_request_dropped();
@@ -1290,7 +1290,7 @@ impl ClientConnection {
         let weak_conn: WeakClientConnection = self.weak_self_.clone();
         // Provider alias, not an inline turbofish — see `qr.callback` below.
         self.heartbeat_manager_.set_on_timeout(
-            HeartbeatTimeoutCallback::from_callable(move || {
+            Some(Box::new(move || {
             let conn_opt = weak_conn.upgrade();
             if conn_opt.is_none() {
                 return;
@@ -1301,7 +1301,7 @@ impl ClientConnection {
             }
             client_log_line(Log::WARN, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: heartbeat timeout for ", &(*conn).host(), ""));
             (*conn).handle_error();
-            }),
+            })),
         );
     }
     pub fn heartbeat_config(&self) -> HeartbeatConfig { self.heartbeat_manager_.config() }
@@ -1465,8 +1465,8 @@ impl ClientConnection {
             client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text_u64_pair("Server restart detected: old_id=", old_id, " new_id=", new_id, ""));
             let callback: Arc<Mutex<OnServerRestartCallbackFn>> = self.on_server_restart_.lock().unwrap().clone();
             let mut cb_ref = callback.lock().unwrap();
-            if !cb_ref.is_empty() {
-                (*cb_ref)(old_id, new_id);
+            if cb_ref.is_some() {
+                cb_ref.as_mut().unwrap()(old_id, new_id);
             }
             return true;
         }
@@ -1722,8 +1722,8 @@ impl Client {
     pub fn reconnect(&self, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
         let guard = self.connection();
         if guard.is_none() {
-            if !on_complete.is_empty() {
-                on_complete(false);
+            if let Some(callback) = on_complete.as_mut() {
+                callback(false);
             }
             return CLIENT_ERR_NOT_CONNECTED;
         }
@@ -2059,8 +2059,8 @@ pub fn clientconn_monotonic_ms_now() -> u64 { Time::now(true) / 1000 }
 #[allow(clippy::unnecessary_cast)]
 pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconnectCompleteCallbackFn) -> i32 {
     let mut complete_callback = |result: i32| -> i32 {
-        if !on_complete.is_empty() {
-            on_complete(result == 0);
+        if let Some(callback) = on_complete.as_mut() {
+            callback(result == 0);
         }
         result
     };
@@ -2259,7 +2259,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     request.payload = body.bytes;
     let queued: Arc<Mutex<HashMap<i64, Arc<Future>>>> = conn.queued_fu_.clone();
     let weak_connection = conn.weak_self_.clone();
-    request.callback = QueuedRequestCallback::from_callable(move |error: i32| {
+    request.callback = Some(Box::new(move |error: i32| {
         let completed: Option<Arc<Future>> = queued.lock().unwrap().remove(&xid);
         if let Some(future) = completed {
             if let Some(connection) = weak_connection.upgrade() {
@@ -2269,7 +2269,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
             future.error_code_.set(error);
             future.notify_ready(future.clone());
         }
-    });
+    }));
     let admission = {
         let lifecycle = conn.lifecycle_.lock().unwrap();
         if lifecycle.generation != generation {
@@ -2979,12 +2979,12 @@ fn clientconn_decode_response_for_binding(conn: &ClientConnection, generation: u
     // frame removing that replacement's future or updating its heartbeat.
     if let Some(restart) = restart {
         let mut handler = restart.lock().unwrap();
-        if !handler.is_empty() {
-            (*handler)(old_server_id, new_server_id);
+        if handler.is_some() {
+            handler.as_mut().unwrap()(old_server_id, new_server_id);
         }
     }
     if let Some(mut callback) = callback {
-        callback(error.get(), unsafe { bytes.add(header_size) }, payload_size);
+        callback.as_mut().unwrap()(error.get(), unsafe { bytes.add(header_size) }, payload_size);
     }
     if let Some(future) = future {
         future.notify_ready(future.clone());

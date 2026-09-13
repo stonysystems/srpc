@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use srpc::heartbeat::{
-    heartbeat_time_us, HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback,
+    HeartbeatTimeoutCallback,     heartbeat_time_us, HeartbeatConfig, HeartbeatManager,
 };
 
 static NOW_US: AtomicU64 = AtomicU64::new(0);
@@ -20,7 +20,7 @@ fn set_now(value: u64) {
 }
 
 #[test]
-fn layouts_and_public_callback_type_match_cpp() {
+fn config_layout_and_callback_thread_traits_are_stable() {
     // Callback invocation is serialized by the manager's mutex.
     macro_rules! assert_not_auto_trait {
         ($type:ty, $auto_trait:ident) => {{
@@ -45,8 +45,6 @@ fn layouts_and_public_callback_type_match_cpp() {
     assert_eq!(offset_of!(HeartbeatConfig, timeout_ms), 8);
     assert_eq!(offset_of!(HeartbeatConfig, max_missed), 12);
 
-    assert_eq!(size_of::<HeartbeatTimeoutCallback>(), 48);
-    assert_eq!(align_of::<HeartbeatTimeoutCallback>(), 16);
 }
 
 #[test]
@@ -101,7 +99,7 @@ fn empty_callback_timeout_is_safe_and_wrapping_elapsed_is_exact() {
         max_missed: 1,
     };
     let manager = HeartbeatManager::new(&config);
-    assert!(manager.on_timeout.get().lock().unwrap().is_empty());
+    assert!(manager.on_timeout.get().lock().unwrap().is_none());
 
     set_now(u64::MAX - 5);
     manager.on_heartbeat_sent_at(test_now());
@@ -143,9 +141,9 @@ fn send_pong_missed_timeout_callback_and_reset_are_exact() {
     let manager = HeartbeatManager::new(&config);
     let calls = Rc::new(Cell::new(0));
     let callback_calls = Rc::clone(&calls);
-    manager.set_on_timeout(HeartbeatTimeoutCallback::from_callable(move || {
+    manager.set_on_timeout(Some(Box::new(move || {
         callback_calls.set(callback_calls.get() + 1);
-    }));
+    })));
 
     set_now(1_000_000);
     assert!(heartbeat_time_us() > 0);

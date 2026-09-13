@@ -141,9 +141,9 @@ impl FiberChannel {
         let event: Arc<crate::reactor::IntEvent> = crate::reactor::create_sp_int_event(1_i32);
         let queue: Arc<Mutex<LegacyStdDeque<OwnedFrame>>> = self.queue_.clone();
         let closed: Arc<AtomicBool> = self.closed_.clone();
-        let predicate = crate::reactor::EventTestFn::from_callable(move |_value| {
+        let predicate: crate::reactor::EventTestFn = Some(Box::new(move |_value| {
             closed.load(Ordering::Acquire) || !queue.lock().unwrap().is_empty()
-        });
+        }));
         // Only the owner reactor touches the event. Transport callbacks
         // publish queue/closed state through the mutex and atomic latch.
         *event.state_.test_.borrow_mut() = predicate;

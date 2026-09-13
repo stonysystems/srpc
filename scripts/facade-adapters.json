@@ -162,78 +162,6 @@
       "category": "standard",
       "sha256": "be7f7cccdc849eaa45a099ef6e9dd460b6d0ee83fb759b881b2de837e1ef8c4d"
     },
-    "impl:Function < F > as Default < F : ? Sized >": {
-      "category": "standard",
-      "sha256": "7150815713f218f19e1460c5b2a61d127d7b268a32ac058b3b088bb04b79aa75"
-    },
-    "impl:Function < F > as Deref < F : ? Sized >": {
-      "category": "standard",
-      "sha256": "37a079a491f27e7dd39133344fddec687c37bac22d90a23cdffcbf4a2293f53f"
-    },
-    "impl:Function < F > as DerefMut < F : ? Sized >": {
-      "category": "standard",
-      "sha256": "2699549838aa0a862e680e408c8ea89cc0843339e517e9da08f577171cfd7a49"
-    },
-    "impl:Function < F > as inherent < F : ? Sized >": {
-      "category": "standard",
-      "sha256": "bdd22b1c7d1f57ecc4a86b00e52322955e73d3a9cf8e495068f6ee11b911c39f"
-    },
-    "impl:Function < dyn Fn () -> R + Send > as inherent < R : 'static >": {
-      "category": "standard",
-      "sha256": "e763d7edff1b59a3e7583c03a2dc892b22efe0b9e71f914c429f5c15fd0c3a1b"
-    },
-    "impl:Function < dyn Fn (A , B) + Send + Sync > as inherent < A : 'static , B : 'static >": {
-      "category": "standard",
-      "sha256": "7d5c4238f7bc7a4fa97f92cf19ad41608b2a5dddeca1ef497e82349699598164"
-    },
-    "impl:Function < dyn Fn (A , B) > as inherent < A : 'static , B : 'static >": {
-      "category": "standard",
-      "sha256": "477c37c573b950b70dbdf0912d61eb2df6ee608888f689b171e35bcb794d3eef"
-    },
-    "impl:Function < dyn Fn (A) + Send + Sync > as inherent < A : 'static >": {
-      "category": "standard",
-      "sha256": "52a3287f55a84cba125e11ed41aba53e8a298f5957608e3cc10a1fa1e6243494"
-    },
-    "impl:Function < dyn Fn (A) -> R > as inherent < A : 'static , R : 'static >": {
-      "category": "standard",
-      "sha256": "87a39dcad1bfe164e27929f21dfe54ead33ab2159476af5a2041482de5066081"
-    },
-    "impl:Function < dyn FnMut (& mut A) -> R > as inherent < A : ? Sized + 'static , R : 'static >": {
-      "category": "standard",
-      "sha256": "40330f9332332843f76515421f984cb36fa4d4ff27a1317ce833d9062f40f26c"
-    },
-    "impl:Function < dyn FnMut () -> R + Send > as inherent < R : 'static >": {
-      "category": "standard",
-      "sha256": "4aadfd3e7519b0071584b1247284ed34a956b5ed606b805bb98d67d6c0d5202f"
-    },
-    "impl:Function < dyn FnMut () > as inherent ": {
-      "category": "standard",
-      "sha256": "01279590b1a9dfd64b054bfc0dd20aa164456185251700265395a9460a295cf6"
-    },
-    "impl:Function < dyn FnMut (bool) + Send > as inherent ": {
-      "category": "standard",
-      "sha256": "ae1e3b2696c0fd5a0dcbf3df69cad8e67cdeaf65c1c8db18708c35f756fbfc31"
-    },
-    "impl:Function < dyn FnMut (i32 , * const u8 , usize) + Send > as inherent ": {
-      "category": "standard",
-      "sha256": "9fd4010fa2961d2ab3b71c59614ca501b6bcb65a1f19531f0b60581047f881bb"
-    },
-    "impl:Function < dyn FnMut (i32 , * const u8 , usize) > as inherent ": {
-      "category": "standard",
-      "sha256": "ed57f604b2071b81fb353a5ab8a406088d7a531f79a01c1487f5757c19d97ce0"
-    },
-    "impl:Function < dyn FnMut (i32) + Send > as inherent ": {
-      "category": "standard",
-      "sha256": "ef34cfe8e72027c7766e03dff5eb00d815b2687597fc0078ffc585d996a5d083"
-    },
-    "impl:Function < dyn FnMut (i32) > as inherent ": {
-      "category": "standard",
-      "sha256": "b024a207513ce9193ffdef9c8702265cc0df3c9d92da7b9c499dd3ae8ae5bd20"
-    },
-    "impl:Function < dyn FnMut (u64 , u64) + Send > as inherent ": {
-      "category": "standard",
-      "sha256": "a49cb2168ff49139cd031c94ff3f183346f0e0d90641478a0b6c2d4daa267d29"
-    },
     "impl:ReactorJobSet < T > as Default < T >": {
       "category": "standard",
       "sha256": "0ae1f9bcf1517192fb2eb001255bb5e3e0b701d56c91cbd1c27b59056c62eae3"
@@ -413,10 +341,6 @@
     "struct:CFile": {
       "category": "c-layout",
       "sha256": "5645067ce8f883a428c206c8f78ebdb045c811adf4051a0b7ed4c166402359fa"
-    },
-    "struct:Function": {
-      "category": "standard",
-      "sha256": "5f03685d453cdceab2f825fc8cda31949ae9bc2624130e07f6197818c0731aad"
     },
     "struct:PthreadCond": {
       "category": "c-layout",
@@ -614,10 +538,6 @@
       "category": "import",
       "sha256": "95f2976263b3260803b197b1131896a0989754d9bea0a5cc021fecfa7d02b0ca"
     },
-    "use:std :: ops :: { Deref , DerefMut , Index }": {
-      "category": "import",
-      "sha256": "94c4581c25e1045aa64160ca3efd352954abb22a0de1a94712644bcac2e90755"
-    },
     "use:std :: option :: Option": {
       "category": "import",
       "sha256": "d060b647c09a10b38f280513d55d527663e93a15c8e7205a1e9dd5f717f87d0d"
@@ -653,6 +573,10 @@
     "use:task::super :: *": {
       "category": "import",
       "sha256": "5d9f812e6d6973f484fcf6f9205e773ecbb4503112229f85e702d7904367395b"
+    },
+    "use:std :: ops :: { Deref , Index }": {
+      "category": "import",
+      "sha256": "51390f38b7affece1e760dc707c3a6e56411a5d06b10955891ea5b88ff43e1c6"
     }
   }
 }

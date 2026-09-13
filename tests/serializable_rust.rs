@@ -203,7 +203,7 @@ fn proxy_factories_and_registry_preserve_payloads() {
     let mut calls = 0;
     srpc::serializable::serializable_registry_register_factory(
         62,
-        srpc::serializable::SerializableRegistryFactory::from_callable(move || {
+        Box::new(move || {
             calls += 1;
             srpc::serializable::make_serializable_proxy(std::sync::Arc::new(Payload {
                 value: calls,

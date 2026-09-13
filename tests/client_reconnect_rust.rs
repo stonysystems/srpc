@@ -121,7 +121,7 @@ fn explicit_reconnect_recovers_after_the_server_returns() {
     // Reconnecting while CONNECTED is refused by contract, and the completion
     // callback still fires with `false`.
     let (tx0, rx0) = mpsc::channel::<bool>();
-    let refused_cb = srpc::client::OnReconnectCompleteCallbackFn::from_callable(Box::new(
+    let refused_cb: srpc::client::OnReconnectCompleteCallbackFn = Some(Box::new(
         move |ok: bool| {
             let _ = tx0.send(ok);
         },
@@ -161,7 +161,7 @@ fn explicit_reconnect_recovers_after_the_server_returns() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let ok = loop {
         let (tx, rx) = mpsc::channel::<bool>();
-        let on_complete = srpc::client::OnReconnectCompleteCallbackFn::from_callable(Box::new(
+        let on_complete: srpc::client::OnReconnectCompleteCallbackFn = Some(Box::new(
             move |completed: bool| {
                 let _ = tx.send(completed);
             },

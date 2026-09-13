@@ -45,10 +45,10 @@ use cpp::std as cpp_std;
 use rusty as cpp;
 
 pub type SrcFileCStr = &'static str;
-pub type EventTestFn = rusty::Function<dyn Fn(i32) -> bool>;
-pub type FiberFn = rusty::Function<dyn FnMut()>;
-pub type FiberTaskFn = rusty::Function<dyn FnMut(&mut fiber_yield_t)>;
-pub type StacklessPollFn = rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>;
+pub type EventTestFn = Option<Box<dyn Fn(i32) -> bool>>;
+pub type FiberFn = Option<Box<dyn FnMut()>>;
+pub type FiberTaskFn = Option<Box<dyn FnMut(&mut fiber_yield_t)>>;
+pub type StacklessPollFn = Option<Box<dyn FnMut(&mut rusty::Context) -> bool>>;
 pub type TaskVoid = rusty::Task<()>;
 pub type PollCmdReceiver = std::sync::mpsc::Receiver<PollCommand>;
 pub type FdPollableMap = HashMap<i32, PollableProxy>;
@@ -59,7 +59,7 @@ pub type PollJoinSlot = std::sync::Mutex<Option<rusty::thread::JoinHandle<()>>>;
 // The historical callback ABI is Vec<std::pair<u16, i64>>, not a Rust tuple.
 // Use the checked facade that maps exactly to std::pair in generated C++.
 pub type QuorumDanglingVec = Vec<rusty::StdPair<u16, i64>>;
-pub type QuorumFinalizeFn = rusty::Function<dyn FnMut(&mut QuorumDanglingVec) -> bool>;
+pub type QuorumFinalizeFn = Option<Box<dyn FnMut(&mut QuorumDanglingVec) -> bool>>;
 pub type StacklessProfileCountU64 = std::sync::atomic::AtomicU64;
 pub type StacklessProfileCountUsize = std::sync::atomic::AtomicUsize;
 // rustc models C `char` as an i8 on the supported Unix targets, while the
@@ -434,8 +434,8 @@ fn int_event_set(ev: &IntEvent, n: i32) -> i32 {
 
 fn int_event_is_ready(ev: &IntEvent) -> bool {
     let guard = ev.state_.test_.borrow();
-    if !guard.is_empty() {
-        return (*guard)(ev.value_.get());
+    if guard.is_some() {
+        return guard.as_ref().unwrap()(ev.value_.get());
     }
     ev.value_.get() >= ev.target_.get()
 }
@@ -867,7 +867,7 @@ impl Fiber {
     where
         Func: FnMut() + 'static,
     {
-        Fiber::create_run_impl(FiberFn::from_callable(func), "", 0i64)
+        Fiber::create_run_impl(Some(Box::new(func)), "", 0i64)
     }
 
     pub fn create_run_impl(func: FiberFn, file: SrcFileCStr, line: i64) -> Rc<Fiber> {
@@ -904,7 +904,7 @@ fn fiber_registry_key(fiber: &Rc<Fiber>) -> usize {
 pub struct StacklessTaskEntry {
     pub active: bool,
     pub queued: bool,
-    pub poll_once: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>,
+    pub poll_once: StacklessPollFn,
 }
 
 const STACKLESS_UNREGISTERED_SLOT: usize = usize::MAX;
@@ -1557,7 +1557,7 @@ impl Reactor {
         });
         reactor_prune_hwm_th_.with(|hwm| hwm.set(guard.len() * 2usize + 64usize));
     }
-    pub fn create_run_fiber(&self, func: rusty::Function<dyn FnMut()>) -> Rc<Fiber> {
+    pub fn create_run_fiber(&self, func: Option<Box<dyn FnMut()>>) -> Rc<Fiber> {
         reactor_create_run_fiber_impl(self, func)
     }
     pub fn continue_fiber(&self, fiber: &Rc<Fiber>) {
@@ -1625,7 +1625,7 @@ impl Reactor {
         // Fixes fibers not being recycled when they don't finish immediately.
         if reusing_fiber() {
             fiber.status_.set(FiberStatus::RECYCLED);
-            let empty_fn: rusty::Function<dyn FnMut()> = Default::default();
+            let empty_fn: Option<Box<dyn FnMut()>> = Default::default();
             *fiber.func_.borrow_mut() = empty_fn;
             self.n_idle_fibers_.set(self.n_idle_fibers_.get() + 1i64);
             self.available_fibers_.borrow_mut().push(fiber.clone());
@@ -1659,7 +1659,7 @@ impl Reactor {
         self.ready_stackless_tasks_.borrow_mut().push_back(idx);
     }
 
-    pub fn register_stackless_poller(&self, poller: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>) -> usize {
+    pub fn register_stackless_poller(&self, poller: StacklessPollFn) -> usize {
         let ingress = stackless_wake_ingress::<()>(self);
         if !ingress.accepting.load(std::sync::atomic::Ordering::Acquire) {
             // Reactor teardown has started.  Destroy the rejected Task-bearing
@@ -1741,13 +1741,13 @@ impl Reactor {
                 // (rusty::Function is move-only; take() leaves an empty one
                 // behind). Reactor is single-threaded: a synchronous waker
                 // during poll only mutates queued/active, never poll_once.
-                let mut poll_fn: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool> = Default::default();
+                let mut poll_fn: StacklessPollFn = Default::default();
                 let mut runnable = false;
                 {
                     let mut tasks_guard = self.stackless_tasks_.borrow_mut();
                     if idx < tasks_guard.len() {
                         (*tasks_guard)[idx].queued = false;
-                        if (*tasks_guard)[idx].active && !(*tasks_guard)[idx].poll_once.is_empty() {
+                        if (*tasks_guard)[idx].active && (*tasks_guard)[idx].poll_once.is_some() {
                             poll_fn = core::mem::take(&mut (*tasks_guard)[idx].poll_once);
                             runnable = true;
                         }
@@ -1769,7 +1769,7 @@ impl Reactor {
                             stackless_profile_note_poll_ready();
                             (*tasks_guard)[idx].active = false;
                             (*tasks_guard)[idx].queued = false;
-                            let empty_fn: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool> = Default::default();
+                            let empty_fn: StacklessPollFn = Default::default();
                             (*tasks_guard)[idx].poll_once = empty_fn;
                         }
                         drop(tasks_guard);
@@ -1911,7 +1911,7 @@ where
     };
     let state: Arc<StacklessResultTaskState<T, OnReady>> = Arc::new(ts);
     let completion_ticket = early_ticket.clone();
-    let poller = StacklessPollFn::from_callable(move |ctx: &mut rusty::Context| -> bool {
+    let poller: StacklessPollFn = Some(Box::new(move |ctx: &mut rusty::Context| -> bool {
         // Scoped so the task borrow is released before on_ready runs.
         // SAFETY: the owner reactor pins each binding throughout task polling.
         let poll_result = unsafe { state.task.borrow_mut().poll(ctx) };
@@ -1931,7 +1931,7 @@ where
             f(poll_result.value);
         }
         true
-    });
+    }));
     let idx = self_.register_stackless_poller(poller);
     if idx == STACKLESS_UNREGISTERED_SLOT {
         // Teardown refused the registration.  register_stackless_poller has
@@ -2700,7 +2700,7 @@ fn shared_int_event_wait_until_gte(sie: &mut SharedIntEvent, x: i32, timeout: i3
 }
 
 fn shared_int_event_wait(sie: &mut SharedIntEvent, f: EventTestFn) {
-    if f(sie.value_) {
+    if f.as_ref().unwrap()(sie.value_) {
         return;
     }
     let ev: Arc<IntEvent> = create_sp_int_event(1);
@@ -2715,13 +2715,13 @@ fn shared_int_event_wait(sie: &mut SharedIntEvent, f: EventTestFn) {
 
 fn fiber_fn_present(f: *const RefCell<FiberFn>) -> bool {
     let g = unsafe { (*f).borrow() };
-    !(*g).is_empty()
+    g.is_some()
 }
 
 fn fiber_fn_invoke(f: *const RefCell<FiberFn>) {
     // borrow_mut: rusty::Function::operator() is non-const.
     let mut g = unsafe { (*f).borrow_mut() };
-    (*g)();
+    g.as_mut().unwrap()();
 }
 
 fn fiber_fn_clear(f: *const RefCell<FiberFn>) {
@@ -2806,7 +2806,7 @@ fn fiber_run(fb: &Fiber) {
     // The closure only reads through this pointer; keep the constness instead
     // of manufacturing a mutable pointer with a const-removal kernel.
     let self_ptr: *const Fiber = fb as *const Fiber;
-    let mut task: FiberTaskFn = FiberTaskFn::from_callable(move |yy: &mut fiber_yield_t| {
+    let mut task: FiberTaskFn = Some(Box::new(move |yy: &mut fiber_yield_t| {
         unsafe {
             // The initial callback must run before fiber_install_task stores
             // its Box. This also proves no RefCell borrow spans engine start.
@@ -2816,7 +2816,7 @@ fn fiber_run(fb: &Fiber) {
             }
             fiber_run_wrapper(&*self_ptr, &raw mut *yy);
         }
-    });
+    }));
     fiber_install_task(&fb.fiber_task_, task);
     {
         let tguard = fb.fiber_task_.borrow();
@@ -2985,7 +2985,7 @@ fn reactor_poll_one(r: &Reactor, idx: usize, poll_fn: *mut StacklessPollFn) -> b
     let ctx_ptr = stackless_wake_context_ptr::<()>(r, idx);
     reactor_verify(!ctx_ptr.is_null());
     let ctx_ref: &mut rusty::Context = unsafe { &mut *ctx_ptr };
-    unsafe { (*poll_fn)(ctx_ref) }
+    unsafe { (*poll_fn).as_mut().unwrap()(ctx_ref) }
 }
 
 fn stackless_profile_note_poll_ready() {
@@ -3193,7 +3193,7 @@ pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     };
     let state: Arc<StacklessVoidTaskState> = Arc::new(ts);
     let completion_ticket = early_ticket.clone();
-    let poller = StacklessPollFn::from_callable(move |ctx: &mut rusty::Context| -> bool {
+    let poller: StacklessPollFn = Some(Box::new(move |ctx: &mut rusty::Context| -> bool {
         // Scoped so the task borrow is released before the ready-path store.
         let ready: bool = {
             let mut tguard = state.task.borrow_mut();
@@ -3208,7 +3208,7 @@ pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
             std::sync::atomic::Ordering::Release,
         );
         true
-    });
+    }));
     let idx = self_.register_stackless_poller(poller);
     if idx == STACKLESS_UNREGISTERED_SLOT {
         // See reactor_spawn_stackless_task_with_result: the rejected poller and
@@ -3681,8 +3681,8 @@ fn fiber_engine_destroy(fib: *mut srpc_fiber) {
 }
 
 fn fiber_task_body_invoke(f: &mut FiberTaskFn, y: &mut fiber_yield_t) {
-    reactor_verify(!f.is_empty());
-    (*f)(y);
+    reactor_verify(f.is_some());
+    f.as_mut().unwrap()(y);
 }
 
 #[cfg_attr(any(), cpp_namespace(::janus))]
@@ -3743,7 +3743,7 @@ fn quorum_event_finalize(qe: &QuorumEvent, timeout: u64,
         if final_ev.status_.get() == EventStatus::TIMEOUT {
             // Didn't receive all RPC replies.
             let dr: &mut QuorumDanglingVec = &mut dangling_rpc;
-            let _ret = finalize_func(dr);
+            let _ret = finalize_func.as_mut().unwrap()(dr);
             // Drain guard: a TIMEOUT'd event is never evicted by the
             // reactor loop (extract takes READY, retain drops DONE), so
             // a registered finalize_event_ would otherwise linger in the

@@ -9,7 +9,7 @@ pub fn heartbeat_time_us() -> u64 {
     current_time_us()
 }
 
-pub type HeartbeatTimeoutCallback = rusty::Function<dyn FnMut() + Send>;
+pub type HeartbeatTimeoutCallback = Option<Box<dyn FnMut() + Send>>;
 
 #[cfg_attr(not(any()), derive(Clone, Copy, Debug, PartialEq, Eq))]
 #[repr(C)]
@@ -176,8 +176,8 @@ impl HeartbeatManager {
                 // from inside the callback without retaining the state lock.
                 let callback: Arc<Mutex<HeartbeatTimeoutCallback>> = self.on_timeout.get();
                 let mut invocation = callback.lock().unwrap();
-                if !invocation.is_empty() {
-                    invocation();
+                if invocation.is_some() {
+                    invocation.as_mut().unwrap()();
                 }
                 return true;
             }

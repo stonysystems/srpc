@@ -1,7 +1,7 @@
 use srpc::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use srpc::connection_state::{ConnectionState, ConnectionStateMachine, StateChangeCallback};
+use srpc::connection_state::{ConnectionState, ConnectionStateMachine};
 use srpc::heartbeat::{HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback};
-use srpc::request_queue::{OverflowStrategy, QueuedRequest, QueuedRequestCallback, RequestQueue,
+use srpc::request_queue::{OverflowStrategy, QueuedRequest, RequestQueue,
     RequestQueueConfig};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -31,11 +31,11 @@ fn a_state_transition_and_its_callback_happen_once_under_contention() {
     let callbacks = Arc::new(AtomicUsize::new(0));
     let observed = callbacks.clone();
     let mut machine = ConnectionStateMachine::new();
-    machine.set_on_state_change(StateChangeCallback::from_callable(move |from, to| {
+    machine.set_on_state_change(Some(Box::new(move |from, to| {
         assert_eq!(from, ConnectionState::NEW);
         assert_eq!(to, ConnectionState::CONNECTING);
         observed.fetch_add(1, Ordering::SeqCst);
-    }));
+    })));
     let machine = Arc::new(machine);
     let barrier = Arc::new(Barrier::new(9));
     let workers: Vec<_> = (0..8).map(|_| {
@@ -58,10 +58,10 @@ fn heartbeat_timeout_callback_can_reset_state_and_fires_once() {
             enabled: true, interval_ms: 1, timeout_ms: 0, max_missed: 1,
         });
         let weak = weak.clone();
-        manager.set_on_timeout(HeartbeatTimeoutCallback::from_callable(move || {
+        manager.set_on_timeout(Some(Box::new(move || {
             observed.fetch_add(1, Ordering::SeqCst);
             weak.upgrade().unwrap().reset();
-        }));
+        })));
         manager
     });
     manager.on_heartbeat_sent_at(100);
@@ -88,10 +88,10 @@ fn heartbeat_callback_can_uninstall_itself() {
             enabled: true, interval_ms: 1, timeout_ms: 0, max_missed: 1,
         });
         let weak = weak.clone();
-        manager.set_on_timeout(HeartbeatTimeoutCallback::from_callable(move || {
+        manager.set_on_timeout(Some(Box::new(move || {
             observed.fetch_add(1, Ordering::SeqCst);
             weak.upgrade().unwrap().set_on_timeout(HeartbeatTimeoutCallback::default());
-        }));
+        })));
         manager
     });
     manager.on_heartbeat_sent_at(100);
@@ -117,9 +117,9 @@ fn concurrent_queue_producers_preserve_capacity_and_rejection_count() {
             for _ in 0..32 {
                 let rejected = rejected.clone();
                 let mut request = QueuedRequest::new();
-                request.callback = QueuedRequestCallback::from_callable(move |_| {
+                request.callback = Some(Box::new(move |_| {
                     rejected.fetch_add(1, Ordering::SeqCst);
-                });
+                }));
                 accepted += usize::from(queue.enqueue(request));
             }
             accepted

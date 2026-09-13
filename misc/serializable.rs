@@ -1151,8 +1151,8 @@ pub trait SerializableBase: sealed::SerializableHolder {
 /// Shared ownership of a concrete canonical payload holder.
 pub type SerializableProxy = Arc<dyn SerializableBase>;
 
-/// Public registry-factory ABI (`rusty::Function<SerializableProxy()>`).
-pub type SerializableRegistryFactory = rusty::Function<dyn FnMut() -> SerializableProxy + Send>;
+/// Registry factories always own a callable; C++ emits `rusty::Function<SerializableProxy()>`.
+pub type SerializableRegistryFactory = Box<dyn FnMut() -> SerializableProxy + Send>;
 
 pub mod details {
     use super::{Arc, BinaryReadArchive, BinaryWriteArchive, SerializableBase, SerializablePayload, sealed};
@@ -1251,7 +1251,7 @@ impl SerializableRegistry {
     // The proxy is holder-shaped so SerializableEnvelope::load gives
     // unpack_shared<T> a refcount-shared Arc<T>.
     pub fn reg<T: SerializablePayload + Default + 'static>(kind: i32) -> i32 {
-        let factory = SerializableRegistryFactory::from_callable(|| -> SerializableProxy {
+        let factory = Box::new(|| -> SerializableProxy {
             make_serializable_proxy_default::<T>()
         });
         serializable_registry_register_factory(kind, factory);

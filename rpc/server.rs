@@ -1438,7 +1438,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         // Same redundant-`mut` reason as the service loop above: the C++
         // lowering must move the Function into `fiber_create_run_impl`.
         #[allow(unused_mut)]
-        let mut job_fn: crate::reactor::FiberFn = crate::reactor::FiberFn::from_callable(move || {
+        let mut job_fn: crate::reactor::FiberFn = Some(Box::new(move || {
             let taken_req = parked_req.take();
             let taken_weak = parked_weak.take();
             if taken_req.is_none() {
@@ -1451,7 +1451,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
                 taken_req.unwrap(),
                 taken_weak.unwrap(),
             );
-        });
+        }));
         // `create_run_impl` is the non-generic entry `Fiber::create_run<Func>`
         // itself calls; naming it directly keeps this an ordinary imported
         // method rather than an imported member template.

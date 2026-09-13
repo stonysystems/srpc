@@ -36,7 +36,7 @@ pub const kRequestQueueExpiredError: i32 = 60;
 #[cfg(not(target_os = "macos"))]
 pub const kRequestQueueExpiredError: i32 = 110;
 
-pub type QueuedRequestCallback = rusty::Function<dyn FnMut(i32) + Send>;
+pub type QueuedRequestCallback = Option<Box<dyn FnMut(i32) + Send>>;
 
 pub fn queued_request_time_us() -> u64 {
     current_time_us()
@@ -139,8 +139,8 @@ impl RequestQueueConfig {
 }
 
 pub fn rq_invoke_callback_safely(mut callback: self::QueuedRequestCallback, error: i32) {
-    if !callback.is_empty() {
-        let _ = catch_unwind(AssertUnwindSafe(move || callback(error)));
+    if callback.is_some() {
+        let _ = catch_unwind(AssertUnwindSafe(move || callback.as_mut().unwrap()(error)));
     }
 }
 
@@ -239,7 +239,7 @@ impl RequestQueue {
                 let request = guard.pop_front().unwrap();
                 if request.is_expired_at(now) {
                     removed = removed.wrapping_add(1);
-                    if !request.callback.is_empty() {
+                    if request.callback.is_some() {
                         callbacks_to_invoke.push(request.callback);
                     }
                 } else {
