@@ -150,10 +150,17 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # In the same change log_line/log_sink_write take std::string_view and the
 # string-returning logging/misc functions return rusty::String (row
 # replacements, count-neutral).
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2045
+# 2045 -> 2056: facade retirement adds eight load-balancer trait RTTI/vtable/
+# destructor symbols, serialize_bytes, and four canonical wake/job helpers.
+# It removes only thread_id_to_u64 and u64_to_thread_id, private non-exported
+# reactor functions with no callers outside pollthread_create/shutdown. Workers
+# now store native gettid values directly. No C++ consumer entry point is removed.
+# Fresh objects: load_balancer 14 unique/19 raw, serializable 597/734,
+# reactor 365/386. The four extra raw load-balancer entries are destructor aliases.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2056
 
 # ---------------------------------------------------------------------------
-# srpc.reactor: the 65 additions recorded by the historical promotion oracle.
+# srpc.reactor: surviving historical additions plus current canonical helpers.
 #
 # The original reactor promotion used an exact compare of the generated
 # provider's owned strong symbols against the incumbent provider's
@@ -186,12 +193,18 @@ EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2045
 #       no symbol at all -- so all 64 replace nothing and remove nothing that
 #       any consumer could previously have called.
 #
+# The historical list remains in Git history. thread_id_to_u64 has been
+# retired with its private inverse; four standard-wake/job helpers are added.
 # REACTOR_INCUMBENT_ORACLE_ADDITIONS is enforced, not decorative: the gate
 # requires every entry to be a real, currently-owned srpc.reactor symbol
 # (require_reactor_oracle_additions), so a stale entry is an error, and a
 # further unreviewed addition cannot hide behind these.
 REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
     {
+        ('T', 'srpc::StacklessWakeTarget@srpc.reactor::wake(rusty::Arc<srpc::StacklessWakeTarget@srpc.reactor>)'),
+        ('T', 'srpc::StacklessWakeTarget@srpc.reactor::wake_by_ref(rusty::Arc<srpc::StacklessWakeTarget@srpc.reactor> const&)'),
+        ('T', 'srpc::job_identity@srpc.reactor(rusty::Arc<srpc::Job@srpc.misc> const&)'),
+        ('T', 'srpc::stackless_wake_make_binding@srpc.reactor(rusty::Arc<srpc::StacklessWakeIngress@srpc.reactor>)'),
         ("R", "srpc::STACKLESS_UNREGISTERED_SLOT@srpc.reactor"),
         ("T", "srpc::EventPollable_::is_ready@srpc.reactor(janus::QuorumEvent@srpc.reactor const&)"),
         ("T", "srpc::EventPollable_::is_ready@srpc.reactor(srpc::IntEvent@srpc.reactor const&)"),
@@ -256,7 +269,6 @@ REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
         ("T", "srpc::stackless_profile_env@srpc.reactor()"),
         ("T", "srpc::stackless_profile_report_periodic@srpc.reactor()"),
         ("T", "srpc::stackless_profile_update_max_slots@srpc.reactor(unsigned long)"),
-        ("T", "srpc::thread_id_to_u64@srpc.reactor(rusty::thread::ThreadId)"),
     }
 )
 
@@ -676,9 +688,11 @@ EXPECTED_IMPORTS = {
     "srpc.utils": ["srpc.logging"],
     "srpc.frame_codec": ["srpc.internal_protocol"],
     "srpc.serializable": [
-        'rusty',
+        'vec_port.vec',
+        'btree_port.btree.map',
+        'btree_port.btree.set',
+        'std_port',
         'srpc.basetypes',
-        'std',
         'srpc.debugging',
     ],
     "srpc.serializable_envelope": [
@@ -686,10 +700,7 @@ EXPECTED_IMPORTS = {
         'srpc.serializable',
         'srpc.debugging',
     ],
-    "srpc.future": [
-        'std',
-        'srpc.reactor',
-    ],
+    "srpc.future": ['srpc.reactor'],
     "srpc.logging": [
         'vec_port.vec',
         'srpc.debugging',
@@ -734,7 +745,7 @@ EXPECTED_IMPORTS = {
         'srpc.logging',
         'srpc.misc',
         'srpc.pollable_proxy',
-        'std',
+        'srpc.threading',
         'srpc.debugging',
     ],
     # MEASURED from build/goal0-crate-cpp/srpc.server.cppm, not declared: the
@@ -1456,13 +1467,13 @@ ABI_SPECS = {
                 "export struct ConnectionStateMachine",
                 "export using StateChangeCallback = rusty::Function<void(ConnectionState, ConnectionState) const>;",
                 '::srpc::SharedCell<ConnectionState> state_field;',
-                "StateChangeCallback on_state_change;",
+                "rusty::Function<void(ConnectionState, ConnectionState) const> on_state_change;",
                 "static ConnectionStateMachine new_();",
                 "ConnectionState state() const;",
                 "bool can_transition_to(ConnectionState new_state) const;",
                 "bool transition_to(ConnectionState new_state) const;",
                 "void force_state(ConnectionState new_state) const;",
-                "void set_on_state_change(StateChangeCallback callback);",
+                "void set_on_state_change(rusty::Function<void(ConnectionState, ConnectionState) const> callback);",
                 "bool is_connected() const;",
                 "bool is_failed() const;",
                 "bool is_terminal() const;",
@@ -1470,8 +1481,8 @@ ABI_SPECS = {
                 "bool is_usable() const;",
                 "static bool is_valid_transition(ConnectionState from, ConnectionState to);",
                 "export std::string_view connection_state_to_string(ConnectionState state);",
-                ".on_state_change = rusty::default_like<StateChangeCallback>()",
-                "rusty::is_empty(this->on_state_change)",
+                ".on_state_change = rusty::Function<void(ConnectionState, ConnectionState) const>{}",
+                "})(this->on_state_change); _iflet_scrutinee.is_some())",
             }
         ),
         symbols=frozenset(
@@ -1516,10 +1527,10 @@ ABI_SPECS = {
                 '::srpc::SharedCell<uint32_t> missed_count_field;',
                 '::srpc::SharedCell<bool> pending_pong;',
                 '::srpc::SharedCell<bool> timed_out;',
-                '::srpc::SharedCell<rusty::Arc<rusty::Mutex<HeartbeatTimeoutCallback>>> on_timeout;',
+                '::srpc::SharedCell<rusty::Arc<rusty::Mutex<rusty::Function<void()>>>> on_timeout;',
                 "static HeartbeatManager new_(const HeartbeatConfig& config);",
                 "void set_config(const HeartbeatConfig& config) const;",
-                "void set_on_timeout(HeartbeatTimeoutCallback callback) const;",
+                "void set_on_timeout(rusty::Function<void()> callback) const;",
                 "bool should_send_heartbeat() const;",
                 "void on_heartbeat_sent() const;",
                 "void on_pong_received() const;",
@@ -1531,7 +1542,6 @@ ABI_SPECS = {
                 "void reset() const;",
                 "HeartbeatConfig config() const;",
                 "return current_time_us();",
-                'void set_on_timeout(HeartbeatTimeoutCallback callback) const;',
                 'bool check_timeout_at(uint64_t now) const;',
                 "rusty::wrapping_sub(now",
                 "rusty::wrapping_add(this->missed_count_field.get()",
@@ -1596,14 +1606,21 @@ ABI_SPECS = {
             }
         ),
         symbols=frozenset(
-            ("T", symbol)
-            for symbol in {
-                "srpc::load_balancing_strategy_to_string@srpc.load_balancer(srpc::LoadBalancingStrategy@srpc.load_balancer)",
-                "srpc::LoadBalancerState@srpc.load_balancer::new_()",
-                "srpc::LoadBalancerState@srpc.load_balancer::next_round_robin_index(unsigned long) const",
-                "srpc::LoadBalancerState@srpc.load_balancer::reset() const",
-                "srpc::LoadBalancer@srpc.load_balancer::select_random(unsigned long, unsigned long)",
-                "srpc::LoadBalancer@srpc.load_balancer::select_round_robin(unsigned long, srpc::LoadBalancerState@srpc.load_balancer const&)",
+            {
+                ('D', 'typeinfo for srpc::LoadBalancerClientVec@srpc.load_balancer'),
+                ('D', 'typeinfo for srpc::LoadBalancerMetrics@srpc.load_balancer'),
+                ('D', 'vtable for srpc::LoadBalancerClientVec@srpc.load_balancer'),
+                ('D', 'vtable for srpc::LoadBalancerMetrics@srpc.load_balancer'),
+                ('R', 'typeinfo name for srpc::LoadBalancerClientVec@srpc.load_balancer'),
+                ('R', 'typeinfo name for srpc::LoadBalancerMetrics@srpc.load_balancer'),
+                ('T', 'srpc::LoadBalancer@srpc.load_balancer::select_random(unsigned long, unsigned long)'),
+                ('T', 'srpc::LoadBalancer@srpc.load_balancer::select_round_robin(unsigned long, srpc::LoadBalancerState@srpc.load_balancer const&)'),
+                ('T', 'srpc::LoadBalancerClientVec@srpc.load_balancer::~LoadBalancerClientVec()'),
+                ('T', 'srpc::LoadBalancerMetrics@srpc.load_balancer::~LoadBalancerMetrics()'),
+                ('T', 'srpc::LoadBalancerState@srpc.load_balancer::new_()'),
+                ('T', 'srpc::LoadBalancerState@srpc.load_balancer::next_round_robin_index(unsigned long) const'),
+                ('T', 'srpc::LoadBalancerState@srpc.load_balancer::reset() const'),
+                ('T', 'srpc::load_balancing_strategy_to_string@srpc.load_balancer(srpc::LoadBalancingStrategy@srpc.load_balancer)'),
             }
         ),
     ),
@@ -1619,7 +1636,7 @@ ABI_SPECS = {
                 "Complete = 1,",
                 "Malformed = 2",
                 "using FrameBytes = std::vector<uint8_t>;",
-                "export using FrameCursor = rusty::io::Cursor<FrameBytes>;",
+                "export using FrameCursor = rusty::io::Cursor<std::vector<uint8_t>>;",
                 "export constexpr size_t kFrameHeaderSize",
                 "export constexpr int32_t kMaxFramePayloadSize",
                 "export struct FrameHeader",
@@ -1646,7 +1663,7 @@ ABI_SPECS = {
                 "int32_t header_word_from_bytes(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3);",
                 "void store_header_word(std::span<uint8_t> out_buf, int32_t w);",
                 "export FrameCursor make_frame_cursor();",
-                "export bool frame_codec_encode_into(FrameBytes& out, const uint8_t* payload, int32_t payload_size, bool extended_header_flag);",
+                "export bool frame_codec_encode_into(std::vector<uint8_t>& out, const uint8_t* payload, int32_t payload_size, bool extended_header_flag);",
                 "export void fsr_append(FrameStreamReader& reader, const uint8_t* data, size_t size);",
                 "export void fsr_consume_frame(FrameStreamReader& reader);",
                 "rusty::saturating_add(this->payload_size",
@@ -1896,13 +1913,13 @@ ABI_SPECS = {
                 "export constexpr int32_t kRequestQueueExpiredError = static_cast<int32_t>(110);",
                 "export std::string_view overflow_strategy_to_string(OverflowStrategy strategy);",
                 "export uint64_t queued_request_time_us();",
-                "export void rq_invoke_callback_safely(QueuedRequestCallback callback, int32_t error);",
+                "export void rq_invoke_callback_safely(rusty::Function<void(int32_t)> callback, int32_t error);",
                 "export struct QueuedRequest",
                 "int64_t xid;",
                 "int32_t rpc_id;",
                 "uint64_t timestamp_us;",
                 "uint32_t retry_count;",
-                "QueuedRequestCallback callback;",
+                "rusty::Function<void(int32_t)> callback;",
                 "uint32_t ttl_ms;",
                 "static QueuedRequest new_();",
                 "bool is_expired() const;",
@@ -1936,7 +1953,7 @@ ABI_SPECS = {
                 "void update_config(RequestQueueConfig config) const;",
                 "return current_time_us();",
                 'return this->is_expired_at(::srpc::queued_request_time_us());',
-                "catch_unwind(AssertUnwindSafe(",
+                "rusty::panic::catch_unwind_std(AssertUnwindSafe(",
             }
         ),
         symbols=frozenset({
@@ -1980,22 +1997,10 @@ ABI_SPECS = {
             {
                 'Arc<T> ptr;',
                 'bool BinaryReadArchive::read_exact(uint8_t* p, size_t n)',
-                'class DeserializeAdapter<std::list<T>> final : public Deserialize {',
-                'class DeserializeAdapter<std::map<K, V>> final : public Deserialize {',
-                'class DeserializeAdapter<std::pair<T1, T2>> final : public Deserialize {',
-                'class DeserializeAdapter<std::set<T>> final : public Deserialize {',
-                'class DeserializeAdapter<std::string> final : public Deserialize {',
-                'class DeserializeAdapter<std::unordered_map<K, V>> final : public Deserialize {',
-                'class DeserializeAdapter<std::unordered_set<T>> final : public Deserialize {',
-                'class DeserializeAdapter<std::vector<T>> final : public Deserialize {',
-                'class SerializeAdapter<std::list<T>> final : public Serialize {',
-                'class SerializeAdapter<std::map<K, V>> final : public Serialize {',
-                'class SerializeAdapter<std::pair<T1, T2>> final : public Serialize {',
-                'class SerializeAdapter<std::set<T>> final : public Serialize {',
-                'class SerializeAdapter<std::string> final : public Serialize {',
-                'class SerializeAdapter<std::unordered_map<K, V>> final : public Serialize {',
-                'class SerializeAdapter<std::unordered_set<T>> final : public Serialize {',
-                'class SerializeAdapter<std::vector<T>> final : public Serialize {',
+                # STL adapters now enter through the reviewed module epilogue.
+                # Native header hashes, importer cases and exact strong symbols
+                # check their definitions and concrete compatibility entry points.
+                '#include "misc/serializable_adapters.hpp"',
                 'export SinkProxy make_sink_proxy_buffer(BufferSink* sink);',
                 'export SinkProxy make_sink_proxy_fd(FdSink* sink);',
                 'export SourceProxy make_source_proxy_buffer(BufferSource* source);',
@@ -2029,6 +2034,7 @@ ABI_SPECS = {
         ),
         symbols=frozenset(
             {
+                ('T', 'srpc::serialize_bytes@srpc.serializable(unsigned char const*, unsigned long, srpc::BinaryWriteArchive@srpc.serializable&)'),
                 ('D', 'typeinfo for srpc::Deserialize@srpc.serializable'),
                 ('D', 'typeinfo for srpc::DeserializeAdapter@srpc.serializable<double>'),
                 ('D', 'typeinfo for srpc::DeserializeAdapter@srpc.serializable<int>'),
@@ -3280,13 +3286,17 @@ ABI_SPECS = {
                 'export struct WaitAny : public EventPollable {',
                 'export struct WaitAll : public EventPollable {',
                 'export struct EventState {',
-                'export void reactor_spawn_stackless_task_impl(const Reactor& self_, TaskVoid task);',
+                'export void reactor_spawn_stackless_task_impl(const Reactor& self_, rusty::Task<void> task);',
                 'void remove(Pollable& poll) const;',
                 'void update_mode(Pollable& poll, int32_t new_mode);',
                 'void pollworker_update_mode(PollThreadWorker& w, Pollable& poll, int32_t new_mode);',
             }
         ),
         symbols=frozenset({
+            ('T', 'srpc::StacklessWakeTarget@srpc.reactor::wake(rusty::Arc<srpc::StacklessWakeTarget@srpc.reactor>)'),
+            ('T', 'srpc::StacklessWakeTarget@srpc.reactor::wake_by_ref(rusty::Arc<srpc::StacklessWakeTarget@srpc.reactor> const&)'),
+            ('T', 'srpc::job_identity@srpc.reactor(rusty::Arc<srpc::Job@srpc.misc> const&)'),
+            ('T', 'srpc::stackless_wake_make_binding@srpc.reactor(rusty::Arc<srpc::StacklessWakeIngress@srpc.reactor>)'),
             ('D', 'typeinfo for janus::QuorumEvent@srpc.reactor'),
             ('D', 'typeinfo for srpc::EventPollable@srpc.reactor'),
             ('D', 'typeinfo for srpc::IntEvent@srpc.reactor'),
@@ -3643,10 +3653,8 @@ ABI_SPECS = {
             ('T', 'srpc::stackless_profile_report_periodic@srpc.reactor()'),
             ('T', 'srpc::stackless_profile_report_periodic_shim@srpc.reactor()'),
             ('T', 'srpc::stackless_profile_update_max_slots@srpc.reactor(unsigned long)'),
-            ('T', 'srpc::thread_id_to_u64@srpc.reactor(rusty::thread::ThreadId)'),
             ('T', 'srpc::timeout_event_is_ready@srpc.reactor(srpc::TimeoutEvent@srpc.reactor const&)'),
             ('T', 'srpc::timeout_event_make@srpc.reactor(unsigned long)'),
-            ('T', 'srpc::u64_to_thread_id@srpc.reactor(unsigned long)'),
             ('T', 'srpc::waitall_make@srpc.reactor()'),
             ('T', 'srpc::waitall_make_from@srpc.reactor(rusty::port::vec::Vec@vec_port.vec<rusty::Arc<srpc::EventPollable@srpc.reactor>, rusty::alloc::Global> const&)'),
             ('T', 'srpc::waitany_make@srpc.reactor(rusty::Arc<srpc::EventPollable@srpc.reactor>, rusty::Arc<srpc::EventPollable@srpc.reactor>)'),
@@ -4258,6 +4266,12 @@ EXPECTED_TOTAL_PLATFORM_SYMBOLS = 0
 # Each tuple is one additional occurrence beyond the unique strong symbol in
 # ABI_SPECS. Every module also has exactly one module initializer.
 RAW_ABI_ALIASES = {
+    "srpc.load_balancer": (
+        ('T', 'srpc::LoadBalancerClientVec@srpc.load_balancer::~LoadBalancerClientVec()'),
+        ('T', 'srpc::LoadBalancerClientVec@srpc.load_balancer::~LoadBalancerClientVec()'),
+        ('T', 'srpc::LoadBalancerMetrics@srpc.load_balancer::~LoadBalancerMetrics()'),
+        ('T', 'srpc::LoadBalancerMetrics@srpc.load_balancer::~LoadBalancerMetrics()'),
+    ),
     "srpc.reactor": (
         ('T', 'janus::QuorumEvent@srpc.reactor::QuorumEvent(janus::QuorumEvent@srpc.reactor&&)'),
         ('T', 'janus::QuorumEvent@srpc.reactor::QuorumEvent(rusty::Cell<srpc::EventStatus@srpc.reactor>, rusty::thread::ThreadId, srpc::EventState@srpc.reactor, rusty::Cell<bool>, rusty::sync::Weak<srpc::EventPollable@srpc.reactor>, rusty::Cell<int>, rusty::Cell<int>, rusty::RefCell<std_port::collections::hash::map::HashMap@std_port<unsigned short, long, std_port::hash::compat::DefaultHasher@std_port, rusty::alloc::Global>>, int, int, rusty::Cell<janus::QuorumPolicy@srpc.reactor>, rusty::Cell<bool>, rusty::Cell<long>, rusty::Cell<bool>, rusty::Cell<unsigned int>, rusty::Cell<long>, rusty::Cell<unsigned long>, rusty::Arc<srpc::IntEvent@srpc.reactor>)'),

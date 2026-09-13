@@ -86,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2045
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2056
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2045)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2056)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -110,6 +110,9 @@ class GateStaticContractTests(unittest.TestCase):
 
     def test_each_promoted_module_has_surface_and_raw_abi_ratchets(self) -> None:
         expected = {
+            "srpc.load_balancer": (14, 19),
+            "srpc.serializable": (597, 734),
+            "srpc.reactor": (365, 386),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
             "srpc.channel": (14, 21),
@@ -198,7 +201,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2045)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2056)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -318,6 +321,9 @@ class GateContractTests(unittest.TestCase):
 
     def test_all_promoted_modules_pin_unique_and_raw_counts(self) -> None:
         expected = {
+            "srpc.load_balancer": (14, 19),
+            "srpc.serializable": (597, 734),
+            "srpc.reactor": (365, 386),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
             "srpc.serializable_envelope": (0, 1),

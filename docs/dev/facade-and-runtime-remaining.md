@@ -94,7 +94,18 @@ Later slices have independent C++ checks:
   nested suspension, cancellation and ownership, including address/undefined
   sanitizer tests.
 
-These slice results do not replace final combined C++ and sanitizer checks.
+Fresh combined objects also establish the reviewed reactor change. Standard wake
+and job handling add four helpers; two private, non-exported thread-ID conversion
+functions disappear. Their only callers were inside worker creation and shutdown,
+which now store kernel thread IDs directly. No consumer called those functions.
+The load-balancer traits add eight RTTI/vtable/destructor symbols. The exact
+inventories record these changes and the serialization helper addition.
+
+Combined C++ compilation has isolated the remaining errors to nullable callback
+alias and result-type inference in the transpiler. The fixes retain standard Rust
+source and the existing C++ callback representation. Complete C++ and sanitizer
+acceptance remains pending.
+
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).
 
