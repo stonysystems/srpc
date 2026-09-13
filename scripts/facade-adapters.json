@@ -22,10 +22,6 @@
     }
   },
   "declarations": {
-    "alias:SerializableStdString": {
-      "category": "import",
-      "sha256": "4d66e675134f0b973e507a6f67bc7f7b2eb3a20ee449d78ef9cd11154fbfb18a"
-    },
     "alias:RustcIoErrorKind": {
       "category": "import",
       "sha256": "f416eef910f6f53cde298b35beeca2fb37a377fadef2b9448d729146411e482e"
@@ -61,10 +57,6 @@
     "file-attributes:task": {
       "category": "import",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    "function:borrowed_std_pair": {
-      "category": "standard",
-      "sha256": "36cdc42a23f635db6bd46c8400dd8508c4abaca78fa9777de97ddf31069b69c1"
     },
     "function:make_box": {
       "category": "standard",
@@ -122,30 +114,6 @@
       "category": "standard",
       "sha256": "518b0a2fcdab9f55de80e9ee7ab88541cab716bc95b248e65c289c21fd854e82"
     },
-    "impl:& 'a SerializableStdList < T > as IntoIterator < 'a , T >": {
-      "category": "standard",
-      "sha256": "72db9d9c7d00209e2242dbce9ebb773ae5bdb1d4ee95647e4edc12ccf87de672"
-    },
-    "impl:& 'a SerializableStdMap < K , V > as IntoIterator < 'a , K , V >": {
-      "category": "standard",
-      "sha256": "a9147066df5659ea8d39d140ab9780079a5bfcdc38fc6ba7e77cf3b28b4a74d9"
-    },
-    "impl:& 'a SerializableStdSet < T > as IntoIterator < 'a , T >": {
-      "category": "standard",
-      "sha256": "15e65a88124c484731f8945c0d714b52ff61aa5d48761ca9c4719748bb81f72c"
-    },
-    "impl:& 'a SerializableStdUnorderedMap < K , V > as IntoIterator < 'a , K , V >": {
-      "category": "standard",
-      "sha256": "12a7150e105b32cba8b1be592849fdf79b8247079411d49b9144eb516c533421"
-    },
-    "impl:& 'a SerializableStdUnorderedSet < T > as IntoIterator < 'a , T >": {
-      "category": "standard",
-      "sha256": "432768a824e8f8c52e79f6e7913d961e1d3ec7586b29326d323cdd934dc1a8c5"
-    },
-    "impl:& 'a SerializableStdVector < T > as IntoIterator < 'a , T >": {
-      "category": "standard",
-      "sha256": "3d40766e48a4d44999668e4d66fa806e91277a7e9276ddc30393e35288cfbde8"
-    },
     "impl::: std :: sync :: Arc < T > as ReactorJobSetKey < T : ? Sized >": {
       "category": "standard",
       "sha256": "58aaffd84dba7ca159107cdff75dfeb1e2ed58d53d6bf5834943f0dcce30fc6e"
@@ -190,78 +158,6 @@
       "category": "standard",
       "sha256": "3cc1e08326b132701e813b81a218b72048063530e49e91ab312c980669d707d0"
     },
-    "impl:SerializableStdList < T > as Default < T >": {
-      "category": "standard",
-      "sha256": "fd0dccb025c711dc224bbbedcea6aaf686bb815e89133f5ff988686b846c93a4"
-    },
-    "impl:SerializableStdList < T > as inherent < T >": {
-      "category": "standard",
-      "sha256": "15bfd2e7ea40c24232fa101a0baa81562004fcef91ae85af6c52542860545ea6"
-    },
-    "impl:SerializableStdMap < K , V > as Default < K , V >": {
-      "category": "standard",
-      "sha256": "66cdb36674ec90039d9693fd5e4b167689017148492b2385bc948473df721c19"
-    },
-    "impl:SerializableStdMap < K , V > as inherent < K , V >": {
-      "category": "standard",
-      "sha256": "2057b43aa3b7364f1552e4451d9c8e2d16a6302dce59bb110ffd450a8a467d19"
-    },
-    "impl:SerializableStdMap < K , V > as inherent < K : Ord , V >": {
-      "category": "standard",
-      "sha256": "e96f5148affc61e86556956b2af42afcc236de7fabc90261a0a1351a628750f5"
-    },
-    "impl:SerializableStdSet < T > as Default < T >": {
-      "category": "standard",
-      "sha256": "9e207ac4796d6d05c766f693e84b4879a64d23afc9817fffff985f702464c3c7"
-    },
-    "impl:SerializableStdSet < T > as inherent < T : Ord >": {
-      "category": "standard",
-      "sha256": "8ce0920676c7eb5d6468d27d52d078b2172330cecdc675af01e0b9fe153786ff"
-    },
-    "impl:SerializableStdSet < T > as inherent < T >": {
-      "category": "standard",
-      "sha256": "ea281c4065f78f45a84655ec6b6a4a2f2e23bb55dec2c2f5637db69cbf92ad24"
-    },
-    "impl:SerializableStdStringView as inherent ": {
-      "category": "standard",
-      "sha256": "0c4dc92d2eea70915df597bf367461cc98fd5c01275db776b52f8641b45b7672"
-    },
-    "impl:SerializableStdUnorderedMap < K , V > as Default < K , V >": {
-      "category": "standard",
-      "sha256": "cf64800c6e10ad997f3d02ac099ef86644a1fae64f2262d4a09bd6652e875481"
-    },
-    "impl:SerializableStdUnorderedMap < K , V > as inherent < K , V >": {
-      "category": "standard",
-      "sha256": "bcbb9472f4c6722a7c5ae81b7cde867c204c52d3aa30ced063800d83af4e45cc"
-    },
-    "impl:SerializableStdUnorderedMap < K , V > as inherent < K : Eq + :: std :: hash :: Hash , V >": {
-      "category": "standard",
-      "sha256": "70c075bfe6136e19ed67f721963fa3cf18c055e6a6ddbea104fd3ae7dbafa028"
-    },
-    "impl:SerializableStdUnorderedSet < T > as Default < T >": {
-      "category": "standard",
-      "sha256": "ed54e0c4f2f556aafe9dea75709b4789f045cacc85595086f46e472e19348451"
-    },
-    "impl:SerializableStdUnorderedSet < T > as inherent < T : Eq + :: std :: hash :: Hash >": {
-      "category": "standard",
-      "sha256": "0acab6b4693d4ca2f4800d034220e2bedf37325128dd9b581c967ebf532b589b"
-    },
-    "impl:SerializableStdUnorderedSet < T > as inherent < T >": {
-      "category": "standard",
-      "sha256": "d4a48c0d1133a1b940b257721473efa57150c040603103848d8b7f266f2f8907"
-    },
-    "impl:SerializableStdVector < T > as :: std :: ops :: Index < usize > < T >": {
-      "category": "standard",
-      "sha256": "c9af3ca3348a621ff4ce90da0990e168d0a0bbdc05b9f8279bc1db35d59f4b95"
-    },
-    "impl:SerializableStdVector < T > as Default < T >": {
-      "category": "standard",
-      "sha256": "411a4b4f1f8b6284c833e6e25e26d7639d13aa9bd596f839e763171cdd7d7333"
-    },
-    "impl:SerializableStdVector < T > as inherent < T >": {
-      "category": "standard",
-      "sha256": "f0b037472ba8d67da209ac6879ec8bd6cffb4ca730210b285560c20ffecddc42"
-    },
     "impl:StdPair < A , B > as inherent < A , B >": {
       "category": "standard",
       "sha256": "8951b016347940909dc3cd1f33573abe1b047037245c2517e6f5b3b40c63dc2d"
@@ -277,14 +173,6 @@
     "impl:std::Cout as inherent ": {
       "category": "standard",
       "sha256": "e94270665fad4226396d16818f8cadc676ffde474d4befa4674482af27f34e26"
-    },
-    "impl:std::string as Default ": {
-      "category": "standard",
-      "sha256": "e44a20709b9d4a041b26cb7e6771fad13bcfd21c3918f65503de32a183486673"
-    },
-    "impl:std::string as inherent ": {
-      "category": "standard",
-      "sha256": "3bd80e391e9157e9474206b9a4c896cdacb2948cb56b5e176c42b9f806ee2801"
     },
     "impl:task::Poll < T > as inherent < T : Default >": {
       "category": "future",
@@ -394,34 +282,6 @@
       "category": "standard",
       "sha256": "b7efdf3e814e9a4bd433ed49920eb59fa909c377ab5989117ec99c28d24df56c"
     },
-    "struct:SerializableStdList": {
-      "category": "standard",
-      "sha256": "36a9cafd9af9c2cfba6adcaac671477cf05338b0a762cdb6c6b43c444aaed796"
-    },
-    "struct:SerializableStdMap": {
-      "category": "standard",
-      "sha256": "65737d33593522147fc32662a1fc9115d990e39c13f6b76d8ba042e13fec1a38"
-    },
-    "struct:SerializableStdSet": {
-      "category": "standard",
-      "sha256": "9c0a437b155915727ff38230e30ccec9e1789b6411f9ae5154c5b4ccd02f4df4"
-    },
-    "struct:SerializableStdStringView": {
-      "category": "standard",
-      "sha256": "b2e48563acc896474ba7cf5910e94f66eb246f336eb67f3d1774c94134926232"
-    },
-    "struct:SerializableStdUnorderedMap": {
-      "category": "standard",
-      "sha256": "e8431592db0003aa57a490f549a609ef8b60fd24b96cbcb3fe877a9a7b354a26"
-    },
-    "struct:SerializableStdUnorderedSet": {
-      "category": "standard",
-      "sha256": "1650d825484d79cf2ddbd8f75635e0680b9241d5edf651b26d2476dc246b53ee"
-    },
-    "struct:SerializableStdVector": {
-      "category": "standard",
-      "sha256": "ea0cbef397f26b7c542dfe07582d5484c4c96a5cfa9c7c22ed651a926ad4186f"
-    },
     "struct:StdPair": {
       "category": "standard",
       "sha256": "3dffbb0292cc563cac5ffe8689eb2063400c968da608fc649cc1db5c765aed4d"
@@ -441,10 +301,6 @@
     "struct:std::Cout": {
       "category": "standard",
       "sha256": "d1957bd58a877c02c4a727da3c4f8837b3cb81845f940d443ed202bbe9c1dd0b"
-    },
-    "struct:std::string": {
-      "category": "standard",
-      "sha256": "28e50220d2ec014476af408e9572d252d6aa65642b76609ffe3d9c985e07348f"
     },
     "struct:task::Context": {
       "category": "future",
@@ -557,10 +413,6 @@
     "use:std::crate :: StdPair": {
       "category": "import",
       "sha256": "26939a598e5e6525706f7f3f5ca1c28ff4d9b1ed16597663378c0104805c97ec"
-    },
-    "use:std::std :: cell :: UnsafeCell": {
-      "category": "import",
-      "sha256": "7e5530b1eb00386e931bbeb7a17d44a5d11a5535044dee36e80ff99177930e6b"
     },
     "use:std::std :: io :: Write as _": {
       "category": "import",

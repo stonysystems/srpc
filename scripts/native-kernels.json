@@ -35,9 +35,13 @@
       "role": "import-shim",
       "sha256": "68102510d9146311520b126d443217e84ad90b33dd0927abfb8212847e4e6e32"
     },
+    "misc/serializable_stl.hpp": {
+      "role": "trait-dispatch",
+      "sha256": "a782674d98640c248acedc1969ca24f74d1825d9c7f72385db30d86ea406d059"
+    },
     "misc/serializable_support.hpp": {
       "role": "trait-dispatch",
-      "sha256": "b5ad9d0b409eb7cfa0ed07937c7d6b1cea0a6771926c1896f7989e0ac7164bc1"
+      "sha256": "30f2a2eb446811f90807cf2bb083a20a5849c8a3b5f627777f6609ab1fc43078"
     },
     "misc/srpc_io.c": {
       "role": "os-leaf",

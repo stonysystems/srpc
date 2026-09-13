@@ -444,62 +444,128 @@ impl Serialize for f64 {
     }
 }
 
-#[allow(unsafe_code)]
-impl Serialize for String {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        Serialize_::serialize(&v64::new(self.len() as i64), ar);
-        unsafe { ar.write_bytes(self.as_ptr(), self.len()) };
+/// Forward a field through canonical overload selection, including scalar leaves.
+pub fn serialize_value<Value: Serialize + ?Sized>(value: &Value, ar: &mut BinaryWriteArchive) {
+    Serialize_::serialize(value, ar);
+}
+
+/// Forward a mutable field through canonical overload selection.
+pub fn deserialize_value<Value: Deserialize + ?Sized>(value: &mut Value, ar: &mut BinaryReadArchive) {
+    Deserialize_::deserialize(value, ar);
+}
+
+/// Write a map entry or pair in its canonical field order.
+pub fn serialize_pair_fields<First: Serialize + ?Sized, Second: Serialize + ?Sized>(
+    first: &First, second: &Second, ar: &mut BinaryWriteArchive,
+) {
+    Serialize_::serialize(first, ar);
+    Serialize_::serialize(second, ar);
+}
+
+/// Write the common collection length and traverse each element once.
+/// The caller supplies only element access and trait dispatch.
+pub fn serialize_counted<WriteNext>(count: usize, ar: &mut BinaryWriteArchive, mut write_next: WriteNext)
+where
+    WriteNext: FnMut(&mut BinaryWriteArchive),
+{
+    Serialize_::serialize(&v64::new(count as i64), ar);
+    let mut index = 0usize;
+    while index < count {
+        write_next(ar);
+        index += 1usize;
     }
 }
 
-// ---- Variable-length byte sequences: v64 length prefix + raw bytes.
-// BOTH leaves carry the body (rather than rusty::SerializableStdString forwarding to a
-// rusty::SerializableStdStringView temporary, as the old hand pair did): a
-// `rusty::SerializableStdStringView{self}` conversion has no DSL spelling. The wire
-// bytes are identical either way.
-//
-// `self.data() as *const u8` lowers to
-// rusty::detail::ptr_cast<const uint8_t*>, replacing the hand
-// reinterpret_cast. The length write MUST be QUALIFIED — unqualified
-// lookup inside the generated namespace finds the sibling it just
-// emitted and stops (the same hazard the container impls below avoid).
-//
-// Only behavioural delta vs. the deleted hand overloads: string_view
-// goes from by-value to `const rusty::SerializableStdStringView&`; rvalues bind to that
-// reference with identical semantics.
-#[allow(unsafe_code)]
-impl Serialize for rusty::SerializableStdStringView {
-    #[allow(clippy::unnecessary_cast)]
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        if self.size() > 0usize {
-            // The cast is redundant in the rustc facade but load-bearing in
-            // production: its mapped C++ type is `std::string_view`, whose
-            // `data()` returns `const char*`.
-            let p: *const u8 = self.data() as *const u8;
-            unsafe { ar.write_bytes(p, self.size()) };
-        }
+/// Read the common collection length, reset storage, and load each element.
+/// Separate state arguments keep both callbacks from borrowing storage at once.
+pub fn deserialize_counted<State, Prepare, ReadNext>(
+    state: &mut State, ar: &mut BinaryReadArchive, mut prepare: Prepare, mut read_next: ReadNext,
+)
+where
+    Prepare: FnMut(&mut State, usize),
+    ReadNext: FnMut(&mut State, &mut BinaryReadArchive),
+{
+    let mut length = v64::new(0i64);
+    Deserialize_::deserialize(&mut length, ar);
+    let count = length.get() as usize;
+    prepare(state, count);
+    let mut index = 0usize;
+    while index < count {
+        read_next(state, ar);
+        index += 1usize;
     }
 }
-#[allow(unsafe_code)]
-impl Serialize for rusty::SerializableStdString {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        if self.size() > 0usize {
-            let p: *const u8 = unsafe { self.data() } as *const u8;
-            unsafe { ar.write_bytes(p, self.size()) };
-        }
+
+/// Decode map entries in wire order, keeping the first value for each key.
+/// The storage adapter must expose an insert-if-vacant primitive (for example,
+/// Rust's `entry(key).or_insert(value)` or C++'s `try_emplace(key, value)`).
+/// This avoids a separate membership lookup while consuming duplicate values.
+pub fn deserialize_map_first<Key, Value, State, Clear, InsertIfVacant>(
+    state: &mut State, ar: &mut BinaryReadArchive, mut clear: Clear,
+    mut insert_if_vacant: InsertIfVacant,
+)
+where
+    Key: Deserialize + Default,
+    Value: Deserialize + Default,
+    Clear: FnMut(&mut State),
+    InsertIfVacant: FnMut(&mut State, Key, Value),
+{
+    let mut length = v64::new(0i64);
+    Deserialize_::deserialize(&mut length, ar);
+    clear(state);
+    let count = length.get() as usize;
+    let mut index = 0usize;
+    while index < count {
+        let mut key = Key::default();
+        let mut value = Value::default();
+        Deserialize_::deserialize(&mut key, ar);
+        Deserialize_::deserialize(&mut value, ar);
+        insert_if_vacant(state, key, value);
+        index += 1usize;
     }
 }
-impl<T: Serialize> Serialize for rusty::SerializableStdList<T> {
+
+/// Write raw bytes with the canonical length prefix, without a text conversion.
+///
+/// # Safety
+///
+/// `data` must name `length` readable bytes for the synchronous archive write.
+#[allow(unsafe_code)]
+pub unsafe fn serialize_bytes(data: *const u8, length: usize, ar: &mut BinaryWriteArchive) {
+    Serialize_::serialize(&v64::new(length as i64), ar);
+    if length > 0usize {
+        unsafe { ar.write_bytes(data, length) };
+    }
+}
+
+/// Read an arbitrary byte sequence into caller-owned storage. Rust strings
+/// separately validate UTF-8; C++ byte strings retain every byte.
+///
+/// # Safety
+///
+/// After `resize(state, length)`, `data(state)` must expose `length` writable
+/// bytes that stay valid until the synchronous archive read finishes.
+#[allow(unsafe_code)]
+pub unsafe fn deserialize_bytes_with<State, Resize, Data>(
+    state: &mut State, ar: &mut BinaryReadArchive, mut resize: Resize, mut data: Data,
+)
+where
+    Resize: FnMut(&mut State, usize),
+    Data: FnMut(&mut State) -> *mut u8,
+{
+    let mut length = v64::new(0i64);
+    Deserialize_::deserialize(&mut length, ar);
+    let count = length.get() as usize;
+    resize(state, count);
+    if count > 0usize {
+        unsafe { ar.read_or_abort(data(state), count) };
+    }
+}
+
+#[allow(unsafe_code)]
+impl Serialize for String {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        for e in self {
-            Serialize_::serialize(e, ar);
-        }
+        unsafe { serialize_bytes(self.as_ptr(), self.len(), ar) };
     }
 }
 
@@ -514,60 +580,6 @@ impl<T: Serialize> Serialize for Vec<T> {
         while i < self.len() {
             Serialize_::serialize(&self[i], ar);
             i += 1usize;
-        }
-    }
-}
-
-impl<T: Serialize> Serialize for rusty::SerializableStdVector<T> {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        let mut i: usize = 0usize;
-        while i < self.size() {
-            Serialize_::serialize(&self[i], ar);
-            i += 1usize;
-        }
-    }
-}
-
-impl<T: Serialize> Serialize for rusty::SerializableStdSet<T> {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        for e in self {
-            Serialize_::serialize(e, ar);
-        }
-    }
-}
-
-impl<T: Serialize> Serialize for rusty::SerializableStdUnorderedSet<T> {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        for e in self {
-            Serialize_::serialize(e, ar);
-        }
-    }
-}
-
-impl<K: Serialize, V: Serialize> Serialize for rusty::SerializableStdMap<K, V> {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        for kv in self {
-            Serialize_::serialize(kv.first, ar);
-            Serialize_::serialize(kv.second, ar);
-        }
-    }
-}
-
-impl<K: Serialize, V: Serialize> Serialize for rusty::SerializableStdUnorderedMap<K, V> {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        let v_len: v64 = v64::new(self.size() as i64);
-        Serialize_::serialize(&v_len, ar);
-        for kv in self {
-            Serialize_::serialize(kv.first, ar);
-            Serialize_::serialize(kv.second, ar);
         }
     }
 }
@@ -662,8 +674,7 @@ impl<K: Serialize, V: Serialize> Serialize for std::collections::HashMap<K, V> {
 // before any definition, so both element calls see the complete set.
 impl<T1: Serialize, T2: Serialize> Serialize for rusty::StdPair<T1, T2> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        Serialize_::serialize(&self.first, ar);
-        Serialize_::serialize(&self.second, ar);
+        serialize_pair_fields(&self.first, &self.second, ar);
     }
 }
 
@@ -851,33 +862,13 @@ impl Deserialize for f64 {
 #[allow(unsafe_code)]
 impl Deserialize for String {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut length = v64::new(0i64);
-        Deserialize_::deserialize(&mut length, ar);
-        let mut bytes = vec![0u8; length.get() as usize];
-        unsafe { ar.read_or_abort(bytes.as_mut_ptr(), bytes.len()) };
-        *self = String::from_utf8(bytes).unwrap();
-    }
-}
-
-// Read-side mirror of the string serialize leaf: v64 length prefix,
-// resize, then read the bytes straight into the string's buffer.
-// @unsafe { writing into rusty::SerializableStdString's internal buffer }
-// `self.data() as *mut u8` picks the C++17 non-const data() overload
-// (the receiver is `rusty::SerializableStdString&`) and lowers to
-// rusty::detail::ptr_cast<uint8_t*>, replacing the old
-// `reinterpret_cast<uint8_t*>(&self_[0])`. verify() keeps the
-// abort-on-truncation contract the hand kernel had.
-#[allow(unsafe_code)]
-impl Deserialize for rusty::SerializableStdString {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        let len: usize = v_len.get() as usize;
-        self.resize(len);
-        if len > 0usize {
-            let p: *mut u8 = unsafe { self.data() } as *mut u8;
-            unsafe { verify_at(ar.read_exact(p, len), file!(), line!()) };
+        let mut bytes = Vec::<u8>::new();
+        unsafe {
+            deserialize_bytes_with(&mut bytes, ar,
+                |storage: &mut Vec<u8>, length: usize| storage.resize(length, 0u8),
+                |storage: &mut Vec<u8>| storage.as_mut_ptr());
         }
+        *self = String::from_utf8(bytes).unwrap();
     }
 }
 
@@ -899,51 +890,13 @@ impl<T1: Deserialize, T2: Deserialize> Deserialize for rusty::StdPair<T1, T2> {
 
 impl<T: Default + Deserialize> Deserialize for Vec<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        self.reserve(n);
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut elem: T = Default::default();
-            Deserialize_::deserialize(&mut elem, ar);
-            self.push(elem);
-            i += 1usize;
-        }
-    }
-}
-
-impl<T: Default + Deserialize> Deserialize for rusty::SerializableStdVector<T> {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        self.reserve(n);
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut elem: T = Default::default();
-            Deserialize_::deserialize(&mut elem, ar);
-            self.push_back(elem);
-            i += 1usize;
-        }
-    }
-}
-
-impl<T: Default + Deserialize> Deserialize for rusty::SerializableStdList<T> {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut elem: T = Default::default();
-            Deserialize_::deserialize(&mut elem, ar);
-            self.push_back(elem);
-            i += 1usize;
-        }
+        deserialize_counted(self, ar,
+            |storage: &mut Vec<T>, count: usize| { storage.clear(); storage.reserve(count); },
+            |storage: &mut Vec<T>, archive: &mut BinaryReadArchive| {
+                let mut element: T = Default::default();
+                Deserialize_::deserialize(&mut element, archive);
+                storage.push(element);
+            });
     }
 }
 
@@ -963,39 +916,7 @@ impl<T: Default + Deserialize + Ord> Deserialize for std::collections::BTreeSet<
     }
 }
 
-impl<T: Default + Deserialize + Ord> Deserialize for rusty::SerializableStdSet<T> {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut elem: T = Default::default();
-            Deserialize_::deserialize(&mut elem, ar);
-            self.insert(elem);
-            i += 1usize;
-        }
-    }
-}
-
 impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for std::collections::HashSet<T> {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut elem: T = Default::default();
-            Deserialize_::deserialize(&mut elem, ar);
-            self.insert(elem);
-            i += 1usize;
-        }
-    }
-}
-
-impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for rusty::SerializableStdUnorderedSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1029,24 +950,6 @@ impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for s
     }
 }
 
-impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for rusty::SerializableStdMap<K, V> {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut key: K = Default::default();
-            let mut value: V = Default::default();
-            Deserialize_::deserialize(&mut key, ar);
-            Deserialize_::deserialize(&mut value, ar);
-            self.emplace(key, value);
-            i += 1usize;
-        }
-    }
-}
-
 impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> Deserialize for std::collections::HashMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
@@ -1060,24 +963,6 @@ impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> 
             Deserialize_::deserialize(&mut key, ar);
             Deserialize_::deserialize(&mut value, ar);
             self.insert(key, value);
-            i += 1usize;
-        }
-    }
-}
-
-impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> Deserialize for rusty::SerializableStdUnorderedMap<K, V> {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        let mut v_len = v64::new(0i64);
-        Deserialize_::deserialize(&mut v_len, ar);
-        self.clear();
-        let n: usize = v_len.get() as usize;
-        let mut i: usize = 0usize;
-        while i < n {
-            let mut key: K = Default::default();
-            let mut value: V = Default::default();
-            Deserialize_::deserialize(&mut key, ar);
-            Deserialize_::deserialize(&mut value, ar);
-            self.emplace(key, value);
             i += 1usize;
         }
     }

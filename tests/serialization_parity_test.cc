@@ -1,13 +1,25 @@
 #include <gtest/gtest.h>
 #include <rusty/rusty.hpp>
-#include "../misc/serializable.hpp"
 #include "../misc/any_message.hpp"
 #include "../misc/serializable_envelope.hpp"
 
 import std;
 import rusty;
+import srpc.serializable;
 
 namespace {
+
+struct UnsupportedSerializationField {};
+struct NonDefaultDeserializationField final : srpc::Deserialize {
+  explicit NonDefaultDeserializationField(int);
+  void deserialize(srpc::BinaryReadArchive&) override {}
+};
+template<class T> concept HasSerializeAdapter = requires { sizeof(srpc::SerializeAdapter<T>); };
+template<class T> concept HasDeserializeAdapter = requires { sizeof(srpc::DeserializeAdapter<T>); };
+static_assert(!HasSerializeAdapter<std::vector<UnsupportedSerializationField>>);
+static_assert(!HasDeserializeAdapter<std::map<int32_t, UnsupportedSerializationField>>);
+static_assert(!HasDeserializeAdapter<std::string_view>);
+static_assert(!HasDeserializeAdapter<std::vector<NonDefaultDeserializationField>>);
 
 template<class T>
 std::vector<uint8_t> Encode(const T& value) {
@@ -46,6 +58,21 @@ TEST(SerializationParity, NestedContainersMatchRustWireVector) {
   static_assert(sizeof(srpc::DeserializeAdapter<std::vector<int64_t>>) > 0);
 }
 
+TEST(SerializationParity, ImportedStlAdaptersSupportErasedDispatch) {
+  const std::vector<std::string> original{"alpha", std::string{'x', char(0), 'y'}};
+  srpc::BufferSink sink;
+  srpc::BinaryWriteArchive output{srpc::make_sink_proxy_buffer(&sink)};
+  const srpc::SerializeAdapterRef<std::vector<std::string>> writer(original);
+  static_cast<const srpc::Serialize&>(writer).serialize(output);
+  auto source = srpc::BufferSource::new_(sink.bytes.data(), sink.bytes.len());
+  srpc::BinaryReadArchive input{srpc::make_source_proxy_buffer(&source)};
+  std::vector<std::string> restored;
+  srpc::DeserializeAdapterRefMut<std::vector<std::string>> reader(restored);
+  static_cast<srpc::Deserialize&>(reader).deserialize(input);
+  EXPECT_EQ(restored, original);
+  EXPECT_EQ(source.remaining(), 0u);
+}
+
 TEST(SerializationParity, OrderedAndUnorderedContainersPreserveKeys) {
   const std::set<int32_t> ordered_set{3, 1, 3};
   EXPECT_EQ(Decode<std::set<int32_t>>(Encode(ordered_set)), ordered_set);
@@ -57,6 +84,24 @@ TEST(SerializationParity, OrderedAndUnorderedContainersPreserveKeys) {
   EXPECT_EQ((Decode<std::unordered_map<int32_t, std::string>>(Encode(unordered_map))), unordered_map);
   const std::list<int32_t> sequence{3, 3, 1};
   EXPECT_EQ(Decode<std::list<int32_t>>(Encode(sequence)), sequence);
+}
+
+TEST(SerializationParity, RawCppStringsPreserveInvalidUtf8AndNul) {
+  const std::string original{char(0xff), char(0), char(0xc0), char(0x80), 'a'};
+  const std::vector<uint8_t> expected{5, 0xff, 0, 0xc0, 0x80, 'a'};
+  EXPECT_EQ(Encode(original), expected);
+  EXPECT_EQ(Encode(std::string_view(original)), expected);
+  EXPECT_EQ(Decode<std::string>(expected), original);
+  EXPECT_EQ(Decode<std::string>(Encode(std::string{})), std::string{});
+}
+
+TEST(SerializationParity, MapsKeepFirstDuplicateWireKey) {
+  const std::vector<std::pair<int32_t, int32_t>> entries{{3, 30}, {1, 10}, {3, 99}};
+  const auto bytes = Encode(entries);
+  const std::map<int32_t, int32_t> expected{{1, 10}, {3, 30}};
+  EXPECT_EQ((Decode<std::map<int32_t, int32_t>>(bytes)), expected);
+  const std::unordered_map<int32_t, int32_t> unordered{{1, 10}, {3, 30}};
+  EXPECT_EQ((Decode<std::unordered_map<int32_t, int32_t>>(bytes)), unordered);
 }
 
 struct Payload {

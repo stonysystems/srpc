@@ -378,83 +378,83 @@ fn round_trip<T: Serialize + Deserialize + Default>(value: &T) -> T {
 }
 
 #[test]
-fn ordered_collections_preserve_order_uniqueness_and_replacement() {
-    let mut btree = std::collections::BTreeMap::<i32, i32>::new();
-    btree.insert(3, 30);
-    btree.insert(1, 10);
-    btree.insert(3, 99);
-    let btree = round_trip(&btree);
-    assert_eq!(btree.into_iter().collect::<Vec<_>>(), [(1, 10), (3, 99)]);
-
-    let mut standard = rusty::SerializableStdMap::<i32, i32>::default();
-    standard.emplace(3, 30);
-    standard.emplace(1, 10);
-    standard.emplace(3, 99);
-    let standard = round_trip(&standard);
-    assert_eq!((&standard).into_iter().map(|p| (*p.first, *p.second)).collect::<Vec<_>>(), [(1, 10), (3, 30)]);
-
-    let mut btree_set = std::collections::BTreeSet::new();
-    let mut standard_set = rusty::SerializableStdSet::default();
-    for value in [3i32, 1, 3] {
-        btree_set.insert(value);
-        standard_set.insert(value);
-    }
-    let btree_set = round_trip(&btree_set);
-    let standard_set = round_trip(&standard_set);
-    assert_eq!(btree_set.into_iter().collect::<Vec<_>>(), [1, 3]);
-    assert_eq!((&standard_set).into_iter().copied().collect::<Vec<_>>(), [1, 3]);
-    let bytes = encode(|archive| standard_set.serialize(archive));
-    let mut expected = vec![2];
-    expected.extend_from_slice(&1i32.to_ne_bytes());
-    expected.extend_from_slice(&3i32.to_ne_bytes());
-    assert_eq!(bytes, expected);
+fn standard_collections_keep_their_rust_insert_semantics() {
+    let mut ordered = std::collections::BTreeMap::new();
+    ordered.insert(3i32, 30i32);
+    ordered.insert(1, 10);
+    ordered.insert(3, 99);
+    assert_eq!(round_trip(&ordered), ordered);
+    let mut unordered = std::collections::HashMap::new();
+    unordered.insert(3i32, 30i32);
+    unordered.insert(1, 10);
+    unordered.insert(3, 99);
+    assert_eq!(round_trip(&unordered), unordered);
+    let ordered: std::collections::BTreeSet<_> = [3i32, 1, 3].into_iter().collect();
+    let unordered: std::collections::HashSet<_> = [3i32, 1, 3].into_iter().collect();
+    assert_eq!(round_trip(&ordered), ordered);
+    assert_eq!(round_trip(&unordered), unordered);
 }
 
 #[test]
-fn unordered_collections_round_trip_and_remove_duplicate_keys() {
-    let mut map = std::collections::HashMap::new();
-    map.insert(3i32, 30i32);
-    map.insert(1, 10);
-    map.insert(3, 99);
-    let map = round_trip(&map);
-    assert_eq!(map.len(), 2);
-    assert_eq!(map.get(&3), Some(&99));
-    assert_eq!(map.get(&1), Some(&10));
-
-    let mut standard_map = rusty::SerializableStdUnorderedMap::default();
-    standard_map.emplace(3i32, 30i32);
-    standard_map.emplace(1, 10);
-    standard_map.emplace(3, 99);
-    let standard_map = round_trip(&standard_map);
-    let mut pairs = (&standard_map).into_iter().map(|p| (*p.first, *p.second)).collect::<Vec<_>>();
-    pairs.sort();
-    assert_eq!(pairs, [(1, 10), (3, 30)]);
-
-    let mut set = std::collections::HashSet::new();
-    let mut standard_set = rusty::SerializableStdUnorderedSet::default();
-    for value in [3i32, 1, 3] {
-        set.insert(value);
-        standard_set.insert(value);
-    }
-    let set = round_trip(&set);
-    assert_eq!(set.len(), 2);
-    assert!(set.contains(&1) && set.contains(&3));
-    let standard_set = round_trip(&standard_set);
-    let mut values = (&standard_set).into_iter().copied().collect::<Vec<_>>();
-    values.sort();
-    assert_eq!(values, [1, 3]);
+fn counted_traversal_preserves_sequence_order_without_container_models() {
+    use srpc::serializable::{serialize_counted, deserialize_counted};
+    let list: std::collections::LinkedList<i32> = [3, 1, 3].into_iter().collect();
+    let bytes = encode(|archive| {
+        let mut elements = list.iter();
+        serialize_counted(list.len(), archive, |output| elements.next().unwrap().serialize(output));
+    });
+    assert_eq!(bytes, encode(|archive| vec![3i32, 1, 3].serialize(archive)));
+    let (restored, remaining) = decode(&bytes, |archive| {
+        let mut restored = std::collections::LinkedList::<i32>::new();
+        restored.push_back(-1);
+        deserialize_counted(&mut restored, archive,
+            |storage, _| storage.clear(),
+            |storage, input| {
+                let mut value = 0i32;
+                value.deserialize(input);
+                storage.push_back(value);
+            });
+        restored
+    });
+    assert_eq!(restored, list);
+    assert_eq!(remaining, 0);
 }
 
 #[test]
-fn list_and_vector_adapters_preserve_duplicates_and_input_order() {
-    let mut list = rusty::SerializableStdList::default();
-    let mut vector = rusty::SerializableStdVector::default();
-    for value in [3i32, 1, 3] {
-        list.push_back(value);
-        vector.push_back(value);
-    }
-    let list = round_trip(&list);
-    let vector = round_trip(&vector);
-    assert_eq!((&list).into_iter().copied().collect::<Vec<_>>(), [3, 1, 3]);
-    assert_eq!((&vector).into_iter().copied().collect::<Vec<_>>(), [3, 1, 3]);
+fn counted_map_decode_keeps_first_duplicate_and_consumes_all_values() {
+    use srpc::serializable::deserialize_map_first;
+    let bytes = encode(|archive| {
+        srpc::basetypes::v64::new(3).serialize(archive);
+        for (key, value) in [(3i32, 30i32), (1, 10), (3, 99)] {
+            key.serialize(archive);
+            value.serialize(archive);
+        }
+    });
+    let (restored, remaining) = decode(&bytes, |archive| {
+        let mut restored = std::collections::BTreeMap::<i32, i32>::new();
+        deserialize_map_first(&mut restored, archive,
+            |storage| storage.clear(),
+            |storage, key, value| { storage.entry(key).or_insert(value); });
+        restored
+    });
+    assert_eq!(restored.into_iter().collect::<Vec<_>>(), [(1, 10), (3, 30)]);
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn raw_byte_helpers_preserve_invalid_utf8_and_embedded_nul() {
+    use srpc::serializable::{serialize_bytes, deserialize_bytes_with};
+    let original = [0xffu8, 0, 0xc0, 0x80, b'a'];
+    let encoded = encode(|archive| unsafe { serialize_bytes(original.as_ptr(), original.len(), archive) });
+    assert_eq!(encoded, [5, 0xff, 0, 0xc0, 0x80, b'a']);
+    let (restored, remaining) = decode(&encoded, |archive| {
+        let mut restored = vec![99u8; 20];
+        unsafe { deserialize_bytes_with(&mut restored, archive,
+            |storage, count| storage.resize(count, 0),
+            |storage| storage.as_mut_ptr()); }
+        restored
+    });
+    assert_eq!(restored, original);
+    assert_eq!(remaining, 0);
 }

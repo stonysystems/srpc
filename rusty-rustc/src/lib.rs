@@ -356,11 +356,6 @@ impl<A, B> StdPair<A, B> {
     }
 }
 
-/// Rust-only facade spelling mapped to the public `std::string` ABI. It is the
-/// impl target that keeps the generated `Serialize_`/`Deserialize_` overloads
-/// for C++ consumers' own `std::string` fields; see `std::string` below.
-pub type SerializableStdString = std::string;
-
 /// Opaque rustc-only model mapped to libc's `FILE` in generated C++.
 #[repr(C)]
 pub struct CFile {
@@ -370,147 +365,6 @@ pub struct CFile {
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
 
-/// Distinct rustc-only model for `std::string_view`.
-#[derive(Default)]
-pub struct SerializableStdStringView {
-    bytes: Vec<u8>,
-}
-
-impl SerializableStdStringView {
-    pub fn size(&self) -> usize {
-        self.bytes.len()
-    }
-
-    pub fn data(&self) -> *const u8 {
-        self.bytes.as_ptr()
-    }
-}
-
-/// Distinct adapters preserve STL container identity during Rust checking.
-pub struct SerializableStdVector<T> {
-    values: Vec<T>,
-}
-impl<T> Default for SerializableStdVector<T> {
-    fn default() -> Self { Self { values: Vec::new() } }
-}
-impl<T> SerializableStdVector<T> {
-    pub fn size(&self) -> usize { self.values.len() }
-    pub fn clear(&mut self) { self.values.clear(); }
-    pub fn reserve(&mut self, additional: usize) { self.values.reserve(additional); }
-    pub fn push_back(&mut self, value: T) { self.values.push(value); }
-}
-impl<T> ::std::ops::Index<usize> for SerializableStdVector<T> {
-    type Output = T;
-    fn index(&self, index: usize) -> &T { &self.values[index] }
-}
-impl<'a, T> IntoIterator for &'a SerializableStdVector<T> {
-    type Item = &'a T;
-    type IntoIter = ::std::slice::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
-}
-
-pub struct SerializableStdList<T> {
-    values: ::std::collections::LinkedList<T>,
-}
-impl<T> Default for SerializableStdList<T> {
-    fn default() -> Self { Self { values: Default::default() } }
-}
-impl<T> SerializableStdList<T> {
-    pub fn size(&self) -> usize { self.values.len() }
-    pub fn clear(&mut self) { self.values.clear(); }
-    pub fn push_back(&mut self, value: T) { self.values.push_back(value); }
-}
-impl<'a, T> IntoIterator for &'a SerializableStdList<T> {
-    type Item = &'a T;
-    type IntoIter = ::std::collections::linked_list::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
-}
-
-pub struct SerializableStdSet<T> {
-    values: ::std::collections::BTreeSet<T>,
-}
-impl<T> Default for SerializableStdSet<T> {
-    fn default() -> Self { Self { values: Default::default() } }
-}
-impl<T> SerializableStdSet<T> {
-    pub fn size(&self) -> usize { self.values.len() }
-    pub fn clear(&mut self) { self.values.clear(); }
-}
-impl<T: Ord> SerializableStdSet<T> {
-    pub fn insert(&mut self, value: T) { self.values.insert(value); }
-}
-impl<'a, T> IntoIterator for &'a SerializableStdSet<T> {
-    type Item = &'a T;
-    type IntoIter = ::std::collections::btree_set::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
-}
-
-pub struct SerializableStdUnorderedSet<T> {
-    values: ::std::collections::HashSet<T>,
-}
-impl<T> Default for SerializableStdUnorderedSet<T> {
-    fn default() -> Self { Self { values: Default::default() } }
-}
-impl<T> SerializableStdUnorderedSet<T> {
-    pub fn size(&self) -> usize { self.values.len() }
-    pub fn clear(&mut self) { self.values.clear(); }
-}
-impl<T: Eq + ::std::hash::Hash> SerializableStdUnorderedSet<T> {
-    pub fn insert(&mut self, value: T) { self.values.insert(value); }
-}
-impl<'a, T> IntoIterator for &'a SerializableStdUnorderedSet<T> {
-    type Item = &'a T;
-    type IntoIter = ::std::collections::hash_set::Iter<'a, T>;
-    fn into_iter(self) -> Self::IntoIter { self.values.iter() }
-}
-
-fn borrowed_std_pair<'a, K, V>((key, value): (&'a K, &'a V)) -> StdPair<&'a K, &'a V> {
-    StdPair::new(key, value)
-}
-
-pub struct SerializableStdMap<K, V> {
-    values: ::std::collections::BTreeMap<K, V>,
-}
-impl<K, V> Default for SerializableStdMap<K, V> {
-    fn default() -> Self { Self { values: Default::default() } }
-}
-impl<K, V> SerializableStdMap<K, V> {
-    pub fn size(&self) -> usize { self.values.len() }
-    pub fn clear(&mut self) { self.values.clear(); }
-}
-impl<K: Ord, V> SerializableStdMap<K, V> {
-    pub fn emplace(&mut self, key: K, value: V) { self.values.entry(key).or_insert(value); }
-}
-impl<'a, K, V> IntoIterator for &'a SerializableStdMap<K, V> {
-    type Item = StdPair<&'a K, &'a V>;
-    type IntoIter = ::std::iter::Map<
-        ::std::collections::btree_map::Iter<'a, K, V>,
-        fn((&'a K, &'a V)) -> StdPair<&'a K, &'a V>,
-    >;
-    fn into_iter(self) -> Self::IntoIter { self.values.iter().map(borrowed_std_pair::<K, V>) }
-}
-
-pub struct SerializableStdUnorderedMap<K, V> {
-    values: ::std::collections::HashMap<K, V>,
-}
-impl<K, V> Default for SerializableStdUnorderedMap<K, V> {
-    fn default() -> Self { Self { values: Default::default() } }
-}
-impl<K, V> SerializableStdUnorderedMap<K, V> {
-    pub fn size(&self) -> usize { self.values.len() }
-    pub fn clear(&mut self) { self.values.clear(); }
-}
-impl<K: Eq + ::std::hash::Hash, V> SerializableStdUnorderedMap<K, V> {
-    pub fn emplace(&mut self, key: K, value: V) { self.values.entry(key).or_insert(value); }
-}
-impl<'a, K, V> IntoIterator for &'a SerializableStdUnorderedMap<K, V> {
-    type Item = StdPair<&'a K, &'a V>;
-    type IntoIter = ::std::iter::Map<
-        ::std::collections::hash_map::Iter<'a, K, V>,
-        fn((&'a K, &'a V)) -> StdPair<&'a K, &'a V>,
-    >;
-    fn into_iter(self) -> Self::IntoIter { self.values.iter().map(borrowed_std_pair::<K, V>) }
-}
 
 /// Rustc stand-ins for the compiler-generated trait adapters.
 ///
@@ -777,58 +631,7 @@ impl<T: ?Sized> RustyFunctionIsEmpty for Box<T> {
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
     use crate::StdPair;
-    use ::std::cell::UnsafeCell;
     use ::std::io::Write as _;
-
-    /// Rustc-only model of C++ `std::string`, kept for exactly one purpose: it
-    /// is the type the canonical `Serialize`/`Deserialize` impls target, so the
-    /// generated C++ keeps its `std::string` wire overloads for consumers' own
-    /// fields (rpcgen-generated services declare `std::string`). Canonical Rust
-    /// never builds or reads one: it spells strings as `String`, which the
-    /// transpiler lowers to `rusty::String`. The API is therefore exactly what
-    /// the two wire impls call -- `size`, `resize`, `data`.
-    ///
-    /// `UnsafeCell` makes this type `!Sync`, matching the shared-access contract
-    /// of `data()`; shared access from multiple threads requires an external
-    /// lock, moving ownership between threads is allowed.
-    ///
-    /// ```compile_fail
-    /// fn require_sync<T: Sync>() {}
-    /// require_sync::<rusty::std::string>();
-    /// ```
-    #[allow(non_camel_case_types)]
-    pub struct string(UnsafeCell<Vec<u8>>);
-
-    impl Default for string {
-        fn default() -> Self {
-            Self(UnsafeCell::new(Vec::new()))
-        }
-    }
-
-    impl string {
-        pub fn resize(&mut self, size: usize) {
-            self.0.get_mut().resize(size, 0);
-        }
-
-        /// # Safety
-        ///
-        /// The returned pointer addresses `size()` initialized bytes. Its use
-        /// must not overlap another access to the byte storage, and must end
-        /// before any safe method mutates the string or the value is dropped.
-        /// Writes must stay within the existing length; they cannot change
-        /// the allocation or the vector's length and capacity.
-        #[allow(unsafe_code)]
-        pub unsafe fn data(&self) -> *mut i8 {
-            unsafe { (&mut *self.0.get()).as_mut_ptr().cast() }
-        }
-
-        #[allow(unsafe_code)]
-        pub fn size(&self) -> usize {
-            // SAFETY: safe byte mutations require &mut self, !Sync prevents
-            // concurrent shared access, and data() forbids overlapping access.
-            unsafe { (&*self.0.get()).len() }
-        }
-    }
 
     pub struct Cout;
 

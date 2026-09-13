@@ -98,6 +98,9 @@ name = "srpc.serializable"
 includes = [
     { path = "misc/serializable_support.hpp", form = "quote" },
 ]
+epilogue_includes = [
+    { path = "misc/serializable_stl.hpp", form = "quote" },
+]
 
 [[module]]
 name = "srpc.reactor"
