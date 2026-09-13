@@ -22,17 +22,9 @@
     }
   },
   "declarations": {
-    "alias:RustcIoErrorKind": {
-      "category": "import",
-      "sha256": "f416eef910f6f53cde298b35beeca2fb37a377fadef2b9448d729146411e482e"
-    },
     "alias:RustcSinkBaseAdapterRefMut": {
       "category": "import",
       "sha256": "501807aee310d221ab2dd3998ae59aef4f2e9a21a3f929193d866e15b21c5cfa"
-    },
-    "alias:RustcSocketAddrV4": {
-      "category": "import",
-      "sha256": "db5a9d6d48e04bd9e262768fd33c5e27943f9d8e855539ecb18c56430e61dddf"
     },
     "alias:RustcSourceBaseAdapterRefMut": {
       "category": "import",
@@ -80,7 +72,7 @@
     },
     "function:rusty::net::socket_addr_v4_from_str": {
       "category": "standard",
-      "sha256": "ddf99bc6eb2c63c6f9a7ba599323eeb395965cce033127179b5649c3120fb221"
+      "sha256": "f6423f289c97eb96401596aedd9a3a94db2b382554fc24693afddd9e6a0750c2"
     },
     "function:rusty::net::socket_addr_v4_to_string": {
       "category": "standard",
@@ -137,26 +129,6 @@
     "impl:ReactorJobSet < T > as inherent < T : ReactorJobSetKey >": {
       "category": "standard",
       "sha256": "e4e010901a78ee812f4a7c9e27f7f21d16f679e1ce07f9c6b977f7b200b1c065"
-    },
-    "impl:RustcBorrowedFd as inherent ": {
-      "category": "standard",
-      "sha256": "cd8e10dad3ebf462f50d2b77617cddb1dbd9a831a0bd8445d3ffff2b7bd6d543"
-    },
-    "impl:RustcIoError as From < :: std :: io :: Error > ": {
-      "category": "standard",
-      "sha256": "26e6a871f3c1f0066b537583d160ddd826929a74e8b6fa5a5bbc4a59c676504a"
-    },
-    "impl:RustcIoError as inherent ": {
-      "category": "standard",
-      "sha256": "f63feb11054c9662e36ec0b0c55aaec49743c27a615132d99ad93a4d778b79ab"
-    },
-    "impl:RustcTcpListener as inherent ": {
-      "category": "standard",
-      "sha256": "77441d980053fa42a0db2794f4973f83fd3ec8bde3d06c8f3813e27721d5e9ec"
-    },
-    "impl:RustcTcpStream as inherent ": {
-      "category": "standard",
-      "sha256": "3cc1e08326b132701e813b81a218b72048063530e49e91ab312c980669d707d0"
     },
     "impl:StdPair < A , B > as inherent < A , B >": {
       "category": "standard",
@@ -266,22 +238,6 @@
       "category": "standard",
       "sha256": "a1b2e9ae49bb9e43a7e0ee5d49d6cb57bd835c43f8c644ef46bb9ca5afa9b370"
     },
-    "struct:RustcBorrowedFd": {
-      "category": "standard",
-      "sha256": "8a215888fca5d142be75499cb2ff54299b1f1b284a65adf69a52582ba93f0046"
-    },
-    "struct:RustcIoError": {
-      "category": "standard",
-      "sha256": "903f200fbc096c32c307d9a9c204c6502ba05ebd3154b4f47fa0618bd26aa730"
-    },
-    "struct:RustcTcpListener": {
-      "category": "standard",
-      "sha256": "1fc35c7014ed7c81eda47a7325f6b84839d49c52993a5228211e55c74409131b"
-    },
-    "struct:RustcTcpStream": {
-      "category": "standard",
-      "sha256": "b7efdf3e814e9a4bd433ed49920eb59fa909c377ab5989117ec99c28d24df56c"
-    },
     "struct:StdPair": {
       "category": "standard",
       "sha256": "3dffbb0292cc563cac5ffe8689eb2063400c968da608fc649cc1db5c765aed4d"
@@ -374,10 +330,6 @@
       "category": "import",
       "sha256": "1d6b65e206d059ea3ca6ad8be543b2cd4700ed6ebfbbd40c97dbccf22c1e3d80"
     },
-    "use:rusty::net::crate :: { RustcIoError as Error , RustcSocketAddrV4 as SocketAddrV4 , RustcTcpListener as TcpListener , RustcTcpStream as TcpStream , }": {
-      "category": "import",
-      "sha256": "febec4ceafe30e96f8cc4dc67c9c969e962f727a7f93e69fcd478046036b852d"
-    },
     "use:rusty_cpp_markers :: cpp_inherit": {
       "category": "import",
       "sha256": "1e55160927cda50fb31298223a496472e76d7233f9e71a91d712af982dface35"
@@ -429,6 +381,10 @@
     "use:std :: ops :: { Deref , Index }": {
       "category": "import",
       "sha256": "51390f38b7affece1e760dc707c3a6e56411a5d06b10955891ea5b88ff43e1c6"
+    },
+    "use:rusty::net::std :: { io :: Error , net :: SocketAddrV4 }": {
+      "category": "import",
+      "sha256": "65e15ace09df5fc6b3a194523e0a5774ec5ee58e80b83c5ec7cf8fb56b1cd3e8"
     }
   }
 }

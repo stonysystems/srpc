@@ -1,16 +1,6 @@
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 #[test]
-fn unbound_listener_reports_errors_without_panicking() {
-    let listener = rusty::RustcTcpListener::default();
-    assert!(!listener.is_bound());
-    assert_eq!(listener.as_raw_fd(), -1);
-    assert_eq!(listener.set_nonblocking(true).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-    assert_eq!(listener.local_addr().unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-    assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-}
-
-#[test]
 fn native_threads_run_and_have_distinct_stable_identities() {
     let owner = rusty::thread::current_id();
     assert_eq!(owner, rusty::thread::current_id());

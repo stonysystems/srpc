@@ -214,136 +214,6 @@ impl<T: ReactorJobSetKey> ReactorJobSet<T> {
 }
 
 
-pub type RustcSocketAddrV4 = ::std::net::SocketAddrV4;
-pub type RustcIoErrorKind = ::std::io::ErrorKind;
-
-#[derive(Debug)]
-pub struct RustcIoError {
-    inner: ::std::io::Error,
-}
-
-impl RustcIoError {
-    pub fn kind(&self) -> RustcIoErrorKind {
-        self.inner.kind()
-    }
-
-    pub fn what(&self) -> String {
-        self.inner.to_string()
-    }
-}
-
-impl From<::std::io::Error> for RustcIoError {
-    fn from(inner: ::std::io::Error) -> Self {
-        Self { inner }
-    }
-}
-
-#[derive(Debug)]
-pub struct RustcTcpStream {
-    inner: ::std::net::TcpStream,
-}
-
-impl RustcTcpStream {
-    pub fn set_nonblocking(&self, value: bool) -> Result<(), RustcIoError> {
-        self.inner.set_nonblocking(value).map_err(Into::into)
-    }
-
-    pub fn into_owned_fd(self) -> ::std::os::fd::OwnedFd {
-        self.inner.into()
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct RustcTcpListener {
-    inner: Option<::std::net::TcpListener>,
-}
-
-/// Rustc-only borrowed descriptor view for a possibly-unbound TCP listener.
-///
-/// Production `rusty::net::TcpListener` stores an invalid/default
-/// `rusty::os::fd::OwnedFd`, whose borrowed view reports `-1`. Rust's standard
-/// `BorrowedFd` cannot represent that state, so the facade uses this tiny view
-/// to preserve the production API's pre-bind behavior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RustcBorrowedFd {
-    raw: i32,
-}
-
-impl RustcBorrowedFd {
-    pub fn as_raw_fd(&self) -> i32 {
-        self.raw
-    }
-}
-
-impl RustcTcpListener {
-    pub fn bind(address: RustcSocketAddrV4) -> Result<Self, RustcIoError> {
-        ::std::net::TcpListener::bind(address)
-            .map(|inner| Self { inner: Some(inner) })
-            .map_err(Into::into)
-    }
-
-    pub fn set_nonblocking(&self, value: bool) -> Result<(), RustcIoError> {
-        self.inner
-            .as_ref()
-            .ok_or_else(|| RustcIoError::from(::std::io::Error::new(
-                ::std::io::ErrorKind::InvalidInput, "listener not bound",
-            )))?
-            .set_nonblocking(value)
-            .map_err(Into::into)
-    }
-
-    pub fn local_addr(&self) -> Result<RustcSocketAddrV4, RustcIoError> {
-        let address = self
-            .inner
-            .as_ref()
-            .ok_or_else(|| RustcIoError::from(::std::io::Error::new(
-                ::std::io::ErrorKind::InvalidInput, "listener not bound",
-            )))?
-            .local_addr()
-            .map_err(RustcIoError::from)?;
-        match address {
-            ::std::net::SocketAddr::V4(address) => Ok(address),
-            _ => Err(RustcIoError::from(::std::io::Error::new(
-                ::std::io::ErrorKind::InvalidInput,
-                "not IPv4",
-            ))),
-        }
-    }
-
-    pub fn accept(&self) -> Result<(RustcTcpStream, RustcSocketAddrV4), RustcIoError> {
-        let (stream, address) = self
-            .inner
-            .as_ref()
-            .ok_or_else(|| RustcIoError::from(::std::io::Error::new(
-                ::std::io::ErrorKind::InvalidInput, "listener not bound",
-            )))?
-            .accept()
-            .map_err(RustcIoError::from)?;
-        match address {
-            ::std::net::SocketAddr::V4(address) => Ok((RustcTcpStream { inner: stream }, address)),
-            _ => Err(RustcIoError::from(::std::io::Error::new(
-                ::std::io::ErrorKind::InvalidInput,
-                "not IPv4",
-            ))),
-        }
-    }
-
-    pub fn is_bound(&self) -> bool {
-        self.inner.is_some()
-    }
-
-    pub fn as_raw_fd(&self) -> i32 {
-        use ::std::os::fd::AsRawFd;
-        self.inner.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-    }
-
-    pub fn as_owned_fd(&self) -> RustcBorrowedFd {
-        RustcBorrowedFd {
-            raw: self.as_raw_fd(),
-        }
-    }
-}
-
 /// Rust-only representation of `std::pair<A, B>` used by canonical sources.
 pub struct StdPair<A, B> {
     pub first: A,
@@ -452,17 +322,11 @@ pub mod rusty {
     }
 
     pub mod net {
-        pub use crate::{
-            RustcIoError as Error, RustcSocketAddrV4 as SocketAddrV4,
-            RustcTcpListener as TcpListener, RustcTcpStream as TcpStream,
-        };
+        use ::std::{io::Error, net::SocketAddrV4};
 
         pub fn socket_addr_v4_from_str(value: &str) -> Result<SocketAddrV4, Error> {
             value.parse::<SocketAddrV4>().map_err(|error| {
-                Error::from(::std::io::Error::new(
-                    ::std::io::ErrorKind::InvalidInput,
-                    error.to_string(),
-                ))
+                Error::new(::std::io::ErrorKind::InvalidInput, error.to_string())
             })
         }
 

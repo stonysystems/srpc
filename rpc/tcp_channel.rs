@@ -29,9 +29,9 @@ use rusty as cpp;
 
 type TcpOutBuf = rusty::StdVector<u8>;
 type LegacyOwnedFd = std::os::fd::OwnedFd;
-type LegacyTcpListener = cpp::RustcTcpListener;
-type LegacySocketAddrV4 = cpp::RustcSocketAddrV4;
-type LegacyIoErrorKind = cpp::RustcIoErrorKind;
+type LegacyTcpListener = std::net::TcpListener;
+type LegacySocketAddrV4 = std::net::SocketAddrV4;
+type LegacyIoErrorKind = std::io::ErrorKind;
 type PollThread = crate::reactor::PollThread;
 
 pub const kTcpConnectionOutboundHighWaterDefault: usize = 4 * 1024 * 1024; // 4 MiB
@@ -484,7 +484,7 @@ impl TcpListener {
                 return ChannelError::AddressInvalid;
             }
         };
-        let bound = match LegacyTcpListener::bind(parsed) {
+        let bound: LegacyTcpListener = match LegacyTcpListener::bind(parsed) {
             Ok(value) => value,
             Err(error) => {
                 self.listened_.store(false, Ordering::Release);
@@ -505,10 +505,10 @@ impl TcpListener {
         #[allow(clippy::needless_late_init)]
         let address_string: String;
         match local_result {
-            Ok(value) => {
+            Ok(std::net::SocketAddr::V4(value)) => {
                 address_string = cpp::rusty::net::socket_addr_v4_to_string(value);
             }
-            Err(_) => {
+            _ => {
                 address_string = addr.to_string();
             }
         }
@@ -546,7 +546,7 @@ impl TcpListener {
             if let Some(owner) = retired.as_ref() {
                 // Stop new connections while the registration lease keeps the
                 // descriptor number reserved through epoll removal.
-                unsafe { let _ = srpc_tcp_shutdown(owner.as_owned_fd().as_raw_fd()); }
+                unsafe { let _ = srpc_tcp_shutdown(owner.as_raw_fd()); }
             }
         }
         // An accept callback may itself call close(); that call must not wait
@@ -588,7 +588,7 @@ impl TcpListener {
             // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
             Some(owner) => {
                 let owner: &Arc<LegacyTcpListener> = owner;
-                owner.as_owned_fd().as_raw_fd()
+                owner.as_raw_fd()
             }
             None => -1,
         }
@@ -677,7 +677,7 @@ impl PollableBase for TcpListenerPollableShim {
             // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
             Some(owner) => {
                 let owner: &Arc<LegacyTcpListener> = owner;
-                owner.as_owned_fd().as_raw_fd()
+                owner.as_raw_fd()
             }
             None => -1,
         }
@@ -1436,10 +1436,22 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
         return 2; // stream drops here, closing the accepted fd.
     }
 
-    let peer_addr_str = cpp::rusty::net::socket_addr_v4_to_string(peer_addr);
+    // Keep the early return in the accept function during C++ lowering.
+    #[allow(clippy::needless_late_init)]
+    let peer_v4: LegacySocketAddrV4;
+    match peer_addr {
+        std::net::SocketAddr::V4(value) => {
+            peer_v4 = value;
+        }
+        _ => {
+            out.ch = ChannelError::AddressInvalid;
+            return 2;
+        }
+    }
+    let peer_addr_str = cpp::rusty::net::socket_addr_v4_to_string(peer_v4);
 
     // Hand the accepted fd to TcpConnection.
-    let conn_fd = stream.into_owned_fd().into_raw_fd();
+    let conn_fd = stream.into_raw_fd();
     // SAFETY: accept transferred the freshly created descriptor into this
     // connection; no other owner remains after into_raw_fd above.
     let mut conn = Arc::new(unsafe { TcpConnection::new(conn_fd, peer_addr_str) });
