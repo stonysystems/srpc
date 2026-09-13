@@ -26,6 +26,9 @@ SerializableBase = "SerializableBase"
 SerializableProxy = "rusty::Arc<SerializableBase>"
 SerializableSharedPtrHolder = "details::SerializableSharedPtrHolder"
 SrcFileCStr = "const char*"
+NullableArc = "rusty::Arc"
+NullableChannelConnectionProxy = "::srpc::ChannelConnectionProxy"
+NullableChannelFactoryProxy = "::srpc::ChannelFactoryProxy"
 
 [rusty]
 BTreeSet = "rusty::BTreeSet"

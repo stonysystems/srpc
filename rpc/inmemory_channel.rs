@@ -601,7 +601,7 @@ pub fn inmemory_listener_accept_for_connect(
     let client_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), true));
     let server_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), false));
 
-    (callback.callable())(make_inmemory_channel_proxy(server_side));
+    (callback.callable())(Some(make_inmemory_channel_proxy(server_side)));
     Some(client_side)
 }
 

@@ -40,9 +40,9 @@ fn listen_and_connect(
     let mut listener: ChannelListenerProxy = factory.make_listener().unwrap();
     let accepted: Arc<AcceptedSlot> = Arc::new(AcceptedSlot(Mutex::new(None)));
     let accepted_for_callback = accepted.clone();
-    let accept_callable: Box<dyn Fn(ChannelConnectionProxy) + Send + Sync> =
-        Box::new(move |connection: ChannelConnectionProxy| {
-            *accepted_for_callback.0.lock().unwrap() = Some(connection);
+    let accept_callable: Box<dyn Fn(Option<ChannelConnectionProxy>) + Send + Sync> =
+        Box::new(move |connection: Option<ChannelConnectionProxy>| {
+            *accepted_for_callback.0.lock().unwrap() = connection;
         });
     let accept_callback: OnAcceptCallback = CallbackWrapper::from_callable(accept_callable);
     listener.set_on_accept(accept_callback);

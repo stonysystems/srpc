@@ -75,16 +75,16 @@ use crate::rand::randgen_range;
 // Retain the C++ module dependency for the canonical callback template.
 #[allow(unused_imports)]
 use crate::callback_wrapper as _;
-use rusty::RustyHandleIsValid as _;
 
 
 
-use crate::basetypes::{Counter, Time};
+use crate::basetypes::{Counter, NullableArc, Time};
 use crate::callbacks::CallbackManager;
 use crate::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ConnectResult, OnClosedCallback,
     OnErrorCallback, OnFrameCallback,
+    NullableChannelConnectionProxy, NullableChannelFactoryProxy,
 };
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 use crate::connection_metrics::ConnectionMetrics;
@@ -752,7 +752,7 @@ pub struct ClientConnection {
     keepalive_config_: ClientCloneCell<KeepaliveConfig>,
     heartbeat_manager_: HeartbeatManager,
     circuit_breaker_: CircuitBreaker,
-    callback_manager_: Arc<CallbackManager>,
+    callback_manager_: NullableArc<CallbackManager>,
     last_activity_time_: ClientCloneCell<u64>,
     metrics_: Arc<ConnectionMetrics>,
     weak_self_: WeakClientConnection,
@@ -828,7 +828,7 @@ impl ClientConnection {
             keepalive_config_: ClientCloneCell::<KeepaliveConfig>::new(KeepaliveConfig::new()),
             heartbeat_manager_: HeartbeatManager::new(&HeartbeatConfig::disabled()),
             circuit_breaker_: CircuitBreaker::new(CircuitBreakerConfig::disabled()),
-            callback_manager_: Arc::<CallbackManager>::new(CallbackManager::new()),
+            callback_manager_: Some(Arc::<CallbackManager>::new(CallbackManager::new())),
             last_activity_time_: ClientCloneCell::<u64>::new(0u64),
             metrics_: Arc::new(ConnectionMetrics::new()),
             weak_self_: WeakClientConnection::new(),
@@ -967,10 +967,11 @@ impl ClientConnection {
         }
         clientconn_connect_factory_for_binding(self, addr, generation)
     }
-    fn bind_channel(&self, channel: ChannelConnectionProxy) {
-        if !channel.is_valid() {
+    fn bind_channel(&self, channel: NullableChannelConnectionProxy) {
+        if channel.is_none() {
             return;
         }
+        let channel = channel.unwrap();
         let channel = self.replace_fiber_channel(channel);
         self.channel_mode_.set(true);
 
@@ -1030,7 +1031,7 @@ impl ClientConnection {
         self.notify_pending_futures(batch);
         channel
     }
-    fn bind_channel_via_poll_thread(&self, channel: ChannelConnectionProxy) { clientconn_bind_channel_via_poll_thread(self, channel); }
+    fn bind_channel_via_poll_thread(&self, channel: NullableChannelConnectionProxy) { clientconn_bind_channel_via_poll_thread(self, channel); }
     // Direct on_frame / on_closed binding: bypasses FiberChannel and the
     // recv-loop fiber entirely, installing the callbacks on the proxy itself.
     // Both fire on whichever thread the channel layer dispatches from -- for
@@ -1044,10 +1045,11 @@ impl ClientConnection {
     // clippy::type_complexity -- the same spelling rpc/fiber_channel.cpp uses for this callback; factoring it into an alias would emit a new `using`. See the Task-2 measurement block above.
     // clippy::explicit_auto_deref -- measured 2026-09-11 (clippy 0.1.97, rusty-cpp 3e1d9505): taking it binds `const ClientConnection& receiver` to the `owner` handle (twice) and `const FiberChannel& fiber` to the `old` handle instead of their pointees (6 emitted lines in srpc.client.cppm).
     #[allow(clippy::type_complexity, clippy::explicit_auto_deref)]
-    fn bind_channel_direct(&self, mut channel: ChannelConnectionProxy, generation: u64) -> bool {
-        if !channel.is_valid() {
+    fn bind_channel_direct(&self, channel: NullableChannelConnectionProxy, generation: u64) -> bool {
+        if channel.is_none() {
             return false;
         }
+        let mut channel = channel.unwrap();
         let config = self.keepalive_config_.get();
         let proxy: &dyn ChannelConnectionBase = &*channel;
         let _ = proxy.set_keepalive(config.enabled, config.idle_sec, config.interval_sec, config.count);
@@ -1123,17 +1125,18 @@ impl ClientConnection {
         let guard = self.direct_channel_.lock().unwrap();
         (*guard).clone()
     }
-    fn bind_factory(&self, factory: ChannelFactoryProxy) {
-        if !factory.is_valid() {
+    fn bind_factory(&self, factory: NullableChannelFactoryProxy) {
+        if factory.is_none() {
             return;
         }
+        let factory = factory.unwrap();
         let factory = Arc::new(Mutex::new(factory));
         let retired = self.factory_.lock().unwrap().replace(factory);
         drop(retired);
     }
     fn abort_reconnect(&mut self) { self.reconnect_.reconnect_abort_.store(true, std::sync::atomic::Ordering::Release); }
-    fn set_callback_manager(&mut self, callback_manager: &Arc<CallbackManager>) {
-        if callback_manager.is_valid() {
+    fn set_callback_manager(&mut self, callback_manager: &NullableArc<CallbackManager>) {
+        if callback_manager.is_some() {
             self.callback_manager_ = callback_manager.clone();
         }
     }
@@ -1343,34 +1346,29 @@ impl ClientConnection {
     // matching the `OnErrorCallbackFn` surface it forwards to; the literal
     // call sites build the owned string.
     fn invoke_error_callback(&self, err: i32, message: &str) {
-        if !self.callback_manager_.is_valid() {
-            return;
+        if let Some(manager) = self.callback_manager_.as_ref() {
+            (**manager).invoke_on_error(clientconn_map_system_error(err), message);
         }
-        (*self.callback_manager_).invoke_on_error(clientconn_map_system_error(err), message);
     }
     fn invoke_disconnected_callback(&self) {
-        if !self.callback_manager_.is_valid() {
-            return;
+        if let Some(manager) = self.callback_manager_.as_ref() {
+            (**manager).invoke_on_disconnected();
         }
-        (*self.callback_manager_).invoke_on_disconnected();
     }
     fn invoke_reconnecting_callback(&self) {
-        if !self.callback_manager_.is_valid() {
-            return;
+        if let Some(manager) = self.callback_manager_.as_ref() {
+            (**manager).invoke_on_reconnecting();
         }
-        (*self.callback_manager_).invoke_on_reconnecting();
     }
     fn invoke_reconnected_callback(&self, success: bool) {
-        if !self.callback_manager_.is_valid() {
-            return;
+        if let Some(manager) = self.callback_manager_.as_ref() {
+            (**manager).invoke_on_reconnected(success);
         }
-        (*self.callback_manager_).invoke_on_reconnected(success);
     }
     fn invoke_connected_callback(&self) {
-        if !self.callback_manager_.is_valid() {
-            return;
+        if let Some(manager) = self.callback_manager_.as_ref() {
+            (**manager).invoke_on_connected();
         }
-        (*self.callback_manager_).invoke_on_connected();
     }
     unsafe fn dispatch_frame_via_channel(&self, body_bytes: *const u8, body_size: usize) -> ChannelError {
         clientconn_dispatch_frame_via_channel(self, body_bytes, body_size)
@@ -1648,7 +1646,7 @@ impl Client {
         let conn: Arc<ClientConnection> = Arc::new_cyclic(|weak_conn| {
             let mut value = ClientConnection::new(self.poll_thread_worker_field.clone());
             value.weak_self_ = weak_conn.clone();
-            value.callback_manager_ = self.callback_manager_field.clone();
+            value.callback_manager_ = Some(self.callback_manager_field.clone());
             value.metrics_ = self.metrics_field.clone();
             value.is_client_mode_ = client;
             value
@@ -1662,14 +1660,14 @@ impl Client {
 
         if !self.has_pending_channel_factory() {
             let tcp_factory: Arc<TcpFactory> = Arc::<TcpFactory>::new(TcpFactory::new(self.poll_thread_worker_field.clone()));
-            self.set_channel_factory(make_tcp_factory_proxy(tcp_factory));
+            self.set_channel_factory(Some(make_tcp_factory_proxy(tcp_factory)));
         }
 
         {
             let mut guard = self.pending_factory_field.lock().unwrap();
             if guard.is_some() {
                 let moved: ChannelFactoryProxy = guard.take().unwrap();
-                conn.bind_factory(moved);
+                conn.bind_factory(Some(moved));
             }
         }
 
@@ -1730,10 +1728,11 @@ impl Client {
         guard.as_ref().unwrap().reconnect(on_complete)
     }
 
-    pub fn set_channel_factory(&self, factory: ChannelFactoryProxy) {
-        if !factory.is_valid() {
+    pub fn set_channel_factory(&self, factory: NullableChannelFactoryProxy) {
+        if factory.is_none() {
             return;
         }
+        let factory = factory.unwrap();
         let mut guard = self.pending_factory_field.lock().unwrap();
         *guard = Some(factory);
     }
@@ -2814,7 +2813,7 @@ fn clientconn_connect_factory_for_binding(conn: &ClientConnection, addr_i8: *con
         return rc;
     }
     let conn_proxy = result.connection.take().unwrap();
-    if !conn.bind_channel_direct(conn_proxy, generation) {
+    if !conn.bind_channel_direct(Some(conn_proxy), generation) {
         return CLIENT_ERR_CANCELED;
     }
 
@@ -2851,10 +2850,11 @@ pub fn clientconn_recv_job_entry(weak_self: WeakClientConnection, channel: Arc<B
 // clippy::arc_with_non_send_sync -- no fix short of changing the payload type; the C++ Arc erases Rust auto traits. See the Task-2 measurement block above.
 #[allow(clippy::arc_with_non_send_sync)]
 pub fn clientconn_bind_channel_via_poll_thread(conn: &ClientConnection,
-                                           channel: ChannelConnectionProxy) {
-    if !channel.is_valid() {
+                                           channel: NullableChannelConnectionProxy) {
+    if channel.is_none() {
         return;
     }
+    let channel = channel.unwrap();
     let channel = conn.replace_fiber_channel(channel);
     conn.channel_mode_.set(true);
 

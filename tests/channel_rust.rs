@@ -237,9 +237,9 @@ fn listener_and_factory_proxies_preserve_ownership_and_results() {
     assert_eq!(listener.local_address(), "127.0.0.1:0");
 
     let accepted = OnAcceptCallback::from_callable(Box::new(|connection| {
-        assert_eq!(connection.peer_address(), "accepted");
+        assert_eq!(connection.unwrap().peer_address(), "accepted");
     }));
-    (accepted.callable())(Box::new(RecordingConnection::new("accepted")));
+    (accepted.callable())(Some(Box::new(RecordingConnection::new("accepted"))));
     listener.set_on_accept(accepted);
     listener.close();
     assert!(listener.is_closed());

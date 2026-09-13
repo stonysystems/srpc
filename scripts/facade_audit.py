@@ -29,16 +29,7 @@ CATEGORIES = {
 
 # These facts are guaranteed by Rust types, not stand-ins for missing behavior.
 # Each declaration's exact AST hash also pins its returned boolean.
-CONSTANT_FACTS = {
-    "impl:Box < T > as RustyHandleIsValid < T : ? Sized >": {
-        "body": "Box < T > as RustyHandleIsValid < T : ? Sized >::is_valid",
-        "reason": "A Rust Box always owns a non-null allocation.",
-    },
-    "impl::: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >": {
-        "body": ":: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >::is_valid",
-        "reason": "A Rust Arc always owns a non-null allocation.",
-    },
-}
+CONSTANT_FACTS = {}
 
 
 def scanner_binary() -> Path:

@@ -69,18 +69,18 @@ fn client_calls_server_over_the_inmemory_channel_and_reads_the_reply() {
 
     // SAFETY (both create calls): the canonical poll threads retain and dispatch deferred close jobs.
     let mut server = Server::new(Some(PollThread::create()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(EchoDoubleService));
     // SAFETY: `addr` is NUL-terminated and outlives the call.
     let started = unsafe { server.start(addr.as_ptr()) };
     assert_eq!(started, 0, "Server::start over the in-memory factory");
 
     let client = Client::create(PollThread::create());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     let connected = client.connect(addr.as_ptr(), true);
     assert_eq!(connected, 0, "Client::connect through the switchboard");
 
@@ -114,17 +114,17 @@ fn unknown_rpc_id_comes_back_as_an_error_not_a_hang() {
 
     // SAFETY: as above — owned poll-thread handles and a NUL-terminated address.
     let mut server = Server::new(Some(PollThread::create()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(EchoDoubleService));
     let started = unsafe { server.start(addr.as_ptr()) };
     assert_eq!(started, 0);
 
     let client = Client::create(PollThread::create());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     assert_eq!(client.connect(addr.as_ptr(), true), 0);
 
     let fu = client

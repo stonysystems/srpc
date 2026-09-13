@@ -7,16 +7,7 @@
     "future": "Rust Future, Waker, and Poll representation for the C++ coroutine ABI; canonical executor owns scheduling.",
     "import": "Standard-library re-export, type alias, module declaration, or lint configuration."
   },
-  "constant_facts": {
-    "impl:Box < T > as RustyHandleIsValid < T : ? Sized >": {
-      "body": "Box < T > as RustyHandleIsValid < T : ? Sized >::is_valid",
-      "reason": "A Rust Box always owns a non-null allocation."
-    },
-    "impl::: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >": {
-      "body": ":: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >::is_valid",
-      "reason": "A Rust Arc always owns a non-null allocation."
-    }
-  },
+  "constant_facts": {},
   "declarations": {
     "file-attributes:": {
       "category": "import",
@@ -37,14 +28,6 @@
     "function:panic::payload_message": {
       "category": "standard",
       "sha256": "9ed02827e1e585d07228e6e0d6a07d13e826df5a194fa27afa600a4fe76dbdb2"
-    },
-    "impl::: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >": {
-      "category": "standard",
-      "sha256": "71614b71f119ec72df1d5be52e459cc26d021c52a49b19e251ae4cf9b828178c"
-    },
-    "impl:Box < T > as RustyHandleIsValid < T : ? Sized >": {
-      "category": "standard",
-      "sha256": "be7f7cccdc849eaa45a099ef6e9dd460b6d0ee83fb759b881b2de837e1ef8c4d"
     },
     "impl:std::Cout as inherent ": {
       "category": "standard",
@@ -73,10 +56,6 @@
     "struct:std::Cout": {
       "category": "standard",
       "sha256": "d1957bd58a877c02c4a727da3c4f8837b3cb81845f940d443ed202bbe9c1dd0b"
-    },
-    "trait:RustyHandleIsValid": {
-      "category": "standard",
-      "sha256": "8da7f977e2375bf95efb057e742292f37ca62d2c403b439076ccbb7d4afaeb75"
     },
     "use:rusty_cpp_markers :: cpp_inherit": {
       "category": "import",

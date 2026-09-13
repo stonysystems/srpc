@@ -2,6 +2,9 @@
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 pub use std::sync::atomic::{AtomicI64, Ordering};
 
+/// Optional shared ownership at C++ boundaries that accept an empty Arc.
+pub type NullableArc<T> = Option<std::sync::Arc<T>>;
+
 #[allow(unsafe_code)]
 unsafe extern "C" {
     fn srpc_clock_monotonic_us() -> u64;

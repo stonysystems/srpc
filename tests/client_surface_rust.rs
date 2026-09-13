@@ -60,17 +60,20 @@ fn connected_pair(tag: &str) -> (Server, Arc<Client>) {
     // SAFETY: rustc-lane poll threads; the in-memory channel never schedules
     // onto them.
     let mut server = Server::new(Some(PollThread::create()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
+    server.set_channel_factory(None);
+    assert!(server.is_channel_factory_bound());
     server.reg_service(Box::new(EchoDoubleService));
     // SAFETY: `addr` is NUL-terminated and outlives the call.
     assert_eq!(unsafe { server.start(addr.as_ptr()) }, 0);
 
     let client = Client::create(PollThread::create());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
+    client.set_channel_factory(None);
     assert_eq!(client.connect(addr.as_ptr(), true), 0);
     (server, client)
 }
@@ -185,9 +188,9 @@ fn connection_callbacks_fire_on_connect() {
 
     #[allow(unsafe_code)]
     let mut server = Server::new(Some(PollThread::create()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(EchoDoubleService));
     #[allow(unsafe_code)]
     let started = unsafe { server.start(addr.as_ptr()) };
@@ -195,9 +198,9 @@ fn connection_callbacks_fire_on_connect() {
 
     #[allow(unsafe_code)]
     let client = Client::create(PollThread::create());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
 
     let fired = Arc::new(AtomicBool::new(false));
     let fired_in = fired.clone();

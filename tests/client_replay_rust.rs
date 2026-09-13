@@ -41,16 +41,16 @@ fn disconnected(name: &str, config: BufferingConfig) -> Fixture {
     let switchboard = Arc::new(InMemorySwitchboard::new());
     let poll = PollThread::create();
     let mut server = Server::new(Some(poll.clone()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(Echo(calls.clone())));
     let address = CString::new(format!("inmemory://{name}")).unwrap();
     assert_eq!(unsafe { server.start(address.as_ptr()) }, 0);
     let client = Client::create(poll.clone());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     assert_eq!(client.connect(address.as_ptr(), true), 0);
     client.set_buffering_config(&config);
     client.connection().unwrap().close();

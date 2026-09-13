@@ -29,16 +29,16 @@ fn connected(name: &str) -> (Server, Arc<Client>, Arc<PollThread>) {
     let switchboard = Arc::new(InMemorySwitchboard::new());
     let poll = PollThread::create();
     let mut server = Server::new(Some(poll.clone()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(NoReplyService));
     let address = CString::new(format!("inmemory://{name}")).unwrap();
     assert_eq!(unsafe { server.start(address.as_ptr()) }, 0);
     let client = Client::create(poll.clone());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     assert_eq!(client.connect(address.as_ptr(), true), 0);
     (server, client, poll)
 }
@@ -191,7 +191,7 @@ fn retired_direct_channel_close_callback_preserves_the_reconnected_request() {
     let poll = PollThread::create();
     let client = Client::create(poll.clone());
     let channels = Arc::new(Mutex::new(Vec::new()));
-    client.set_channel_factory(Box::new(RetainedChannelFactory { channels: channels.clone() }));
+    client.set_channel_factory(Some(Box::new(RetainedChannelFactory { channels: channels.clone() })));
     client.set_reconnect_policy(&srpc::reconnect_policy::ReconnectPolicy::no_retry());
     assert_eq!(client.connect(c"tracked://retained-close".as_ptr(), true), 0);
     let connection = client.connection().unwrap();
@@ -243,7 +243,7 @@ fn controlled_client() -> (Arc<Client>, Arc<PollThread>, TrackedChannels) {
     let poll = PollThread::create();
     let client = Client::create(poll.clone());
     let channels = Arc::new(Mutex::new(Vec::new()));
-    client.set_channel_factory(Box::new(RetainedChannelFactory { channels: channels.clone() }));
+    client.set_channel_factory(Some(Box::new(RetainedChannelFactory { channels: channels.clone() })));
     client.set_reconnect_policy(&srpc::reconnect_policy::ReconnectPolicy::no_retry());
     assert_eq!(client.connect(c"tracked://lifecycle".as_ptr(), true), 0);
     (client, poll, channels)
@@ -545,9 +545,9 @@ fn canceled_factory_attempt(public_close: bool) {
     let channels = Arc::new(Mutex::new(Vec::new()));
     let (entered, entry) = mpsc::channel();
     let release = Arc::new(Barrier::new(2));
-    client.set_channel_factory(Box::new(PausedReconnectFactory {
+    client.set_channel_factory(Some(Box::new(PausedReconnectFactory {
         calls: 0, entered, release: release.clone(), channels: channels.clone(),
-    }));
+    })));
     client.set_reconnect_policy(&srpc::reconnect_policy::ReconnectPolicy::no_retry());
     assert_eq!(client.connect(c"tracked://blocked-connect".as_ptr(), true), 0);
     let connection = client.connection().unwrap();
@@ -597,7 +597,7 @@ fn channel_close_during_callback_installation_cancels_publication() {
     let client = Client::create(poll.clone());
     let channel = Arc::new(ChannelLifetime::default());
     channel.close_during_install.store(true, Ordering::Release);
-    client.set_channel_factory(Box::new(ClosingDuringInstallFactory(channel.clone())));
+    client.set_channel_factory(Some(Box::new(ClosingDuringInstallFactory(channel.clone()))));
     client.set_reconnect_policy(&srpc::reconnect_policy::ReconnectPolicy::no_retry());
     let result = client.connect(c"tracked://install-close".as_ptr(), true);
     let connected = client.connected();
@@ -694,7 +694,7 @@ impl srpc::channel::ChannelFactoryBase for RefusingReconnectFactory {
 fn factory_error_callback_reports_busy_for_a_reentrant_reconnect() {
     let poll = PollThread::create();
     let client = Client::create(poll.clone());
-    client.set_channel_factory(Box::new(RefusingReconnectFactory(0)));
+    client.set_channel_factory(Some(Box::new(RefusingReconnectFactory(0))));
     client.set_reconnect_policy(&srpc::reconnect_policy::ReconnectPolicy::no_retry());
     assert_eq!(client.connect(c"tracked://factory-error".as_ptr(), true), 0);
     let connection = client.connection().unwrap();
@@ -770,7 +770,7 @@ fn replacing_fiber_channel_keeps_a_parked_receiver_alive_until_it_exits() {
     let (server, client, poll) = connected("fiber-replacement-ownership");
     let connection = client.connection().unwrap();
     let original = Arc::new(ChannelLifetime::default());
-    clientconn_bind_channel_via_poll_thread(&connection, Box::new(TrackedChannel(original.clone())));
+    clientconn_bind_channel_via_poll_thread(&connection, Some(Box::new(TrackedChannel(original.clone()))));
     wait_for_parked_receiver(&poll);
 
     // Hold the owner thread after its receive fiber has suspended. Replacing
@@ -786,7 +786,7 @@ fn replacing_fiber_channel_keeps_a_parked_receiver_alive_until_it_exits() {
     entered_receiver.recv_timeout(Duration::from_secs(3)).unwrap();
 
     let replacement = Arc::new(ChannelLifetime::default());
-    clientconn_bind_channel_via_poll_thread(&connection, Box::new(TrackedChannel(replacement)));
+    clientconn_bind_channel_via_poll_thread(&connection, Some(Box::new(TrackedChannel(replacement))));
     let dropped_before_receiver_exit = original.dropped.load(Ordering::Acquire);
     release.wait();
 
@@ -837,7 +837,7 @@ impl Drop for ReenterOnDrop {
 fn rejected_async_callback_capture_can_reenter_when_dropped() {
     let poll = PollThread::create();
     let client = Client::create(poll.clone());
-    client.set_channel_factory(Box::new(BackpressureFactory));
+    client.set_channel_factory(Some(Box::new(BackpressureFactory)));
     assert_eq!(client.connect(c"backpressure://capture-drop".as_ptr(), true), 0);
     let connection = client.connection().unwrap();
     let (finished, observed) = mpsc::channel();

@@ -99,8 +99,11 @@ pub trait ChannelConnectionBase: Send + Sync {
 /// Owned, non-nullable connection handle.
 pub type ChannelConnectionProxy = Box<dyn ChannelConnectionBase>;
 
+/// A connection argument that may be absent at a transport boundary.
+pub type NullableChannelConnectionProxy = Option<ChannelConnectionProxy>;
+
 pub type OnAcceptCallback =
-    LegacyCallbackWrapper<Box<dyn Fn(self::ChannelConnectionProxy) + Send + Sync>>;
+    LegacyCallbackWrapper<Box<dyn Fn(self::NullableChannelConnectionProxy) + Send + Sync>>;
 
 /// Abstract accept loop implemented by transport listeners.
 ///
@@ -140,3 +143,6 @@ pub trait ChannelFactoryBase: Send {
 
 /// Owned, non-nullable factory handle.
 pub type ChannelFactoryProxy = Box<dyn ChannelFactoryBase>;
+
+/// A factory argument that may be absent at a client or server boundary.
+pub type NullableChannelFactoryProxy = Option<ChannelFactoryProxy>;

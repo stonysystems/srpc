@@ -1360,7 +1360,7 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
                     accepting = false;
                     continue;
                 }
-                callback.callable()(accepted);
+                callback.callable()(Some(accepted));
             }
         } else if rc == 0 {
             accepting = false;

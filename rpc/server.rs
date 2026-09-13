@@ -14,7 +14,6 @@
 #[allow(unused_imports)]
 use crate::reactor as _;
 
-use rusty::RustyHandleIsValid as _;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
@@ -25,11 +24,12 @@ use std::sync::{Arc, Weak as ArcWeak};
 // exact spelling.
 use std::collections::{HashMap, HashSet};
 
-use crate::basetypes::Time;
+use crate::basetypes::{NullableArc, Time};
 use crate::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ChannelListenerBase,
     ChannelListenerProxy, OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
+    NullableChannelConnectionProxy, NullableChannelFactoryProxy,
 };
 use crate::logging::log_line;
 use crate::misc::OneTimeJob;
@@ -123,13 +123,13 @@ pub type ShutdownHook = Box<dyn FnMut()>;
 /// pending-request counter on drop. The matching increment is done at the
 /// guard's single construction site (`Request::attach_pending_guard`).
 pub struct PendingRequestGuard {
-    pending_counter: Arc<AtomicI32>,
+    pending_counter: NullableArc<AtomicI32>,
 }
 
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
-        if self.pending_counter.is_valid() {
-            self.pending_counter.fetch_sub(1i32, Ordering::Relaxed);
+        if let Some(counter) = &self.pending_counter {
+            counter.fetch_sub(1i32, Ordering::Relaxed);
         }
     }
 }
@@ -143,12 +143,14 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn attach_pending_guard(&mut self, counter: &Arc<AtomicI32>) {
-        if self.pending_guard.is_none() && counter.is_valid() {
-            counter.fetch_add(1i32, Ordering::Relaxed);
-            self.pending_guard = Some(Box::new(PendingRequestGuard {
-                pending_counter: counter.clone(),
-            }));
+    pub fn attach_pending_guard(&mut self, counter: &NullableArc<AtomicI32>) {
+        if self.pending_guard.is_none() {
+            if let Some(counter) = counter.as_ref() {
+                counter.fetch_add(1i32, Ordering::Relaxed);
+                self.pending_guard = Some(Box::new(PendingRequestGuard {
+                    pending_counter: Some(counter.clone()),
+                }));
+            }
         }
     }
 }
@@ -339,10 +341,11 @@ impl ServerConnection {
     // clones — one per closure — so the callbacks never cycle through
     // `channel_proxy_`; callbacks installed BEFORE the proxy moves into
     // the slot so none of them runs under the mutex.
-    pub fn bind_channel(&mut self, mut proxy: ChannelConnectionProxy) {
-        if !proxy.is_valid() {
+    pub fn bind_channel(&mut self, proxy: NullableChannelConnectionProxy) {
+        if proxy.is_none() {
             return;
         }
+        let mut proxy = proxy.unwrap();
         let weak_frame: WeakServerConnection = self.weak_self_.clone();
         let weak_closed: WeakServerConnection = self.weak_self_.clone();
         let weak_error: WeakServerConnection = self.weak_self_.clone();
@@ -835,10 +838,11 @@ impl Server {
         }
     }
 
-    pub fn set_channel_factory(&mut self, factory: ChannelFactoryProxy) {
-        if !factory.is_valid() {
+    pub fn set_channel_factory(&mut self, factory: NullableChannelFactoryProxy) {
+        if factory.is_none() {
             return;
         }
+        let factory = factory.unwrap();
         self.channel_factory_field = Some(factory);
     }
 
@@ -1014,7 +1018,7 @@ impl Server {
             let tcp_factory: Arc<TcpFactory> = Arc::new(TcpFactory::new(
                 self.poll_thread_field.as_ref().unwrap().clone(),
             ));
-            self.set_channel_factory(make_tcp_factory_proxy(tcp_factory));
+            self.set_channel_factory(Some(make_tcp_factory_proxy(tcp_factory)));
         }
 
         if self.is_channel_factory_bound() {
@@ -1041,8 +1045,8 @@ impl Server {
             {
                 let ch: &mut Box<dyn ChannelListenerBase> = &mut listener;
                 ch.set_on_accept(OnAcceptCallback::from_callable(Box::new(
-                    move |conn_proxy: ChannelConnectionProxy| {
-                        if !conn_proxy.is_valid() {
+                    move |conn_proxy: NullableChannelConnectionProxy| {
+                        if conn_proxy.is_none() {
                             return;
                         }
                         let sconn: Arc<ServerConnection> =
@@ -1087,7 +1091,7 @@ impl Server {
                             guard.conns.push(sconn);
                         }
                     },
-                ) as Box<dyn Fn(ChannelConnectionProxy) + Send + Sync>));
+                ) as Box<dyn Fn(NullableChannelConnectionProxy) + Send + Sync>));
                 ch.set_on_error(OnErrorCallback::from_callable(Box::new(
                     move |err: ChannelError, msg: &str| {
                         let reason: &str = channel_error_to_string(err);
@@ -1355,7 +1359,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     crate::serializable::Deserialize_::deserialize(&mut v_xid, &mut header_ar);
     req_box.xid = v_xid.get();
     let pending_counter: Arc<ServerPendingRequestsAtomic> = sconn.ctx_.pending_requests.clone();
-    req_box.attach_pending_guard(&pending_counter);
+    req_box.attach_pending_guard(&Some(pending_counter));
 
     // sizeof(i32) spelled as its value: not enough bytes for rpc_id.
     if req_box.src.remaining() < 4usize {

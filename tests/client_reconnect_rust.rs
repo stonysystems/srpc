@@ -78,17 +78,17 @@ fn connected_pair(tag: &str) -> (Server, Arc<Client>) {
     // SAFETY: rustc-lane poll threads; the in-memory channel never schedules
     // onto them.
     let mut server = Server::new(Some(PollThread::create()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(RetryProbeService));
     // SAFETY: `addr` is NUL-terminated and outlives the call.
     assert_eq!(unsafe { server.start(addr.as_ptr()) }, 0);
 
     let client = Client::create(PollThread::create());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     assert_eq!(client.connect(addr.as_ptr(), true), 0);
     (server, client)
 }
@@ -103,16 +103,16 @@ fn explicit_reconnect_recovers_after_the_server_returns() {
     // SAFETY: rustc-lane poll threads; the in-memory channel never schedules
     // onto them (three create sites in this test).
     let mut server = Server::new(Some(PollThread::create()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(RetryProbeService));
     assert_eq!(unsafe { server.start(addr.as_ptr()) }, 0);
 
     let client = Client::create(PollThread::create());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     assert_eq!(client.connect(addr.as_ptr(), true), 0);
     // Only the EXPLICIT path under test: without this, the default policy's
     // auto-reconnect thread can race the revived server below.
@@ -142,9 +142,9 @@ fn explicit_reconnect_recovers_after_the_server_returns() {
     // Bring a server back on the same switchboard address, then reconnect --
     // the completion arrives from the coordinator's real spawned thread.
     let mut revived = Server::new(Some(PollThread::create()));
-    revived.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    revived.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     revived.reg_service(Box::new(RetryProbeService));
     let revived_start = unsafe { revived.start(addr.as_ptr()) };
     let addr_string = "inmemory://reconnect".to_string();

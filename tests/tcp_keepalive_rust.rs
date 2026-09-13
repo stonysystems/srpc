@@ -81,7 +81,7 @@ fn client_applies_pending_keepalive_on_bind_and_live_updates_to_the_transport() 
     client.set_keepalive(&KeepaliveConfig {
         enabled: true, idle_sec: 19, interval_sec: 5, count: 7,
     });
-    client.set_channel_factory(Box::new(ConnectedTcpFactory(connection.clone())));
+    client.set_channel_factory(Some(Box::new(ConnectedTcpFactory(connection.clone()))));
     let address = std::ffi::CString::new("127.0.0.1:1").unwrap();
     assert_eq!(client.connect(address.as_ptr(), true), 0);
     let fd = connection.fd();

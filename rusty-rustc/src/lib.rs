@@ -78,28 +78,6 @@ pub mod panic {
     }
 }
 
-/// Handle-validity and emptiness predicates the runtime types carry but Rust's
-/// own owning handles cannot be without. `rusty::Box` / `rusty::Arc` expose
-/// `is_valid()` and `rusty::Function` exposes `is_empty()`; a Rust `Box` or
-/// `Arc` is never null and a Rust boxed closure is never empty, so the rustc
-/// models are constants. Canonical sources still spell the predicate so the
-/// generated C++ keeps checking handles that reach it from C++ callers.
-pub trait RustyHandleIsValid {
-    fn is_valid(&self) -> bool;
-}
-
-impl<T: ?Sized> RustyHandleIsValid for Box<T> {
-    fn is_valid(&self) -> bool {
-        true
-    }
-}
-
-impl<T: ?Sized> RustyHandleIsValid for ::std::sync::Arc<T> {
-    fn is_valid(&self) -> bool {
-        true
-    }
-}
-
 
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {

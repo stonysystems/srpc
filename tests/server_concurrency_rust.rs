@@ -42,8 +42,28 @@ fn connection() -> (Arc<ServerConnection>, Arc<TransportState>) {
     let state = Arc::new(TransportState { entered: Barrier::new(2), release: Barrier::new(2),
         dropped: AtomicBool::new(false), close_count: AtomicUsize::new(0) });
     let mut connection = ServerConnection::new(context, -1);
-    connection.bind_channel(Box::new(BlockingTransport(state.clone())));
+    connection.bind_channel(Some(Box::new(BlockingTransport(state.clone()))));
+    connection.bind_channel(None);
+    assert!(!state.dropped.load(Ordering::SeqCst), "an absent binding must keep the installed transport");
     (Arc::new(connection), state)
+}
+
+#[test]
+fn an_absent_request_counter_never_installs_a_pending_guard() {
+    let counter = Arc::new(AtomicI32::new(0));
+    let mut request = srpc::server::Request {
+        body: Vec::new(),
+        src: srpc::serializable::BufferSource::new(std::ptr::null(), 0),
+        xid: 0,
+        pending_guard: None,
+    };
+    request.attach_pending_guard(&None);
+    assert!(request.pending_guard.is_none());
+    request.attach_pending_guard(&Some(counter.clone()));
+    request.attach_pending_guard(&None);
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
+    drop(request);
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
 }
 
 #[test]

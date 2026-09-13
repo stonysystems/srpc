@@ -43,16 +43,16 @@ fn connected(
     let server_poll = PollThread::create();
     let client_poll = PollThread::create();
     let mut server = Server::new(Some(server_poll.clone()));
-    server.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard.clone(),
-    ))));
+    )))));
     server.reg_service(Box::new(service));
     let address = CString::new(format!("inmemory://{name}")).unwrap();
     assert_eq!(unsafe { server.start(address.as_ptr()) }, 0);
     let client = Client::create(client_poll.clone());
-    client.set_channel_factory(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
         switchboard,
-    ))));
+    )))));
     assert_eq!(client.connect(address.as_ptr(), true), 0);
     (server, client, server_poll, client_poll)
 }
