@@ -144,7 +144,13 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # mirrored in RAW_ABI_ALIASES), and TcpConnection.fd_ becomes
 # UnsafeCell<Option<Arc<OwnedFd>>>: every later field shifts +8 and sizeof goes
 # 344 -> 352, re-pinned from measured values in tests/rpc_tcp_channel_test.cc.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2046
+# 2046 -> 2045: the facade std::string byte model left canonical Rust; the
+# backtrace renderer's `bt_empty_string()` helper (a `Default::default()` on
+# that model) went with it, and its strong symbol in srpc.debugging with it.
+# In the same change log_line/log_sink_write take std::string_view and the
+# string-returning logging/misc functions return rusty::String (row
+# replacements, count-neutral).
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2045
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: the 65 additions recorded by the historical promotion oracle.
@@ -685,12 +691,15 @@ EXPECTED_IMPORTS = {
         'srpc.reactor',
     ],
     "srpc.logging": [
+        'vec_port.vec',
         'std',
         'srpc.debugging',
     ],
     "srpc.idempotency": ["vec_port.vec", "srpc.serializable"],
     "srpc.fiber": ["rc_port", "srpc.basetypes", "srpc.reactor"],
-    "srpc.misc": [],
+    "srpc.misc": [
+        'vec_port.vec',
+    ],
     "srpc.channel": ["srpc.callback_wrapper"],
     "srpc.epoll_wrapper": ["rusty"],
     "srpc.pollable_proxy": [],
@@ -2690,10 +2699,10 @@ ABI_SPECS = {
                 "static void set_level(int32_t level);",
                 "static int32_t level_now();",
                 "export std::string_view log_level_tag(int32_t level);",
-                "export void log_line(int32_t level, int32_t line, const int8_t* file, const rusty::String& msg);",
-                "export void log_sink_write(const std::string& line);",
-                "export std::string log_basename(const int8_t* fpath);",
-                "export std::string log_time_now();",
+                "export void log_line(int32_t level, int32_t line, const int8_t* file, std::string_view msg);",
+                "export void log_sink_write(std::string_view line);",
+                "export rusty::String log_basename(const int8_t* fpath);",
+                "export rusty::String log_time_now();",
                 "logging_ffi::srpc_path_basename(reinterpret_cast<const std::string::value_type*>(fpath))",
                 "logging_ffi::srpc_local_calendar_fields(",
                 "logging_ffi::srpc_gettimeofday_us()",
@@ -2707,8 +2716,8 @@ ABI_SPECS = {
                 ('T', 'srpc::log_basename@srpc.logging(signed char const*)'),
                 ('T', 'srpc::log_format_time@srpc.logging(std::__1::span<int const, 18446744073709551615ul>, int)'),
                 ('T', 'srpc::log_level_tag@srpc.logging(int)'),
-                ('T', 'srpc::log_line@srpc.logging(int, int, signed char const*, rusty::String const&)'),
-                ('T', 'srpc::log_sink_write@srpc.logging(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)'),
+                ('T', 'srpc::log_line@srpc.logging(int, int, signed char const*, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
+                ('T', 'srpc::log_sink_write@srpc.logging(std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
                 ('T', 'srpc::log_time_now@srpc.logging()'),
                 ('T', 'srpc::log_write_digits@srpc.logging(std::__1::span<unsigned char, 18446744073709551615ul>, int, unsigned long, unsigned long)'),
             }
@@ -2852,7 +2861,7 @@ ABI_SPECS = {
                 "export template<typename T, typename T1, typename T2>",
                 "T clamp(const T& value, const T1& lower, const T2& upper)",
                 "export int32_t get_ncpu();",
-                "export std::string format_thousands(double val);",
+                "export rusty::String format_thousands(double val);",
                 "export rusty::Task<int64_t> async_double(int64_t x);",
                 "export rusty::Task<int64_t> async_double_twice(int64_t x);",
                 "export int64_t thread_slot_bump();",
@@ -3210,7 +3219,6 @@ ABI_SPECS = {
             {
                 ('T', 'srpc::BtCapture@srpc.debugging::new_()'),
                 ('T', 'srpc::bt_capture@srpc.debugging()'),
-                ('T', 'srpc::bt_empty_string@srpc.debugging()'),
                 ('T', 'srpc::bt_index_prefix@srpc.debugging(int)'),
                 ('T', 'srpc::bt_render@srpc.debugging(srpc::BtCapture@srpc.debugging const&)'),
                 ('T', 'srpc::likely@srpc.debugging(bool)'),
@@ -6608,7 +6616,7 @@ static_assert(std::is_same_v<
 static_assert(std::is_same_v<
               decltype(&srpc::log_line),
               void (*)(std::int32_t, std::int32_t, const std::int8_t*,
-                       const rusty::String&)>);
+                       std::string_view)>);
 
 static_assert(sizeof(srpc::IdempotencyKey) == 16);
 static_assert(alignof(srpc::IdempotencyKey) == 8);
@@ -6671,7 +6679,7 @@ static_assert(std::is_convertible_v<srpc::OneTimeJob*, srpc::Job*>);
 static_assert(std::is_same_v<
               decltype(&srpc::get_ncpu), std::int32_t (*)()>);
 static_assert(std::is_same_v<
-              decltype(&srpc::format_thousands), std::string (*)(double)>);
+              decltype(&srpc::format_thousands), rusty::String (*)(double)>);
 
 static_assert(std::is_same_v<
               std::underlying_type_t<srpc::ChannelError>, std::int32_t>);
@@ -9771,7 +9779,7 @@ int main() {
         srpc::log_basename(nullptr) != "<unknown>" ||
         srpc::log_basename(reinterpret_cast<const std::int8_t*>("a/b/file.cc")) !=
             "file.cc" ||
-        srpc::log_time_now().size() != 23) {
+        srpc::log_time_now().len() != 23) {
         return 223;
     }
     std::ostringstream logging_sink;

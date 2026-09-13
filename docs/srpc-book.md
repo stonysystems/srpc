@@ -5768,7 +5768,7 @@ class ChannelConnectionBase {
 };
 
 class ChannelListenerBase {
-    virtual ChannelError listen(const rusty::String& address) = 0;
+    virtual ChannelError listen(std::string_view address) = 0;
     virtual void close() = 0;
     virtual bool is_closed() const = 0;
     virtual rusty::String local_address() const = 0;
@@ -5782,7 +5782,7 @@ struct ConnectResult {
 };
 
 class ChannelFactoryBase {
-    virtual ConnectResult connect(const rusty::String& address) = 0;
+    virtual ConnectResult connect(std::string_view address) = 0;
     virtual rusty::Option<ChannelListenerProxy> make_listener() = 0;
     virtual rusty::String backend_name() const = 0;
 };

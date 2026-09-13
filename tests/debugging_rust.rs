@@ -32,15 +32,3 @@ fn verification_failure_renders_a_real_backtrace_and_reports_the_call_site() {
     assert!(message.contains("37"), "{message}");
 }
 
-#[test]
-#[allow(unsafe_code)]
-fn standard_string_c_str_is_nul_terminated_and_preserves_bytes() {
-    let mut value = rusty::LoggingString::default();
-    value.append("stack trace");
-    let pointer = value.c_str();
-    assert!(!pointer.is_null());
-    // SAFETY: c_str owns the NUL-terminated bytes until the next string mutation.
-    assert_eq!(unsafe { std::ffi::CStr::from_ptr(pointer) }.to_bytes(), b"stack trace");
-    value.append(" suffix");
-    assert_eq!(unsafe { std::ffi::CStr::from_ptr(value.c_str()) }.to_bytes(), b"stack trace suffix");
-}

@@ -236,7 +236,8 @@ void value_checks() {
     require(::gethostname(hostname.data(), hostname.size() - 1) == 0, "native hostname");
     require(srpc::get_host_name() == hostname.data(), "canonical hostname used a facade");
     const auto timestamp = srpc::log_time_now();
-    require(timestamp.size() == 23 && timestamp[4] == '-' && timestamp[19] == '.',
+    const std::string_view timestamp_view = timestamp.as_str();
+    require(timestamp_view.size() == 23 && timestamp_view[4] == '-' && timestamp_view[19] == '.',
             "canonical timestamp shape");
 }
 }  // namespace

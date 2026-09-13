@@ -49,34 +49,34 @@ pub fn log_level_tag(level: i32) -> &'static str {
 /// `file` must be null or point to a valid NUL-terminated path for the
 /// duration of the call. The logger scans any non-null path.
 #[allow(unsafe_code)]
-pub unsafe fn log_line(level: i32, line: i32, file: *const i8, msg: &String) {
+pub unsafe fn log_line(level: i32, line: i32, file: *const i8, msg: &str) {
     if level > Log::DEBUG {
         // SAFETY: the indexed verifier has no caller-side precondition.
         verify_at(false, file!(), line!());
     }
     if level <= Log::level_now() {
-        let mut out: rusty::LoggingString = Default::default();
-        out.append(log_level_tag(level));
-        out.append("[");
+        let mut out = String::new();
+        out.push_str(log_level_tag(level));
+        out.push('[');
         // SAFETY: upheld by this function's contract.
-        out.append(unsafe { log_basename(file) });
-        out.append(":");
-        out.append(&line.to_string());
-        out.append("] ");
-        out.append(log_time_now());
-        out.append(" | ");
-        out.append(msg);
+        out.push_str(&unsafe { log_basename(file) });
+        out.push(':');
+        out.push_str(&line.to_string());
+        out.push_str("] ");
+        out.push_str(&log_time_now());
+        out.push_str(" | ");
+        out.push_str(msg);
         log_sink_write(&out);
     }
 }
 
 /// Write the exact line bytes, append one newline, and flush `std::cout`.
 #[allow(unsafe_code)]
-pub fn log_sink_write(line: &rusty::LoggingString) {
-    // SAFETY: `line.data()` remains valid for `line.size()` bytes for the
+pub fn log_sink_write(line: &str) {
+    // SAFETY: `line.as_ptr()` remains valid for `line.len()` bytes for the
     // duration of these synchronous output calls.
     unsafe {
-        cpp_std::cout.write(line.data(), line.size());
+        cpp_std::cout.write(line.as_ptr() as *const LegacyCChar, line.len());
         cpp_std::cout.put(b'\n' as LegacyCChar);
         cpp_std::cout.flush();
     }
@@ -93,30 +93,31 @@ mod logging_ffi {
     }
 }
 
-/// Return an owned byte-for-byte copy of the filename portion of `fpath`.
+/// Return an owned copy of the filename portion of `fpath`. Valid UTF-8 is
+/// preserved byte for byte; an invalid sequence becomes U+FFFD, as a Rust
+/// `String` requires.
 ///
 /// # Safety
 ///
 /// `fpath` must be null or point to a valid NUL-terminated path for the
 /// duration of the call.
 #[allow(unsafe_code)]
-pub unsafe fn log_basename(fpath: *const i8) -> rusty::LoggingString {
-    let mut out: rusty::LoggingString = Default::default();
+pub unsafe fn log_basename(fpath: *const i8) -> String {
     // SAFETY: upheld by this function's contract.
     let base = unsafe { logging_ffi::srpc_path_basename(fpath as *const LegacyCChar) };
     if base.is_null() {
-        out.append("<unknown>");
-        return out;
+        return String::from("<unknown>");
     }
+    let mut bytes: Vec<u8> = Vec::new();
     let mut index: usize = 0;
     // SAFETY: the C helper returns either null or a pointer into the same
     // valid NUL-terminated input string.
     while unsafe { *base.add(index) } != 0 as LegacyCChar {
         // SAFETY: `index` is advanced only until the first NUL byte.
-        out.push_back(unsafe { *base.add(index) });
+        bytes.push(unsafe { *base.add(index) } as u8);
         index += 1;
     }
-    out
+    String::from(String::from_utf8_lossy(bytes.as_slice()))
 }
 
 fn log_write_digits(bytes: &mut [u8], mut value: i32, offset: usize, digits: usize) {
@@ -128,7 +129,7 @@ fn log_write_digits(bytes: &mut [u8], mut value: i32, offset: usize, digits: usi
     }
 }
 
-fn log_format_time(fields: &[i32], milliseconds: i32) -> rusty::LoggingString {
+fn log_format_time(fields: &[i32], milliseconds: i32) -> String {
     let mut bytes: [u8; 23] = [0; 23];
     log_write_digits(&mut bytes, fields[0], 0, 4);
     bytes[4] = b'-';
@@ -143,18 +144,13 @@ fn log_format_time(fields: &[i32], milliseconds: i32) -> rusty::LoggingString {
     log_write_digits(&mut bytes, fields[5], 17, 2);
     bytes[19] = b'.';
     log_write_digits(&mut bytes, milliseconds, 20, 3);
-    let mut now: rusty::LoggingString = Default::default();
-    let mut index: usize = 0;
-    while index < bytes.len() {
-        now.push_back(bytes[index] as LegacyCChar);
-        index += 1;
-    }
-    now
+    // Every byte is an ASCII digit or separator, so this is lossless.
+    String::from(String::from_utf8_lossy(bytes.as_slice()))
 }
 
 /// Produce the legacy 23-character local-time timestamp.
 #[allow(unsafe_code)]
-pub fn log_time_now() -> rusty::LoggingString {
+pub fn log_time_now() -> String {
     let mut fields: [i32; 6] = [0; 6];
     // SAFETY: the calendar operation writes exactly six integer fields.
     if unsafe { logging_ffi::srpc_local_calendar_fields(fields.as_mut_ptr()) } != 0 {

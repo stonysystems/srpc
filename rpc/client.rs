@@ -2749,30 +2749,26 @@ pub fn clientconn_enqueue_heartbeat_probe(conn: &ClientConnection) {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn clientconn_addr_to_string(addr: *const i8) -> String {
     if addr.is_null() {
-        // See `ClientConnection::new`: the alias maps to `std::string`.
-        return Default::default();
+        return String::new();
     }
-    // Byte-for-byte copy up to the NUL — the same shape `base/logging.cpp`'s
-    // `log_basename` uses, and the same bytes the historical
-    // `std::string(addr)` produced.
+    // Copy up to the NUL -- the same shape `base/logging.rs`'s `log_basename`
+    // uses. Valid UTF-8 is preserved byte for byte, as the historical
+    // `std::string(addr)` did; an invalid sequence becomes U+FFFD.
     //
     // `CStr::from_ptr(..).to_string_lossy().into_owned()` is not spellable
     // here: the checked map spells `CStr` `std::string`, so the associated
     // function emits the non-existent `std::string::from_ptr`, and every
-    // `CStr` method behind it has the same problem. `rusty::LoggingString` is
-    // the byte model that maps to `std::string` and carries C++'s
-    // `push_back`; `client_text` then hands back a `String` (`&LoggingString`
-    // derefs to `&str` in rustc and converts to `std::string_view` in C++).
-    let mut scratch: rusty::LoggingString = Default::default();
+    // `CStr` method behind it has the same problem.
+    let mut bytes: Vec<u8> = Vec::new();
     let mut index: usize = 0;
     // SAFETY: all callers uphold the historical C-string input contract;
     // `index` is advanced only until the first NUL byte.
     while unsafe { *addr.add(index) } != 0i8 {
-        // SAFETY: as above — `index` is still before the terminator.
-        scratch.push_back(unsafe { *addr.add(index) });
+        // SAFETY: as above -- `index` is still before the terminator.
+        bytes.push(unsafe { *addr.add(index) } as u8);
         index += 1;
     }
-    client_text(&scratch)
+    String::from(String::from_utf8_lossy(bytes.as_slice()))
 }
 
 pub fn clientconn_connect_via_factory(conn: &ClientConnection, addr_i8: *const i8) -> i32 {

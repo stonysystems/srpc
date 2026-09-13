@@ -415,8 +415,10 @@ impl<A, B> StdPair<A, B> {
     }
 }
 
-/// Rust-only facade spelling mapped to the public `std::string` ABI.
-pub type LoggingString = std::string;
+/// Rust-only facade spelling mapped to the public `std::string` ABI. It is the
+/// impl target that keeps the generated `Serialize_`/`Deserialize_` overloads
+/// for C++ consumers' own `std::string` fields; see `std::string` below.
+pub type SerializableStdString = std::string;
 
 /// Opaque rustc-only model mapped to libc's `FILE` in generated C++.
 #[repr(C)]
@@ -892,8 +894,9 @@ pub mod panic {
     /// recovers.
     pub struct PanicPayload(Option<String>);
 
-    pub fn do_panic(message: crate::std::string) -> ! {
-        ::std::panic::panic_any(message.to_rust_string())
+    /// Production C++ takes a `std::string_view`; `&str` lowers to exactly that.
+    pub fn do_panic(message: &str) -> ! {
+        ::std::panic::panic_any(message.to_string())
     }
 
     /// Run `body`, converting an unwind into `Err(PanicPayload)`.
@@ -956,141 +959,34 @@ pub mod std {
     use ::std::cell::UnsafeCell;
     use ::std::io::Write as _;
 
-    /// Values accepted by the rustc-only `std::string::append` model.
-    pub trait StringAppend {
-        fn append_to(self, output: &mut Vec<u8>);
-    }
-
-    impl StringAppend for &str {
-        fn append_to(self, output: &mut Vec<u8>) {
-            output.extend_from_slice(self.as_bytes());
-        }
-    }
-
-    impl StringAppend for &::std::string::String {
-        fn append_to(self, output: &mut Vec<u8>) {
-            output.extend_from_slice(self.as_bytes());
-        }
-    }
-
-    /// Owned byte storage for the Rust implementation of `std::string`.
+    /// Rustc-only model of C++ `std::string`, kept for exactly one purpose: it
+    /// is the type the canonical `Serialize`/`Deserialize` impls target, so the
+    /// generated C++ keeps its `std::string` wire overloads for consumers' own
+    /// fields (rpcgen-generated services declare `std::string`). Canonical Rust
+    /// never builds or reads one: it spells strings as `String`, which the
+    /// transpiler lowers to `rusty::String`. The API is therefore exactly what
+    /// the two wire impls call -- `size`, `resize`, `data`.
     ///
-    /// Safe byte mutations require an exclusive reference. The separate C
-    /// string cache supports `c_str(&self)` without changing the byte storage.
-    /// `UnsafeCell` makes this type `!Sync`; shared access from multiple threads
-    /// requires an external lock. Moving ownership between threads is allowed.
+    /// `UnsafeCell` makes this type `!Sync`, matching the shared-access contract
+    /// of `data()`; shared access from multiple threads requires an external
+    /// lock, moving ownership between threads is allowed.
     ///
     /// ```compile_fail
     /// fn require_sync<T: Sync>() {}
     /// require_sync::<rusty::std::string>();
     /// ```
     #[allow(non_camel_case_types)]
-    pub struct string(UnsafeCell<Vec<u8>>, UnsafeCell<Vec<u8>>);
+    pub struct string(UnsafeCell<Vec<u8>>);
 
     impl Default for string {
         fn default() -> Self {
-            Self(UnsafeCell::new(Vec::new()), UnsafeCell::new(Vec::new()))
-        }
-    }
-
-    impl StringAppend for string {
-        fn append_to(self, output: &mut Vec<u8>) {
-            output.extend_from_slice(self.0.into_inner().as_slice());
-        }
-    }
-
-    impl StringAppend for &string {
-        #[allow(unsafe_code)]
-        fn append_to(self, output: &mut Vec<u8>) {
-            // SAFETY: safe byte mutations require `&mut string`, this type is
-            // !Sync, and unsafe data() callers must prevent overlapping access.
-            output.extend_from_slice(unsafe { (&*self.0.get()).as_slice() });
-        }
-    }
-
-    /// Shared byte view used by equality, ordering, hashing, and copying.
-    /// Generated C++ uses the corresponding `std::string` operations.
-    #[allow(unsafe_code)]
-    fn string_bytes(value: &string) -> &[u8] {
-        // SAFETY: safe byte mutations require an exclusive reference, and
-        // !Sync prevents concurrent shared access without an external lock.
-        // The data() contract excludes mutation while this view is live.
-        unsafe { (&*value.0.get()).as_slice() }
-    }
-
-    /// `std::string` converts to `std::string_view` implicitly in C++, which is
-    /// what canonical sources rely on when they hand a stored address to a
-    /// `&str` parameter. `Deref` is the Rust spelling of that implicit
-    /// conversion and is invisible to the emitter: deref coercion happens in
-    /// rustc's type checker, so the generated C++ call is unchanged.
-    impl ::std::ops::Deref for string {
-        type Target = str;
-
-        fn deref(&self) -> &str {
-            ::std::str::from_utf8(string_bytes(self)).expect("UTF-8 required for a Rust string view")
-        }
-    }
-
-    impl Clone for string {
-        fn clone(&self) -> Self {
-            Self(UnsafeCell::new(string_bytes(self).to_vec()), UnsafeCell::new(Vec::new()))
-        }
-    }
-
-    impl PartialEq for string {
-        fn eq(&self, other: &Self) -> bool {
-            string_bytes(self) == string_bytes(other)
-        }
-    }
-
-    impl Eq for string {}
-
-    impl PartialOrd for string {
-        fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    impl Ord for string {
-        fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
-            string_bytes(self).cmp(string_bytes(other))
-        }
-    }
-
-    impl ::std::hash::Hash for string {
-        fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
-            string_bytes(self).hash(state);
+            Self(UnsafeCell::new(Vec::new()))
         }
     }
 
     impl string {
-        pub fn append<T: StringAppend>(&mut self, value: T) {
-            value.append_to(self.0.get_mut());
-        }
-
-        pub fn push_back(&mut self, value: i8) {
-            self.0.get_mut().push(value as u8);
-        }
-
         pub fn resize(&mut self, size: usize) {
             self.0.get_mut().resize(size, 0);
-        }
-
-        /// Return a NUL-terminated view of the current bytes.
-        ///
-        /// The pointer and any references derived from it must not be used
-        /// after the next `c_str` call, a string mutation, or this value's drop.
-        #[allow(unsafe_code)]
-        pub fn c_str(&self) -> *const i8 {
-            // SAFETY: !Sync prevents concurrent cache access, and callers must
-            // end views from earlier c_str calls before calling again. The
-            // separate cache never changes the main byte storage.
-            let bytes = unsafe { &*self.0.get() };
-            let cache = unsafe { &mut *self.1.get() };
-            cache.clear();
-            cache.extend_from_slice(bytes);
-            cache.push(0);
-            cache.as_ptr().cast()
         }
 
         /// # Safety
@@ -1105,24 +1001,11 @@ pub mod std {
             unsafe { (&mut *self.0.get()).as_mut_ptr().cast() }
         }
 
-        pub fn is_empty(&self) -> bool {
-            self.size() == 0
-        }
-
         #[allow(unsafe_code)]
         pub fn size(&self) -> usize {
             // SAFETY: safe byte mutations require &mut self, !Sync prevents
             // concurrent shared access, and data() forbids overlapping access.
             unsafe { (&*self.0.get()).len() }
-        }
-
-        /// Copy the bytes into a Rust string, rejecting invalid UTF-8.
-        #[allow(unsafe_code)]
-        pub fn to_rust_string(&self) -> ::std::string::String {
-            // SAFETY: safe byte mutations require &mut self, !Sync prevents
-            // concurrent shared access, and data() forbids overlapping access.
-            let bytes = unsafe { (&*self.0.get()).clone() };
-            ::std::string::String::from_utf8(bytes).expect("valid UTF-8 in std::string facade")
         }
     }
 
@@ -1136,7 +1019,7 @@ pub mod std {
         ///
         /// `data` must denote `size` readable bytes.
         #[allow(unsafe_code)]
-        pub unsafe fn write(&self, data: *mut i8, size: usize) {
+        pub unsafe fn write(&self, data: *const i8, size: usize) {
             let bytes = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
             let _ = ::std::io::stdout().write_all(bytes);
         }

@@ -86,9 +86,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2046
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2045
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2046)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2045)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -123,7 +123,7 @@ class GateStaticContractTests(unittest.TestCase):
             # One C++ ABI alias and the initializer remain separately pinned.
             "srpc.fiber_channel": (13, 15),
             "srpc.threading": (17, 18),
-            "srpc.debugging": (10, 11),
+            "srpc.debugging": (9, 10),
             "srpc.heartbeat": (25, 26),
             "srpc.any_message": (10, 11),
         }
@@ -198,7 +198,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2046)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2045)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -340,7 +340,7 @@ class GateContractTests(unittest.TestCase):
             # One C++ ABI alias and the initializer remain separately pinned.
             "srpc.fiber_channel": (13, 15),
             "srpc.threading": (17, 18),
-            "srpc.debugging": (10, 11),
+            "srpc.debugging": (9, 10),
             "srpc.heartbeat": (25, 26),
             "srpc.any_message": (10, 11),
         }

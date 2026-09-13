@@ -70,7 +70,7 @@ fn one_time_job_preserves_state_and_trait_dispatch() {
 
 #[test]
 fn thousands_formatter_matches_the_legacy_surface() {
-    let text = |value| format_thousands(value).to_rust_string();
+    let text = |value| format_thousands(value);
     assert_eq!(text(0.0), "0.00");
     assert_eq!(text(-0.0), "0.00");
     assert_eq!(text(12.5), "12.50");

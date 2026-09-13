@@ -22,9 +22,9 @@
     }
   },
   "declarations": {
-    "alias:LoggingString": {
+    "alias:SerializableStdString": {
       "category": "import",
-      "sha256": "1aa6eb2a7742a3da1f20d7b2c11b3e4139caceb718d47d86cf80d003c977df6a"
+      "sha256": "4d66e675134f0b973e507a6f67bc7f7b2eb3a20ee449d78ef9cd11154fbfb18a"
     },
     "alias:NativeHashMap": {
       "category": "import",
@@ -84,7 +84,7 @@
     },
     "function:panic::do_panic": {
       "category": "standard",
-      "sha256": "77d9625124cf62d3872d2e0cebf33861aa7e02e79ac618e4a5695c4b6c074e62"
+      "sha256": "63dd791fe8d23e3fe2d52d9767dbf3b89305d9caa608fc5b61962f87e2f8c42d"
     },
     "function:panic::payload_message": {
       "category": "standard",
@@ -121,10 +121,6 @@
     "function:std::make_pair": {
       "category": "standard",
       "sha256": "fedaef4629a510edf89923e291e05b5ccaefc6df3c8b751227f203f4b7201e78"
-    },
-    "function:std::string_bytes": {
-      "category": "standard",
-      "sha256": "8e76badbf0e7a145f08e05c0189f72692ddad8ea8302d20319182176ffec6b9d"
     },
     "function:sys::process::getpid": {
       "category": "standard",
@@ -402,61 +398,17 @@
       "category": "trait-dispatch",
       "sha256": "c18f7ee96bac46d70b8989d9820431102a7f2e16e172654c28e7068eba5d23c5"
     },
-    "impl:std::& :: std :: string :: String as StringAppend ": {
-      "category": "standard",
-      "sha256": "9bf486f63fa383d31c1e87deabe81ecc287c3f556722993a895d6f788f8d7d7a"
-    },
-    "impl:std::& str as StringAppend ": {
-      "category": "standard",
-      "sha256": "33796233110346285f21672862df30078d24837a84757c613ef1c9e64ffe04c6"
-    },
-    "impl:std::& string as StringAppend ": {
-      "category": "standard",
-      "sha256": "f1860e5f6f3ac28e26ec2f2828384d937da5c67a5bbc2e5b56600c71c8074a8e"
-    },
     "impl:std::Cout as inherent ": {
       "category": "standard",
-      "sha256": "84be8037d77920304c3a772a59479eaceed878e4c192af65fac843896cf40cab"
-    },
-    "impl:std::string as :: std :: hash :: Hash ": {
-      "category": "standard",
-      "sha256": "c9ec9a3bf4f962581adebc41726595aeb2a28687b9079ea5256edb41362588e1"
-    },
-    "impl:std::string as :: std :: ops :: Deref ": {
-      "category": "standard",
-      "sha256": "ceb554006254381fd5014631fc9fa203cc61aafcba0f11e8494561926dd9fdef"
-    },
-    "impl:std::string as Clone ": {
-      "category": "standard",
-      "sha256": "3c55bbf7a419b7b223f973191b1f9bb1a1da6fc94a6144b7c7dee6df1409bd2c"
+      "sha256": "e94270665fad4226396d16818f8cadc676ffde474d4befa4674482af27f34e26"
     },
     "impl:std::string as Default ": {
       "category": "standard",
-      "sha256": "243cf8f71c0c7cbeaf782c76c68ee9b5164487474a00c6bd55b8fa8d66f09950"
-    },
-    "impl:std::string as Eq ": {
-      "category": "standard",
-      "sha256": "428aa24910a41649ebd1e5a2d1e0efc34a3cfcff44cba5e7cfe67e4267e85472"
-    },
-    "impl:std::string as Ord ": {
-      "category": "standard",
-      "sha256": "f55f8aabdaaa4419f8acbd443e5c270fae84f963ed60ff3b1fa03b7164229f89"
-    },
-    "impl:std::string as PartialEq ": {
-      "category": "standard",
-      "sha256": "ecba9c0aee1c14f87ff3452387953534b617260bedd0dcd8473838ec74c82b96"
-    },
-    "impl:std::string as PartialOrd ": {
-      "category": "standard",
-      "sha256": "7296ea67170a263ba80eb7cfb6f4c9b67a8923ab12a84a1391d79ba722b315c7"
-    },
-    "impl:std::string as StringAppend ": {
-      "category": "standard",
-      "sha256": "791c6a0be653b7c4b73be5d69214d1a2d9ef3529c4984e2409a12109dd4f35cb"
+      "sha256": "e44a20709b9d4a041b26cb7e6771fad13bcfd21c3918f65503de32a183486673"
     },
     "impl:std::string as inherent ": {
       "category": "standard",
-      "sha256": "3f73b1b5f808fa8c441ad731f2a0e4a8e102dff4e3f3e080df9bcaea5d67233d"
+      "sha256": "3bd80e391e9157e9474206b9a4c896cdacb2948cb56b5e176c42b9f806ee2801"
     },
     "impl:task::Poll < T > as inherent < T : Default >": {
       "category": "future",
@@ -684,7 +636,7 @@
     },
     "struct:std::string": {
       "category": "standard",
-      "sha256": "f31cc280cfab486f7e3864fb21560442944c8d4c888748f8a557085c0d1e24cf"
+      "sha256": "28e50220d2ec014476af408e9572d252d6aa65642b76609ffe3d9c985e07348f"
     },
     "struct:task::Context": {
       "category": "future",
@@ -757,10 +709,6 @@
     "trait:StdArcGetMutExt": {
       "category": "standard",
       "sha256": "8b5004df63387b66c78a9decf1a18c6adcf5003edf00259479faa2ea89cea296"
-    },
-    "trait:std::StringAppend": {
-      "category": "standard",
-      "sha256": "f6bb842b86a3f05e023e71078256f0b6e508c1fa801dd1d6511b4cf92008a44c"
     },
     "use:marker::std :: marker :: PhantomPinned": {
       "category": "import",

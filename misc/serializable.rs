@@ -453,7 +453,7 @@ impl Serialize for String {
 }
 
 // ---- Variable-length byte sequences: v64 length prefix + raw bytes.
-// BOTH leaves carry the body (rather than rusty::LoggingString forwarding to a
+// BOTH leaves carry the body (rather than rusty::SerializableStdString forwarding to a
 // rusty::SerializableStdStringView temporary, as the old hand pair did): a
 // `rusty::SerializableStdStringView{self}` conversion has no DSL spelling. The wire
 // bytes are identical either way.
@@ -483,7 +483,7 @@ impl Serialize for rusty::SerializableStdStringView {
     }
 }
 #[allow(unsafe_code)]
-impl Serialize for rusty::LoggingString {
+impl Serialize for rusty::SerializableStdString {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.size() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -861,14 +861,14 @@ impl Deserialize for String {
 
 // Read-side mirror of the string serialize leaf: v64 length prefix,
 // resize, then read the bytes straight into the string's buffer.
-// @unsafe { writing into rusty::LoggingString's internal buffer }
+// @unsafe { writing into rusty::SerializableStdString's internal buffer }
 // `self.data() as *mut u8` picks the C++17 non-const data() overload
-// (the receiver is `rusty::LoggingString&`) and lowers to
+// (the receiver is `rusty::SerializableStdString&`) and lowers to
 // rusty::detail::ptr_cast<uint8_t*>, replacing the old
 // `reinterpret_cast<uint8_t*>(&self_[0])`. verify() keeps the
 // abort-on-truncation contract the hand kernel had.
 #[allow(unsafe_code)]
-impl Deserialize for rusty::LoggingString {
+impl Deserialize for rusty::SerializableStdString {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
