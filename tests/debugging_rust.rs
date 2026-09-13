@@ -10,15 +10,15 @@ fn branch_hints_preserve_boolean_identity() {
 
 #[test]
 fn explicit_rust_source_location_drives_the_success_path() {
-    let location = rusty::SourceLocation::current();
-    debugging::verify(&true, &location);
+    let location = core::panic::Location::caller();
+    debugging::verify(&true, location);
 }
 
 #[test]
 fn source_location_records_the_caller() {
     let expected_line = line!() + 1;
-    let location = rusty::SourceLocation::current();
-    assert_eq!(location.file_name(), file!());
+    let location = core::panic::Location::caller();
+    assert_eq!(location.file(), file!());
     assert_eq!(location.line(), expected_line);
 }
 

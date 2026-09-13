@@ -1,8 +1,6 @@
 //! Canonical epoll registration, error policy, and readiness dispatch.
 //! Rust and generated C++ use the same syscall adapters in srpc_epoll.c.
 
-use cpp::rusty as cpp_rusty;
-use rusty as cpp;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -147,7 +145,7 @@ where
 
 // The checked type map restores the established C++ spelling
 // `rusty::os::fd::OwnedFd`; direct Rust uses std's equivalent RAII owner.
-type LegacyOwnedFd = cpp_rusty::os::fd::OwnedFd;
+type LegacyOwnedFd = std::os::fd::OwnedFd;
 
 /// Move-only RAII owner of the platform poll descriptor.
 #[repr(C)]
@@ -164,7 +162,7 @@ impl Epoll {
         Epoll {
             // SAFETY: epoll_open returns a fresh owned descriptor or aborts in
             // the platform implementation before returning an invalid value.
-            poll_fd_: unsafe { cpp_rusty::os::fd::OwnedFd::from_raw_fd(epoll_open()) },
+            poll_fd_: unsafe { LegacyOwnedFd::from_raw_fd(epoll_open()) },
         }
     }
 

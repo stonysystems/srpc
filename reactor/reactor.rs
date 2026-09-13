@@ -29,7 +29,6 @@
     unused_mut,
 )]
 
-use rusty::cpp_inherit;
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -51,7 +50,7 @@ pub type FiberFn = rusty::Function<dyn FnMut()>;
 pub type FiberTaskFn = rusty::Function<dyn FnMut(&mut fiber_yield_t)>;
 pub type StacklessPollFn = rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>;
 pub type TaskVoid = rusty::Task<()>;
-pub type PollCmdReceiver = rusty::sync::mpsc::Receiver<PollCommand>;
+pub type PollCmdReceiver = std::sync::mpsc::Receiver<PollCommand>;
 pub type FdPollableMap = HashMap<i32, PollableProxy>;
 pub type FdModeMap = HashMap<i32, i32>;
 pub type FdSet = HashSet<i32>;
@@ -61,8 +60,8 @@ pub type PollJoinSlot = std::sync::Mutex<Option<rusty::thread::JoinHandle<()>>>;
 // Use the checked facade that maps exactly to std::pair in generated C++.
 pub type QuorumDanglingVec = Vec<rusty::StdPair<u16, i64>>;
 pub type QuorumFinalizeFn = rusty::Function<dyn FnMut(&mut QuorumDanglingVec) -> bool>;
-pub type StacklessProfileCountU64 = rusty::sync::atomic::AtomicU64;
-pub type StacklessProfileCountUsize = rusty::sync::atomic::AtomicUsize;
+pub type StacklessProfileCountU64 = std::sync::atomic::AtomicU64;
+pub type StacklessProfileCountUsize = std::sync::atomic::AtomicUsize;
 // rustc models C `char` as an i8 on the supported Unix targets, while the
 // production C++ declaration must retain the distinct built-in `char` type.
 // `rust-type-map.toml` maps this established facade name to C++ `char`.
@@ -179,7 +178,7 @@ pub struct EventState {
     pub wakeup_time_: Cell<u64>,
     pub rcd_wait_: Cell<bool>,
     pub wait_place_: RefCell<String>,
-    pub wp_fiber_: RefCell<rusty::rc::Weak<Fiber>>,
+    pub wp_fiber_: RefCell<std::rc::Weak<Fiber>>,
 }
 
 impl EventState {
@@ -190,7 +189,7 @@ impl EventState {
             wakeup_time_: Cell::new(0),
             rcd_wait_: Cell::new(false),
             wait_place_: RefCell::new(String::new()),
-            wp_fiber_: RefCell::new(rusty::rc::Weak::new()),
+            wp_fiber_: RefCell::new(std::rc::Weak::new()),
         }
     }
 }
@@ -272,7 +271,7 @@ impl<Type: Clone + Default + 'static> BoxEvent<Type> {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl<Type: Clone + Default + 'static> EventPollable for BoxEvent<Type> {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -387,7 +386,7 @@ impl IntEvent {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl EventPollable for IntEvent {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -488,7 +487,7 @@ impl NeverEvent {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl EventPollable for NeverEvent {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -553,7 +552,7 @@ impl TimeoutEvent {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl EventPollable for TimeoutEvent {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -624,7 +623,7 @@ impl WaitAny {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl EventPollable for WaitAny {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -702,7 +701,7 @@ impl WaitAll {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl EventPollable for WaitAll {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -771,7 +770,7 @@ pub struct fiber_task_t {
     pub fn_: FiberTaskFn,
     pub yield_: fiber_yield_t,
     pub fib_: srpc_fiber,
-    pub _pin: rusty::marker::PhantomPinned,
+    pub _pin: std::marker::PhantomPinned,
 }
 
 impl fiber_task_t {
@@ -785,7 +784,7 @@ impl fiber_task_t {
             fib_: unsafe {
                 core::mem::MaybeUninit::<srpc_fiber>::zeroed().assume_init()
             },
-            _pin: rusty::marker::PhantomPinned {},
+            _pin: std::marker::PhantomPinned {},
         }
     }
 }
@@ -842,7 +841,7 @@ pub struct Fiber {
     // transpiler emit DELETED move operations instead, which is the same
     // guarantee the destructor used to provide, stated on purpose.
     // Same precedent as Reactor above.
-    pub _pin: rusty::marker::PhantomPinned,
+    pub _pin: std::marker::PhantomPinned,
 }
 
 impl Fiber {
@@ -856,7 +855,7 @@ impl Fiber {
             func_: RefCell::<FiberFn>::new(func),
             fiber_task_: Default::default(),
             fiber_yield_: Cell::<*mut fiber_yield_t>::new(core::ptr::null_mut()),
-            _pin: rusty::marker::PhantomPinned {},
+            _pin: std::marker::PhantomPinned {},
         }
     }
 
@@ -911,12 +910,12 @@ pub struct StacklessTaskEntry {
 const STACKLESS_UNREGISTERED_SLOT: usize = usize::MAX;
 
 struct StacklessWakeTicket {
-    slot: rusty::sync::atomic::AtomicUsize,
-    enqueued: rusty::sync::atomic::AtomicBool,
+    slot: std::sync::atomic::AtomicUsize,
+    enqueued: std::sync::atomic::AtomicBool,
 }
 
 struct StacklessWakeIngress {
-    accepting: rusty::sync::atomic::AtomicBool,
+    accepting: std::sync::atomic::AtomicBool,
     pending: std::sync::Mutex<VecDeque<Arc<StacklessWakeTicket>>>,
 }
 
@@ -980,20 +979,20 @@ struct StacklessVoidTaskState {
 // the native battery pins that contract end to end.
 
 struct StacklessCancelCounters {
-    teardown_tasks: rusty::sync::atomic::AtomicU64,
-    admitted_completions: rusty::sync::atomic::AtomicU64,
-    pending_wakes: rusty::sync::atomic::AtomicU64,
-    rejected_spawns: rusty::sync::atomic::AtomicU64,
+    teardown_tasks: std::sync::atomic::AtomicU64,
+    admitted_completions: std::sync::atomic::AtomicU64,
+    pending_wakes: std::sync::atomic::AtomicU64,
+    rejected_spawns: std::sync::atomic::AtomicU64,
 }
 
 // Deliberately the same shape as `g_stackless_profile`, which the incumbent
 // object proves carries no owned strong symbol (it is absent from the 300-entry
 // manifest).  Atomics give interior mutability, so the binding need not be mut.
 static g_stackless_cancel: StacklessCancelCounters = StacklessCancelCounters {
-    teardown_tasks: rusty::sync::atomic::AtomicU64::new(0u64),
-    admitted_completions: rusty::sync::atomic::AtomicU64::new(0u64),
-    pending_wakes: rusty::sync::atomic::AtomicU64::new(0u64),
-    rejected_spawns: rusty::sync::atomic::AtomicU64::new(0u64),
+    teardown_tasks: std::sync::atomic::AtomicU64::new(0u64),
+    admitted_completions: std::sync::atomic::AtomicU64::new(0u64),
+    pending_wakes: std::sync::atomic::AtomicU64::new(0u64),
+    rejected_spawns: std::sync::atomic::AtomicU64::new(0u64),
 };
 
 // Plain aggregate: no derives, no methods, so it contributes no symbol either.
@@ -1009,10 +1008,10 @@ pub struct StacklessCancelReport {
 // the same C7 discipline the wake registry already follows.
 pub fn stackless_cancel_report<WakeDomain>() -> StacklessCancelReport {
     StacklessCancelReport {
-        teardown_tasks: g_stackless_cancel.teardown_tasks.load(rusty::sync::atomic::Ordering::Relaxed),
-        admitted_completions: g_stackless_cancel.admitted_completions.load(rusty::sync::atomic::Ordering::Relaxed),
-        pending_wakes: g_stackless_cancel.pending_wakes.load(rusty::sync::atomic::Ordering::Relaxed),
-        rejected_spawns: g_stackless_cancel.rejected_spawns.load(rusty::sync::atomic::Ordering::Relaxed),
+        teardown_tasks: g_stackless_cancel.teardown_tasks.load(std::sync::atomic::Ordering::Relaxed),
+        admitted_completions: g_stackless_cancel.admitted_completions.load(std::sync::atomic::Ordering::Relaxed),
+        pending_wakes: g_stackless_cancel.pending_wakes.load(std::sync::atomic::Ordering::Relaxed),
+        rejected_spawns: g_stackless_cancel.rejected_spawns.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
@@ -1094,17 +1093,17 @@ fn stackless_wake_reactor_key<WakeDomain>(reactor: &Reactor) -> usize {
 // MEASURED allow — see the `extra_unused_type_parameters` note on `stackless_wake_owners_slot`.
 #[allow(clippy::extra_unused_type_parameters)]
 fn stackless_wake_request<WakeDomain>(ingress: &Arc<StacklessWakeIngress>, ticket: &Arc<StacklessWakeTicket>) {
-    if !ingress.accepting.load(rusty::sync::atomic::Ordering::Acquire) {
+    if !ingress.accepting.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
-    if ticket.enqueued.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
+    if ticket.enqueued.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
     let mut pending = ingress.pending.lock().unwrap();
-    if ingress.accepting.load(rusty::sync::atomic::Ordering::Acquire) {
+    if ingress.accepting.load(std::sync::atomic::Ordering::Acquire) {
         (*pending).push_back(ticket.clone());
     } else {
-        ticket.enqueued.store(false, rusty::sync::atomic::Ordering::Release);
+        ticket.enqueued.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1129,7 +1128,7 @@ fn stackless_wake_ingress<WakeDomain>(reactor: &Reactor) -> Arc<StacklessWakeIng
     }
 
     let ingress = Arc::new(StacklessWakeIngress {
-        accepting: rusty::sync::atomic::AtomicBool::new(true),
+        accepting: std::sync::atomic::AtomicBool::new(true),
         pending: std::sync::Mutex::new(VecDeque::<Arc<StacklessWakeTicket>>::new()),
     });
     let owner = StacklessWakeOwner {
@@ -1150,8 +1149,8 @@ fn stackless_wake_ingress<WakeDomain>(reactor: &Reactor) -> Arc<StacklessWakeIng
 
 fn stackless_wake_make_binding<WakeDomain>(ingress: Arc<StacklessWakeIngress>) -> Box<StacklessWakeBinding> {
     let ticket = Arc::new(StacklessWakeTicket {
-        slot: rusty::sync::atomic::AtomicUsize::new(STACKLESS_UNREGISTERED_SLOT),
-        enqueued: rusty::sync::atomic::AtomicBool::new(false),
+        slot: std::sync::atomic::AtomicUsize::new(STACKLESS_UNREGISTERED_SLOT),
+        enqueued: std::sync::atomic::AtomicBool::new(false),
     });
     let wake_ingress = ingress.clone();
     let wake_ticket = ticket.clone();
@@ -1184,7 +1183,7 @@ fn stackless_wake_attach<WakeDomain>(reactor: &Reactor, idx: usize, binding: Box
                     owners[i].bindings.push(None);
                 }
                 reactor_verify(owners[i].bindings[idx].is_none());
-                binding.ticket.slot.store(idx, rusty::sync::atomic::Ordering::Release);
+                binding.ticket.slot.store(idx, std::sync::atomic::Ordering::Release);
                 owners[i].bindings[idx] = Some(binding);
                 return;
             }
@@ -1224,7 +1223,7 @@ fn stackless_wake_close<WakeDomain>(reactor: &Reactor, idx: usize) {
                     let binding = owners[i].bindings[idx].as_ref().unwrap();
                     binding.ticket.slot.store(
                         STACKLESS_UNREGISTERED_SLOT,
-                        rusty::sync::atomic::Ordering::Release,
+                        std::sync::atomic::Ordering::Release,
                     );
                 }
                 return;
@@ -1275,8 +1274,8 @@ fn stackless_wake_take_pending<WakeDomain>(reactor: &Reactor) -> Vec<usize> {
     let mut pending = ingress.pending.lock().unwrap();
     while !(*pending).is_empty() {
         let ticket = (*pending).pop_front().unwrap();
-        ticket.enqueued.store(false, rusty::sync::atomic::Ordering::Release);
-        let idx = ticket.slot.load(rusty::sync::atomic::Ordering::Acquire);
+        ticket.enqueued.store(false, std::sync::atomic::Ordering::Release);
+        let idx = ticket.slot.load(std::sync::atomic::Ordering::Acquire);
         if idx != STACKLESS_UNREGISTERED_SLOT {
             ready.push(idx);
         }
@@ -1303,7 +1302,7 @@ fn stackless_wake_shutdown_begin<WakeDomain>(reactor: &Reactor) {
                         let binding = owners[i].bindings[j].as_ref().unwrap();
                         binding.ticket.slot.store(
                             STACKLESS_UNREGISTERED_SLOT,
-                            rusty::sync::atomic::Ordering::Release,
+                            std::sync::atomic::Ordering::Release,
                         );
                     }
                     j += 1usize;
@@ -1317,7 +1316,7 @@ fn stackless_wake_shutdown_begin<WakeDomain>(reactor: &Reactor) {
         // Reject first.  stackless_wake_request re-checks `accepting` under this
         // same lock before pushing, so once this store is visible no producer
         // can enqueue again and the drain below is final rather than racy.
-        ingress.accepting.store(false, rusty::sync::atomic::Ordering::Release);
+        ingress.accepting.store(false, std::sync::atomic::Ordering::Release);
         // Now drain what is already queued.  These are admitted wakes that will
         // never be delivered: count them as cancelled, and release the ticket
         // Arcs here so no allocation outlives the last waker Arc.  Leaving them
@@ -1328,12 +1327,12 @@ fn stackless_wake_shutdown_begin<WakeDomain>(reactor: &Reactor) {
             let mut pending = ingress.pending.lock().unwrap();
             while !(*pending).is_empty() {
                 let ticket = (*pending).pop_front().unwrap();
-                ticket.enqueued.store(false, rusty::sync::atomic::Ordering::Release);
+                ticket.enqueued.store(false, std::sync::atomic::Ordering::Release);
                 drained += 1u64;
             }
         }
         if drained > 0u64 {
-            g_stackless_cancel.pending_wakes.fetch_add(drained, rusty::sync::atomic::Ordering::Relaxed);
+            g_stackless_cancel.pending_wakes.fetch_add(drained, std::sync::atomic::Ordering::Relaxed);
             reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::teardown] cancelling {} admitted stackless wake(s) that will never be delivered", drained));
         }
     }
@@ -1400,7 +1399,7 @@ pub struct Reactor {
     pub stackless_tasks_: RefCell<Vec<StacklessTaskEntry>>,
     pub free_stackless_task_slots_: RefCell<Vec<usize>>,
     pub ready_stackless_tasks_: RefCell<VecDeque<usize>>,
-    pub _pin: rusty::marker::PhantomPinned,
+    pub _pin: std::marker::PhantomPinned,
 }
 
 impl Reactor {
@@ -1430,7 +1429,7 @@ impl Reactor {
             stackless_tasks_: Default::default(),
             free_stackless_task_slots_: Default::default(),
             ready_stackless_tasks_: Default::default(),
-            _pin: rusty::marker::PhantomPinned {},
+            _pin: std::marker::PhantomPinned {},
         }
     }
 
@@ -1662,7 +1661,7 @@ impl Reactor {
 
     pub fn register_stackless_poller(&self, poller: rusty::Function<dyn FnMut(&mut rusty::Context) -> bool>) -> usize {
         let ingress = stackless_wake_ingress::<()>(self);
-        if !ingress.accepting.load(rusty::sync::atomic::Ordering::Acquire) {
+        if !ingress.accepting.load(std::sync::atomic::Ordering::Acquire) {
             // Reactor teardown has started.  Destroy the rejected Task-bearing
             // closure without publishing a slot or a Context binding.  Dropping
             // it here destroys the completion callback and its captures on the
@@ -1671,7 +1670,7 @@ impl Reactor {
             // Refusing a spawn is a cancellation, so it is reported, never
             // silent: the caller believes it has scheduled work that will now
             // never run, and anything waiting on that work must be told.
-            g_stackless_cancel.rejected_spawns.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
+            g_stackless_cancel.rejected_spawns.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
             reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), "[Reactor::register_stackless_poller] cancelling a spawn refused during teardown; the task and its completion callback are destroyed now, so waiters are released with an error instead of blocking forever".to_string());
             return STACKLESS_UNREGISTERED_SLOT;
         }
@@ -1865,8 +1864,8 @@ impl Drop for Reactor {
             }
         }
         if outstanding > 0u64 || admitted > 0u64 {
-            g_stackless_cancel.teardown_tasks.fetch_add(outstanding, rusty::sync::atomic::Ordering::Relaxed);
-            g_stackless_cancel.admitted_completions.fetch_add(admitted, rusty::sync::atomic::Ordering::Relaxed);
+            g_stackless_cancel.teardown_tasks.fetch_add(outstanding, std::sync::atomic::Ordering::Relaxed);
+            g_stackless_cancel.admitted_completions.fetch_add(admitted, std::sync::atomic::Ordering::Relaxed);
             reactor_log_line(Log::ERROR, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] cancelling {} outstanding stackless task(s) and {} already-admitted completion(s); their callbacks and captures are destroyed below, which is how waiters learn this failed rather than hanging",
                       outstanding, admitted));
         }
@@ -1921,7 +1920,7 @@ where
         }
         completion_ticket.slot.store(
             STACKLESS_UNREGISTERED_SLOT,
-            rusty::sync::atomic::Ordering::Release,
+            std::sync::atomic::Ordering::Release,
         );
         // take() moves the callback out and leaves None, so it fires once.
         let cb: Option<OnReady> = {
@@ -1943,7 +1942,7 @@ where
         // waiter blocked on a completion that can never arrive.
         return;
     }
-    early_ticket.slot.store(idx, rusty::sync::atomic::Ordering::Release);
+    early_ticket.slot.store(idx, std::sync::atomic::Ordering::Release);
     let ingress_ready = stackless_wake_take_pending::<()>(self_);
     for ready_idx in ingress_ready {
         self_.enqueue_stackless_task(ready_idx);
@@ -2063,7 +2062,7 @@ fn u64_to_thread_id(bits: u64) -> rusty::thread::ThreadId {
 
 #[repr(C)]
 pub struct PollThread {
-    pub sender_: rusty::sync::mpsc::Sender<PollCommand>,
+    pub sender_: std::sync::mpsc::Sender<PollCommand>,
     pub join_handle_: PollJoinSlot,
     // Thread id of the poll thread as raw u64 bits (bit_cast of the
     // native id) — used to detect self-join attempts in shutdown.
@@ -2083,7 +2082,7 @@ impl PollThread {
     pub fn shutdown(&self) {
         let main_tid: i64 = current_thread_gettid();
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[PollThread::shutdown] Called from TID={}", main_tid as i32));
-        if self.shutdown_called_.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
+        if self.shutdown_called_.swap(true, std::sync::atomic::Ordering::AcqRel) {
             reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Already called, returning".to_string());
             return;
         }
@@ -2099,7 +2098,7 @@ impl PollThread {
         // Thread-safe read of the poll thread's id.
         let current_tid = rusty::thread::current_id();
         let poll_tid = u64_to_thread_id(
-            self.poll_thread_id_bits_.load(rusty::sync::atomic::Ordering::Acquire));
+            self.poll_thread_id_bits_.load(std::sync::atomic::Ordering::Acquire));
         if current_tid == poll_tid {
             reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Called from poll thread, skipping join".to_string());
             return;
@@ -2137,7 +2136,7 @@ impl PollThread {
     /// completes, for example by retaining it through worker shutdown.
     pub fn remove_fd(&self, fd: i32) {
         if self.sender_.send(PollCommand::RemovePollable { fd }).is_ok() {
-            self.remove_count_.fetch_add(1, rusty::sync::atomic::Ordering::Relaxed);
+            self.remove_count_.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -2168,7 +2167,7 @@ impl PollThread {
     /// Count accepted remove requests, including requests for an absent fd.
     /// Requests sent after worker shutdown are rejected and do not count.
     pub fn get_remove_count(&self) -> i32 {
-        self.remove_count_.load(rusty::sync::atomic::Ordering::Relaxed)
+        self.remove_count_.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -2299,7 +2298,7 @@ impl QuorumEvent {
     }
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl EventPollable for QuorumEvent {
     fn test(&self) -> bool {
         event_test_impl(self)
@@ -2473,7 +2472,7 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         // Rc::downgrade(rc) factory (mirrors std::rc::Rc::downgrade). `fiber` is
         // cloned (a refcount bump) so the factory consumes the temporary and the
         // original `fiber` stays live for the checks below.
-        *ev.core_state().wp_fiber_.borrow_mut() = ::rusty::port::rc::Rc::<Fiber>::downgrade(&fiber);
+        *ev.core_state().wp_fiber_.borrow_mut() = Rc::<Fiber>::downgrade(&fiber);
         ev.core_status().set(EventStatus::WAIT);
         let fiber_status = fiber.status_.get();
         reactor_verify(fiber_status != FiberStatus::FINISHED && fiber_status != FiberStatus::RECYCLED);
@@ -2532,7 +2531,7 @@ fn event_state_seed(st: &EventState) {
         // does not compile (`this_` unbound).
         let rc_fiber: Rc<Fiber> = rc_fiber;
         let mut g2 = st.wp_fiber_.borrow_mut();
-        *g2 = rusty::port::rc::Rc::<Fiber>::downgrade(&rc_fiber);
+        *g2 = Rc::<Fiber>::downgrade(&rc_fiber);
     }
 }
 
@@ -2875,10 +2874,10 @@ fn stackless_profile_env() -> bool {
 }
 
 fn stackless_profile_enabled() -> bool {
-    static ENABLED_STATE: rusty::sync::atomic::AtomicUsize =
-        rusty::sync::atomic::AtomicUsize::new(0);
+    static ENABLED_STATE: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
     loop {
-        let observed = ENABLED_STATE.load(rusty::sync::atomic::Ordering::Acquire);
+        let observed = ENABLED_STATE.load(std::sync::atomic::Ordering::Acquire);
         if observed == 2 {
             return false;
         }
@@ -2890,15 +2889,15 @@ fn stackless_profile_enabled() -> bool {
                 .compare_exchange(
                     0,
                     1,
-                    rusty::sync::atomic::Ordering::AcqRel,
-                    rusty::sync::atomic::Ordering::Acquire,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
                 )
                 .is_ok()
         {
             let enabled = stackless_profile_env();
             ENABLED_STATE.store(
                 if enabled { 3 } else { 2 },
-                rusty::sync::atomic::Ordering::Release,
+                std::sync::atomic::Ordering::Release,
             );
             return enabled;
         }
@@ -2922,18 +2921,18 @@ struct StacklessProfileCounters {
 // Atomics provide interior mutability, so the Rust binding itself need not be
 // `mut`. Explicit zero initializers preserve the former static-storage state.
 static g_stackless_profile: StacklessProfileCounters = StacklessProfileCounters {
-    reg_calls: rusty::sync::atomic::AtomicU64::new(0u64),
-    reg_scan_steps: rusty::sync::atomic::AtomicU64::new(0u64),
-    reg_reuse: rusty::sync::atomic::AtomicU64::new(0u64),
-    reg_new: rusty::sync::atomic::AtomicU64::new(0u64),
-    poll_calls: rusty::sync::atomic::AtomicU64::new(0u64),
-    poll_ready: rusty::sync::atomic::AtomicU64::new(0u64),
-    enqueue_calls: rusty::sync::atomic::AtomicU64::new(0u64),
-    max_slots: rusty::sync::atomic::AtomicUsize::new(0usize),
+    reg_calls: std::sync::atomic::AtomicU64::new(0u64),
+    reg_scan_steps: std::sync::atomic::AtomicU64::new(0u64),
+    reg_reuse: std::sync::atomic::AtomicU64::new(0u64),
+    reg_new: std::sync::atomic::AtomicU64::new(0u64),
+    poll_calls: std::sync::atomic::AtomicU64::new(0u64),
+    poll_ready: std::sync::atomic::AtomicU64::new(0u64),
+    enqueue_calls: std::sync::atomic::AtomicU64::new(0u64),
+    max_slots: std::sync::atomic::AtomicUsize::new(0usize),
 };
 
 fn stackless_profile_update_max_slots(slots: usize) {
-    g_stackless_profile.max_slots.fetch_max(slots, rusty::sync::atomic::Ordering::Relaxed);
+    g_stackless_profile.max_slots.fetch_max(slots, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn stackless_profile_report_periodic() {
@@ -2954,14 +2953,14 @@ fn stackless_profile_report_periodic() {
     }
     last_report_us.with(|stamp| stamp.set(now_us));
 
-    let reg_calls: u64 = g_stackless_profile.reg_calls.load(rusty::sync::atomic::Ordering::Relaxed);
-    let reg_scans: u64 = g_stackless_profile.reg_scan_steps.load(rusty::sync::atomic::Ordering::Relaxed);
-    let reg_reuse: u64 = g_stackless_profile.reg_reuse.load(rusty::sync::atomic::Ordering::Relaxed);
-    let reg_new: u64 = g_stackless_profile.reg_new.load(rusty::sync::atomic::Ordering::Relaxed);
-    let poll_calls: u64 = g_stackless_profile.poll_calls.load(rusty::sync::atomic::Ordering::Relaxed);
-    let poll_ready: u64 = g_stackless_profile.poll_ready.load(rusty::sync::atomic::Ordering::Relaxed);
-    let enqueue_calls: u64 = g_stackless_profile.enqueue_calls.load(rusty::sync::atomic::Ordering::Relaxed);
-    let max_slots: usize = g_stackless_profile.max_slots.load(rusty::sync::atomic::Ordering::Relaxed);
+    let reg_calls: u64 = g_stackless_profile.reg_calls.load(std::sync::atomic::Ordering::Relaxed);
+    let reg_scans: u64 = g_stackless_profile.reg_scan_steps.load(std::sync::atomic::Ordering::Relaxed);
+    let reg_reuse: u64 = g_stackless_profile.reg_reuse.load(std::sync::atomic::Ordering::Relaxed);
+    let reg_new: u64 = g_stackless_profile.reg_new.load(std::sync::atomic::Ordering::Relaxed);
+    let poll_calls: u64 = g_stackless_profile.poll_calls.load(std::sync::atomic::Ordering::Relaxed);
+    let poll_ready: u64 = g_stackless_profile.poll_ready.load(std::sync::atomic::Ordering::Relaxed);
+    let enqueue_calls: u64 = g_stackless_profile.enqueue_calls.load(std::sync::atomic::Ordering::Relaxed);
+    let max_slots: usize = g_stackless_profile.max_slots.load(std::sync::atomic::Ordering::Relaxed);
 
     let mut avg_scan: f64 = 0.0f64;
     if reg_calls > 0u64 {
@@ -2973,13 +2972,13 @@ fn stackless_profile_report_periodic() {
 
 fn stackless_profile_note_enqueue() {
     if stackless_profile_enabled() {
-        g_stackless_profile.enqueue_calls.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
+        g_stackless_profile.enqueue_calls.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
 fn reactor_poll_one(r: &Reactor, idx: usize, poll_fn: *mut StacklessPollFn) -> bool {
     if stackless_profile_enabled() {
-        g_stackless_profile.poll_calls.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
+        g_stackless_profile.poll_calls.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
     }
     // The binding is heap-stable and owned by the private owner-thread
     // registry. Task::poll may retain Context* until the Task is destroyed.
@@ -2991,7 +2990,7 @@ fn reactor_poll_one(r: &Reactor, idx: usize, poll_fn: *mut StacklessPollFn) -> b
 
 fn stackless_profile_note_poll_ready() {
     if stackless_profile_enabled() {
-        g_stackless_profile.poll_ready.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
+        g_stackless_profile.poll_ready.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3003,12 +3002,12 @@ fn stackless_profile_note_register(scanned: usize, reuse: bool, slots_now: usize
     if !stackless_profile_enabled() {
         return;
     }
-    g_stackless_profile.reg_calls.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
-    g_stackless_profile.reg_scan_steps.fetch_add(scanned as u64, rusty::sync::atomic::Ordering::Relaxed);
+    g_stackless_profile.reg_calls.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
+    g_stackless_profile.reg_scan_steps.fetch_add(scanned as u64, std::sync::atomic::Ordering::Relaxed);
     if reuse {
-        g_stackless_profile.reg_reuse.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
+        g_stackless_profile.reg_reuse.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
     } else {
-        g_stackless_profile.reg_new.fetch_add(1u64, rusty::sync::atomic::Ordering::Relaxed);
+        g_stackless_profile.reg_new.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
         stackless_profile_update_max_slots(slots_now);
     }
 }
@@ -3206,7 +3205,7 @@ pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
         }
         completion_ticket.slot.store(
             STACKLESS_UNREGISTERED_SLOT,
-            rusty::sync::atomic::Ordering::Release,
+            std::sync::atomic::Ordering::Release,
         );
         true
     });
@@ -3218,7 +3217,7 @@ pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
         // continuation, so this must not look like a successful spawn.
         return;
     }
-    early_ticket.slot.store(idx, rusty::sync::atomic::Ordering::Release);
+    early_ticket.slot.store(idx, std::sync::atomic::Ordering::Release);
     let ingress_ready = stackless_wake_take_pending::<()>(self_);
     for ready_idx in ingress_ready {
         self_.enqueue_stackless_task(ready_idx);
@@ -3598,17 +3597,17 @@ fn thread_id_to_u64(tid: rusty::thread::ThreadId) -> u64 {
 }
 
 fn pollthread_create() -> Arc<PollThread> {
-    let (sender, receiver) = rusty::sync::mpsc::channel::<PollCommand>();
+    let (sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let seed = PollThread {
         sender_: sender,
         join_handle_: PollJoinSlot::new(None),
-        poll_thread_id_bits_: rusty::sync::atomic::AtomicU64::new(0),
-        shutdown_called_: rusty::sync::atomic::AtomicBool::new(false),
+        poll_thread_id_bits_: std::sync::atomic::AtomicU64::new(0),
+        shutdown_called_: std::sync::atomic::AtomicBool::new(false),
         remove_count_: AtomicI32::new(0),
     };
     let arc: Arc<PollThread> = Arc::new(seed);
     // rusty atomic ops are const, so a const* suffices through the Arc.
-    let thread_id_address = (&arc.poll_thread_id_bits_ as *const rusty::sync::atomic::AtomicU64) as usize;
+    let thread_id_address = (&arc.poll_thread_id_bits_ as *const std::sync::atomic::AtomicU64) as usize;
     // One-argument spawn.  The production `rusty::thread::spawn` is variadic
     // (`auto spawn(F&& func, Args&&... args)`), so both `spawn(f, rx)` and
     // `spawn(f_capturing_rx)` lower to a valid call; the single-callable form
@@ -3616,8 +3615,8 @@ fn pollthread_create() -> Arc<PollThread> {
     // the canonical client already spells `spawn(move || { ... })`.
     let handle = rusty::thread::spawn(move || {
         let tid = rusty::thread::current_id();
-        let thread_id_ptr = thread_id_address as *const rusty::sync::atomic::AtomicU64;
-        unsafe { (*thread_id_ptr).store(thread_id_to_u64(tid), rusty::sync::atomic::Ordering::Release) };
+        let thread_id_ptr = thread_id_address as *const std::sync::atomic::AtomicU64;
+        unsafe { (*thread_id_ptr).store(thread_id_to_u64(tid), std::sync::atomic::Ordering::Release) };
         // Raw TLS pointer (not a re-borrow) so fibers on this thread can
         // reach the worker while the borrow_mut guard is held.
         let worker: Rc<RefCell<PollThreadWorker>> = PollThreadWorker::create(receiver);

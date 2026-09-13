@@ -379,7 +379,7 @@ fn round_trip<T: Serialize + Deserialize + Default>(value: &T) -> T {
 
 #[test]
 fn ordered_collections_preserve_order_uniqueness_and_replacement() {
-    let mut btree = rusty::BTreeMap::<i32, i32>::new();
+    let mut btree = std::collections::BTreeMap::<i32, i32>::new();
     btree.insert(3, 30);
     btree.insert(1, 10);
     btree.insert(3, 99);
@@ -393,7 +393,7 @@ fn ordered_collections_preserve_order_uniqueness_and_replacement() {
     let standard = round_trip(&standard);
     assert_eq!((&standard).into_iter().map(|p| (*p.first, *p.second)).collect::<Vec<_>>(), [(1, 10), (3, 30)]);
 
-    let mut btree_set = rusty::BTreeSet::new();
+    let mut btree_set = std::collections::BTreeSet::new();
     let mut standard_set = rusty::SerializableStdSet::default();
     for value in [3i32, 1, 3] {
         btree_set.insert(value);

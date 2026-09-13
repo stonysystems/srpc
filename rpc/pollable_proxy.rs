@@ -1,6 +1,5 @@
 //! Canonical Rust owner for `srpc.pollable_proxy`.
 
-use rusty::cpp_inherit;
 use std::sync::Arc;
 
 /// A registration owns the descriptor returned by `fd` until it unregisters.
@@ -44,7 +43,7 @@ pub struct PollableArcShim<T> {
     pub poll_: Arc<T>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl<T: PollableSharedTarget> PollableBase for PollableArcShim<T> {
     fn fd(&self) -> i32 {
         self.poll_.fd()

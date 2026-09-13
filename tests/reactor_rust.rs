@@ -49,7 +49,7 @@ fn stackless_wakers_use_owner_ingress_and_stable_bindings() {
         "stackless_wake_release_empty_storage::<WakeDomain>",
         "stackless_wake_take_pending::<()>",
         "stackless_wake_shutdown_begin::<()>",
-        "if !ingress.accepting.load(rusty::sync::atomic::Ordering::Acquire)",
+        "if !ingress.accepting.load(std::sync::atomic::Ordering::Acquire)",
         "core::mem::take(&mut *tasks_guard)",
         "drop(retired_tasks);",
         "drop(poll_fn);",
@@ -144,7 +144,7 @@ fn teardown_paths_report_cancelled_waiters_instead_of_silence() {
         "g_stackless_cancel.teardown_tasks.fetch_add(",
         "g_stackless_cancel.admitted_completions.fetch_add(",
         // shutdown drains the ingress rather than stranding tickets
-        "ticket.enqueued.store(false, rusty::sync::atomic::Ordering::Release);",
+        "ticket.enqueued.store(false, std::sync::atomic::Ordering::Release);",
         // a rejected registration is not a successful spawn
         "if idx == STACKLESS_UNREGISTERED_SLOT {",
     ] {

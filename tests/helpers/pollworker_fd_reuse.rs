@@ -32,7 +32,7 @@ fn replacement_delivers_a_real_frame(deferred_removal: bool) {
     let _serial = FD_REUSE_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (_sender, receiver) = rusty::sync::mpsc::channel::<PollCommand>();
+    let (_sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let mut worker = pollworker_make(receiver);
     let (old_socket, mut old_peer) = UnixStream::pair().unwrap();
     old_socket.set_nonblocking(true).unwrap();
@@ -164,7 +164,7 @@ fn closed_queued_add_keeps_descriptor_until_command_retirement() {
     let _serial = FD_REUSE_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (sender, receiver) = rusty::sync::mpsc::channel::<PollCommand>();
+    let (sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let mut worker = pollworker_make(receiver);
     let (connection, mut peer, fd) = controlled_connection();
     assert!(
@@ -198,7 +198,7 @@ fn closed_active_registration_keeps_descriptor_until_deferred_removal() {
     let _serial = FD_REUSE_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (_sender, receiver) = rusty::sync::mpsc::channel::<PollCommand>();
+    let (_sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let mut worker = pollworker_make(receiver);
     let (connection, _peer, fd) = controlled_connection();
     pollworker_do_add_pollable(
@@ -249,7 +249,7 @@ fn closed_queued_listener_keeps_descriptor_until_command_retirement() {
     let _serial = FD_REUSE_TESTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (sender, receiver) = rusty::sync::mpsc::channel::<PollCommand>();
+    let (sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let mut worker = pollworker_make(receiver);
     let listener = Arc::new(TcpListener::new());
     assert!(listener.listen("127.0.0.1:0") == ChannelError::None);

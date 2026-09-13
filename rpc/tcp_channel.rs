@@ -12,10 +12,8 @@
 #[allow(unused_imports)]
 use crate::reactor as _;
 
-use rusty::cpp_inherit;
-use rusty::StdArcGetMutExt as _;
 use std::cell::{RefCell, UnsafeCell};
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak as ArcWeak};
 
@@ -30,7 +28,7 @@ use crate::pollable_proxy::{PollableBase, PollableProxy};
 use rusty as cpp;
 
 type TcpOutBuf = rusty::StdVector<u8>;
-type LegacyOwnedFd = cpp::RustcOwnedFd;
+type LegacyOwnedFd = std::os::fd::OwnedFd;
 type LegacyTcpListener = cpp::RustcTcpListener;
 type LegacySocketAddrV4 = cpp::RustcSocketAddrV4;
 type LegacyIoErrorKind = cpp::RustcIoErrorKind;
@@ -270,7 +268,7 @@ struct TcpChannelShim {
     conn_: Arc<TcpConnection>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl ChannelConnectionBase for TcpChannelShim {
     unsafe fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
         unsafe { self.conn_.send_frame(frame) }
@@ -306,7 +304,7 @@ struct TcpPollableShim {
     fd_lease_: Option<Arc<LegacyOwnedFd>>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl PollableBase for TcpPollableShim {
     fn fd(&self) -> i32 {
         match self.fd_lease_.as_ref() {
@@ -633,7 +631,7 @@ struct TcpListenerChannelShim {
     listener_: Arc<TcpListener>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 #[allow(unsafe_code)]
 unsafe impl ChannelListenerBase for TcpListenerChannelShim {
     fn listen(&mut self, a: &str) -> ChannelError {
@@ -672,7 +670,7 @@ struct TcpListenerPollableShim {
     fd_lease_: Option<Arc<LegacyTcpListener>>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl PollableBase for TcpListenerPollableShim {
     fn fd(&self) -> i32 {
         match self.fd_lease_.as_ref() {
@@ -763,7 +761,7 @@ struct TcpFactoryShim {
     factory_: Arc<TcpFactory>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl ChannelFactoryBase for TcpFactoryShim {
     fn connect(&mut self, addr: &str) -> ConnectResult {
         self.factory_.connect(addr)
@@ -1449,7 +1447,7 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
     if let Some(pt) = lst.poll_thread_.as_ref() {
         // The Arc is still uniquely owned, so this is the safe minting
         // window for installing the worker before either proxy clones it.
-        conn.get_mut().unwrap().set_poll_thread(pt.clone());
+        Arc::get_mut(&mut conn).unwrap().set_poll_thread(pt.clone());
         // SAFETY: the proxy owns the registered connection Arc.
                     crate::reactor::PollThread::add_proxy(
                 &**pt,
@@ -1626,7 +1624,7 @@ pub fn tcp_factory_connect(fac: &TcpFactory, addr: &str) -> ConnectResult {
     // SAFETY: tcp_connect_socket returned a fresh descriptor whose
     // ownership is transferred exactly once into TcpConnection.
     let mut conn = Arc::new(unsafe { TcpConnection::new(fd, addr.to_string()) });
-    conn.get_mut()
+    Arc::get_mut(&mut conn)
         .unwrap()
         .set_poll_thread(fac.poll_thread_.clone());
     let pt: &Arc<PollThread> = &fac.poll_thread_;
@@ -1641,8 +1639,7 @@ pub fn tcp_factory_connect(fac: &TcpFactory, addr: &str) -> ConnectResult {
 
 pub fn tcp_factory_make_listener(self_: &TcpFactory) -> Option<ChannelListenerProxy> {
     let mut listener = Arc::new(TcpListener::new());
-    listener
-        .get_mut()
+    Arc::get_mut(&mut listener)
         .unwrap()
         .set_poll_thread(self_.poll_thread_.clone());
     Some(make_tcp_listener_channel_proxy(listener))

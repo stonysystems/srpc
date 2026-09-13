@@ -574,7 +574,7 @@ impl<K: Serialize, V: Serialize> Serialize for rusty::SerializableStdUnorderedMa
 
 // rusty B-tree containers iterate Rust-style (no begin()/end()); the
 // explicit iterator loop is the same shape their old C++ bodies used.
-impl<T: Serialize> Serialize for rusty::BTreeSet<T> {
+impl<T: Serialize> Serialize for std::collections::BTreeSet<T> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -589,7 +589,7 @@ impl<T: Serialize> Serialize for rusty::BTreeSet<T> {
     }
 }
 
-impl<K: Serialize, V: Serialize> Serialize for rusty::BTreeMap<K, V> {
+impl<K: Serialize, V: Serialize> Serialize for std::collections::BTreeMap<K, V> {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
         let v_len: v64 = v64::new(self.len() as i64);
         Serialize_::serialize(&v_len, ar);
@@ -947,7 +947,7 @@ impl<T: Default + Deserialize> Deserialize for rusty::SerializableStdList<T> {
     }
 }
 
-impl<T: Default + Deserialize + Ord> Deserialize for rusty::BTreeSet<T> {
+impl<T: Default + Deserialize + Ord> Deserialize for std::collections::BTreeSet<T> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1011,7 +1011,7 @@ impl<T: Default + Deserialize + Eq + std::hash::Hash> Deserialize for rusty::Ser
     }
 }
 
-impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for rusty::BTreeMap<K, V> {
+impl<K: Default + Deserialize + Ord, V: Default + Deserialize> Deserialize for std::collections::BTreeMap<K, V> {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
         let mut v_len = v64::new(0i64);
         Deserialize_::deserialize(&mut v_len, ar);
@@ -1156,8 +1156,6 @@ pub type SerializableRegistryFactory = rusty::Function<dyn FnMut() -> Serializab
 
 pub mod details {
     use super::{Arc, BinaryReadArchive, BinaryWriteArchive, SerializableBase, SerializablePayload, sealed};
-    use rusty::StdArcGetMutExt as _;
-    use rusty::cpp_inherit;
 
     pub struct SerializableSharedPtrHolder<T> {
         pub ptr: Arc<T>,
@@ -1165,7 +1163,7 @@ pub mod details {
 
     impl<T: SerializablePayload + 'static> sealed::SerializableHolder for SerializableSharedPtrHolder<T> {}
 
-    #[cpp_inherit]
+    #[cfg_attr(any(), cpp_inherit)]
     impl<T: SerializablePayload + 'static> SerializableBase for SerializableSharedPtrHolder<T> {
         fn save(&self, ar: &mut BinaryWriteArchive) {
             self.ptr.save(ar)
@@ -1174,7 +1172,7 @@ pub mod details {
         // owners. A factory retaining either kind of additional owner is
         // rejected before load can mutate the payload.
         fn load(&mut self, ar: &mut BinaryReadArchive) {
-            self.ptr.get_mut().unwrap().load(ar)
+            Arc::get_mut(&mut self.ptr).unwrap().load(ar)
         }
         fn kind(&self) -> i32 {
             self.ptr.kind()
@@ -1276,12 +1274,9 @@ impl SerializableRegistry {
 }
 
 struct SerializableRegistryMap {
-    // Facade-spelled on purpose: `rusty::HashMap::new()` is a `const fn`,
-    // which is what lets `registry()` const-initialise its `static`. std's
-    // `new()` is not const, and the const route std offers (`with_hasher`)
-    // drags a hasher parameter into the emitted C++ type (measured: 132
-    // emitted lines move). Everything non-static in this crate spells std.
-    map: rusty::HashMap<i32, SerializableRegistryFactory>,
+    // Initialize the standard map under the registry lock on first use.
+    // None keeps the static initializer independent of a const HashMap::new.
+    map: Option<std::collections::HashMap<i32, SerializableRegistryFactory>>,
 }
 
 // The otherwise-unused parameter intentionally makes this a C++ function
@@ -1290,7 +1285,7 @@ struct SerializableRegistryMap {
 #[allow(clippy::extra_unused_type_parameters)]
 fn registry<T>() -> &'static std::sync::Mutex<SerializableRegistryMap> {
     static R: std::sync::Mutex<SerializableRegistryMap> = std::sync::Mutex::new(SerializableRegistryMap {
-        map: rusty::HashMap::new(),
+        map: None,
     });
     &R
 }
@@ -1300,23 +1295,32 @@ pub fn serializable_registry_register_factory(
     factory: SerializableRegistryFactory,
 ) {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    guard.map.insert(kind, factory);
+    if guard.map.is_none() {
+        guard.map = Some(std::collections::HashMap::new());
+    }
+    guard.map.as_mut().unwrap().insert(kind, factory);
 }
 
 #[allow(unsafe_code)]
 pub fn serializable_registry_create_impl(kind: i32) -> SerializableProxy {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    let entry = guard.map.get_mut(&kind);
+    verify_at(guard.map.is_some(), file!(), line!());
+    let entry = guard.map.as_mut().unwrap().get_mut(&kind);
     verify_at(entry.is_some(), file!(), line!());
     entry.unwrap()()
 }
 
 pub fn serializable_registry_is_registered_impl(kind: i32) -> bool {
     let guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    guard.map.get(&kind).is_some()
+    if guard.map.is_none() {
+        return false;
+    }
+    guard.map.as_ref().unwrap().get(&kind).is_some()
 }
 
 pub fn serializable_registry_clear_impl() {
     let mut guard = registry::<SerializableRegistryMap>().lock().unwrap();
-    guard.map.clear();
+    if let Some(map) = guard.map.as_mut() {
+        map.clear();
+    }
 }

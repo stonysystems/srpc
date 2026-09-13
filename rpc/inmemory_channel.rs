@@ -9,7 +9,6 @@
 #![allow(unsafe_code)]
 #![allow(clippy::arc_with_non_send_sync, clippy::question_mark)]
 
-use rusty::cpp_inherit;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -396,7 +395,7 @@ pub struct InMemoryChannelShim {
     pub conn_: Arc<InMemoryChannel>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl ChannelConnectionBase for InMemoryChannelShim {
     unsafe fn send_frame(&self, frame: &ChannelFrame) -> ChannelError {
         unsafe { self.conn_.send_frame(frame) }
@@ -612,7 +611,7 @@ pub struct InMemoryListenerShim {
     pub listener_: Arc<InMemoryListener>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 #[allow(unsafe_code)]
 unsafe impl ChannelListenerBase for InMemoryListenerShim {
     fn listen(&mut self, address: &str) -> ChannelError {
@@ -717,7 +716,7 @@ pub struct InMemoryFactoryShim {
     pub factory_: Arc<InMemoryFactory>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl ChannelFactoryBase for InMemoryFactoryShim {
     fn connect(&mut self, address: &str) -> ConnectResult {
         self.factory_.connect(address)

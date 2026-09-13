@@ -26,10 +26,6 @@
       "category": "import",
       "sha256": "4d66e675134f0b973e507a6f67bc7f7b2eb3a20ee449d78ef9cd11154fbfb18a"
     },
-    "alias:NativeHashMap": {
-      "category": "import",
-      "sha256": "32ada813c167629d58172aaf6051e3539c48f6c69692640d263290907f5bf00e"
-    },
     "alias:RustcIoErrorKind": {
       "category": "import",
       "sha256": "f416eef910f6f53cde298b35beeca2fb37a377fadef2b9448d729146411e482e"
@@ -49,10 +45,6 @@
     "alias:StdVector": {
       "category": "import",
       "sha256": "440c9c55f305e438aab1b5237a62340716e133e1e377bc6aecfbcdebc2c428fa"
-    },
-    "alias:rusty::os::fd::OwnedFd": {
-      "category": "import",
-      "sha256": "59953557f609cd0e4e2850c00cf89196877b348c4b87f0412700908afd01396d"
     },
     "alias:task::TaskPoller": {
       "category": "future",
@@ -122,14 +114,6 @@
       "category": "standard",
       "sha256": "fedaef4629a510edf89923e291e05b5ccaefc6df3c8b751227f203f4b7201e78"
     },
-    "function:sys::process::getpid": {
-      "category": "standard",
-      "sha256": "b416d36dfdf151965c993af69b270f0f886f21fced2ffdaac0f84d0cdee4d5ce"
-    },
-    "function:sys::time::sleep_us": {
-      "category": "standard",
-      "sha256": "d1b730c6dfc18d3a88d4c630f9d305bc27b83c809725aefa898ceb951b399fd4"
-    },
     "function:thread::current_id": {
       "category": "standard",
       "sha256": "f32802e3e543c154708968d8f311ded63764e20fb1fe58e7c8789aa0993c94de"
@@ -169,10 +153,6 @@
     "impl::: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >": {
       "category": "standard",
       "sha256": "71614b71f119ec72df1d5be52e459cc26d021c52a49b19e251ae4cf9b828178c"
-    },
-    "impl::: std :: sync :: Arc < T > as StdArcGetMutExt < T > < T : ? Sized >": {
-      "category": "standard",
-      "sha256": "809ee89f2d2646c7a7e15f019ad95f25506de0767199fd90ce48791c8ab0c126"
     },
     "impl:Box < T > as RustyFunctionIsEmpty < T : ? Sized >": {
       "category": "standard",
@@ -254,30 +234,6 @@
       "category": "standard",
       "sha256": "a49cb2168ff49139cd031c94ff3f183346f0e0d90641478a0b6c2d4daa267d29"
     },
-    "impl:HashMap < K , V > as Default < K , V >": {
-      "category": "standard",
-      "sha256": "6e142308f781de16fb6ec28e11ec44be208044a7fbe43bf44c96e16f577cb4c0"
-    },
-    "impl:HashMap < K , V > as inherent < K , V >": {
-      "category": "standard",
-      "sha256": "7610659384c88d19f1b1eda56b501c8cb6ddd82ebedef35c4903727b658db5cc"
-    },
-    "impl:HashMap < K , V > as inherent < K : Eq + :: std :: hash :: Hash , V >": {
-      "category": "standard",
-      "sha256": "cd1764069bbea87858234cea3203982ca2d990d43a3a7db9fb0333661a8050bf"
-    },
-    "impl:HashSet < T > as Default < T >": {
-      "category": "standard",
-      "sha256": "db98f43faa66db71cb8099e0499d4920aefecea24f70b55d4b27c8d5cd297138"
-    },
-    "impl:HashSet < T > as inherent < T : Eq + :: std :: hash :: Hash >": {
-      "category": "standard",
-      "sha256": "4bf29df9974d703047004575a0a9d4a3af5a3af7d76df369338bf5ad463c387d"
-    },
-    "impl:HashSet < T > as inherent < T >": {
-      "category": "standard",
-      "sha256": "b3ded172fb9741fe782233b6ce3c2c259b2c02fcabc3d14757a52714289595f1"
-    },
     "impl:ReactorJobSet < T > as Default < T >": {
       "category": "standard",
       "sha256": "0ae1f9bcf1517192fb2eb001255bb5e3e0b701d56c91cbd1c27b59056c62eae3"
@@ -297,10 +253,6 @@
     "impl:RustcIoError as inherent ": {
       "category": "standard",
       "sha256": "f63feb11054c9662e36ec0b0c55aaec49743c27a615132d99ad93a4d778b79ab"
-    },
-    "impl:RustcOwnedFd as inherent ": {
-      "category": "standard",
-      "sha256": "97bd4ad5292f239816eaad64bc1b3d0197a359de4071e16f752e8695cec29aa0"
     },
     "impl:RustcTcpListener as inherent ": {
       "category": "standard",
@@ -382,10 +334,6 @@
       "category": "standard",
       "sha256": "f0b037472ba8d67da209ac6879ec8bd6cffb4ca730210b285560c20ffecddc42"
     },
-    "impl:SourceLocation as inherent ": {
-      "category": "standard",
-      "sha256": "71d74db9db7cd926ed7fc02d4b8488f4c51e257a5403f377b9673c2c0d8e4c4b"
-    },
     "impl:StdPair < A , B > as inherent < A , B >": {
       "category": "standard",
       "sha256": "8951b016347940909dc3cd1f33573abe1b047037245c2517e6f5b3b40c63dc2d"
@@ -430,25 +378,9 @@
       "category": "standard",
       "sha256": "430206e240842f9f5ef9cb5186fd20855b23bfb741e3952a0ea31d21e993f137"
     },
-    "module:marker": {
-      "category": "import",
-      "sha256": "2edfa140e6b0d77fc3ea821ff70ce773bd6b06dd1357b8035a93cd0f9f31b5b4"
-    },
     "module:panic": {
       "category": "import",
       "sha256": "4b0e2213d29a417efbf7fd426103a850bcd77c02ae6a073b91ad258893af7a91"
-    },
-    "module:port": {
-      "category": "import",
-      "sha256": "241ee30329d4c09c5176bcc8b138c690d89aa80ac4765fbc1d59576dd33d7c49"
-    },
-    "module:port::rc": {
-      "category": "import",
-      "sha256": "d9a32e39aefc6bc9fbe8496aed89995b86cc670c740831a2254a1f26f874a59f"
-    },
-    "module:rc": {
-      "category": "import",
-      "sha256": "d9a32e39aefc6bc9fbe8496aed89995b86cc670c740831a2254a1f26f874a59f"
     },
     "module:rusty": {
       "category": "import",
@@ -462,41 +394,9 @@
       "category": "import",
       "sha256": "50b239afca8092e053e50dcfec6b3712d06a309a1f9802264ee75f72c139bdbf"
     },
-    "module:rusty::os": {
-      "category": "import",
-      "sha256": "eef15d919d779f4929edbfaee7ea5a11a4c1ee1291f1b12b5c7868ffda73f8c0"
-    },
-    "module:rusty::os::fd": {
-      "category": "import",
-      "sha256": "998173493fd4f2891c38929e7724bac28735884e7635b984470e3e8782f7e6b0"
-    },
     "module:std": {
       "category": "import",
       "sha256": "d1339a0d2481914b3fa3fd53d98206b1bcead4c087e4a9c3e1e9f426afecb0fc"
-    },
-    "module:sync": {
-      "category": "import",
-      "sha256": "8bcf81bf0951fa1f91496fff2a248a94b3ebc53317c3b3899c8c51bcfdd01bb5"
-    },
-    "module:sync::atomic": {
-      "category": "import",
-      "sha256": "633d6530c670d6991afa1fbd813cd5fbb9438c2648a0072811b3e7d52ef4e2ab"
-    },
-    "module:sync::mpsc": {
-      "category": "import",
-      "sha256": "bfd68923c012fb26ce1625ae5f9c6e6fe97ba6c58f223fac56e611294597d7b4"
-    },
-    "module:sys": {
-      "category": "import",
-      "sha256": "db228134c6cc7082f15777bbda2d5ed006d1f43a7d3fa2ccf7d5eba9e271bf73"
-    },
-    "module:sys::process": {
-      "category": "import",
-      "sha256": "cc58e267a8f918c62b1627fae3c03ab9fd096dd798823def4f93551f371b639a"
-    },
-    "module:sys::time": {
-      "category": "import",
-      "sha256": "20fd8922bc170989ac6ea2e8a873d7dc2859825d4b494948cde610b5fdfc6eee"
     },
     "module:task": {
       "category": "import",
@@ -517,14 +417,6 @@
     "struct:Function": {
       "category": "standard",
       "sha256": "5f03685d453cdceab2f825fc8cda31949ae9bc2624130e07f6197818c0731aad"
-    },
-    "struct:HashMap": {
-      "category": "standard",
-      "sha256": "1e754ffd9be8daff22509ff44ae7975a1afcdbbe2bfd65c30caa291787dbc9c9"
-    },
-    "struct:HashSet": {
-      "category": "standard",
-      "sha256": "e42c5ea0447b7ee63b4309b29a8f5551baf1f3a27fbd559d61a9ed43e78e8530"
     },
     "struct:PthreadCond": {
       "category": "c-layout",
@@ -570,10 +462,6 @@
       "category": "standard",
       "sha256": "903f200fbc096c32c307d9a9c204c6502ba05ebd3154b4f47fa0618bd26aa730"
     },
-    "struct:RustcOwnedFd": {
-      "category": "standard",
-      "sha256": "3eb8913f2dd7fdafc1df5eb3c1b89e4edc807b9ab81578e8972877728e5fd2fd"
-    },
     "struct:RustcTcpListener": {
       "category": "standard",
       "sha256": "1fc35c7014ed7c81eda47a7325f6b84839d49c52993a5228211e55c74409131b"
@@ -609,10 +497,6 @@
     "struct:SerializableStdVector": {
       "category": "standard",
       "sha256": "ea0cbef397f26b7c542dfe07582d5484c4c96a5cfa9c7c22ed651a926ad4186f"
-    },
-    "struct:SourceLocation": {
-      "category": "standard",
-      "sha256": "de4493e818b5a752e4b395f54948f0a34dedba811d42d707389f4b7efd7aecec"
     },
     "struct:StdPair": {
       "category": "standard",
@@ -706,22 +590,6 @@
       "category": "standard",
       "sha256": "8da7f977e2375bf95efb057e742292f37ca62d2c403b439076ccbb7d4afaeb75"
     },
-    "trait:StdArcGetMutExt": {
-      "category": "standard",
-      "sha256": "8b5004df63387b66c78a9decf1a18c6adcf5003edf00259479faa2ea89cea296"
-    },
-    "use:marker::std :: marker :: PhantomPinned": {
-      "category": "import",
-      "sha256": "03051e90e7036b52f2f7dfa41b912c1ad6e875043fbb1f1338f186e03274223c"
-    },
-    "use:port::rc::std :: rc :: Rc": {
-      "category": "import",
-      "sha256": "189699d42dd15916a2fb2f574d9cd4554c9ffb6f95fc86c15bd3cf8870a7dcf3"
-    },
-    "use:rc::std :: rc :: { Rc , Weak }": {
-      "category": "import",
-      "sha256": "4f5c5b2c85afab75bfd5f17ea8ea8237a00720041d3c0819f7b1763475b8275f"
-    },
     "use:rusty::io::std :: io :: Error": {
       "category": "import",
       "sha256": "1d6b65e206d059ea3ca6ad8be543b2cd4700ed6ebfbbd40c97dbccf22c1e3d80"
@@ -741,10 +609,6 @@
     "use:std :: cell :: { Cell , RefCell , RefMut }": {
       "category": "import",
       "sha256": "2633d29cb397bbff49eb649066abc65078b506788d2a54ff481fdd0df89a3fe1"
-    },
-    "use:std :: collections :: { BTreeMap , BTreeSet }": {
-      "category": "import",
-      "sha256": "d592e69cdaf0f4593bb8075d8ba996d34b7b1690609511a321130e26212fe298"
     },
     "use:std :: collections :: { VecDeque }": {
       "category": "import",
@@ -781,18 +645,6 @@
     "use:std::std :: io :: Write as _": {
       "category": "import",
       "sha256": "ef6188338614e29365fbb31931a002820361ae30bfae79788109891a5904856d"
-    },
-    "use:sync::atomic::std :: sync :: atomic :: { AtomicBool , AtomicU64 , AtomicUsize , Ordering }": {
-      "category": "import",
-      "sha256": "eafdcefb79293c92ae810432bb345b01b1a5f00cc25b01e86ba3df2fceb8e7e9"
-    },
-    "use:sync::mpsc::std :: sync :: mpsc :: { channel , Receiver , Sender }": {
-      "category": "import",
-      "sha256": "827250c33b5e30c2d3825e37cefc95d13a4d1d5691d9972bb86a5ab72f798e59"
-    },
-    "use:sync::std :: sync :: { Arc , Weak }": {
-      "category": "import",
-      "sha256": "f3446996b075172068cfb09283725102af68752219efb8bccf029665e1821b4e"
     },
     "use:task :: { Context , Poll , Task , Waker }": {
       "category": "import",

@@ -24,7 +24,7 @@ DEFAULT_TRANSPILER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-transpiler"
 )
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "3e1d95059839e4bf1968891047ff1563a2f08c17"
+REQUIRED_RUSTY_CPP_COMMIT = "4cd99d8b362c0623c92bf32f1e16046acf32afd4"
 EXTRACTION_DRIVER = "scripts/extract_srpc_rust.py"
 EXTRACTION_MANIFEST = "rust-modules.toml"
 MODULE_PREAMBLE = "module-preambles.toml"
@@ -701,7 +701,7 @@ EXPECTED_IMPORTS = {
         'vec_port.vec',
     ],
     "srpc.channel": ["srpc.callback_wrapper"],
-    "srpc.epoll_wrapper": ["rusty"],
+    "srpc.epoll_wrapper": [],
     "srpc.pollable_proxy": [],
     "srpc.callbacks": ["vec_port.vec", "srpc.errors"],
     "srpc.inmemory_channel": ["vec_port.vec", "std_port", "srpc.channel"],

@@ -46,32 +46,6 @@ pub struct PthreadCondAttr {
     _opaque: [u8; 0],
 }
 
-pub mod sync {
-    pub use ::std::sync::{Arc, Weak};
-
-    pub mod atomic {
-        pub use ::std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-    }
-
-    pub mod mpsc {
-        pub use ::std::sync::mpsc::{channel, Receiver, Sender};
-    }
-}
-
-pub mod marker {
-    pub use ::std::marker::PhantomPinned;
-}
-
-pub mod rc {
-    pub use ::std::rc::{Rc, Weak};
-}
-
-pub mod port {
-    pub mod rc {
-        pub use ::std::rc::Rc;
-    }
-}
-
 /// Rustc-only model of `rusty::thread`.
 ///
 /// The production facade (`third-party/rusty-cpp/include/rusty/thread.hpp`)
@@ -370,39 +344,6 @@ impl RustcTcpListener {
     }
 }
 
-/// Rustc-only ownership model for the production `rusty::os::fd::OwnedFd`.
-///
-/// The runtime wrapper has an invalid/default state; `std::os::fd::OwnedFd`
-/// deliberately does not, so the facade represents that state with `Option`.
-#[derive(Debug, Default)]
-pub struct RustcOwnedFd {
-    inner: Option<::std::os::fd::OwnedFd>,
-}
-
-impl RustcOwnedFd {
-    /// # Safety
-    ///
-    /// `fd` must be a live descriptor whose unique ownership is transferred
-    /// to the returned value.
-    #[allow(unsafe_code)]
-    pub unsafe fn from_raw_fd(fd: i32) -> Self {
-        use ::std::os::fd::FromRawFd;
-        Self {
-            // SAFETY: this facade has the same ownership precondition.
-            inner: Some(unsafe { ::std::os::fd::OwnedFd::from_raw_fd(fd) }),
-        }
-    }
-
-    pub fn as_raw_fd(&self) -> i32 {
-        use ::std::os::fd::AsRawFd;
-        self.inner.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.inner.is_some()
-    }
-}
-
 /// Rust-only representation of `std::pair<A, B>` used by canonical sources.
 pub struct StdPair<A, B> {
     pub first: A,
@@ -426,104 +367,8 @@ pub struct CFile {
     _opaque: [u8; 0],
 }
 
-/// Rust-side model of `std::source_location` used by Debugging tests.
-pub struct SourceLocation {
-    file: &'static str,
-    line: u32,
-}
-
-impl SourceLocation {
-    #[track_caller]
-    pub fn current() -> SourceLocation {
-        let caller = ::std::panic::Location::caller();
-        SourceLocation {
-            file: caller.file(),
-            line: caller.line(),
-        }
-    }
-
-    pub fn file_name(&self) -> &'static str {
-        self.file
-    }
-
-    pub fn line(&self) -> u32 {
-        self.line
-    }
-}
-
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
-
-/// Rustc-only method facade for the member-shaped `rusty::Arc::get_mut()`
-/// C++ API. `std::sync::Arc` exposes the same operation as an associated
-/// function, so canonical sources import this trait to retain one spelling in
-/// both languages.
-pub trait StdArcGetMutExt<T: ?Sized> {
-    fn get_mut(&mut self) -> Option<&mut T>;
-}
-
-impl<T: ?Sized> StdArcGetMutExt<T> for ::std::sync::Arc<T> {
-    fn get_mut(&mut self) -> Option<&mut T> {
-        ::std::sync::Arc::get_mut(self)
-    }
-}
-
-// Runtime collection names retain distinct C++ type mappings. Their Rust
-// storage delegates to standard collections, including key replacement,
-// ordering and duplicate elimination.
-pub use ::std::collections::{BTreeMap, BTreeSet};
-
-type NativeHashMap<K, V> = ::std::collections::HashMap<
-    K, V, ::std::hash::BuildHasherDefault<::std::collections::hash_map::DefaultHasher>,
->;
-
-pub struct HashMap<K, V> {
-    values: NativeHashMap<K, V>,
-}
-
-impl<K, V> Default for HashMap<K, V> {
-    fn default() -> Self { Self::new() }
-}
-
-impl<K, V> HashMap<K, V> {
-    pub const fn new() -> Self {
-        Self { values: NativeHashMap::with_hasher(::std::hash::BuildHasherDefault::new()) }
-    }
-    pub fn len(&self) -> usize { self.values.len() }
-    pub fn is_empty(&self) -> bool { self.values.is_empty() }
-    pub fn clear(&mut self) { self.values.clear(); }
-    pub fn iter(&self) -> ::std::collections::hash_map::Iter<'_, K, V> { self.values.iter() }
-}
-
-impl<K: Eq + ::std::hash::Hash, V> HashMap<K, V> {
-    pub fn insert(&mut self, key: K, value: V) { self.values.insert(key, value); }
-    pub fn get(&self, key: &K) -> Option<&V> { self.values.get(key) }
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> { self.values.get_mut(key) }
-    pub fn contains_key(&self, key: &K) -> bool { self.values.contains_key(key) }
-    pub fn remove(&mut self, key: &K) { self.values.remove(key); }
-}
-
-/// Hash-set exposes the runtime's map field to its canonical encoder.
-pub struct HashSet<T> {
-    pub map: HashMap<T, ()>,
-}
-
-impl<T> Default for HashSet<T> {
-    fn default() -> Self { Self::new() }
-}
-
-impl<T> HashSet<T> {
-    pub const fn new() -> Self { Self { map: HashMap::new() } }
-    pub fn len(&self) -> usize { self.map.len() }
-    pub fn is_empty(&self) -> bool { self.map.is_empty() }
-    pub fn clear(&mut self) { self.map.clear(); }
-}
-
-impl<T: Eq + ::std::hash::Hash> HashSet<T> {
-    pub fn insert(&mut self, value: T) { self.map.insert(value, ()); }
-    pub fn contains(&self, value: &T) -> bool { self.map.contains_key(value) }
-    pub fn remove(&mut self, value: &T) { self.map.remove(value); }
-}
 
 /// Distinct rustc-only model for `std::string_view`.
 #[derive(Default)]
@@ -799,12 +644,6 @@ pub mod rusty {
         }
     }
 
-    pub mod os {
-        pub mod fd {
-            pub type OwnedFd = ::std::os::fd::OwnedFd;
-        }
-    }
-
     /// # Safety
     ///
     /// The C++ associated namespace for `T` must provide a compatible
@@ -860,24 +699,6 @@ pub mod rusty {
     }
 
 
-}
-
-/// Rust-side model of helpers supplied by the C++ rusty runtime.
-pub mod sys {
-    pub mod time {
-        pub fn sleep_us(microseconds: u64) {
-            ::std::thread::sleep(::std::time::Duration::from_micros(microseconds));
-        }
-
-
-    }
-
-    pub mod process {
-        /// Production C++ resolves this to `rusty::sys::process::getpid()`.
-        pub fn getpid() -> i32 {
-            ::std::process::id() as i32
-        }
-    }
 }
 
 pub mod panic {

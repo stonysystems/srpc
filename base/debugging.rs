@@ -143,17 +143,17 @@ pub fn verify_failed(file: &str, line: u32) {
 
 /// Verify an expression while preserving the C++ caller-location default.
 ///
-/// Canonical Rust callers pass an explicit rustc-only `SourceLocation`. The
-/// inert parameter marker is intended to make generated C++ retain the legacy
+/// Canonical Rust callers pass a standard caller location. The
+/// inert parameter marker makes generated C++ retain the
 /// `std::source_location::current()` default at every C++ call site.
 pub fn verify<Expr>(
     expr: &Expr,
-    #[cfg_attr(any(), cpp_default_argument(source_location))] location: &::rusty::SourceLocation,
+    #[cfg_attr(any(), cpp_default_argument(source_location))] location: &::core::panic::Location<'_>,
 ) where
     Expr: Copy + Into<bool>,
 {
     let value: bool = (*expr).into();
-    verify_at(value, location.file_name(), location.line());
+    verify_at(value, location.file(), location.line());
 }
 
 /// Verify at an explicit call site using the same implementation in both languages.

@@ -7,7 +7,6 @@ use crate::serializable::{BinaryReadArchive, BinaryWriteArchive, SerializableBas
 use crate::serializable as _;
 type SerializableSharedPtrHolder<T> = crate::serializable::details::SerializableSharedPtrHolder<T>;
 use std::sync::Arc;
-use rusty::StdArcGetMutExt as _;
 
 #[allow(unsafe_code)]
 /// Recover a mutable payload pointer from a checked shared-holder pointer.
@@ -133,7 +132,7 @@ impl<PayloadSet> SerializableEnvelope<PayloadSet> {
         let kind: i32 = unsafe { SparseInt::load32(kind_bytes.as_ptr()) };
         let mut proxy: SerializableProxy =
             crate::serializable::SerializableRegistry::create(kind);
-        proxy.get_mut().unwrap().load(ar);
+        Arc::get_mut(&mut proxy).unwrap().load(ar);
         self.inner_ = Some(proxy);
         self.refresh_kind();
     }

@@ -780,7 +780,7 @@ struct ClientReplayScope {
 
 impl Drop for ClientReplayScope {
     fn drop(&mut self) {
-        self.running.store(false, rusty::sync::atomic::Ordering::Release);
+        self.running.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -789,8 +789,8 @@ impl Drop for ClientReplayScope {
 
 impl Drop for ClientConnection {
     fn drop(&mut self) {
-        self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release);
-        self.reconnect_.reconnecting_.store(false, rusty::sync::atomic::Ordering::Release);
+        self.reconnect_.reconnect_abort_.store(true, std::sync::atomic::Ordering::Release);
+        self.reconnect_.reconnecting_.store(false, std::sync::atomic::Ordering::Release);
         self.invalidate_pending_futures();
     }
 }
@@ -868,7 +868,7 @@ impl ClientConnection {
             let prev_state = self.state_machine_.state();
             user_initiated_closing = prev_state == ConnectionState::DISCONNECTING
                 || prev_state == ConnectionState::DISCONNECTED
-                || self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+                || self.reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire);
             if !user_initiated_closing {
                 self.state_machine_.state_field.set(ConnectionState::FAILED);
             }
@@ -889,9 +889,9 @@ impl ClientConnection {
         // unless reconnect was aborted.
         let addr: String = self.reconnect_address_.get();
         if self.reconnect_policy_.get().auto_reconnect && !addr.is_empty() {
-            self.reconnect_.channel_reconnect_attempts_.fetch_add(1, rusty::sync::atomic::Ordering::AcqRel);
+            self.reconnect_.channel_reconnect_attempts_.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
-            let reconnect_aborted: bool = self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+            let reconnect_aborted: bool = self.reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire);
             if reconnect_aborted {
                 return;
             }
@@ -902,7 +902,7 @@ impl ClientConnection {
                     return;
                 }
                 let conn = conn_opt.unwrap();
-                let conn_aborted: bool = (*conn).reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+                let conn_aborted: bool = (*conn).reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire);
                 if !(*conn).reconnect_policy_.get().auto_reconnect || conn_aborted {
                     return;
                 }
@@ -943,7 +943,7 @@ impl ClientConnection {
             if self.state_machine_.can_connect() {
                 lifecycle.generation += 1;
                 lifecycle.active = false;
-                self.closing_.store(false, rusty::sync::atomic::Ordering::Release);
+                self.closing_.store(false, std::sync::atomic::Ordering::Release);
                 self.state_machine_.state_field.set(ConnectionState::CONNECTING);
                 true
             } else {
@@ -1015,7 +1015,7 @@ impl ClientConnection {
             lifecycle.active = true;
             retired = self.fiber_channel_.lock().unwrap().replace(channel.clone());
             retired_direct = self.direct_channel_.lock().unwrap().take();
-            self.closing_.store(false, rusty::sync::atomic::Ordering::Release);
+            self.closing_.store(false, std::sync::atomic::Ordering::Release);
             self.channel_mode_.set(true);
             batch = self.detach_pending_futures();
         }
@@ -1105,7 +1105,7 @@ impl ClientConnection {
             retired_direct = self.direct_channel_.lock().unwrap().replace(channel);
             retired_fiber = self.fiber_channel_.lock().unwrap().take();
             lifecycle.active = true;
-            self.closing_.store(false, rusty::sync::atomic::Ordering::Release);
+            self.closing_.store(false, std::sync::atomic::Ordering::Release);
             self.channel_mode_.set(true);
             self.state_machine_.state_field.set(ConnectionState::CONNECTED);
         }
@@ -1131,7 +1131,7 @@ impl ClientConnection {
         let retired = self.factory_.lock().unwrap().replace(factory);
         drop(retired);
     }
-    fn abort_reconnect(&mut self) { self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release); }
+    fn abort_reconnect(&mut self) { self.reconnect_.reconnect_abort_.store(true, std::sync::atomic::Ordering::Release); }
     fn set_callback_manager(&mut self, callback_manager: &Arc<CallbackManager>) {
         if callback_manager.is_valid() {
             self.callback_manager_ = callback_manager.clone();
@@ -1224,7 +1224,7 @@ impl ClientConnection {
                     return;
                 }
             }
-            if self.closing_.swap(true, rusty::sync::atomic::Ordering::AcqRel) {
+            if self.closing_.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 return;
             }
             lifecycle.active = false;
@@ -1262,7 +1262,7 @@ impl ClientConnection {
             lifecycle.active = false;
             lifecycle.generation += 1;
             generation = lifecycle.generation;
-            self.reconnect_.reconnect_abort_.store(true, rusty::sync::atomic::Ordering::Release);
+            self.reconnect_.reconnect_abort_.store(true, std::sync::atomic::Ordering::Release);
             if !self.state_machine_.is_terminal() {
                 self.state_machine_.state_field.set(ConnectionState::DISCONNECTING);
             }
@@ -1379,7 +1379,7 @@ impl ClientConnection {
     #[allow(clippy::explicit_auto_deref)]
     fn handle_error(&self) {
         let prev_state = self.state_machine_.state();
-        let abort_flag: bool = self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+        let abort_flag: bool = self.reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire);
         let user_initiated_closing: bool =
             (prev_state as i32) == (ConnectionState::DISCONNECTING as i32)
             || (prev_state as i32) == (ConnectionState::DISCONNECTED as i32)
@@ -1397,7 +1397,7 @@ impl ClientConnection {
         self.invoke_disconnected_callback();
 
         // Trigger policy-driven reconnect automatically after transport failures.
-        let reconnect_aborted: bool = self.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+        let reconnect_aborted: bool = self.reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire);
         if self.reconnect_policy_.get().auto_reconnect && !reconnect_aborted {
             let addr: String = self.reconnect_address_.get();
             if addr.is_empty() {
@@ -1410,7 +1410,7 @@ impl ClientConnection {
                     return;
                 }
                 let conn = conn_opt.unwrap();
-                let conn_aborted: bool = (*conn).reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire);
+                let conn_aborted: bool = (*conn).reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire);
                 if !(*conn).reconnect_policy_.get().auto_reconnect || conn_aborted {
                     return;
                 }
@@ -1443,9 +1443,9 @@ impl ClientConnection {
         }
     }
     fn is_factory_bound(&self) -> bool { (*self.factory_.lock().unwrap()).is_some() }
-    fn channel_reconnect_attempts_count(&self) -> u64 { self.reconnect_.channel_reconnect_attempts_.load(rusty::sync::atomic::Ordering::Acquire) }
+    fn channel_reconnect_attempts_count(&self) -> u64 { self.reconnect_.channel_reconnect_attempts_.load(std::sync::atomic::Ordering::Acquire) }
     pub fn set_reconnect_policy(&self, policy: &ReconnectPolicy) { self.reconnect_policy_.set(*policy); }
-    pub fn is_reconnecting(&self) -> bool { self.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) }
+    pub fn is_reconnecting(&self) -> bool { self.reconnect_.reconnecting_.load(std::sync::atomic::Ordering::Acquire) }
     pub fn pending_future_count(&self) -> usize { self.pending_fu_.lock().unwrap().len() }
     fn replay_pending_requests_for_test(&self) -> usize { self.replay_pending_requests() }
     fn update_pending_queue_config_for_test(&self, config: &RequestQueueConfig) { self.pending_queue_.update_config(*config); }
@@ -2066,7 +2066,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
     };
     // Waiting here can wait for this very call's on_reconnecting/error
     // callback to return. A second caller receives an explicit busy result.
-    if self_.reconnect_.reconnecting_.load(rusty::sync::atomic::Ordering::Acquire) {
+    if self_.reconnect_.reconnecting_.load(std::sync::atomic::Ordering::Acquire) {
         return complete_callback(CLIENT_ERR_BUSY);
     }
     if self_.reconnect_address_.get().is_empty() || !self_.state_machine_.can_connect() {
@@ -2076,13 +2076,13 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
     {
         let lifecycle = self_.lifecycle_.lock().unwrap();
         if self_.reconnect_.reconnecting_.compare_exchange(false, true,
-            rusty::sync::atomic::Ordering::AcqRel,
-            rusty::sync::atomic::Ordering::Acquire).is_err() {
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire).is_err() {
             drop(lifecycle);
             return complete_callback(CLIENT_ERR_BUSY);
         }
         start_generation = lifecycle.generation;
-        self_.reconnect_.reconnect_abort_.store(false, rusty::sync::atomic::Ordering::Release);
+        self_.reconnect_.reconnect_abort_.store(false, std::sync::atomic::Ordering::Release);
     }
     let attempt_generation = Cell::new(start_generation);
     let mut finish = |success: bool, result: i32| -> i32 {
@@ -2095,7 +2095,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
             }
             // No later part of this completion writes the latch. A user
             // notification may now start and own a completely new attempt.
-            self_.reconnect_.reconnecting_.store(false, rusty::sync::atomic::Ordering::Release);
+            self_.reconnect_.reconnecting_.store(false, std::sync::atomic::Ordering::Release);
             if success && result == 0 {
                 self_.metrics_.record_reconnect();
             }
@@ -2119,7 +2119,7 @@ pub fn clientconn_reconnect(self_: &ClientConnection, mut on_complete: OnReconne
     let attempt_is_current = || -> bool {
         let lifecycle = self_.lifecycle_.lock().unwrap();
         lifecycle.generation == attempt_generation.get()
-            && !self_.reconnect_.reconnect_abort_.load(rusty::sync::atomic::Ordering::Acquire)
+            && !self_.reconnect_.reconnect_abort_.load(std::sync::atomic::Ordering::Acquire)
     };
     let reconnect_once = || -> i32 {
         if !attempt_is_current() {
@@ -2295,8 +2295,8 @@ fn clientconn_replay_pending_requests(conn: &ClientConnection) -> usize {
 
 fn clientconn_replay_pending_for_binding(conn: &ClientConnection, expected_generation: u64) -> usize {
     if conn.replaying_.compare_exchange(false, true,
-        rusty::sync::atomic::Ordering::AcqRel,
-        rusty::sync::atomic::Ordering::Acquire).is_err() {
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire).is_err() {
         return 0;
     }
     let scope = ClientReplayScope { running: conn.replaying_.clone() };

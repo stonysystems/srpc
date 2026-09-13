@@ -1,128 +1,233 @@
-# Remaining facade and runtime adapters
+# Remaining facade and C++ runtime dependencies
 
-Status as of 2026-09-12, branch `apas/srpc`, after commits `d6d899f` through
-`8a094ff`. This is a working inventory for the next person who picks up the
-facade: what is left in `rusty-rustc/`, why each item is still there, what
-would remove it, and how to remove one safely. Every count below was measured
-against the tree at that revision; re-measure before trusting a number.
+Investigated on 2026-09-12 at SRPC `c591960`, with the pinned rusty-cpp
+`3e1d95059839e4bf1968891047ff1563a2f08c17`. Counts below describe that tree.
+The September migration history is retained below; its emission deltas are
+historical measurements, not new results from this investigation.
 
-## The principle
+The Cargo lane already builds without a C++ runtime. It compiles canonical
+Rust, the Rust-only `rusty-rustc` facade, nine C sources and one architecture's
+fiber assembly. The generated C++ lane still uses rusty-cpp's C++ runtime.
+Replacing `rusty::Arc` with `std::sync::Arc` in canonical Rust reduces facade
+coupling but still emits `rusty::Arc` in C++.
 
-The `rusty` C++ runtime API is designed so that canonical Rust can use the
-*real* standard-library types and the transpiler maps them: `Arc` is
-`std::sync::Arc`, `Mutex` is `std::sync::Mutex`, `String` is `String`, and the
-emitter spells them `rusty::Arc`, `rusty::Mutex`, `rusty::String`. The
-rustc-only facade (`rusty-rustc/src/lib.rs`, `task.rs`) exists so the canonical
-sources type-check and test under rustc; the emitter omits the package by
-identity. Under that principle a hand-written replacement type in the facade
-is debt unless it has a measured reason, and the reason belongs at the
-definition.
+There is work left in the facade, but several earlier blocker descriptions
+were wrong. The pinned transpiler already lowers `std::thread::sleep` and
+plain `Option<Box<dyn FnMut()>>`. Nullable callbacks with `Send`/`Sync` bounds
+remain unsupported by that special lowering. Network and descriptor models
+also have concrete API and empty-state differences that a path-map edit
+alone cannot remove.
 
-Two things follow. A type the facade merely re-exports (`pub use
-::std::sync::Arc`) already honours the principle. A type the facade *models*
-by hand is acceptable only when it stands for something Rust has no word for:
-a C++ ABI type the shipped surface names, a runtime semantic std cannot
-express, or an emitter contract.
+## Active removal goal
 
-## What was removed in September 2026
+The target is a canonical Cargo lane that uses Rust std plus the reviewed
+native kernel, with no dependency on `rusty-rustc` or C++ runtime models.
+Compiler-only annotations and C++ consumer adapters may remain outside that
+runtime dependency. Moving the facade into another Rust module does not meet
+this goal.
 
-| Commit | Change | Emission delta |
+Completion requires both Rust runtime tests and generated-C++ checks, followed
+by a standalone Cargo build with the C++ toolchain and facade sources absent.
+C++ compatibility work must keep serialization and scheduling policy in the
+canonical Rust implementation.
+
+Current implementation progress, updated 2026-09-13 (combined working tree):
+
+- The facade has 158 declarations, down from 195. Removed the Arc extension,
+  both descriptor models/aliases, unused std re-exports, collection models,
+  sleep/PID helpers, and the source-location model.
+- TCP and epoll use std `OwnedFd`. Their isolated Rust workspace, doctest,
+  clippy, audit and C++ compile checks pass. Provider symbols are unchanged;
+  epoll loses its unused `rusty` import and local import-initialization guard.
+- Canonical code imports std directly, uses inert inheritance annotations,
+  lazily initializes standard registry collections, sleeps through std, and
+  gets the process ID through std. Combined Rust tests pass. All generated
+  C++ providers compile and `libsrpc.a` links. The full ABI gate passes,
+  including 2,045 exact provider-owned strong symbols. All 26 SRPC CTest
+  tests pass.
+- `verify` now takes a standard `core::panic::Location`. Upstream tests run
+  native Rust and generated C++ and verify the C++ default captures the
+  importer's call site. The SRPC debugging provider compiles in the combined
+  C++ build.
+- Upstream nullable callback lowering now accepts standard Send/Sync bounds;
+  std mpsc and unsigned process-ID support are implemented. The integrated
+  compiler pin is `4cd99d8b362c0623c92bf32f1e16046acf32afd4`.
+- Async runtime work supports non-default and move-only poll payloads, owns
+  suspended tasks' polling contexts, and resumes nested pending tasks. Direct
+  runtime tests pass with address/undefined sanitizers. Standard Future
+  lowering is implemented. The canonical executor now passes Rust tests with
+  standard Future/Wake, including a non-default, non-cloneable output; its
+  combined C++ checks remain pending in an isolated worktree.
+- The STL serialization slice is validated and ready for integration: 37
+  facade declarations removed, 21 Rust tests and nine import-only C++ parity
+  tests passed. Wire-format loops and error handling stay canonical. C++
+  adapters expose individual container operations, including insert-if-vacant
+  to preserve duplicate-key behavior with one map lookup.
+- Standard TCP stream/listener migration is validated and ready for
+  integration. Rust lifecycle tests and fresh C++ compilation pass; all
+  strong and SRPC-owned TCP symbols are unchanged. Existing C++ IPv4 APIs
+  remain available alongside the standard address-returning operations.
+- Standard boxed callbacks replace the padded Function model in an isolated
+  slice, removing 19 declarations. Rust tests, doctests and clippy pass.
+  Whole-crate generation exposed missing nullable callback borrow operations;
+  upstream tests now cover shared/mutable views, guards and empty unwraps.
+  Whole-crate generation passes with that borrowing support.
+- Standard thread handles and IDs replace the facade thread module in an
+  isolated slice. The worker still aborts on panic and avoids joining itself
+  using its native kernel thread ID. Rust tests, including worker self-shutdown,
+  clippy and whole-crate generation pass; fresh C++ compilation is running.
+- Remaining implementation work covers source/sink and ADL forwarding,
+  native C/assembly type declarations, standard thread handles/IDs, panic
+  payloads, job ordering, domain load-balancer traits, pair/vector aliases,
+  handle presence, and deleting the facade package/build dependency itself.
+
+The inventory and probe tables below record the starting investigation.
+Completed removals above supersede their candidate status.
+
+## Ownership and removal criteria
+
+Canonical Rust owns SRPC scheduling, transport, serialization and reliability
+policy. The [facade](../../rusty-rustc/src/lib.rs) supplies Rust representations
+for the C++ contracts that the same source must emit. The transpiler omits
+that package by identity. There is no remaining facade scheduler, fake event
+implementation, archive implementation or separate SRPC runtime owner.
+The [runtime ownership notes](../canonical-rust-runtime.md) identify the
+canonical owners.
+
+Prefer actual Rust standard-library types when their lowering preserves the
+required behavior and C++ interface. A facade model can remain for an explicit
+C ABI layout, a C++ consumer type, a runtime behavior difference or an emitter
+contract. Removing those models requires either compiler support or a reviewed
+change to the corresponding contract. It does not follow that every remaining
+adapter is permanent, or that every removal needs an upstream feature.
+
+## Current facade inventory
+
+[scripts/facade-adapters.json](../../scripts/facade-adapters.json) contains
+195 declarations. The facade has 1,482 lines, with 1,328 in `lib.rs` and 154
+in `task.rs`. Both facade audit entry points pass against these files.
+
+| Category | Declarations | What the count includes |
 |---|---|---|
-| `d6d899f` | `rusty::Mutex`/`Condvar` wrappers deleted; 53 sites spell `std::sync::*`; six dead facade items removed | none (38/38 files byte-identical) |
-| `3f5a099` | non-static `HashMap`/`HashSet` spell `std::collections::*` | 1 file, 20 lines, in a never-instantiated template |
-| `52ec8e3` | last `rusty::sync::downgrade` caller spells `Arc::downgrade`; facade fn deleted | 1 line (a `rusty::clone` disappears) |
-| `14be655` | `LegacyStdString` alias and its `std::string` type-map row deleted; the C++ surface says `rusty::String` | 11 modules, 208 lines, all type spellings; 2 of ~50 test TUs needed 3 lines |
-| `f237f1f` | facade `std::string` byte model retired from canonical code; kept only as `SerializableStdString`, the wire impl target | 5 modules; provider symbols 2046 -> 2045 |
-| `8a094ff` | 20 `&String` parameters and callback types take `&str`, so the C++ surface takes `std::string_view` | 5 modules, 128 lines |
+| `import` | 52 | 23 `use` declarations, 19 modules, 8 aliases and 2 file-attribute records. Some aliases name C++ ABI adapters; these are not all std re-exports. |
+| `standard` | 108 | 23 structs, 67 impl blocks, 13 functions, 4 traits and 1 static. This combines removable wrappers with C++ contracts. |
+| `trait-dispatch` | 14 | Archive/source/sink forwarding plus load-balancer trait contracts and impls. Only the archive/source/sink part is paired with `misc/serializable_support.hpp`. |
+| `c-layout` | 12 | pthread and FILE types, opaque C void, fiber state and both architecture-specific register frames, IPv4 C layouts. |
+| `future` | 9 | `TaskPoller`, `Task`, `Poll`, `Context`, `Waker` and their impl blocks. Scheduling remains in canonical Rust. |
 
-`std::string` mentions inside emitted module bodies went from 281 to 49; the
-49 are the wire overloads in `serializable`, `rand`'s explicit
-`std_string_bytes` ABI carrier, and the `std::string::value_type` spelling of
-a C `char`. Canonical Rust now names the C++ string type in exactly two lines,
-the two wire impls in `misc/serializable.rs`.
+These are AST declaration counts, not counts of replacement types or call
+sites. In particular, an impl block counts once regardless of how many methods
+it contains. The audit pins declaration tokens and rejects stale or changed
+entries; a pass does not establish semantic parity between Rust and C++.
 
-## The inventory today
+## Work that can start in SRPC
 
-`scripts/facade-adapters.json` pins 195 declarations (down from 220). The
-gate (`scripts/facade_audit.py`, run as `check_facade_shadow.py` and
-`check_facade_stubs.py`) fails on any unreviewed, changed, or stale entry.
+| Candidate | Evidence and next step |
+|---|---|
+| Replace `StdArcGetMutExt` with imported `Arc::get_mut` | `use std::sync::Arc; Arc::get_mut(...)` emits and compiles against an existing static runtime overload. The previous claim that the runtime only has a member was wrong. Six canonical uses across serialization, envelopes and TCP are candidates. Fully qualified `std::sync::Arc::get_mut` emitted an invalid C++ path in a separate probe, so use the imported spelling and validate the whole crate. |
+| Replace the two `rusty::sys::time::sleep_us` calls | The calls are in `base/threading.rs` and `rpc/server.rs`. `std::thread::sleep(std::time::Duration::from_micros(...))` already emits `rusty::thread::sleep(rusty::time::Duration::from_micros(...))`. The emitted probe compiles. Review behavior before removing the facade function: `sys::time::sleep_us` calls `nanosleep` once without retrying EINTR, while `thread::sleep` uses the duration-based platform sleep path. Whole-crate imports and call behavior still need validation. |
+| Move always-present `Function` uses to `Box<dyn Fn...>` | Owned boxed callbacks already lower to `rusty::Function`, including `Send`/`Sync` bounds. Review each alias and its callers for empty-state behavior before selecting a slice. The facade has explicit size/alignment padding, so Rust layout assumptions also need review. A successful type spelling probe alone does not establish a safe migration. |
+| Replace the remaining const-initialized facade collections through lazy initialization | `misc/serializable.rs::registry` and `rpc/server.rs::g_rpc_id_missing` keep the facade `HashMap` and `HashSet`. `misc/any_message.rs` already demonstrates `Mutex<Option<RegistryMap>>`, initially `None`, with std maps created under the lock. This is an SRPC-only alternative to hasher lowering, but it changes representation and initialization code. Measure its C++ layout, import and symbol effects before choosing it. |
+| Probe the TCP owning-fd alias | Canonical TCP already uses `Option<Arc<LegacyOwnedFd>>` and constructs the inner owner only with `from_raw_fd`. A std `OwnedFd` alias plus `AsRawFd`/`FromRawFd` imports may remove the custom inner optional owner. The existing `LegacyOwnedFd` type-map row may preserve the C++ type. This has not been transpiled or built as a migration. |
+| Review redundant facade imports and stale mapping/index metadata | Direct std re-exports can move out of canonical imports independently of model removal. Do not treat all 52 `import` entries this way: `StdVector`, `SerializableStdString`, and the source/sink adapter aliases preserve distinct C++ types. `cpp-module-index.toml` still describes `log_line` with `const std::string&`; canonical `base/logging.rs` takes `&str` and the current ABI gate expects `std::string_view`. That index row needs a separate checked cleanup. |
 
-| Category | Count | Standing against the principle |
+These are next probes, not migrations completed by this investigation. The
+previous statement that nothing could move with today's transpiler was too
+strong. The existence of a type mapping is insufficient evidence for
+removing a facade model.
+
+## Models and the remaining blockers
+
+| Model | Current use and removal condition |
+|---|---|
+| `Function<F>` | 19 `standard` declarations, including 14 signature-specific constructors. Canonical source has 23 direct `rusty::Function<...>` spellings and 9 constructors through its aliases. The old constructor count included canonical `CallbackWrapper` and `Waker` calls. Plain nullable boxed callbacks already flatten to `rusty::Function`; nullable callbacks with `Send`/`Sync` or explicit higher-ranked bounds do not. Extend the recognizer while preserving Rust bounds, then migrate uses and validate operations. Real empty-state resets occur in `reactor/reactor.rs`; the TCP callback defaults cited previously belong to canonical `CallbackWrapper`, not directly to this model. See F2. |
+| `RustyFunctionIsEmpty` | The trait and its `Box<T>` impl are two additional declarations, separate from `Function`. `rpc/server.rs::ServerConnection::run_async` and `sconn_reply` use it on plain boxed callbacks so C++ callers can pass empty functions. Deleting the `Function` model would not automatically delete this contract. |
+| `HashMap` / `HashSet` | Eight `standard` declarations plus the `NativeHashMap` alias. Their const constructors support the two registries above. An explicit std hasher still reaches the emitted C++ template as an extra parameter. Either add hasher lowering, or probe the existing lazy-initialization pattern and accept its measured ABI effects. |
+| `SerializableStd*` | Eight underlying structs and 26 impls, plus the `SerializableStdString = std::string` alias. The 15 serialization/deserialization impl targets in `misc/serializable.rs` preserve overloads for C++ STL fields. `StringView` only has serialization. Removing them requires a way to emit additional STL-targeted trait impls without replacing the existing Rust-container overloads. See F3. |
+| `StdVector<T>` | An omitted item in the earlier inventory. This is a `Vec<T>` alias in Rust, explicitly mapped to `std::vector<T>`. `rpc/frame_codec.rs::FrameBytes` and `rpc/tcp_channel.rs::TcpOutBuf` use it. Replacing it with ordinary `Vec<T>` changes those C++ types to `rusty::Vec<T>`; account for consumer and layout changes, or retain this small ABI alias. |
+| `StdPair`, `std::make_pair`, `borrowed_std_pair` | The `::janus` quorum and promise interfaces need `std::pair`; `misc/serializable.rs` also has two explicit pair wire impls, and std-map serialization uses `.first`/`.second`. Rust tuples emit `std::tuple`. `borrowed_std_pair` is private facade iteration glue, not a canonical call site. See F4. |
+| `RustcTcpStream`, `RustcTcpListener`, `RustcIoError`, `RustcOwnedFd`, `RustcBorrowedFd` | The differences are substantive. Stream exposes `into_owned_fd`; listener returns IPv4 addresses directly and exposes `is_bound`/`as_owned_fd`; error exposes `what`, although no canonical or Rust-test caller was found; owning and borrowed fd models can represent `-1`. std's listener/address/error/fd APIs do not have the same shape. In particular `BorrowedFd` cannot represent `-1`, and `OwnedFd` has no invalid default. Current canonical TCP already places owners inside `Option<Arc<...>>` and only constructs valid inner owners. The default-listener use found is a facade test. Probe these models separately instead of assuming their internal invalid states are required by canonical code. |
+| `rusty::net` address helpers | `RustcSocketAddrV4` and `RustcIoErrorKind` already alias std types. Parse/format helpers still bridge C++ helper functions; replacing them needs working std parse/display lowering and error compatibility. `sockaddr_in_from_socket_addr_v4` copies a C ABI layout and remains native-bound. |
+| `task::{Task, Poll, Context, Waker}` | `Poll` is a ready flag plus stored value, `Context` holds a raw `Waker*`, and `Waker::from_callable` owns a callback. Mapping std type names does not translate enum construction or context/waker behavior. `Task` adapts Rust futures to the C++ coroutine handle and has no direct std counterpart. See F5. |
+| `sys::process::getpid` | One canonical use, in the server instance ID. `std::process::id()` currently emits `rusty::process::id()`, which the runtime lacks. Add a supported target and account for std's `u32` result versus the current signed PID. See F1. |
+| `std::Cout` / `std::cout` | The logger's `write`/`put`/`flush` calls preserve capture through C++ `std::cout.rdbuf`. Rust `stdout` uses a different API, and routing bytes through a C fd write would change capture behavior. Retain the model unless that contract or its lowering changes. |
+| `SourceLocation` | `base/debugging.rs::verify` preserves a C++ `std::source_location::current()` default argument. The facade already uses Rust `#[track_caller]` internally. What is missing is equivalent generated caller-location behavior, not Rust location support. See F6. |
+
+The network/fd group needs its own migration design. Adding `TcpListener` or
+`OwnedFd` type-map rows alone does not supply methods, Rust trait imports,
+address conversion, or valid empty-state representations.
+
+## Behavior and ABI contracts to preserve
+
+| Adapter | Measured reason it remains |
+|---|---|
+| `thread::spawn`, `JoinHandle::{join, detach}` | C++ `thread.hpp::run_into_state` lets an escaping exception terminate the process. The facade catches Rust unwinds and aborts to match. Ordinary Rust `spawn` captures the panic in the join result, changing detached-thread failure behavior. Preserve this behavior if replacing the wrapper. |
+| `thread::ThreadId`, `thread::current_id` | The canonical reactor converts IDs to/from `u64` and uses zero as unset. The facade stores `Option<std::thread::ThreadId>`. A direct std replacement cannot accept the existing zero transmute; the sentinel and conversion contract must change first. |
+| `panic::{catch_unwind, payload_message, PanicPayload, do_panic}` | The shutdown-hook handler inspects an exception message. Rust has an `Any` panic payload, while C++ carries `std::exception_ptr`. Canonical sites that only swallow an unwind already use std directly. |
+| `make_box` | The emitter recognizes it for source/sink adapter and trait-object coercion. A textual `Box::new` replacement needs equivalent generated construction and dispatch. |
+| `RustyHandleIsValid::is_valid` | Rust `Box`/`Arc` are non-null, but C++ callers can supply empty handles. The constant Rust answer emits a real C++ validity check. |
+| `StdArcGetMutExt` | The facade forwards to std's associated function. The C++ runtime has both member and static `get_mut` overloads; the imported `Arc::get_mut` probe works. This adapter is a removal candidate, subject to the six call-site probes and the existing strong/weak ownership regressions. |
+| `ReactorJobSet`, `ReactorJobSetKey` | The C++ field remains `std::set` of job handles. The Rust model orders/deduplicates by handle identity; `dyn Job` does not implement `Ord`. Replacing it requires a matching ordering and ABI decision. |
+| C layouts and markers | pthread storage, `FILE`, socket structures, fiber register order and `cpp_inherit` express native or compiler contracts. `LegacyCChar` is a canonical alias for C string pointers, outside the facade declaration census. Its `std::string::value_type` spelling does not make it an owned-string adapter. |
+
+These are reasons to preserve behavior, not proof that no future standard-type
+implementation is possible. Several are small compatibility contracts that may
+remain after the larger callable and container models disappear.
+
+## C++ runtime and native dependencies
+
+[build.rs](../../build.rs) and
+[scripts/native-kernel-sources.txt](../../scripts/native-kernel-sources.txt)
+show exactly what Cargo compiles. Nine `.c` files provide OS operations,
+clock/calendar reads, entropy and fiber resources. The manifest lists two
+`.S` files; a build selects only the one matching `x86_64` or `aarch64`.
+Cargo links them as `libsrpc_native.a`. It does not compile or link the
+rusty-cpp C++ runtime. Removing this remaining C/assembly dependency would be
+a separate platform-porting task.
+
+The generated C++ lane has 37 canonical module providers. It also retains:
+
+- 20 reviewed SRPC headers, comprising 12 import shims, 6 C declaration/layout
+  headers, `misc/serializable_support.hpp`, and `base/rustc_markers.hpp`.
+  The previous total of 16 was incorrect. `std_compat.hpp` is one of the
+  import shims. Removing include shims is a C++ consumer migration.
+- The same nine C sources and selected assembly file.
+- The vendored rusty-cpp runtime, including handwritten `Arc`, `String`,
+  `Cell`/`RefCell`, synchronization, callable, thread and coroutine headers.
+  The CMake runtime dependency also brings in generated port modules. Its
+  explicit archive closure has 13 entries in `CMakeLists.txt`, including
+  `rusty`, `rusty_async`, and the collection, cell, string and Arc ports.
+  Handwritten top-level runtime types remain in use alongside those ports.
+
+The [native kernel audit](../../scripts/check_native_kernels.py) covers root
+headers and `base/`, `misc/`, `rpc/`, `reactor/`. It does not inventory the
+vendored runtime. A green native audit therefore means that SRPC's native
+boundary matches its reviewed inventory, not that the generated C++ lane is
+free of handwritten runtime code.
+
+`rust-type-map.toml`, `module-preambles.toml`, `cpp-module-index.toml` and
+`rusty-cpp-markers` remain compiler/ABI inputs. Their entries need review as
+models disappear; they are not evidence of a second SRPC implementation.
+
+## September migration history
+
+| Commit | Change | Historical emission delta |
 |---|---|---|
-| `import` | 52 | Re-exports of std. Already the principle. |
-| `standard` | 108 | Hand-written models. This is where the remaining debt and the remaining necessities both live; see below. |
-| `trait-dispatch` | 14 | Bounded trait forwarding into canonical Rust (the ADL `Serialize` seam, the `LoadBalancerClient*` contracts). By design, paired with `misc/serializable_support.hpp`. |
-| `c-layout` | 12 | Opaque C ABI types (`pthread_*`, `FILE`, the fiber register frame, `sockaddr_in`, `LegacyCVoid`). Required. |
-| `future` | 9 | `Task`/`Poll`/`Context`/`Waker`, the rustc half of the coroutine ABI. See F5. |
+| `d6d899f` | Deleted Mutex/Condvar wrappers and six dead facade items; 53 sites use std synchronization | 38/38 files byte-identical |
+| `3f5a099` | Non-static HashMap/HashSet uses moved to std | 1 file, 20 lines in a never-instantiated template |
+| `52ec8e3` | Last free downgrade caller moved to `Arc::downgrade` | 1 line |
+| `14be655` | Removed `LegacyStdString`; C++ interfaces use `rusty::String` | 11 modules, 208 lines of type spellings |
+| `f237f1f` | Reduced the facade string model to the `SerializableStdString` wire target | 5 modules |
+| `8a094ff` | 20 string parameters/callback types moved to `&str` | 5 modules, 128 lines |
 
-The facade is 1482 lines (`lib.rs` 1328, `task.rs` 154), down from 1678 at
-the start of the pass.
-
-## `standard`: what could still go, and what blocks each
-
-Site counts are canonical call sites across `base/`, `misc/`, `rpc/`,
-`reactor/`, comments excluded. "Blocker" names the transpiler feature (F1-F6,
-specified at the end) or the probe still owed.
-
-| Item | Sites | Why it is still here | Blocker |
-|---|---|---|---|
-| `Function<F>` (struct, `Default`/`Deref`/`DerefMut`, a generic and 14 signature-specific `from_callable` impls, `RustyFunctionIsEmpty`; 21 declarations) | 23 type spellings, 22 `from_callable` calls | `Box<dyn Fn..>` already lowers to `rusty::Function<..>`, so the non-nullable sites can move today. About nine sites need the *empty* state (`Default::default()` fields in `rpc/tcp_channel.rs`, `is_empty()` checks in `rpc/server.rs`), and `Option<Box<dyn Fn>>` lowers to `rusty::Option<rusty::Function>`, a different field type. | F2 for the nullable sites; the rest is a measured slice with no blocker. |
-| `HashMap`/`HashSet` (structs, 6 impls) | 5, two `static`s | Their `new()` is `const fn`; std's is not. std's const route, `with_hasher(BuildHasherDefault::new())`, compiles but the emitter propagates the hasher parameter into a 3-parameter `rusty::HashMap<K, V, BuildHasherDefault<..>>` and moves the `Serialize_` overloads onto it (132 emitted lines). | Strip the hasher parameter when mapping, or lower `OnceLock`/`LazyLock`. |
-| `sys::time::sleep_us`, `sys::process::getpid` | 5, 1 | No mapping for `std::thread::sleep` / `std::process::id`. | F1: two path rows. Smallest item on the list. |
-| `StdPair`, `std::make_pair`, `borrowed_std_pair` | 6 | Rust tuples lower to `std::tuple`; the `::janus` surface (`QuorumDanglingVec`, `make_promise`) is pinned on `std::pair`. | F4: opt-in 2-tuple to `std::pair`. |
-| `SerializableStd{Vector,Map,Set,List,UnorderedMap,UnorderedSet,StringView,String}` (8 structs, 26 impls; 34 declarations) | 15, all in `misc/serializable.rs` | They exist so `impl Serialize for rusty::SerializableStdVector<T>` emits the `Serialize_::serialize(const std::vector<T>&)` overload C++ consumers and rpcgen-generated services use. A plain `Vec<T>` lowers to `rusty::Vec`, a different type. `SerializableStdString` is the same thing for `std::string`, reduced to `size`/`resize`/`data`. | F3 extended to containers: a way to write a trait impl whose target is a C++ STL type. Otherwise wire-bound and stays. |
-| `task::{Task, Poll, Context, Waker}` (`future`) | 20, two files | The transpiler maps `std::task::{Poll, Context, Waker}` to `rusty::*`, but the C++ `rusty::Poll<T>` is a `{ready, value}` struct with `ready_with`/`pending()`, not an enum, and `Context` holds a raw `Waker*`. `Task<T>` is the C++ coroutine handle and has no std counterpart. | F5 for `Poll`/`Context`/`Waker`; `Task` stays. |
-| `RustcTcpStream`, `RustcTcpListener`, `RustcIoError`, `RustcOwnedFd`, `RustcBorrowedFd`, the three `rusty::net::*` address helpers | 1, 1, 1, 3, 5 | `std::net::TcpStream`, `std::net::SocketAddrV4` and `std::io::Error` are already mapped to `rusty::net::*` / `rusty::io::Error`; the models remain because nobody has checked that the C++ member names match std's. `OwnedFd` and `TcpListener` have no mapping row. `sockaddr_in_from_socket_addr_v4` is C-ABI glue and stays. | A probe per type (swap, `cargo check`, transpile, build), then mapping rows for the two unmapped types. |
-| `std::Cout` / `std::cout` | 3, `base/logging.rs` | The logger writes through `std::cout` so that C++ tests and the importer program can capture it by `rdbuf`; a raw `write(2)` would bypass them. The facade models `write`/`put`/`flush`. | A mapping from `std::io::stdout()` writes to `std::cout`, or accept the model as a C++ I/O contract. |
-| `SourceLocation` | 1, `base/debugging.rs` | Models the `std::source_location` default argument the C++ `verify` keeps (`cpp_default_argument(source_location)`). | F6: lower `#[track_caller]` / `Location::caller()` to a `std::source_location::current()` default argument. |
-
-Everything in this table is a candidate. Nothing in it migrates with today's
-transpiler, which is why the list is here rather than in a commit.
-
-## `standard`: what stays, and the measured reason
-
-These were each checked against the runtime source, not the facade's own
-comment. Do not "migrate" them; the reason is also written at each
-definition in `rusty-rustc/src/lib.rs`.
-
-| Item | Sites | Reason |
-|---|---|---|
-| `thread::spawn`, `JoinHandle::{join, detach}` | 4 | The runtime's `run_into_state` (`thread.hpp`) runs a spawned body with no try/catch: an escaping exception reaches `std::thread` and terminates the process ("Rust panic-abort semantics", the runtime's own words). The facade's `catch_unwind(..).unwrap_or_else(abort)` gives rustc the same behaviour. `std::thread::spawn` would capture the panic into the handle; a detached client thread's panic would die silently and a test awaiting it would hang. A worktree probe that swapped them type-checked, which is exactly why `cargo check` is not evidence here. |
-| `thread::ThreadId`, `thread::current_id` | 20, 22 | `reactor/reactor.rs` transmutes thread ids to and from `u64` with `0` meaning "unset" (`u64_to_thread_id`, `thread_id_to_u64`). std's `ThreadId` is a `NonZero<u64>`; transmuting `0` into it is undefined behaviour. The facade's `ThreadId(Option<std::thread::ThreadId>)` makes `0` a sound `None`. |
-| `panic::{catch_unwind, payload_message, PanicPayload, do_panic}` | 3 | Code that only swallows an unwind already uses `std::panic::catch_unwind` directly (`rpc/callbacks.rs`, `rpc/request_queue.rs`). The model exists for the one site that inspects the payload (the shutdown-hook invoker in `rpc/server.rs`): std's `Err(Box<dyn Any + Send>)` has no C++ spelling, the runtime carries a `std::exception_ptr`. `do_panic` takes `&str`, which is the `std::string_view` the C++ one takes. |
-| `make_box` | 5 (spelled `rusty::make_box::<T>(..)`) | A real runtime function (`box.hpp`) with a dedicated trait-object coercion path in the emitter. An emitter contract, not a wrapper over `Box::new`. |
-| `RustyHandleIsValid::is_valid` | 18 | Always `true` under rustc; exists to emit the real C++ null check on handles that C++ callers can hand in empty. |
-| `StdArcGetMutExt::get_mut` | ~6 | `rusty::Arc::get_mut` is a C++ *member*; std's is an associated function, and swapping emits a free call the runtime lacks. |
-| `ReactorJobSet`, `ReactorJobSetKey` | 1 | The incumbent `std::set` type in the reactor; `dyn Job` is not `Ord`. |
-| `SerializableStdString`, `SerializableStdStringView` | 2, 1 | The impl targets that keep the C++ `std::string` / `std::string_view` wire overloads for consumers' own fields. See the containers row above; this is the same reason, already reduced to its minimum. |
-
-Two items in the C-layout family are worth naming because they look like
-string business and are not: `LegacyCChar` (21 sites) is the `char` of a C
-string pointer, mapped to `std::string::value_type`, and `CFile` (3) is
-`FILE*`. Both are C ABI, not std adapters.
-
-## C++-side adapters and native kernels
-
-These are not facade debt. CLAUDE.md defines them as intended seams, and
-`scripts/check_native_kernels.py` plus `scripts/native-kernels.json` pin them.
-
-- 16 hand-written headers: `srpc.hpp` (57 lines) and the per-module
-  compatibility headers that import generated modules for consumers who keep
-  `#include "srpc/..."`; `misc/serializable_support.hpp` (55 lines), the ADL
-  forwarding half of the `trait-dispatch` category; `base/rustc_markers.hpp`
-  (8 lines); `std_compat.hpp`; `reactor/srpc_epoll.h` and `reactor/srpc_fiber.h`
-  (the latter's `srpc_fiber_ctx` field order *is* the assembly contract).
-- 9 C sources and 2 assembly files listed in
-  `scripts/native-kernel-sources.txt`: individual OS operations, entropy and
-  clock reads, and context switching. Policy lives in canonical Rust.
-
-Dropping the compatibility headers is a consumer-policy decision (their
-`#include` lines would become `import` lines), not a correctness one.
+The previous notes recorded 49 `std::string` mentions in emitted module bodies
+after these changes. That was an emission-text measurement, not a count of
+remaining facade models, and it has not been remeasured here.
 
 ## How to remove one more item safely
 
-This is the procedure that worked six times in a row this month. Each step is
-there because skipping it cost a twenty-minute gate.
+For a canonical-source migration, validate both consumers of the edited Rust.
+This investigation changed documentation only and did not run this full gate.
 
 1. **Write the edit as a script with exact, unique anchors** that aborts on a
    missing or ambiguous match. Apply it to a detached scratch worktree first
@@ -136,7 +241,7 @@ there because skipping it cost a twenty-minute gate.
 3. **`cargo check`, `cargo test`, `cargo clippy -D warnings` in the worktree**
    with `CARGO_TARGET_DIR` in scratch. clippy's `ptr_arg` skips `pub` items
    under `avoid-breaking-exported-api`, so count `&String`/`&Vec` parameters
-   by grep, not by lint.
+   with `rg`, not by lint.
 4. **Build the real tree with `cmake --build build -- -k 0`** so one pass
    collects every consumer error, every layout pin, and the oracle failure.
    Never edit a tracked file while a gate runs: `srpc_goal0_cargo` reads the
@@ -175,42 +280,111 @@ rediscovering:
 - A `Vec<u8>` in a module that had none adds `import vec_port.vec;` to its
   emitted module and moves `EXPECTED_IMPORTS`.
 
-## A gate improvement worth making
+## Remaining compiler work and probe results
 
-`facade_audit.py`'s `standard` category conflates "adapter over a std type"
-with "model of a C++ ABI or runtime contract". Splitting the second group
-into its own category (`cpp-abi-model`: the `SerializableStd*` targets,
-`StdPair`, `SourceLocation`, `thread`, `panic`, `make_box`, `is_valid`,
-`get_mut`, `ReactorJobSet`, `Cout`) would make the principle enforceable:
-anything still in `standard` is, by definition, work.
+F1-F6 retain their earlier identifiers so existing references remain useful.
+They are not six entirely missing features. The current implementation already
+covers some parts, and local migrations still require whole-crate validation.
 
-## Transpiler features that would finish the job
+- F1 now means process-ID lowering. Add a supported target for
+  `std::process::id()` and preserve the server ID conversion. Sleep lowering
+  already exists; the remaining question there is semantic acceptance of its
+  different implementation.
+- F2 means extending nullable-callback recognition to required `Send`/`Sync`
+  bounds and any needed higher-ranked signatures. Plain
+  `Option<Box<dyn Fn/FnMut/FnOnce>>` already collapses to `rusty::Function`.
+  The emitter supports `None`, `Some`, default construction, extraction,
+  `take`, `is_some`, `is_none`, `unwrap` and supported pattern forms. Other
+  Option operations can be rejected, so review the actual migrated operations.
+  Do not remove Rust thread-safety bounds to make recognition succeed.
+- F3 is additional STL-target emission for Rust trait impls. Foreign C++ impl
+  targets and type-map overrides already exist. What is missing is a way to
+  retain both the Rust-container and STL overloads without duplicate Rust impls.
+  Turning `SerializableStdVector<T>` into an alias of `Vec<T>` conflicts with
+  existing `Serialize`/`Deserialize` impls; String has the same problem. The
+  design must also translate operations in the emitted bodies. An attribute is
+  one possible design, not an implemented contract.
+- F4 is opt-in pair lowering with pair construction, field access and wire
+  impl targets preserved. Ordinary two-tuples still become `std::tuple` and
+  `std::make_tuple`. A type spelling change alone would not handle the two
+  existing pair serialization impls.
+- F5 needs Poll construction, Context access and Waker ownership support.
+  `Poll::Pending` currently needs a stored default `T` in the runtime, unlike
+  Rust's enum variant. The canonical reactor also builds stable raw-pointer
+  Waker/Context bindings, and retained wakes must outlive task teardown safely.
+  The facade's `Task::from_future` already bridges real std futures and wakers.
+  Replacing that representation requires source and lifetime changes as well
+  as lowering. `Task` remains the C++ coroutine adapter.
+- F6 is generated caller-location preservation. `#[track_caller]` plus
+  `Location::caller()` does not yet synthesize the C++ default argument used by
+  `verify`. Preserve the caller's location and the public function contract.
+- Explicit hasher lowering must handle `BuildHasherDefault` and its constructor
+  consistently. The C++ runtime already permits a third HashMap template
+  parameter, so this is not simply a two-parameter arity limitation. Preserve
+  default-hasher ABI/overload identity when erasing a Rust hasher, or implement
+  the intended hasher semantics. The SRPC lazy-initialization alternative
+  avoids needing this compiler change for the two remaining registries.
 
-Each of these is a rusty-cpp change, measured against the pinned transpiler
-`3e1d9505`. File them upstream; none is an SRPC edit.
+The pinned source evidence is in
+[callback type mapping](../../third-party/rusty-cpp/transpiler/src/codegen/type_mapping.rs),
+[codegen regressions](../../third-party/rusty-cpp/transpiler/src/codegen/tests.rs),
+[nullable callback runtime tests](../../third-party/rusty-cpp/transpiler/tests/runtime_nullable_callback.rs),
+and the runtime
+[Arc](../../third-party/rusty-cpp/include/rusty/arc.hpp),
+[thread](../../third-party/rusty-cpp/include/rusty/thread.hpp),
+[sys time](../../third-party/rusty-cpp/include/rusty/sys/time.hpp), and
+[async](../../third-party/rusty-cpp/include/rusty/async.hpp) implementations.
 
-- **F1** Path rows for `std::thread::sleep` and `std::process::id` (to
-  `rusty::sys::time::sleep_us` and `rusty::sys::process::getpid`, with the
-  `Duration` argument lowered to microseconds). Removes 2 facade functions.
-- **F2** Lower `Option<Box<dyn Fn..>>` as `rusty::Function<..>` with `None`
-  as the empty callable and `is_some()`/`is_none()` as `!is_empty()`/
-  `is_empty()`. Removes the `Function` model (21 declarations) once the
-  non-nullable sites have moved to `Box<dyn Fn..>`.
-- **F3** STL-alias trait targets: allow a Rust type (`Vec<T>`, `String`,
-  `BTreeMap<K, V>`, ...) to carry an attribute naming the C++ STL type an
-  `impl` should be emitted for, so `impl Serialize for Vec<T>` can also emit
-  `serialize(const std::vector<T>&)`. Removes the eight `SerializableStd*`
-  models (34 declarations).
-- **F4** Opt-in lowering of a 2-tuple to `std::pair` where an attribute says
-  so. Removes `StdPair`, `make_pair`, `borrowed_std_pair`.
-- **F5** Lower `std::task::Poll::{Ready(v), Pending}` onto the runtime's
-  struct-shaped `rusty::Poll<T>` (`ready_with`/`pending`), and
-  `Context::from_waker`/`waker()` onto the `Waker*` field. Removes
-  `Poll`/`Context`/`Waker` from the `future` category; `Task` stays.
-- **F6** Lower `#[track_caller]` + `core::panic::Location::caller()` to a
-  `std::source_location::current()` default argument. Removes
-  `SourceLocation`.
-- **Hasher stripping**: map `HashMap<K, V, BuildHasherDefault<H>>` and
-  `with_hasher(BuildHasherDefault::new())` to the 2-parameter runtime type
-  and its default constructor. Lets the two const-initialised registries
-  spell `std::collections::HashMap` and removes the last facade containers.
+Small temporary inputs were transpiled with a release binary whose
+`--build-info` matched the pinned revision. These are observed emission results:
+
+| Rust input | Observed C++ result |
+|---|---|
+| `std::thread::sleep(Duration::from_micros(50))` | `rusty::thread::sleep(rusty::time::Duration::from_micros(50))`; Clang syntax check passed. |
+| Imported `Arc::get_mut(arc)` | `Arc<int32_t>::get_mut(arc)` with `using rusty::Arc`; three variants, including mutation through `unwrap`, passed Clang syntax checks. |
+| Fully qualified `std::sync::Arc::get_mut(arc)` | Left an invalid `std::sync::Arc<int32_t>` C++ path. |
+| `std::process::id()` | `rusty::process::id()`; the runtime provides `rusty::sys::process::getpid` instead. |
+| `Option<Box<dyn FnMut()>>` | `rusty::Function<void()>`. |
+| `Option<Box<dyn FnMut() + Send>>` | `rusty::Option<rusty::Function<void()>>`. |
+| `Box<dyn FnMut() + Send>` | `rusty::Function<void()>`. |
+| `Poll::Ready(3)` / `Poll::Pending` | `rusty::Poll<int32_t>::Ready(3)` / `Pending()`, which do not match runtime `ready_with` / `pending`. |
+| `Context::from_waker(w)` / `cx.waker()` | Calls to missing C++ members. |
+| Explicit `HashMap<..., BuildHasherDefault<...>>` | Retains the hasher as a third template argument. |
+| Two-tuple construction | `std::tuple` / `std::make_tuple`. |
+| `#[track_caller]` with `Location::caller().line()` | Leaves the Rust location path in C++; no source-location default argument appears. |
+
+Only the sleep and imported-Arc probes were C++ syntax checked, using the
+configured Clang 22 compiler with these flags:
+
+```sh
+clang++ -std=c++23 -stdlib=libc++ -DRUSTY_PORTABLE_INTRINSICS=1 \
+  -I third-party/rusty-cpp/include -fsyntax-only probe.cpp
+```
+
+No whole-crate migration or runtime parity run was performed. Successful transpilation alone
+is not evidence that the emitted API exists or that behavior is preserved.
+
+## Audit follow-up and verification
+
+The `standard` category combines replacement candidates and explicit C++
+contracts; `import` combines plain std exports and ABI aliases. Splitting or
+annotating those groups would make the remaining work easier to track. It
+would require coordinated changes to `facade_audit.py`, the inventory and its
+negative controls. It should not reclassify every currently justified model as
+permanent, or treat a lower declaration count as proof of runtime correctness.
+
+Verified for this documentation revision:
+
+```sh
+python3 scripts/check_facade_shadow.py
+python3 scripts/check_facade_stubs.py
+python3 scripts/check_native_kernels.py
+python3 scripts/tests/test_facade_audit.py
+```
+
+All three audit commands passed; all 42 facade audit tests passed. Declaration
+and native-header counts were recomputed from the reviewed JSON inventories.
+The source investigation and temporary probes above supplied the new findings.
+The full Cargo/CMake/ctest and sanitizer gates were not rerun for this doc-only
+change. Their historical results should not be read as acceptance of a proposed
+adapter migration.

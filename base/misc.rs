@@ -8,7 +8,6 @@
 
 use std::cell::Cell;
 
-use rusty::cpp_inherit;
 
 
 /// Clamp a value between potentially heterogeneous bounds.
@@ -104,7 +103,7 @@ impl OneTimeJob {
 // Direct inheritance is required by existing Arc<OneTimeJob> -> Arc<Job>
 // upcasts. The crate root imports a rustc-only no-op macro with this name;
 // rusty-cpp consumes the retained attribute during production generation.
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 #[allow(unsafe_code)]
 unsafe impl Job for OneTimeJob {
     fn Ready(&mut self) -> bool {

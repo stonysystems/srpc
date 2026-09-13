@@ -14,7 +14,6 @@
 #[allow(unused_imports)]
 use crate::reactor as _;
 
-use rusty::cpp_inherit;
 use rusty::RustyFunctionIsEmpty as _;
 use rusty::RustyHandleIsValid as _;
 use std::cell::Cell;
@@ -191,7 +190,7 @@ pub struct ServiceBoxShim<T> {
     svc_: Box<T>,
 }
 
-#[cpp_inherit]
+#[cfg_attr(any(), cpp_inherit)]
 impl<T: Service> Service for ServiceBoxShim<T> {
     fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32 {
         self.svc_.__reg_to__(server, svc_index)
@@ -598,7 +597,7 @@ pub fn server_wait_for_shutdown_impl(
 pub fn server_generate_instance_id() -> u64 {
     let time_component: u64 = server_now_nanos();
     let random_component: u64 = server_random_u64();
-    let pid_component: u64 = (rusty::sys::process::getpid() as u64) << 48;
+    let pid_component: u64 = (std::process::id() as u64) << 48;
     // 0x7fff_ffff_ffff_ffff is std::numeric_limits<int64_t>::max(): the id
     // is kept non-negative because it crosses the wire as a signed i64.
     let mut id: u64 =
@@ -649,7 +648,7 @@ pub fn server_drain_impl(
             unsafe { log_line(2, 0, core::ptr::null(), &expired) };
             return false;
         }
-        rusty::sys::time::sleep_us(1000u64);
+        std::thread::sleep(std::time::Duration::from_micros(1000u64));
     }
     let done: String = "Server::drain: completed, all requests drained".to_string();
     // SAFETY: the file pointer is null.
@@ -1307,11 +1306,10 @@ pub fn request_fill_body(req: &mut Request, bytes: &[u8]) {
 /// which is benign — this is the non-exported `namespace srpc` and
 /// server.cpp is the module's only TU.
 //
-// Facade-spelled `rusty::HashSet` on purpose: its `const fn new()` is what
-// lets this be a const-initialised `static`; std's `new()` is not const. It
-// lowers to the same `rusty::HashSet` the std spelling does.
-static g_rpc_id_missing: std::sync::Mutex<rusty::HashSet<i32>> =
-    std::sync::Mutex::<rusty::HashSet<i32>>::new(rusty::HashSet::<i32>::new());
+// The set is constructed under its lock after the first missing RPC ID.
+// An empty Option makes the process-wide static valid with std HashSet.
+static g_rpc_id_missing: std::sync::Mutex<Option<HashSet<i32>>> =
+    std::sync::Mutex::new(None);
 
 pub fn sconn_dispatch_in_fiber(
     ctx: Arc<RpcServiceContext>,
@@ -1398,8 +1396,12 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         let mut surpress_warning = false;
         {
             let mut guard = g_rpc_id_missing.lock().unwrap();
-            if !(*guard).contains(&rpc_id) {
-                (*guard).insert(rpc_id);
+            if guard.is_none() {
+                *guard = Some(HashSet::new());
+            }
+            let missing = guard.as_mut().unwrap();
+            if !missing.contains(&rpc_id) {
+                missing.insert(rpc_id);
             } else {
                 surpress_warning = true;
             }

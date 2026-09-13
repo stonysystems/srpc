@@ -38,7 +38,7 @@ namespace = "srpc"
 
 [modules."srpc::logging".symbols.log_line]
 kind = "function"
-callable_signatures = ["void(int32_t,int32_t,const int8_t*,const std::string&)"]
+callable_signatures = ["void(int32_t,int32_t,const int8_t*,std::string_view)"]
 
 [modules."srpc::reactor"]
 cpp_module = "srpc.reactor"

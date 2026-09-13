@@ -18,7 +18,6 @@
 use crate::debugging::verify_at;
 use crate::serializable::{SerializablePayload, SerializableProxy};
 use std::sync::Arc;
-use rusty::StdArcGetMutExt as _;
 use std::any::TypeId;
 
 
@@ -46,7 +45,7 @@ impl AnyMessage {
         let proxy_option = any_message_registry::create(&self.type_name_);
         verify_at(proxy_option.is_some(), file!(), line!());
         let mut proxy = proxy_option.unwrap();
-        proxy.get_mut().unwrap().load(archive);
+        Arc::get_mut(&mut proxy).unwrap().load(archive);
         self.payload_ = Some(proxy);
     }
 

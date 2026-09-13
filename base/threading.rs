@@ -32,8 +32,8 @@ impl<T: Clone> SharedCell<T> {
     }
 }
 
-pub type AtomicBool = rusty::sync::atomic::AtomicBool;
-pub type Ordering = rusty::sync::atomic::Ordering;
+pub type AtomicBool = std::sync::atomic::AtomicBool;
+pub type Ordering = std::sync::atomic::Ordering;
 
 #[allow(unsafe_code)]
 unsafe extern "C" {
@@ -237,7 +237,7 @@ impl SpinLock {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            rusty::sys::time::sleep_us(50_u64);
+            std::thread::sleep(std::time::Duration::from_micros(50_u64));
         }
     }
 
