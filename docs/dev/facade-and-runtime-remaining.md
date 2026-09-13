@@ -15,15 +15,18 @@ The isolated copy passes 266 Rust tests and two doctests, with one existing layo
 test ignored. The canonical body audit,
 native source audit, native ABI audit and 47 negative controls also pass.
 The regular workspace tests, doctests and clippy also pass on the integrated
-tree. Complete generated-C++ validation is still in progress.
+tree. The complete CMake build also passes, including independent compilation
+of all providers and the umbrella, exact ABI checks, and importer execution
+against fresh objects and the production archive.
 
 Remaining acceptance work:
 
-1. Build all generated C++ providers with the updated compiler. Preserve the
-   existing public symbols and measure necessary additions from canonical
-   helpers and load-balancer traits.
-2. Run the full CMake/CTest gates and runtime sanitizer checks. Record their
-   results here before declaring the migration complete.
+1. Rebuild and rerun CTest with the integrated repeated-wake fix. The prior run
+   passed 30 of 31 suites. C++ lvalue wakes now retain their owner; generated
+   standard Rust wake calls consume it, including inferred clones. Focused
+   ownership, concurrency and cancellation tests pass under ASan/UBSan.
+2. Run the full runtime sanitizer batteries and record their results here before
+   declaring the migration complete.
 
 ## Removed dependencies
 
@@ -115,7 +118,16 @@ umbrella and its dependencies current and supplies its explicit ABI importer
 mapping. This fixes Clang crashes caused by stale synthesized runtime BMIs.
 The original event, fiber-runtime and serialization-parity consumers pass their
 5, 9 and 12 cases; serialization also needed an explicit factory callback type.
-Complete CMake, CTest and sanitizer acceptance remains pending.
+The complete CMake build passed before the final waker repair. CTest passed
+30 of 31 suites; the stackless battery exposed a consumed callback owner on its
+second reusable C++ `wake()` call. The integrated fix gives C++ lvalue calls
+borrowed dispatch and rvalue calls consuming dispatch. Compiler inference keeps
+standard Rust waker clones movable and emits consuming calls. The same-source
+Rust/C++ fixture checks independent clone ownership and immediate release;
+direct C++ tests also cover repeated and concurrent wakes, moved/empty wrappers,
+and retained wakes after cancellation. All pass, including ASan/UBSan runs; the
+old runtime reproduces the crash. Full rebuilt CTest and sanitizer acceptance
+remain pending.
 
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).

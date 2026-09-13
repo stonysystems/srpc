@@ -306,10 +306,11 @@ the macOS branches were removed, with canonical policy in `reactor/epoll_wrapper
 `reactor/srpc_epoll.c`. Fiber context-switch assembly exists for x86_64 and
 aarch64.
 
-The Rust lane needs a current stable Rust toolchain and nothing else:
-`cargo test --locked --workspace --all-targets` is the fast inner loop, and a consumer
-crate additionally compiles the eight plain-C kernels (a dozen lines of `cc` in a
-`build.rs`). Building the C++ lane needs **Clang 22 or newer with libc++**, CMake 3.30+,
+The Rust lane needs a current stable Rust toolchain, a C compiler and an archiver on
+one of those Linux architectures. SRPC's `build.rs` compiles the nine C kernels and
+the selected fiber assembly automatically for the library, its tests and downstream
+Cargo consumers. Run `cargo test --locked --workspace --all-targets` for the Rust tests.
+Building the C++ lane needs **Clang 22 or newer with libc++**, CMake 3.30+,
 Ninja, Cargo (with clippy), and Python 3.11+. There is no `install()` and no CMake
 package config, so downstream C++ consumption is `add_subdirectory` and repeating srpc's
 toolchain settings by hand; and there is no CI, so the pre-commit sequence in `CLAUDE.md`
@@ -976,16 +977,17 @@ A task is spawned through the same canonical call in both lanes:
 use srpc::reactor::{reactor_spawn_stackless_task_with_result, Reactor};
 
 let reactor = Reactor::get_reactor();
-let task = rusty::Task::from_future(async_double(21)); // rustc: wrap the future
+let task = Box::pin(async_double(21));
 reactor_spawn_stackless_task_with_result(&reactor, task, |value| {
     // completion: runs inline if the task was ready on its first poll
     assert_eq!(value, 42);
 });
 ```
 
-(In C++ the `from_future` wrapper is unnecessary — calling the coroutine already
-yields a `rusty::Task` — so the generated async wrappers pass the handler's
-return value straight in.) The spawn polls the task once inline; if it completes
+The Rust spawn function accepts `Pin<Box<dyn Future<Output = T>>>`; `Box::pin`
+pins the future and the call coerces it to that type. In generated C++, calling the
+coroutine yields a `rusty::Task<T>`, which the dispatcher passes directly to spawn.
+The spawn polls the task once inline; if it completes
 immediately the callback runs right there and nothing is registered. Otherwise
 the task is parked with a stable `Waker` binding, and the reactor re-polls it
 when the waker fires. The canonical poll-worker loop calls `run_loop` to drain
@@ -1085,7 +1087,7 @@ touches the main one.
 ```rust
 let reactor = Reactor::get_reactor();
 
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(|| {
+reactor.create_run_fiber(Some(Box::new(|| {
     this_fiber::r#yield();
 })));
 
@@ -1191,23 +1193,21 @@ which rustc compiles natively and the transpiler lowers to C++
 two independent reactors — `tests/reactor_multithread_rust.rs` pins exactly that, two
 reactors running independent suspend/wake cycles in one process.
 
-The owner check is what catches misuse — a captured reactor handle used from the wrong
-thread panics loudly instead of corrupting the queues:
+The runtime owner check rejects use from another thread. Rust also rejects moving
+an `Rc<Reactor>` into a spawned thread because `Rc` is not `Send`:
 
 ```rust
 // WRONG - the reactor belongs to the thread that created it
 let reactor = Reactor::get_reactor();
 std::thread::spawn(move || {
-    // Panics on the owner check before anything runs: this thread is not
-    // the recorded owner.  (Rc is not Send either; the canonical C++ lane
-    // has no such compiler check, only the runtime verify.)
-    reactor.create_run_fiber(/* ... */);
+    // This closure does not compile: its captured Rc<Reactor> is not Send.
+    reactor.create_run_fiber(Some(Box::new(|| {})));
 });
 
 // RIGHT - ask for the reactor on the thread that will use it
 std::thread::spawn(|| {
     let reactor = Reactor::get_reactor(); // this thread's own
-    reactor.create_run_fiber(rusty::Function::from_callable(Box::new(|| { /* ... */ })));
+    reactor.create_run_fiber(Some(Box::new(|| { /* ... */ })));
     reactor.run_loop(false, true);
 });
 ```
@@ -1312,7 +1312,7 @@ let reactor = Reactor::get_reactor();
 let ev = create_sp_int_event(1); // ready once value_ >= 1
 
 let ev_in = ev.clone();
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+reactor.create_run_fiber(Some(Box::new(move || {
     ev_in.wait(); // suspends this fiber
     // resumed: ev_in.status_.get() == EventStatus::DONE
 })));
@@ -1376,7 +1376,7 @@ value and marks the slot full (which also runs `test()`); `get()` copies the val
 let slot = create_sp_box_event::<i32>();
 
 let slot_in = slot.clone();
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+reactor.create_run_fiber(Some(Box::new(move || {
     slot_in.wait();
     let v = slot_in.get();
     let _ = v;
@@ -1405,7 +1405,7 @@ let e2 = create_sp_int_event(1);
 let any = create_sp_waitany(e1.clone(), e2.clone());
 
 let any_in = any.clone();
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+reactor.create_run_fiber(Some(Box::new(move || {
     any_in.wait(); // returns as soon as EITHER child is ready
 })));
 e2.set(1);
@@ -1433,7 +1433,7 @@ let events: Vec<Arc<dyn EventPollable>> = vec![event1.clone(), event2.clone()];
 let and_event = create_sp_waitall_from(&events);
 
 let and_in = and_event.clone();
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+reactor.create_run_fiber(Some(Box::new(move || {
     and_in.wait();
 })));
 
@@ -2682,7 +2682,7 @@ pending-future map entirely and hands the reply straight to a callback:
 ```rust
 use srpc::client::AsyncReplyCallback;
 
-let on_reply = AsyncReplyCallback::from_callable(Box::new(
+let on_reply: AsyncReplyCallback = Some(Box::new(
     |err: i32, payload: *const u8, size: usize| {
         if err != 0 { return; }
         // decode `size` bytes at `payload` here — they are only valid
@@ -4589,12 +4589,12 @@ move a plain `Cell` phase field. Call them from the thread that owns the `Server
 
 ### Stackless tasks: the one designed cross-thread wake
 
-The reactor also drives stackless task pollers (the machinery behind `async fn`
-handlers), and those genuinely can be woken from another thread. The design keeps the reactor itself out of the crossing. A waker is a
-`Box<dyn Fn() + Send + Sync>` that holds only heap-allocated, thread-safe pieces: an `Arc`
-ticket and an `Arc` ingress consisting of an `accepting` flag and a mutex-guarded pending
-queue. Waking pushes the ticket onto that queue; the owning reactor drains it inside
-`run_loop`. The `Reactor` pointer never travels.
+The reactor also drives stackless task pollers behind `async fn` handlers, and those
+can be woken from another thread. Canonical Rust uses `std::task::Waker` backed by an
+`Arc<StacklessWakeTarget>` implementing `std::task::Wake`. The target owns an `Arc`
+ticket and an `Arc` ingress containing an `accepting` flag and a mutex-guarded pending
+queue. Waking publishes the ticket to that queue; the owning reactor drains it inside
+`run_loop`. The `Reactor` pointer never crosses threads.
 
 Teardown flips `accepting` to false, which makes a late foreign wake a defined no-op — and,
 because a silently dropped wake is exactly the shape of a client hang, every teardown path
@@ -6219,7 +6219,7 @@ let reactor = Reactor::get_reactor();
 let ev = create_sp_int_event(1); // ready when value >= 1
 
 let ev_in = ev.clone();
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+reactor.create_run_fiber(Some(Box::new(move || {
     ev_in.wait(); // or ev_in.wait_timeout(500 * 1000)
     // ...
 })));
@@ -6253,7 +6253,7 @@ never returns, and it is a busy spin rather than a blocking wait.
 ```rust
 // The body runs now, up to the first wait; the rest needs a drain.
 let ev_in = ev.clone();
-reactor.create_run_fiber(rusty::Function::from_callable(Box::new(move || {
+reactor.create_run_fiber(Some(Box::new(move || {
     ev_in.wait();
     finish();
 })));
