@@ -33,7 +33,7 @@ canonical Rust implementation.
 
 Current implementation progress, updated 2026-09-13:
 
-- The combined working tree has 24 facade declarations, down from 195.
+- The combined working tree has 17 facade declarations, down from 195.
   Integrated removals cover direct std imports, Arc access, owned descriptors,
   lazy standard collections, sleep/PID/source locations, boxed callbacks,
   standard TCP streams/listeners/errors, standard threads, standard Future/Wake,
@@ -71,13 +71,15 @@ Remaining source work is now concentrated in these areas:
 1. Validate the combined generated C++ build. Its Rust tests
    and eleven isolated C++ serialization tests pass.
 2. Standard IPv4 parsing/formatting and logging remove the remaining platform
-   helpers. Pthread, FILE and fiber bindings are integrated with a separate
+   helpers. Logging and IPv4 helpers are now removed; their isolated Rust and
+   C++ checks pass. Pthread, FILE and fiber bindings are integrated with a separate
    native ABI audit; all defined symbols match in five affected C++ providers.
 3. Tuple/vector aliases used by existing C++ consumers. Rust tuples and Vec
    need scoped C++ type mappings that retain the current pair/vector ABI.
 4. Optional handle and callback presence. Required Rust owners must stop
    carrying facade methods that return constant validity values.
-5. Job identity ordering, load-balancer trait ownership and panic payloads.
+5. Standard panic payload handling. Job identity ordering and load-balancer
+   trait ownership are integrated and pass Rust tests.
 6. Delete the facade and marker Cargo packages/dependencies, revise the
    independence checks, and prove a copied Cargo tree builds and tests without
    facade sources or the C++ runtime/toolchain.

@@ -1253,7 +1253,7 @@ fn stackless_wake_waker<WakeDomain>(reactor: &Reactor, idx: usize) -> Waker {
         }
     }
     reactor_verify(false);
-    std::process::abort()
+    std::process::abort();
 }
 
 fn stackless_wake_close<WakeDomain>(reactor: &Reactor, idx: usize) {
@@ -3450,7 +3450,7 @@ fn job_spawn_work(job: &Arc<dyn Job>) {
 }
 
 fn pollworker_trigger_job(w: &mut PollThreadWorker) {
-    let jobs_exec = core::mem::take(&mut w.jobs_);
+    let jobs_exec = core::mem::replace(&mut w.jobs_, JobSet::new());
     for job in jobs_exec.values() {
         if job_ready(job) {
             // Ready jobs ran (or are running) — do NOT re-add them.
