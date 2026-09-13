@@ -39,12 +39,18 @@ wrapper at a time.
 
 ## Permitted adapters and native kernels
 
-[rusty-rustc](../rusty-rustc/src/lib.rs) is omitted from C++ lowering by authenticated package identity.
-It supplies Rust representations of standard values, containers, synchronization, callables, descriptor
-ownership, C layouts, and trait forwarding. Its [Task adapter](../rusty-rustc/src/task.rs) polls real
-Rust `Future` values; C++ uses its native coroutine representation. Task scheduling remains in the
-canonical reactor. `Waker::from_callable` owns a callback through Rust `Arc` or C++ `std::function`.
-It does not contain a second wake queue or scheduling decision.
+The canonical Cargo package has no production Rust dependencies. It uses Rust std
+and the C/assembly kernel described below. The `rusty-rustc` and `rusty-cpp-markers`
+packages have been removed. Standard Rust futures, contexts and wakers are polled
+by the canonical reactor; generated C++ uses the compiler's coroutine runtime.
+Scheduling and wake admission remain in canonical Rust.
+
+C++ type mappings, native declarations, module preambles and serialization
+forwarders remain build inputs for the generated C++ lane. Cargo does not compile
+or link the C++ runtime. The
+[Cargo independence check](../scripts/check_rust_independence.py) builds and tests
+a copied tree containing only Cargo inputs, canonical Rust and native C/assembly
+sources, with no C++ tool on its restricted tool path.
 
 The repaired C++ `Arc` adapter follows Rust's ownership contract: `get_mut` requires one strong
 owner and no `Weak` owners. If `new_cyclic` construction fails, it releases its temporary ownership;
@@ -52,13 +58,8 @@ any escaped `Weak` remains expired and keeps the allocation alive until its last
 returns zero before cyclic construction publishes a strong owner and after all strong owners drop,
 matching Rust.
 
-The reviewed [facade inventory](../scripts/facade-adapters.json) pins declarations by normalized AST,
-including private methods, imports, aliases, and conditional declarations. The shared
-[facade audit](../scripts/facade_audit.py) checks that inventory and canonical name ownership. Missing
-behavior cannot be excused by an empty body, a plausible constant, or an unimplemented panic. A new
-adapter needs a narrow language or ABI contract, executable checks, and review of the canonical owner.
-
-The same AST audit checks canonical functions against a separate
+The [canonical AST audit](../scripts/rust_source_audit.py) checks functions against
+the reviewed
 [constant-function inventory](../scripts/canonical-constant-functions.json). Constant results and empty
 bodies require a recorded behavioral reason and exact signature/body hash. This covers legitimate
 cases such as `NeverEvent`, a listener with no output buffer, and a consumed `Arc` released by
@@ -258,10 +259,14 @@ Run the relevant checks from the repository root:
 cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --doc
 cargo clippy --locked --workspace --all-targets -- -D warnings
-python3 scripts/check_facade_shadow.py
-python3 scripts/check_facade_stubs.py
+python3 scripts/rust_source_audit.py
+python3 scripts/check_rust_independence.py
 python3 scripts/check_native_kernels.py
-python3 scripts/tests/test_facade_audit.py
+python3 scripts/check_native_abi_bindings.py
+python3 scripts/tests/test_rust_source_audit.py
+python3 scripts/tests/test_native_kernels.py
+python3 scripts/tests/test_native_abi_bindings.py
+python3 scripts/tests/test_rust_independence.py
 python3 scripts/tests/test_runtime_parity.py
 cmake --build build --parallel 4
 ctest --test-dir build -N -L srpc
@@ -270,7 +275,9 @@ ctest --test-dir build -L srpc --output-on-failure
 
 The normal build and tests passed on Linux x86_64 with Clang 22, libc++, and Release C++ settings.
 The validated SRPC working tree is based on `9bba8a7`; the compiler is the clean release build of
-`3e1d95059839e4bf1968891047ff1563a2f08c17`. The results below cover this working tree and toolchain.
+`3e1d95059839e4bf1968891047ff1563a2f08c17`. The results below are historical acceptance for that tree and toolchain. Current
+facade-removal acceptance is tracked in
+[facade-and-runtime-remaining.md](dev/facade-and-runtime-remaining.md).
 
 | Check | Recorded result |
 | --- | --- |

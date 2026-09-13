@@ -351,8 +351,8 @@ TCP is auto-installed by `Client::connect` / `Server::start`; to use in-memory y
 **Concurrency is both stackful and stackless.** Fibers are mmap'd stacks (1 MiB default + guard page)
 switched by `reactor/fiber_context_{x86_64,aarch64}.S`; the field order of `srpc_fiber_ctx` in
 `reactor/srpc_fiber.h` *is* the ABI contract with that assembly. The `Reactor` uses real thread-local
-storage in both Rust and generated C++, and also drives stackless
-`rusty::Task` pollers. Cross-thread wake ingress is synchronized; fiber events remain owner-thread state.
+storage in both Rust and generated C++, and also polls standard Rust `Future` values. Generated C++ uses the compiler
+coroutine runtime. Cross-thread wake ingress is synchronized; fiber events remain owner-thread state.
 
 **Reliability layers** (circuit breaker, heartbeat, reconnect policy, connection state machine, request
 queue, metrics) are embedded by value in `ClientConnection`. Only four configs are staged on `Client` and
