@@ -81,3 +81,15 @@ fn concurrent_close_transitions_and_closes_the_transport_once() {
     for worker in workers { worker.join().unwrap(); }
     assert_eq!(state.close_count.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn optional_async_callback_reports_empty_and_calls_present_once() {
+    let (connection, _state) = connection();
+    assert_ne!(connection.run_async(None), 0);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = calls.clone();
+    assert_eq!(connection.run_async(Some(Box::new(move || {
+        callback_calls.fetch_add(1, Ordering::SeqCst);
+    }))), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

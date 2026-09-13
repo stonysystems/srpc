@@ -14,7 +14,6 @@
 #[allow(unused_imports)]
 use crate::reactor as _;
 
-use rusty::RustyFunctionIsEmpty as _;
 use rusty::RustyHandleIsValid as _;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -263,16 +262,7 @@ impl RpcServiceContext {
 // is bound.
 
 // Alias for the reply callback type.
-pub type ServerReplyFn = Box<dyn FnMut(&mut BinaryWriteArchive)>;
-
-/// The empty-reply writer. The retired carrier passed a default-constructed
-/// `rusty::Function` here and `sconn_reply` bypassed the call; a writer that
-/// writes nothing produces the identical reply bytes, and the emptiness guard
-/// in `sconn_reply` still protects the empty Functions that reach this module
-/// from its C++ callers.
-fn no_reply_writer() -> ServerReplyFn {
-    Box::new(|_ar: &mut BinaryWriteArchive| {})
-}
+pub type ServerReplyFn = Option<Box<dyn FnMut(&mut BinaryWriteArchive)>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ServerConnStatus {
@@ -387,15 +377,15 @@ impl ServerConnection {
         self.channel_mode_.store(true, Ordering::Release);
     }
 
-    pub fn run_async(&self, mut f: Box<dyn FnMut()>) -> i32 {
-        if f.is_empty() {
+    pub fn run_async(&self, f: Option<Box<dyn FnMut()>>) -> i32 {
+        if f.is_none() {
             let message: String =
                 "srpc::ServerConnection::run_async called with empty callback".to_string();
             // SAFETY: the file pointer is null.
             unsafe { log_line(2, 0, core::ptr::null(), &message) };
             return SERVER_ERR_INVALID_ARGUMENT;
         }
-        f();
+        f.unwrap()();
         0i32
     }
 }
@@ -417,7 +407,7 @@ pub struct DeferredReply {
     // `ServerReplyFn` is this exact type, declared above; naming it here
     // keeps the field off `clippy::type_complexity` without inventing a
     // second spelling for one C++ type.
-    archive_reply_field: Option<ServerReplyFn>,
+    archive_reply_field: ServerReplyFn,
     cleanup_field: Option<Box<dyn FnMut()>>,
 }
 
@@ -454,7 +444,7 @@ impl DeferredReply {
         let cb = cb_opt.unwrap();
         let sconn_opt = self.weak_sconn_field.upgrade();
         if let Some(sconn) = sconn_opt {
-            (*sconn).reply(&self.req_field, 0i32, cb);
+            (*sconn).reply(&self.req_field, 0i32, Some(cb));
         } else {
             let message: String =
                 "Connection closed before reply sent, dropping reply".to_string();
@@ -473,7 +463,7 @@ impl DeferredReply {
         }
         let sconn_opt = self.weak_sconn_field.upgrade();
         if let Some(sconn) = sconn_opt {
-            let no_writer: ServerReplyFn = no_reply_writer();
+            let no_writer: ServerReplyFn = None;
             (*sconn).reply(&self.req_field, error_code, no_writer);
         } else {
             let message: String =
@@ -1195,11 +1185,8 @@ impl Server {
 // Implementation namespace — free functions the methods above delegate to.
 // ===========================================================================
 
-/// Build the reply body (header + user payload) into a BufferSink and
-/// dispatch through the bound channel proxy. (Was the templated `reply<F>`;
-/// de-templated to a `ServerReplyFn` — Function SBO keeps the `[&]` reply
-/// lambdas inline, no per-reply alloc.) An empty `write_fn` (the former
-/// 2-arg empty-reply overload) writes just the header.
+/// Build the reply header and optional payload, then dispatch through the channel.
+/// An absent writer sends only the header.
 pub fn sconn_reply(
     sconn: &ServerConnection,
     req: &Request,
@@ -1227,8 +1214,7 @@ pub fn sconn_reply(
         &v64::new(sconn.ctx_.server_instance_id as i64),
         ar,
     );
-    if !write_fn.is_empty() {
-        let mut write = write_fn;
+    if let Some(mut write) = write_fn {
         write(ar);
     }
     drop(ar_store);
@@ -1373,7 +1359,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
 
     // sizeof(i32) spelled as its value: not enough bytes for rpc_id.
     if req_box.src.remaining() < 4usize {
-        let empty_fn1: ServerReplyFn = no_reply_writer();
+        let empty_fn1: ServerReplyFn = None;
         sconn_reply(sconn, &req_box, SERVER_ERR_INVALID_ARGUMENT, empty_fn1);
         return;
     }
@@ -1385,7 +1371,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
     if rpc_id == crate::internal_protocol::kInternalHeartbeatRpcId {
         let hb: &Arc<ServerDropHeartbeatRepliesAtomic> = &sconn.ctx_.drop_heartbeat_replies;
         if !hb.load(Ordering::Acquire) {
-            let empty_fn2: ServerReplyFn = no_reply_writer();
+            let empty_fn2: ServerReplyFn = None;
             sconn_reply(sconn, &req_box, 0i32, empty_fn2);
         }
         return;
@@ -1414,7 +1400,7 @@ pub unsafe fn sconn_decode_request_and_dispatch(
             // SAFETY: the file pointer is null.
             unsafe { log_line(2, 0, core::ptr::null(), &message) };
         }
-        let empty_fn3: ServerReplyFn = no_reply_writer();
+        let empty_fn3: ServerReplyFn = None;
         sconn_reply(sconn, &req_box, SERVER_ERR_NO_ENTRY, empty_fn3);
         return;
     }

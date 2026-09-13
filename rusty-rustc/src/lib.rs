@@ -10,65 +10,12 @@
 pub use ::std::boxed::Box;
 pub use ::std::cell::{Cell, RefCell, RefMut};
 pub use ::std::collections::{VecDeque};
-use ::std::ops::{Deref, Index};
 pub use ::std::option::Option;
 pub use ::std::option::Option::{None, Some};
 pub use ::std::rc::Rc;
 pub use ::std::vec::Vec;
 
 pub use rusty_cpp_markers::cpp_inherit;
-
-
-/// Rustc-only storage model for the reactor's `std::set<Arc<Job>>` slot.
-///
-/// The production type map lowers `ReactorJobSet<T>` to `std::set<T>`; this
-/// sorted storage preserves the set's pointee-address order and uniqueness for
-/// direct Rust checking without requiring `dyn Job: Ord`.
-pub struct ReactorJobSet<T> {
-    entries: Vec<T>,
-}
-
-pub trait ReactorJobSetKey {
-    fn identity_address(&self) -> usize;
-}
-
-impl<T: ?Sized> ReactorJobSetKey for ::std::sync::Arc<T> {
-    fn identity_address(&self) -> usize {
-        ::std::sync::Arc::as_ptr(self) as *const () as usize
-    }
-}
-
-impl<T> Default for ReactorJobSet<T> {
-    fn default() -> Self {
-        Self { entries: Vec::new() }
-    }
-}
-
-impl<T: ReactorJobSetKey> ReactorJobSet<T> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert(&mut self, value: T) {
-        if let Err(index) = self.entries.binary_search_by_key(
-            &value.identity_address(), |existing| existing.identity_address(),
-        ) {
-            self.entries.insert(index, value);
-        }
-    }
-
-    pub fn erase(&mut self, value: T) {
-        if let Ok(index) = self.entries.binary_search_by_key(
-            &value.identity_address(), |existing| existing.identity_address(),
-        ) {
-            self.entries.remove(index);
-        }
-    }
-
-    pub fn iter(&self) -> ::std::slice::Iter<'_, T> {
-        self.entries.iter()
-    }
-}
 
 
 
@@ -153,15 +100,6 @@ impl<T: ?Sized> RustyHandleIsValid for ::std::sync::Arc<T> {
     }
 }
 
-pub trait RustyFunctionIsEmpty {
-    fn is_empty(&self) -> bool;
-}
-
-impl<T: ?Sized> RustyFunctionIsEmpty for Box<T> {
-    fn is_empty(&self) -> bool {
-        false
-    }
-}
 
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
@@ -200,52 +138,4 @@ pub mod std {
     }
 
 
-}
-
-/// Rust-only contract for metric views used by the canonical load-balancer module.
-pub trait LoadBalancerMetrics {
-    fn in_flight_requests(&self) -> u64;
-    fn avg_latency_us(&self) -> u64;
-    fn requests_completed(&self) -> u64;
-}
-
-/// Rust-only contract for a client exposing a load-balancer metric view.
-pub trait LoadBalancerClient {
-    type Metrics: LoadBalancerMetrics;
-
-    fn metrics(&self) -> &Self::Metrics;
-}
-
-/// Rust-only contract for pointer-like client handles.
-pub trait LoadBalancerClientHandle: Deref
-where
-    Self::Target: LoadBalancerClient,
-{
-}
-
-impl<T> LoadBalancerClientHandle for T
-where
-    T: Deref,
-    T::Target: LoadBalancerClient,
-{
-}
-
-/// Rust-only contract for indexable client pools.
-#[allow(clippy::len_without_is_empty)]
-pub trait LoadBalancerClientVec: Index<usize>
-where
-    Self::Output: LoadBalancerClientHandle,
-    <Self::Output as Deref>::Target: LoadBalancerClient,
-{
-    fn len(&self) -> usize;
-}
-
-impl<T> LoadBalancerClientVec for Vec<T>
-where
-    T: LoadBalancerClientHandle,
-    <T as Deref>::Target: LoadBalancerClient,
-{
-    fn len(&self) -> usize {
-        Vec::len(self)
-    }
 }

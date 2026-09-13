@@ -672,7 +672,7 @@ EXPECTED_IMPORTS = {
         'srpc.threading',
         'srpc.circuit_breaker',
     ],
-    "srpc.load_balancer": [],
+    "srpc.load_balancer": ["vec_port.vec"],
     "srpc.utils": ["srpc.logging"],
     "srpc.frame_codec": ["srpc.internal_protocol"],
     "srpc.serializable": [
@@ -1577,8 +1577,8 @@ ABI_SPECS = {
                 "ROUND_ROBIN = 1,",
                 "LEAST_CONNECTIONS = 2,",
                 "LEAST_LATENCY = 3",
-                "// Rust-only trait import marker: using _ = rusty::LoadBalancerClient;",
-                "// Rust-only trait import marker: using _ = rusty::LoadBalancerMetrics;",
+                "class LoadBalancerClient",
+                "export class LoadBalancerMetrics",
                 "export struct LoadBalancerState",
                 "rusty::Cell<size_t> round_robin_index_field;",
                 "static LoadBalancerState new_();",
@@ -5529,7 +5529,7 @@ def require_cpp_surfaces(
                 text, "srpc.request_queue", EXPECTED_IMPORTS["srpc.request_queue"]
             )
         elif module.cpp_module == "srpc.load_balancer":
-            require_exact_module_imports(text, "srpc.load_balancer", [])
+            require_exact_module_imports(text, "srpc.load_balancer", EXPECTED_IMPORTS["srpc.load_balancer"])
             live_cpp = "\n".join(
                 line
                 for line in text.splitlines()

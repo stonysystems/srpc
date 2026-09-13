@@ -27,9 +27,9 @@ impl Service for Echo {
         };
         Deserialize::deserialize(&mut value, &mut archive);
         self.0.lock().unwrap().push(value);
-        let reply: ServerReplyFn = Box::new(move |output: &mut BinaryWriteArchive| {
+        let reply: ServerReplyFn = Some(Box::new(move |output: &mut BinaryWriteArchive| {
             Serialize::serialize(&(value * 2), output);
-        });
+        }));
         connection.upgrade().unwrap().reply(&request, 0, reply);
     }
 }

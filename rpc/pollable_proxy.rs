@@ -90,5 +90,5 @@ pub fn make_pollable_proxy_from_typed_arc<T>(poll: Arc<T>) -> PollableProxy
 where
     T: PollableSharedTarget + 'static,
 {
-    rusty::make_box::<PollableArcShim<T>>(PollableArcShim { poll_: poll })
+    Box::new(PollableArcShim { poll_: poll })
 }

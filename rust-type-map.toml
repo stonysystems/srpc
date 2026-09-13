@@ -28,7 +28,6 @@ SerializableSharedPtrHolder = "details::SerializableSharedPtrHolder"
 SrcFileCStr = "const char*"
 
 [rusty]
-ReactorJobSet = "std::set"
 BTreeSet = "rusty::BTreeSet"
 BTreeMap = "rusty::BTreeMap"
 HashSet = "rusty::HashSet"

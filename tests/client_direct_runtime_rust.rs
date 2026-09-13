@@ -28,9 +28,9 @@ impl Service for ReplyService {
             entered.send(()).unwrap();
             self.release.as_ref().unwrap().wait();
         }
-        let writer: ServerReplyFn = Box::new(|archive: &mut BinaryWriteArchive| {
+        let writer: ServerReplyFn = Some(Box::new(|archive: &mut BinaryWriteArchive| {
             Serialize::serialize(&42i64, archive);
-        });
+        }));
         connection.reply(&request, 0, writer);
     }
 }

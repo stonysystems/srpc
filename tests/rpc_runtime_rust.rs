@@ -39,9 +39,9 @@ impl Service for CooperativeService {
             self.stages.send("fast replied").unwrap();
         }
         let connection = connection.upgrade().expect("live server connection");
-        let writer: ServerReplyFn = Box::new(move |archive: &mut BinaryWriteArchive| {
+        let writer: ServerReplyFn = Some(Box::new(move |archive: &mut BinaryWriteArchive| {
             Serialize::serialize(&(value + 1), archive);
-        });
+        }));
         connection.reply(&request, 0, writer);
     }
 }

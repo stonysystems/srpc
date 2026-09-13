@@ -62,9 +62,9 @@ impl Service for RetryProbeService {
             Deserialize::deserialize(&mut value, &mut ar);
         }
         let sconn = sconn.upgrade().expect("connection alive during inline dispatch");
-        let writer: ServerReplyFn = Box::new(move |ar: &mut BinaryWriteArchive| {
+        let writer: ServerReplyFn = Some(Box::new(move |ar: &mut BinaryWriteArchive| {
             Serialize::serialize(&(value + 1), ar);
-        });
+        }));
         sconn.reply(&req, 0, writer);
     }
 }

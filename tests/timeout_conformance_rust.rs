@@ -49,9 +49,9 @@ impl Service for TimeoutProbeService {
             Deserialize::deserialize(&mut value, &mut ar);
         }
         let sconn = sconn.upgrade().expect("live connection");
-        let writer: ServerReplyFn = Box::new(move |ar: &mut BinaryWriteArchive| {
+        let writer: ServerReplyFn = Some(Box::new(move |ar: &mut BinaryWriteArchive| {
             Serialize::serialize(&(value * 2), ar);
-        });
+        }));
         sconn.reply(&req, 0, writer);
     }
 }

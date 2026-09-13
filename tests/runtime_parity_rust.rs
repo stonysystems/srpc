@@ -31,9 +31,9 @@ impl Service for Echo {
             source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut request.src) },
         };
         Deserialize::deserialize(&mut value, &mut archive);
-        connection.upgrade().unwrap().reply(&request, 0, Box::new(move |out| {
+        connection.upgrade().unwrap().reply(&request, 0, Some(Box::new(move |out| {
             Serialize::serialize(&(value * 2), out);
-        }));
+        })));
     }
 }
 

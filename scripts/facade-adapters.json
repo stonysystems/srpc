@@ -15,10 +15,6 @@
     "impl::: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >": {
       "body": ":: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >::is_valid",
       "reason": "A Rust Arc always owns a non-null allocation."
-    },
-    "impl:Box < T > as RustyFunctionIsEmpty < T : ? Sized >": {
-      "body": "Box < T > as RustyFunctionIsEmpty < T : ? Sized >::is_empty",
-      "reason": "An assigned Rust Box callable cannot be empty."
     }
   },
   "declarations": {
@@ -42,37 +38,13 @@
       "category": "standard",
       "sha256": "9ed02827e1e585d07228e6e0d6a07d13e826df5a194fa27afa600a4fe76dbdb2"
     },
-    "impl::: std :: sync :: Arc < T > as ReactorJobSetKey < T : ? Sized >": {
-      "category": "standard",
-      "sha256": "58aaffd84dba7ca159107cdff75dfeb1e2ed58d53d6bf5834943f0dcce30fc6e"
-    },
     "impl::: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >": {
       "category": "standard",
       "sha256": "71614b71f119ec72df1d5be52e459cc26d021c52a49b19e251ae4cf9b828178c"
     },
-    "impl:Box < T > as RustyFunctionIsEmpty < T : ? Sized >": {
-      "category": "standard",
-      "sha256": "07038859eb766235048ab8904c7f0eeeefaee6da6222b607732ebd8d84366fcb"
-    },
     "impl:Box < T > as RustyHandleIsValid < T : ? Sized >": {
       "category": "standard",
       "sha256": "be7f7cccdc849eaa45a099ef6e9dd460b6d0ee83fb759b881b2de837e1ef8c4d"
-    },
-    "impl:ReactorJobSet < T > as Default < T >": {
-      "category": "standard",
-      "sha256": "0ae1f9bcf1517192fb2eb001255bb5e3e0b701d56c91cbd1c27b59056c62eae3"
-    },
-    "impl:ReactorJobSet < T > as inherent < T : ReactorJobSetKey >": {
-      "category": "standard",
-      "sha256": "e4e010901a78ee812f4a7c9e27f7f21d16f679e1ce07f9c6b977f7b200b1c065"
-    },
-    "impl:T as LoadBalancerClientHandle < T >": {
-      "category": "trait-dispatch",
-      "sha256": "a67fc8e9933d7d0bfa709388c0c26033d4aec0ae8b64b55cd203af1d91f3c3be"
-    },
-    "impl:Vec < T > as LoadBalancerClientVec < T >": {
-      "category": "trait-dispatch",
-      "sha256": "c18f7ee96bac46d70b8989d9820431102a7f2e16e172654c28e7068eba5d23c5"
     },
     "impl:std::Cout as inherent ": {
       "category": "standard",
@@ -94,10 +66,6 @@
       "category": "standard",
       "sha256": "230525fab95805e42a431345257605209f7a7457278b817d4394abf5421d5021"
     },
-    "struct:ReactorJobSet": {
-      "category": "standard",
-      "sha256": "a1b2e9ae49bb9e43a7e0ee5d49d6cb57bd835c43f8c644ef46bb9ca5afa9b370"
-    },
     "struct:panic::PanicPayload": {
       "category": "standard",
       "sha256": "751dfe25bbf4ccbc4a1394974678c45f645ba888435a8cae5de4af7238e7a2f4"
@@ -105,30 +73,6 @@
     "struct:std::Cout": {
       "category": "standard",
       "sha256": "d1957bd58a877c02c4a727da3c4f8837b3cb81845f940d443ed202bbe9c1dd0b"
-    },
-    "trait:LoadBalancerClient": {
-      "category": "trait-dispatch",
-      "sha256": "3bf53bfcdc4863dedd0a3be4f591bd57d27d5d73adb7aaeb8568f6a3731ed2b5"
-    },
-    "trait:LoadBalancerClientHandle": {
-      "category": "trait-dispatch",
-      "sha256": "cea7004572d9bf8c6cd8c130e3d94402b048a9c2c3d1fc9bd5e7367e15cc3669"
-    },
-    "trait:LoadBalancerClientVec": {
-      "category": "trait-dispatch",
-      "sha256": "2ecc5c3b207cd96e6e70a82afbc70588ed5558dfd0f0575ca8e22d7284f37b33"
-    },
-    "trait:LoadBalancerMetrics": {
-      "category": "trait-dispatch",
-      "sha256": "d3e12a599956b708a86c3be4dcc62bfa67eab0ae5d2d467bae2c2b5d4504fbd9"
-    },
-    "trait:ReactorJobSetKey": {
-      "category": "standard",
-      "sha256": "6224086cab38ebb3fcd1a542ab1d1ec564734ad4220ec806c268ace3d26bd7e5"
-    },
-    "trait:RustyFunctionIsEmpty": {
-      "category": "standard",
-      "sha256": "3c6610e7159860be11d46cadf3be8161745bc3f65426c3bead8861037f22a8d5"
     },
     "trait:RustyHandleIsValid": {
       "category": "standard",
@@ -169,10 +113,6 @@
     "use:std::std :: io :: Write as _": {
       "category": "import",
       "sha256": "ef6188338614e29365fbb31931a002820361ae30bfae79788109891a5904856d"
-    },
-    "use:std :: ops :: { Deref , Index }": {
-      "category": "import",
-      "sha256": "51390f38b7affece1e760dc707c3a6e56411a5d06b10955891ea5b88ff43e1c6"
     }
   }
 }

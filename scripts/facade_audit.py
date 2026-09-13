@@ -38,10 +38,6 @@ CONSTANT_FACTS = {
         "body": ":: std :: sync :: Arc < T > as RustyHandleIsValid < T : ? Sized >::is_valid",
         "reason": "A Rust Arc always owns a non-null allocation.",
     },
-    "impl:Box < T > as RustyFunctionIsEmpty < T : ? Sized >": {
-        "body": "Box < T > as RustyFunctionIsEmpty < T : ? Sized >::is_empty",
-        "reason": "An assigned Rust Box callable cannot be empty.",
-    },
 }
 
 

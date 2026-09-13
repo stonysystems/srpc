@@ -58,7 +58,7 @@ pub type PollCmdReceiver = std::sync::mpsc::Receiver<PollCommand>;
 pub type FdPollableMap = HashMap<i32, PollableProxy>;
 pub type FdModeMap = HashMap<i32, i32>;
 pub type FdSet = HashSet<i32>;
-pub type JobSet = rusty::ReactorJobSet<Arc<dyn Job>>;
+pub type JobSet = std::collections::BTreeMap<usize, Arc<dyn Job>>;
 pub type PollJoinSlot = std::sync::Mutex<Option<std::thread::JoinHandle<()>>>;
 // The tuple alias keeps the historical std::pair callback element profile.
 pub type QuorumDangling = (u16, i64);
@@ -3451,13 +3451,13 @@ fn job_spawn_work(job: &Arc<dyn Job>) {
 
 fn pollworker_trigger_job(w: &mut PollThreadWorker) {
     let jobs_exec = core::mem::take(&mut w.jobs_);
-    for job in jobs_exec.iter() {
+    for job in jobs_exec.values() {
         if job_ready(job) {
             // Ready jobs ran (or are running) — do NOT re-add them.
             job_spawn_work(job);
         } else {
             // Not ready yet — check again on the next pass.
-            w.jobs_.insert(job.clone());
+            w.jobs_.insert(job_identity(job), job.clone());
         }
     }
 }
@@ -3541,12 +3541,17 @@ fn pollworker_do_update_mode(w: &mut PollThreadWorker, fd: i32, new_mode: i32) {
     }
 }
 
+#[allow(unsafe_code)]
+fn job_identity(job: &Arc<dyn Job>) -> usize {
+    Arc::as_ptr(job) as *const () as usize
+}
+
 fn pollworker_do_add_job(w: &mut PollThreadWorker, job: Arc<dyn Job>) {
-    w.jobs_.insert(job);
+    w.jobs_.insert(job_identity(&job), job);
 }
 
 fn pollworker_do_remove_job(w: &mut PollThreadWorker, job: Arc<dyn Job>) {
-    w.jobs_.erase(job);
+    w.jobs_.remove(&job_identity(&job));
 }
 
 fn pollworker_process_pending_removals(w: &mut PollThreadWorker) {
