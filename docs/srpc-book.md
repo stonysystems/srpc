@@ -367,8 +367,8 @@ Hand-written non-Rust does survive, but only as *seam*, never as logic:
 - Two assembly files, `reactor/fiber_context_x86_64.S` and `reactor/fiber_context_aarch64.S`,
   which perform the actual fiber context switch.
 - A handful of C++ headers: the umbrella `srpc.hpp`, `std_compat.hpp`, `base/all.hpp`,
-  `misc/serializable_support.hpp` (the real open-set ADL serialize/deserialize dispatch),
-  `base/rustc_markers.hpp`, and several `#pragma once` shims whose entire body is
+  `misc/serializable_support.hpp` and `misc/serializable_adapters.hpp` for ADL and
+  erased serialization forwarding, and several `#pragma once` shims whose entire body is
   `import srpc.<module>;`.
 
 That last category is a trap for readers browsing the tree. Finding `rpc/frame_codec.hpp`
@@ -435,8 +435,10 @@ different traits.) The layering is upside down at exactly this one seam.
 Client, server, TCP, fiber helpers, and fiber futures import the canonical
 `crate::reactor` implementation. Cargo executes those Rust methods directly; rusty-cpp
 lowers them into the corresponding named modules. Explicit dependency anchors preserve
-imports where required by the compiler. `rusty-rustc` supplies standard-library and OS
-adapters, but no parallel SRPC reactor or serialization implementation.
+imports where required by the compiler. Cargo uses Rust std and the shared C/assembly
+kernel, with no production Rust dependency or C++ runtime. The `rusty-rustc` facade and
+`rusty-cpp-markers` packages have been removed. The generated C++ lane still uses the
+vendored rusty-cpp runtime and compiler mappings for standard Rust types and operations.
 
 The current ownership and adapter contracts are documented in
 [Canonical Rust runtime and migration notes](canonical-rust-runtime.md).
@@ -497,7 +499,6 @@ srpc/
     misc.rs                   general utilities
     threading.rs              SpinLock plus pthread mutex/cond wrappers
     all.hpp                   five-import umbrella for base/
-    rustc_markers.hpp         declares rusty::cpp_inherit for the C++ side
     srpc_base.c               plain-C: execinfo backtrace capture and a
                               path-basename scan (no header)
 
@@ -578,8 +579,6 @@ srpc/
                             verify_srpc.sh, tests/
   verify/                   workspace-excluded Verus harness that #[path]-links
                             the real sources
-  rusty-rustc/              the hand-written `rusty` facade crate (rustc only)
-  rusty-cpp-markers/        proc-macro markers
   docs/                     verification.md, and this book
   third-party/              rusty-cpp (pinned transpiler), googletest
 
@@ -6629,8 +6628,11 @@ The normal CMake `ALL` build includes the source and dual-compile gates.
 
 The **source gate** (`srpc_goal0_source_gate`) runs the DSL census, the
 extraction check (`src/lib.rs` must match `rust-modules.toml`), contract negative
-controls, the facade AST audit, the native-kernel inventory check, Cargo tests,
-and clippy with warnings denied. A new clippy warning breaks the C++ build.
+controls, the canonical Rust AST audit, native source and ABI-binding checks,
+Cargo tests, and clippy with warnings denied. The Cargo independence check also
+runs tests and doctests in a copied tree containing only Rust sources and the
+C/assembly kernel, without the facade, vendored C++ runtime or transpiler.
+A new clippy warning breaks the C++ build.
 
 The **dual-compile gate** (`srpc_goal0_dual_compile`) is the ABI oracle. It
 recompiles every generated module into its own object, links one importer
@@ -6650,14 +6652,19 @@ bounded evidence; they do not prove equivalence for every input or interleaving.
 
 ### Standard adapters, from the C++ side
 
-The transpiler omits `rusty-rustc` by authenticated package identity and maps its standard
-values, ownership types, synchronization, and task representation to the real C++ runtime
-headers. SRPC scheduling, events, archives, and protocol policy stay in canonical Rust.
+The transpiler maps Rust std values, ownership types, synchronization, futures and
+wakers to the C++ runtime. Explicit compiler mappings preserve the established C++
+callback and container interfaces where their representation differs from Rust.
+These mappings and C++ headers are inputs only to the generated C++ lane. Cargo uses
+the standard Rust implementations directly. SRPC scheduling, events, archives and
+protocol policy stay in canonical Rust.
 
-The shared AST audit checks normalized declarations against the reviewed adapter inventory
-and rejects canonical ownership shadows. A separate constant-function inventory checks
-otherwise plausible empty or constant-returning bodies in canonical Rust. Both guards
-complement behavioral tests; neither permits a second runtime behind familiar names.
+The canonical AST audit rejects missing runtime bodies and checks empty or
+constant-returning functions against a reviewed inventory. Native source and ABI
+audits check the shared C/assembly kernel and its declarations. The Cargo independence
+check rejects production Rust dependencies and builds a copy without the C++ inputs.
+These checks complement behavioral tests; they do not establish equivalent behavior
+for every input or execution schedule.
 
 ---
 

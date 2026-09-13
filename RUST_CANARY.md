@@ -1,5 +1,12 @@
 # `srpc` canonical Rust canary
 
+> Historical canary notes. The module counts, compiler pin and partial-promotion
+> status below describe an earlier migration stage, not current acceptance criteria.
+> All 37 production modules are now canonical Rust, and Cargo uses std plus the
+> shared C/assembly kernel without a facade package or C++ runtime. Current status
+> and validation are tracked in
+> [Rust lane independence](docs/dev/facade-and-runtime-remaining.md).
+
 The Cargo package is the canonical source for twenty-three production modules:
 
 - `srpc.basetypes`

@@ -3,9 +3,10 @@
 SRPC's Rust files own its runtime and protocol behavior. Cargo compiles those sources directly, and
 rusty-cpp generates the C++ named-module providers from the same files. The
 [translation audit](translation-parity-audit.md) records the earlier substitutes that prompted this
-repair. This document describes the changed implementation and public contracts. The normal C++ and
-address sanitizer checks have passed with the limits recorded below. Thread and undefined-behavior
-sanitizer acceptance remains pending.
+repair. This document describes the changed implementation and public contracts. The C++ and address
+sanitizer results below record the earlier runtime repair based on SRPC `9bba8a7`, with the toolchain
+and limits identified in the validation record. Current facade-removal acceptance is tracked separately
+in [Rust lane independence](dev/facade-and-runtime-remaining.md).
 
 ## Implementation owners
 
