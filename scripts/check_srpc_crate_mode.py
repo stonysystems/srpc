@@ -784,6 +784,7 @@ EXPECTED_IMPORTS = {
         'srpc.serializable',
         'srpc.tcp_channel',
         'srpc.reactor',
+        'srpc.threading',
         'srpc.rand',
         'srpc.callback_wrapper',
         'srpc.debugging',

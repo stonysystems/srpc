@@ -108,10 +108,9 @@ The two remaining callback construction errors in `fiber_channel` and `server`
 are fixed with explicit standard type paths and imported callback aliases.
 These let the compiler prove the aliases' identities in the reactor module's
 macro-containing scope. Both providers compile, and Rust tests and clippy pass.
-The full build now compiles all providers except `client`, where three callback
-expressions and a missing threading import remain. Complete C++ and sanitizer
-acceptance remains pending. All 36 compiled production providers match the
-reviewed unique and raw symbol inventories.
+The client now also compiles with its threading import and explicit callback
+ownership transfers. All 37 providers match the reviewed unique and raw symbol
+inventories. Complete CMake, CTest and sanitizer acceptance remains pending.
 
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).
