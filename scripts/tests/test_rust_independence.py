@@ -40,8 +40,9 @@ class RustIndependenceTests(unittest.TestCase):
         self.assertFalse((self.dest / 'runtime.cpp').exists())
 
     def test_production_dependencies_are_rejected_in_every_scope(self):
-        for table in ('dependencies', 'build-dependencies', 'target.cfg(unix).dependencies',
-                      'target.cfg(unix).build-dependencies'):
+        for table in ('dependencies', 'build-dependencies', 'build_dependencies',
+                      'target.cfg(unix).dependencies', 'target.cfg(unix).build-dependencies',
+                      'target.cfg(unix).build_dependencies'):
             with self.subTest(table=table):
                 table = table.replace('cfg(unix)', '\"cfg(unix)\"')
                 (self.repo / 'Cargo.toml').write_text(f'[{table}]\nshadow="1"\n')

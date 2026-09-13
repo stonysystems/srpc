@@ -14,10 +14,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def production_dependencies(manifest: dict) -> list[str]:
-    names = list(manifest.get('dependencies', {})) + list(manifest.get('build-dependencies', {}))
-    for target in manifest.get('target', {}).values():
-        names += list(target.get('dependencies', {})) + list(target.get('build-dependencies', {}))
-    return names
+    # Cargo accepts the legacy underscore spelling in this crate's Rust edition.
+    keys = ('dependencies', 'build-dependencies', 'build_dependencies')
+    scopes = [manifest, *manifest.get('target', {}).values()]
+    return [name for scope in scopes for key in keys for name in scope.get(key, {})]
 
 
 def validate_manifest(repo: Path) -> None:
