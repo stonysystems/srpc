@@ -1,6 +1,6 @@
 # The SRPC Book
 
-A developer's guide to **SRPC** — a Simple RPC framework for C++23.
+A developer's guide to SRPC, a native Rust RPC runtime with a generated C++23 library.
 
 You describe a service in a small `.rpc` file, run the code generator, and get a typed
 server base class and a typed client proxy. Underneath sits an epoll reactor, stackful
@@ -14,10 +14,11 @@ the generated C++ will not. Handlers take a typed request struct and return
 
 ### How to read this book
 
-The repository's `README.md` is the quick start — clone, write a `.rpc` file, generate,
-build, run. This book is the reference behind it, taking the same machinery apart layer
-by layer: the fiber context switch, the reactor, the wire format, the client and server
-state machines, and the code generator that ties them to your service definition.
+Start with [building and testing SRPC](#building-and-testing-srpc) for checkout and
+toolchain setup. The [C++ walkthrough](#20-consuming-srpc-from-c) takes a service from
+IDL through server and client programs; [Chapter 12](#12-service-definition-and-code-generation-c-lane)
+explains the generator. The remaining chapters cover the fiber context switch, reactor,
+wire format, client and server state machines, and reliability behavior.
 
 Two conventions to know before you start.
 
@@ -33,9 +34,10 @@ one fails the test outright.
 **Ground truth is Rust.** SRPC's 37 production modules are canonical Rust files living
 at their historical C++ paths in `base/`, `misc/`, `reactor/` and `rpc/`; the C++
 modules that ship in `libsrpc.a` are generated from exactly those bytes. When this book
-and a `.cc` file under `tests/` disagree, believe the `.rs` — CMake compiles only 9 of
-the 76 test files, and the rest have drifted. Chapter 1 introduces that arrangement, and
-Chapter 14 goes into the memory-safety machinery that comes with it.
+and a `.cc` file under `tests/` disagree, check the `.rs` and the configured test
+inventory. `ctest --test-dir build -N -L srpc` lists the active suites; a file under
+`tests/` is not necessarily compiled or a current API example. Chapter 1 introduces
+that arrangement, and Chapter 14 covers the memory-safety machinery.
 
 ---
 
@@ -123,7 +125,8 @@ impl Service for EchoDoubleService {
         server.reg_fast_rpc(ECHO_DOUBLE_RPC_ID, svc_index)
     }
 
-    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
+    fn __dispatch__(&self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
+        assert_eq!(rpc_id, ECHO_DOUBLE_RPC_ID);
         let mut value = 0i64;
         {
             let mut ar = BinaryReadArchive {
@@ -134,9 +137,9 @@ impl Service for EchoDoubleService {
             Deserialize::deserialize(&mut value, &mut ar);
         }
         let sconn = sconn.upgrade().expect("connection alive during dispatch");
-        let writer: ServerReplyFn = Box::new(move |ar: &mut BinaryWriteArchive| {
+        let writer: ServerReplyFn = Some(Box::new(move |ar: &mut BinaryWriteArchive| {
             Serialize::serialize(&(value * 2), ar);
-        });
+        }));
         sconn.reply(&req, 0, writer);
     }
 }
@@ -229,7 +232,7 @@ stable only by scraping them back out of the header the generator is about to ov
 | **Pluggable transport** | framed TCP, or an in-process switchboard with fault injection for tests |
 | **Binary serialization** | `Serialize`/`Deserialize` traits over `BinaryWriteArchive` / `BinaryReadArchive` |
 | **Reliability** | reconnect policy, circuit breaker, per-request timeouts and retries, connection pooling |
-| **Machine-checked contracts** | Verus specifications on `misc/stat.rs` and `rpc/internal_protocol.rs` |
+| **Machine-checked contracts** | Verus specifications in five canonical modules; [Chapter 19](#checking-rust-contracts) describes their scope and how to run them |
 
 ### The two lanes
 
@@ -249,11 +252,10 @@ and held to a frozen symbol census by the dual-compile gate. A change to a `.rs`
 is simultaneously a Rust change and a C++ ABI change, and the build enforces that; a
 green `cargo test` proves nothing about whether the C++ still builds or kept its ABI.
 Because the source of truth is Rust, functional contracts can also be machine-checked
-in place: two modules carry Verus specifications behind `#[cfg(verus)]` — the
-response-header codec round-trip in `rpc/internal_protocol.rs`, and a first-sample
-invariant in `misc/stat.rs` that pins a bug which actually shipped.
-`docs/verification.md` is the standing reference for that lane, and it is honest about
-how narrow it is.
+in place. Five modules carry Verus specifications behind `#[cfg(verus)]`, covering
+sparse integers, error classification, frame headers and a statistics invariant.
+[Verification](verification.md) records the exact contracts and their limits;
+[Chapter 19](#checking-rust-contracts) gives the command to check them.
 
 Chapters 14 and 19 return to all of this in detail.
 
@@ -261,8 +263,9 @@ Chapters 14 and 19 return to all of this in detail.
 
 Chapter 15 carries measured numbers for both lanes — same wire, same benchmark client,
 same minutes — and the raw trials behind them. Reproduce them before trusting them on
-your hardware; the drivers are `tests/rpcbench.cc` for the C++ lane and an out-of-repo
-cargo crate for the Rust lane, and CMake deliberately builds no benchmark target.
+your hardware. The optional CMake `rpcbench` target builds the C++ driver, and
+`bench/` contains the Rust microbenchmark. [Reproducing benchmarks](#reproducing-benchmarks)
+gives the commands and distinguishes these checked-in tools from older external drivers.
 
 What can be said without measuring is where the costs sit structurally. A `fast` handler
 runs inline on the poll thread with no fiber at all, which makes it the cheapest option
@@ -311,16 +314,62 @@ one of those Linux architectures. SRPC's `build.rs` compiles the nine C kernels 
 the selected fiber assembly automatically for the library, its tests and downstream
 Cargo consumers. Run `cargo test --locked --workspace --all-targets` for the Rust tests.
 Building the C++ lane needs **Clang 22 or newer with libc++**, CMake 3.30+,
-Ninja, Cargo (with clippy), and Python 3.11+. There is no `install()` and no CMake
+Ninja, Cargo (with clippy), Python 3.11+ and ripgrep. There is no `install()` and no CMake
 package config, so downstream C++ consumption is `add_subdirectory` and repeating srpc's
-toolchain settings by hand; and there is no CI, so the pre-commit sequence in `CLAUDE.md`
-is the entire safety net.
+toolchain settings by hand. There is no CI. Run the checks in
+[CLAUDE.md](../CLAUDE.md) locally before accepting a change.
 
 One thing this book cannot do is compile itself against a fully checked-out tree; the
 `third-party/` submodules are not required to be present to read it. Snippets tagged
 `srpc-no-compile` are illustrative by construction, and the rest are checked by
 `tests/rpc_docs_snippet_compile_test.py` only when you run it against a configured build
 directory.
+
+### Building and testing SRPC
+
+Clone the repository first:
+
+```sh
+git clone https://github.com/stonysystems/srpc
+cd srpc
+```
+
+The Rust lane needs no submodules or C++ toolchain. With Rust, a C compiler and an
+archiver installed, run its tests and doctests directly:
+
+```sh
+cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --doc
+```
+
+For C++, initialize the pinned transpiler/runtime and GoogleTest submodules, then
+build all configured targets before running the SRPC tests:
+
+```sh
+git submodule update --init --recursive
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 4
+ctest --test-dir build -L srpc --output-on-failure
+```
+
+CMake refuses to configure without `third-party/rusty-cpp`. GoogleTest is needed
+for the runtime battery; without it CMake warns and configures fewer tests.
+Inspect `ctest --test-dir build -N -L srpc` before claiming runtime acceptance.
+Use the `srpc` label because vendored tests can require binaries outside the
+default build. The lists in `CMakeLists.txt` define the configured inventory.
+
+A cold C++ build takes minutes. It generates all 37 providers, compiles the archive,
+and runs the source and ABI gates. The source gate includes Rust tests and clippy
+with warnings denied, so a Rust warning also fails the C++ build. To rerun only the
+ABI gate after an incremental change, use
+`cmake --build build --parallel 4 --target srpc_goal0_dual_compile`; this does not
+replace building the other test targets before CTest.
+
+[Chapter 18](#tools-that-exist-in-this-repository) covers individual suites and
+separate sanitizer configurations. [Chapter 19](#checking-rust-contracts) covers
+Verus, and [Chapter 15](#reproducing-benchmarks) covers the optional benchmarks.
+The [migration record](dev/facade-and-runtime-remaining.md) states the latest
+completed validation and its limits.
 
 ---
 
@@ -573,8 +622,8 @@ srpc/
                               lang_python.py, misc.py, rpcgen.g (stale grammar)
     yapps/                    parser runtime only, no compiler
 
-  tests/                    41 tests/*_rust.rs, 76 .cc files (9 are built),
-                            plus the benchmark_service IDL example
+  tests/                    Rust tests, configured C++ suites and the
+                            benchmark_service IDL example; see CMakeLists.txt
   scripts/                  the gates: extract_srpc_rust.py,
                             check_srpc_crate_mode.py, srpc_dsl_check.sh,
                             verify_srpc.sh, tests/
@@ -2406,11 +2455,32 @@ in-memory one never gets a chance. The module is also not re-exported through th
 umbrella header, so name it explicitly:
 
 ```cpp srpc-no-compile
-// srpc.hpp does not import these two; a consumer that names them says so.
+// Setup fragment: requires a Server svr and a Client owner cl in the same process.
+// Put the import at file scope, and the setup code inside your function.
 import srpc.inmemory_channel;
-import srpc.internal_protocol;
+using namespace srpc;
+
+auto switchboard = rusty::Arc<InMemorySwitchboard>::new_(InMemorySwitchboard::new_());
+auto make_factory = [&]() {
+    auto factory = rusty::Arc<InMemoryFactory>::new_(
+        InMemoryFactory::new_(switchboard.clone()));
+    return make_inmemory_factory_proxy(std::move(factory));
+};
+
+svr.set_channel_factory(make_factory());
+svr.start(reinterpret_cast<const int8_t*>("inmemory://demo"));
+
+cl->set_channel_factory(make_factory());
+cl->connect(reinterpret_cast<const int8_t*>("inmemory://demo"), true);
 ```
 
+The address is an exact lookup key; no URI scheme is parsed. Both ends must use
+factories backed by the same switchboard in one process. Register the service first,
+then install these factories before starting the server and connecting the client.
+The [C++ walkthrough](#20-consuming-srpc-from-c) shows service registration and TCP
+setup; its separate server and client processes cannot share this switchboard.
+
+`srpc.internal_protocol` also needs an explicit import when used directly.
 `srpc.frame_codec` is the exception among the protocol modules: `srpc.hpp` pulls it
 in textually via `#include "rpc/frame_codec.hpp"`, so `kFrameHeaderSize`,
 `kMaxFramePayloadSize`, `FrameHeader`, and `FrameDecodeStatus` are already visible to
@@ -2742,7 +2812,24 @@ if let Some(client) = pool.get_client(&"127.0.0.1:8848".to_string()) {
 }
 ```
 
+The generated C++ proxy can use a pooled connection in the same way:
 
+```cpp srpc-no-compile
+// Setup fragment: requires demo.h; place the import at file scope.
+import srpc.load_balancer;
+using namespace srpc;
+
+auto config = PoolConfig::defaults();
+config.load_balancing = LoadBalancingStrategy::ROUND_ROBIN;
+auto pool = ClientPool::new_(rusty::Some(poll), config);
+
+auto client_opt = pool.get_client("127.0.0.1:8848");
+if (client_opt.is_some()) {
+    auto client = client_opt.unwrap();
+    demo::DemoProxy proxy(const_cast<Client*>(client.get()));
+    // Issue typed requests through proxy while client remains owned.
+}
+```
 
 The constructor is `ClientPool::new(Option<Arc<PollThread>>, PoolConfig)`
 (`ClientPool::new_` in C++) — both arguments are required, and passing `None`
@@ -2903,7 +2990,7 @@ impl Service for MyRawService {
         server.reg_rpc(RPC_DO_WORK, svc_index)
     }
 
-    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, weak_sconn: WeakServerConnection) {
+    fn __dispatch__(&self, rpc_id: i32, mut req: Box<Request>, weak_sconn: WeakServerConnection) {
         if rpc_id != RPC_DO_WORK {
             return;
         }
@@ -2921,9 +3008,9 @@ impl Service for MyRawService {
         let result = compute(arg);
 
         if let Some(sconn) = weak_sconn.upgrade() {
-            let writer: ServerReplyFn = Box::new(move |out: &mut BinaryWriteArchive| {
+            let writer: ServerReplyFn = Some(Box::new(move |out: &mut BinaryWriteArchive| {
                 Serialize::serialize(&result, out);
-            });
+            }));
             sconn.reply(&req, 0, writer);
         }
         // `req` is a Box — dropping it releases the request and its
@@ -3045,8 +3132,8 @@ server.graceful_shutdown(30000);
 
 `phase()` reads the current phase and `shutdown_phase_to_string()` names it for a log
 line. `do_shutdown()` on its own only wakes `wait_for_shutdown()` — it stops nothing
-— which is exactly what you want from a signal handler that then lets `main` run the
-real shutdown. The default drain timeout constant is `kDefaultDrainTimeoutMs`
+and lets a coordinated control thread ask `main` to run the real shutdown. It takes
+a mutex, so it is not signal-handler-safe. The default drain timeout constant is `kDefaultDrainTimeoutMs`
 (30000); C++ has no default argument here, so pass the value.
 
 What the drain actually counts is worth understanding. Every request that gets far
@@ -4017,12 +4104,11 @@ You do not write the C++ lane's wire code by hand. You describe a service in a s
 containing a typed server base class and a typed client proxy. This chapter is about that file, that
 generator, and exactly what comes out the other end.
 
-The fullest worked example in the tree is `tests/benchmark_service.rpc` together with
-its committed output `tests/benchmark_service.h` and the out-of-line handler definitions
-in `tests/benchmark_service.cc`. Nothing in the CMake build compiles any of the three —
-codegen is not wired into the build at all — but they are the reference for what the
-generator actually emits, and everything below was read out of them and out of
-`pylib/simplerpcgen/`.
+The fullest worked example in the tree is `tests/benchmark_service.rpc`, its committed
+output `tests/benchmark_service.h`, and the twelve out-of-line handlers in
+`tests/benchmark_service.cc`. The optional `rpcbench` CMake target compiles the header
+and handlers. Generation remains a separate, manual step. [Chapter 20](#20-consuming-srpc-from-c)
+uses the smaller `Demo` service below for a complete server and client walkthrough.
 
 ### The service definition language
 
@@ -4134,12 +4220,12 @@ consequently, what signature the generated virtual has.
 
 | Attribute | Generated handler signature | How it runs |
 | --- | --- | --- |
-| *(none)* | `rusty::Result<Resp, srpc::i32> m(const Req&)` | in a fiber the server spawns per request — may block or make nested calls |
+| *(none)* | `rusty::Result<Resp, srpc::i32> m(const Req&) const` | in a fiber the server spawns per request — may block or make nested calls |
 | `fast` / `prefix` | same | inline on the poll thread, no fiber |
-| `defer` | `void m(const Req&, Resp& resp, srpc::DeferredReply defer)` | in a fiber; you reply whenever you like |
-| `fiber` | `rusty::Result<Resp, srpc::i32> m(const Req&)` | in a fiber inside the request fiber (see the caveat below) |
-| `async` | `rusty::Task<rusty::Result<Resp, srpc::i32>> m(const Req&)` | entered inline on the poll thread, then resumed as a stackless coroutine |
-| `raw` | `void m(rusty::Box<srpc::Request>, srpc::WeakServerConnection)` | in a fiber; you decode and reply yourself |
+| `defer` | `void m(const Req&, Resp& resp, srpc::DeferredReply defer) const` | in a fiber; you reply whenever you like |
+| `fiber` | `rusty::Result<Resp, srpc::i32> m(const Req&) const` | in a fiber inside the request fiber (see the caveat below) |
+| `async` | `rusty::Task<rusty::Result<Resp, srpc::i32>> m(const Req&) const` | entered inline on the poll thread, then resumed as a stackless coroutine |
+| `raw` | `void m(rusty::Box<srpc::Request>, srpc::WeakServerConnection) const` | in a fiber; you decode and reply yourself |
 
 The mechanism behind the table has two halves. The generated `__reg_to__` registers each
 method id with the server through either `reg_fast_rpc` (for `fast`, `prefix` and
@@ -4192,9 +4278,8 @@ everything. Define the virtuals out of line in a `.cc` instead — which is exac
 
 ### Running the generator
 
-There is no `bin/rpcgen` in this repo. That driver script lived in the upstream checkout
-this code was extracted from; both in-tree rpcgen tests still shell out to it and both are
-therefore dead. Drive the generator by importing it with `pylib/` on the Python path:
+There is no `bin/rpcgen` in this repo. Import the generator with `pylib/` on the Python
+path, as the configured generator tests do:
 
 ```sh
 PYTHONPATH=/path/to/srpc/pylib python3 -c \
@@ -4211,13 +4296,11 @@ functions unconditionally, and every header committed here was generated with it
 Generation is not part of the build. Run it by hand and commit the output, the way
 `tests/benchmark_service.h` is committed here.
 
-One fix-up you will need every time: the generated header opens with
-`#include "srpc/srpc.hpp"`, which assumes SRPC sits in a directory named `srpc` on your
-include path. For a header generated into a subdirectory of the repo itself, that line
-has to become something like `#include "../srpc.hpp"`. The generator rewrites it on every
-run, so re-apply the edit after each regeneration. (The committed
-`tests/benchmark_service.h` still carries the unedited form — nothing in the build
-compiles it, so nothing catches it there.)
+The generated header opens with `#include "srpc/srpc.hpp"`. Supply an include directory
+whose `srpc/` entry points to this repository. The `rpcbench` CMake target creates
+`build/bench-include/srpc` as a symlink to the source tree and adds `build/bench-include`
+to its include path. Keep the generated include intact and use the same arrangement
+for your application; [build wiring](#build-wiring) covers the other consumer settings.
 
 ### RPC method ids, and how to not break the wire
 
@@ -4283,7 +4366,7 @@ enum {
 };
 
 // typed service signatures
-virtual rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) = 0;
+virtual rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) const = 0;
 ```
 
 The structs are nested, so from outside the class they are spelled
@@ -4303,36 +4386,15 @@ svr.reg_service_typed(rusty::make_box<MyDemoService>());
 
 Inherit from the generated class and override the typed virtuals. Return `::Ok(resp)` with
 the response filled in, or `::Err(code)` with an error code of your choosing; the
-generated wrapper does all the (de)serialization and sends the reply.
-
-```cpp srpc-no-compile
-class MyDemoService : public DemoService {
-public:
-    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
-        RpcSumResponse resp{};
-        resp.result = req.a + req.b + req.c;
-        return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
-    }
-
-    rusty::Result<RpcDotProdResponse, srpc::i32> dot_prod(const RpcDotProdRequest& req) override {
-        RpcDotProdResponse resp{};
-        resp.v = req.p1.x * req.p2.x + req.p1.y * req.p2.y + req.p1.z * req.p2.z;
-        return rusty::Result<RpcDotProdResponse, srpc::i32>::Ok(resp);
-    }
-
-    void slow_echo(const RpcSlowEchoRequest& req, RpcSlowEchoResponse& resp,
-                   srpc::DeferredReply defer) override {
-        resp.echoed = req.msg;
-        defer.reply();     // or defer.reply_error(EAGAIN)
-    }
-};
-```
+generated wrapper does all the serialization and sends the reply. Every generated
+service method is `const`; its override must be too. The [complete Demo implementation](#the-service)
+in Chapter 20 defines all four pure virtuals, including `sayhi` and the deferred reply.
 
 An `async` method is written as a coroutine on the same class:
 
 ```cpp srpc-no-compile
 rusty::Task<rusty::Result<BenchmarkService::RpcAsyncNopResponse, srpc::i32>>
-BenchmarkService::async_nop(const RpcAsyncNopRequest& req) {
+BenchmarkService::async_nop(const RpcAsyncNopRequest& req) const {
     (void)req;
     co_return rusty::Result<RpcAsyncNopResponse, srpc::i32>::Ok(RpcAsyncNopResponse{});
 }
@@ -4568,21 +4630,26 @@ Do not drive one `Client` from two application threads. `Client::request` takes 
 borrow of the connection slot, and that borrow counter is not atomic. Give each application
 thread its own `PollThread` and its own `Client` — that is the shape the benchmark client in
 `tests/rpcbench.cc` uses (one `PollThread::create()` and one `Client::create()` per client
-thread), though note CMake does not build that file.
+thread). The optional `rpcbench` target builds that driver.
 
 ### Server shutdown is the one sanctioned cross-thread handshake
 
 `do_shutdown()` locks the server's shutdown state, sets the flag, and broadcasts a condition
-variable; `wait_for_shutdown()` blocks on the same pair. So a signal handler or a control
-thread can stop a server whose main thread is parked:
+variable; `wait_for_shutdown()` blocks on the same pair. A coordinated control thread
+can notify a server whose main thread is parked. This operation takes a mutex and
+must not be called from a signal handler:
 
-```rust
-// control thread / signal handler
+```cpp srpc-no-compile
+// C++ lifetime-coordinated fragment: svr stays alive until the control thread returns.
+// Control thread:
 svr.do_shutdown();
 
-// main thread
+// Owning thread:
 svr.wait_for_shutdown();
 ```
+
+The Rust `Server` is not `Sync`; this narrow C++ handshake does not make the whole
+server shareable between Rust threads.
 
 `stop_accepting()`, `drain(ms)` and `graceful_shutdown(ms)` are *not* in that category: they
 move a plain `Cell` phase field. Call them from the thread that owns the `Server`.
@@ -4871,33 +4938,48 @@ fiber teardown, poll workers, transports, and restored client behavior. Cargo ru
 canonical reactor with the same native kernels. The paired runtime driver compares
 independently specified observations from Rust and generated C++ executables.
 
-**Verus** proves functional contracts on two modules today — `misc/stat.rs` and
-`rpc/internal_protocol.rs` — against the real sources in place, not an extracted copy:
-
-```bash srpc-no-compile
-VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh
-```
-
-`docs/verification.md` is the standing reference for that lane, including the rule that any
-new spec must be shown to go red on a perturbed body before it is believed.
+**Verus** checks functional contracts in five canonical modules against their real
+sources. [Checking Rust contracts](#checking-rust-contracts) gives the command and
+scope. [Verification](verification.md) also requires a negative control: a new
+specification must fail when its implementation is deliberately perturbed.
 
 ---
 
 ## 15. Performance Tuning
 
-There is no benchmark *target*. `cmake --build build --target rpcbench` fails, because
-`CMakeLists.txt` never declares one. But the load generator's source survives at
-`tests/rpcbench.cc`, and it does build and run — you just have to compile it yourself.
+### Reproducing benchmarks
 
-Two obstacles, both mechanical. It pulls `tests/benchmark_service.h`, whose
-`#include "srpc/srpc.hpp"` is written for the monorepo layout this repository was
-extracted from; point an include directory at a directory containing a symlink `srpc`
-back to the repository root and it resolves. And it consumes SRPC's C++ modules, so it
-needs a module map: `scripts/emit_module_map.py --modules-json
-build/CMakeFiles/srpc.dir/CXXModules.json --build-dir build --output bench.modmap`
-produces one. Compile `tests/benchmark_service.cc` and `tests/rpcbench.cc` with
-`-std=gnu++23 -stdlib=libc++ -march=native @bench.modmap`, then link them against
-`libsrpc.a` and the rusty-cpp archives inside `-Wl,--start-group`.
+The `rpcbench` target compiles `tests/rpcbench.cc` and `tests/benchmark_service.cc`.
+It is `EXCLUDE_FROM_ALL` and is not a CTest: throughput is measured separately from
+correctness. After [configuring the C++ build](#building-and-testing-srpc), run:
+
+```sh
+cmake --build build --parallel 4 --target rpcbench
+scripts/run_rpcbench.sh build/rpcbench before-my-change
+```
+
+CMake supplies the module map and a `build/bench-include/srpc` symlink that resolves
+the generated header's `#include "srpc/srpc.hpp"`. Regenerate the service header only
+when changing its IDL, and preserve it between runs so method IDs remain stable.
+
+The driver runs three trials for each of `fast`, `fiber`, `defer` and `async`, starting
+a fresh server each time. Read the spread across trials, then compare revisions on the
+same host. `RPCBENCH_PORT`, `RPCBENCH_TRIALS` and the other `RPCBENCH_*` variables in
+[run_rpcbench.sh](../scripts/run_rpcbench.sh) control the workload.
+
+The Rust microbenchmark is checked in under `bench/`, outside the production Cargo
+workspace. It measures selected operations rather than a TCP client/server matrix:
+
+```sh
+scripts/run_microbench.sh
+scripts/run_microbench.sh --compare <commit-a> <commit-b>
+```
+
+Comparison mode builds detached worktrees and alternates runs. Check the benchmark
+sources before interpreting its results: for revisions that already contain `bench/`,
+the helper's copy can create `bench/bench/` and leave the older harness active. A fair
+comparison requires the same harness on both sides. The older cross-language TCP
+tables below used an external Rust driver; `bench/` does not reproduce that driver.
 
 `rpcbench` is a client/server pair: `-s <addr>` serves, `-c <addr>` drives load. `-m`
 picks the dispatch mode, `-n` the duration in seconds, `-t` client threads, `-o`
@@ -6178,7 +6260,7 @@ process but whose reply was lost will be processed again. That is what
 
 For an `abstract` service (or a method with a trailing `= 0` in the IDL) the
 generator emits pure virtuals and subclassing works normally. Without `abstract`
-it emits `virtual R m(const Req&);` — declared, never defined, anywhere. The
+it emits `virtual R m(const Req&) const;` — declared, never defined, anywhere. The
 class therefore has no key function, its vtable is never emitted, and a subclass
 fails at *link* time with undefined references even though every method is
 overridden.
@@ -6666,81 +6748,261 @@ check rejects production Rust dependencies and builds a copy without the C++ inp
 These checks complement behavioral tests; they do not establish equivalent behavior
 for every input or execution schedule.
 
+### Checking Rust contracts
+
+Five canonical modules contain Verus specifications behind `#[cfg(verus)]`:
+
+| Module | Contract examples |
+| --- | --- |
+| `base/basetypes.rs` | Sparse-integer length bounds and the 64-bit round trip |
+| `misc/stat.rs` | The first-sample statistics invariant |
+| `rpc/errors.rs` | Error classification predicates |
+| `rpc/frame_codec.rs` | Header-word round trip, write bound and peek bound |
+| `rpc/internal_protocol.rs` | Response-header encoding and decoding |
+
+The separate verification lane checks the real source files rather than copies.
+Install the Verus distribution described in [verification.md](verification.md), then
+run from the repository root:
+
+```sh
+VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh
+```
+
+The script's output and that document define the proved scope. These contracts do
+not prove the whole stateful runtime, and Cargo tests do not run Verus implicitly.
+New contracts also need a negative control that makes a deliberately changed body fail.
+
 ---
 
 ## 20. Consuming SRPC from C++
 
-The C++ consumer's view, end to end, using the generated typed layer from
-Chapter 12. This is the material the rest of the book defers here; the API
-reference for everything named is Chapter 16.
+This walkthrough uses the four-method `Demo` service from
+[Chapter 12](#the-service-definition-language): `sayhi`, `sum`, `dot_prod` and
+`slow_echo`. Save that IDL as `demo.rpc`, then [run the generator](#running-the-generator)
+to produce `demo.h`. Keep the generated header when regenerating, because it stores
+the stable RPC method IDs. The examples below are separate application files that
+require that header; the generic book snippet checker does not generate it.
 
 ### The service
 
-Given the IDL from Chapter 1 —
-
-```
-namespace demo
-
-abstract service Demo {
-    sum(i32 a, i32 b, i32 c | i32 result);
-};
-```
-
-— the generator produces `DemoService` (with `RpcSumRequest` / `RpcSumResponse`
-as members) and `DemoProxy`. You subclass and override:
+Put the implementation in `demo_service.hpp`. Generated request and response types
+are nested in `DemoService`; the subclass can name them directly. The `abstract`
+service requires all four overrides, each with the generated `const` qualifier.
 
 ```cpp srpc-no-compile
+// Application header: requires the generated demo.h.
+#pragma once
+#include <cstdio>
 #include "demo.h"
 
 class MyDemoService : public demo::DemoService {
 public:
-    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
+    rusty::Result<RpcSayhiResponse, srpc::i32> sayhi(const RpcSayhiRequest& req) const override {
+        std::printf("%s\n", req.hi.c_str());
+        return rusty::Result<RpcSayhiResponse, srpc::i32>::Ok(RpcSayhiResponse{});
+    }
+
+    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) const override {
         RpcSumResponse resp{};
         resp.result = req.a + req.b + req.c;
         return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
+    }
+
+    rusty::Result<RpcDotProdResponse, srpc::i32> dot_prod(const RpcDotProdRequest& req) const override {
+        RpcDotProdResponse resp{};
+        resp.v = req.p1.x * req.p2.x + req.p1.y * req.p2.y + req.p1.z * req.p2.z;
+        return rusty::Result<RpcDotProdResponse, srpc::i32>::Ok(resp);
+    }
+
+    void slow_echo(const RpcSlowEchoRequest& req, RpcSlowEchoResponse& resp,
+                   srpc::DeferredReply defer) const override {
+        resp.echoed = req.msg;
+        defer.reply();
     }
 };
 ```
 
 Return `::Ok(resp)` and the generated wrapper serializes and replies with error
 code 0; return `::Err(code)` and it replies with your code and an empty body.
-Register with `server.reg_service_typed(rusty::make_box<MyDemoService>());` —
-the typed entry point exists because a generated service class has no base
-class (Chapter 9 has the shim details).
+For a deferred reply, fill in the response and call `reply()` or `reply_error(code)`.
+Either fires at most once. Dropping the handle without replying leaves the caller
+waiting until its deadline. [Dispatch modes](#choosing-how-each-method-is-dispatched)
+explains when each handler runs and which ones may block.
 
-### The client
+### Starting the server
 
-Wrap a connected `Client` in the proxy and call methods; every method also has
-an `async_<method>` form returning a typed future:
+Save this as `demo_server.cc`. A server needs a poll thread and service registration
+before it starts listening. `reg_service_typed` wraps the generated class, which does
+not inherit the low-level `srpc::Service` interface.
 
 ```cpp srpc-no-compile
-demo::DemoProxy proxy(const_cast<srpc::Client*>(client.get()));
+// Application translation unit: requires demo_service.hpp and generated demo.h.
+#include "demo_service.hpp"
 
-demo::DemoProxy::RpcSumRequest req;
-req.a = 1; req.b = 2; req.c = 3;
+int main() {
+    auto poll = srpc::PollThread::create();
+    {
+        auto svr = srpc::Server::new_(rusty::Some(poll));
+        svr.reg_service_typed(rusty::make_box<MyDemoService>());
 
-auto result = proxy.sum(req);              // rusty::Result<RpcSumResponse, srpc::i32>
-if (result.is_ok()) {
-    printf("%d\n", result.unwrap().result);
+        const char* addr = "127.0.0.1:8848";
+        if (svr.start(reinterpret_cast<const int8_t*>(addr)) != 0) {
+            return 1;
+        }
+
+        // A coordinated control thread may call svr.do_shutdown().
+        // Without one, this waits until the process is stopped externally.
+        svr.wait_for_shutdown();
+        svr.graceful_shutdown(30000); // Run lifecycle changes on the owning thread.
+    } // Destroy the server and close accepted connections before the poll thread.
+    poll->shutdown();
+    return 0;
 }
-
-auto fu = proxy.async_sum(req);            // typed future; same 1s wait cap as Chapter 8
 ```
+
+`start()` returns 0 on success and -1 on failure. Its address argument is
+`const int8_t*`, hence the cast. TCP is installed automatically. Bind to port `0`
+and call `get_bound_port()` if the OS should choose the port.
+
+Register hooks before waiting. A coordinated control thread can call `do_shutdown()`
+while keeping the server alive; after the wait returns, the owning thread performs
+`graceful_shutdown()`, as above. These owner-thread calls illustrate the hook and
+drain budget:
+
+```cpp srpc-no-compile
+// Owner-thread lifecycle fragment: install hooks before waiting, then drain on exit.
+svr.add_shutdown_hook([]() { /* release application resources */ });
+svr.graceful_shutdown(30000);
+```
+
+The timeout is in milliseconds. Shutdown stops acceptance, drains in-flight work,
+runs the hooks and releases `wait_for_shutdown()`. Server destruction closes accepted
+connections. Close clients first, destroy the server, then shut down the poll thread.
+[Chapter 9](#graceful-shutdown) describes the lifecycle and thread restrictions.
+
+### Connecting the client
+
+Save this as `demo_client.cc`. The proxy borrows the client, so keep its owner alive
+for every call.
+
+```cpp srpc-no-compile
+// Application translation unit: requires the generated demo.h.
+#include <cstdio>
+#include "demo.h"
+
+int main() {
+    auto poll = srpc::PollThread::create();
+    auto client = srpc::Client::create(poll);
+    const char* addr = "127.0.0.1:8848";
+    if (client->connect(reinterpret_cast<const int8_t*>(addr), true) != 0) {
+        client->close();
+        poll->shutdown();
+        return 1;
+    }
+
+    demo::DemoProxy proxy(const_cast<srpc::Client*>(client.get()));
+    demo::DemoProxy::RpcSumRequest req{};
+    req.a = 1; req.b = 2; req.c = 3;
+
+    auto result = proxy.sum(req);
+    if (result.is_ok()) {
+        std::printf("1 + 2 + 3 = %d\n", result.unwrap().result);
+    } else {
+        std::printf("RPC error: %d\n", result.unwrap_err());
+    }
+
+    client->close();
+    poll->shutdown();
+    return 0;
+}
+```
+
+`rusty::Arc<T>::get()` returns `const T*`; the generated proxy constructor takes
+`Client*`, which accounts for the cast. Run the server and client in separate
+terminals. The successful reply prints `1 + 2 + 3 = 6`.
+
+The blocking call has the same one-second limit as the underlying future. Common
+errors are 107 `ENOTCONN`, 110 `ETIMEDOUT`, 16 `EBUSY` for an open circuit breaker,
+and 2 `ENOENT` for an unknown RPC method. [Error codes](#error-codes) covers the full
+set.
+
+Every non-raw method also has an `async_<method>` form. The [generated proxy example](#the-generated-client-proxy)
+shows issuing calls before resolving their typed futures, along with `ready()`,
+`wait()`, `get_error_code()`, `raw_future()` and callback support through `FutureAttr`.
+Those futures share the one-second cap. For a longer budget, call
+`Client::request_with_options` using `demo::DemoService::SUM`, serialize all three
+request fields, then set the coordinator's wait budget as shown in
+[timeouts and retries](#timeouts-and-retries).
+
+Further client setup is covered where each policy is explained:
+
+- [Reconnect, heartbeat and circuit breaker configuration](#what-is-staged-and-what-is-not),
+  including buffering after `connect`. Heartbeat configuration alone does not schedule probes.
+- [Connection callbacks](#connection-callbacks) and [live metrics](#reading-metrics).
+- [ClientPool](#clientpool) for selecting a connection to each server address.
+- [In-memory transport](#the-in-memory-transport-for-tests) for synchronous tests
+  with one shared switchboard, plus drop and send-error injection.
 
 ### Build wiring
 
-A consumer includes `srpc.hpp` (plus explicit `import srpc.<module>;` for the
-trimmed modules Chapter 2 lists), builds with the same toolchain settings srpc
-itself uses — Clang 22+ with libc++, `-std=gnu++23`, and `-march=native`, which
-is a module-compatibility requirement, not an optimization — and links
-`libsrpc.a` together with the rusty runtime archives. There is no `install()`
-target: consumption is `add_subdirectory` inside your own CMake, or replicating
-the compile of `tests/rpcbench.cc` by hand, which the repository's benchmark
-procedure documents.
+There is no `install()` target or CMake package config. Downstream consumption uses
+`add_subdirectory`, but SRPC still has top-level build assumptions. This is the
+starting configuration, not a tested standalone consumer project:
+
+```cmake
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_CXX_MODULE_STD ON)
+add_compile_options(-stdlib=libc++)
+add_link_options(-stdlib=libc++ -lc++abi)
+
+add_subdirectory(srpc)
+
+add_executable(demo_server demo_server.cc)
+target_link_libraries(demo_server srpc)
+add_executable(demo_client demo_client.cc)
+target_link_libraries(demo_client srpc)
+```
+
+Use Clang 22 or newer with libc++. The directory-level standard-library settings
+must also apply to your consumer. The `srpc` target exports its include paths and
+`SRPC_CXXFLAGS`, including `-march=native`, debug/frame-pointer options and `-w`.
+Supply the generated header's `srpc/srpc.hpp` include path as described in
+[running the generator](#running-the-generator).
+
+The gate targets are in `ALL` and some paths use `CMAKE_BINARY_DIR`, so an unadjusted
+parent project can run gates against the wrong build directory. Pure module consumers
+may also need `CXX_SCAN_FOR_MODULES OFF`, `CXX_MODULE_STD OFF` and an explicit module
+map. The in-tree `rpcbench` target and `scripts/emit_module_map.py` show the working
+recipe; use those target settings when adapting this sketch.
+
+Put textual `#include`s before `import std;`. libc++ rejects headers introduced after
+the module import. Keep the producer and consumer target flags consistent:
+`-march=native` is required for module compatibility, and a build tree cannot be
+copied between machines with incompatible CPU features.
 
 Interoperability needs no ceremony: the wire format is identical in both lanes,
 so this C++ client drives a Rust-lane server (and the reverse) exactly as it
 drives a C++ one — Chapter 15's cross-lane matrix is measured precisely that
 way, with one unmodified C++ `rpcbench` binary against both servers.
+
+### Migrating from simple-rpc
+
+The IDL is largely familiar, but application code and build wiring change:
+
+| Earlier interface | Current SRPC interface |
+| --- | --- |
+| `rrr::` | `srpc::`; the shipped convenience alias is `namespace base = srpc;` |
+| `sum(a, b, c, &result)` | A request struct and `rusty::Result<Response, srpc::i32>`; service methods are `const` |
+| Hand-decoded handlers | The `raw` attribute retains manual decoding and its proxy's pointer-output form; `defer` uses a response reference |
+| `bin/rpcgen` | Import the generator from `pylib/simplerpcgen` with Python |
+| Legacy service registration | `reg_service_typed(rusty::make_box<T>())` for generated classes |
+| Implicit runtime setup | Give clients and servers a `PollThread`; C++ address parameters use `const int8_t*` |
+| waf | CMake and Ninja with Clang 22+ and libc++ |
+
+Choose `abstract service` when subclassing. For a concrete generated service, define
+its virtual methods out of line, as `tests/benchmark_service.cc` does. The Python
+generator can also emit stubs for the external `simplerpc` package; this walkthrough
+covers the C++ consumer, not that package's runtime.
 
 ---
