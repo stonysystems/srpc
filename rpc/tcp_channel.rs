@@ -20,7 +20,7 @@ use std::sync::{Arc, Weak as ArcWeak};
 use crate::channel::{
     ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFactoryBase,
     ChannelFactoryProxy, ChannelFrame, ChannelListenerBase, ChannelListenerProxy, ConnectResult,
-    OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
+    NullableChannelConnectionProxy, OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
 };
 use crate::frame_codec::{FrameDecodeStatus, FrameHeader, FrameStreamReader, FrameView};
 use crate::pollable_proxy::{PollableBase, PollableProxy};
@@ -1360,7 +1360,8 @@ fn tcplistener_handle_read(lst: &TcpListener) -> bool {
                     accepting = false;
                     continue;
                 }
-                callback.callable()(Some(accepted));
+                let connection: NullableChannelConnectionProxy = Some(accepted);
+                callback.callable()(connection);
             }
         } else if rc == 0 {
             accepting = false;

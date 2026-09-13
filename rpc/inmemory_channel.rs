@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use crate::channel::{
     ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFactoryBase,
     ChannelFactoryProxy, ChannelFrame, ChannelListenerBase, ChannelListenerProxy, ConnectResult,
-    OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
+    NullableChannelConnectionProxy, OnAcceptCallback, OnClosedCallback, OnErrorCallback, OnFrameCallback,
 };
 
 // The consumer profile maps this private carrier to `std::string`, retaining
@@ -601,7 +601,8 @@ pub fn inmemory_listener_accept_for_connect(
     let client_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), true));
     let server_side: Arc<InMemoryChannel> = Arc::new(InMemoryChannel::new(state.clone(), false));
 
-    (callback.callable())(Some(make_inmemory_channel_proxy(server_side)));
+    let connection: NullableChannelConnectionProxy = Some(make_inmemory_channel_proxy(server_side));
+    (callback.callable())(connection);
     Some(client_side)
 }
 
