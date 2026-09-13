@@ -53,7 +53,7 @@ fn stackless_wakers_use_owner_ingress_and_stable_bindings() {
         "core::mem::take(&mut *tasks_guard)",
         "drop(retired_tasks);",
         "drop(poll_fn);",
-        "thread_id_: Cell::new(rusty::thread::current_id())",
+        "thread_id_: Cell::new(std::thread::current().id())",
     ] {
         assert!(source.contains(required), "missing stackless safety contract: {required}");
     }

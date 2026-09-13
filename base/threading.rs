@@ -245,3 +245,17 @@ impl SpinLock {
         self.locked_field.store(false, Ordering::Release);
     }
 }
+
+/// Spawn an SRPC worker whose uncaught panic terminates the process.
+/// Detached reconnect workers must not silently lose a failed task.
+pub fn spawn_abort_on_panic<F>(body: F) -> std::thread::JoinHandle<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        if result.is_err() {
+            std::process::abort();
+        }
+    })
+}

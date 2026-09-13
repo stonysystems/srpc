@@ -896,7 +896,7 @@ impl ClientConnection {
                 return;
             }
             let weak_conn: WeakClientConnection = self.weak_self_.clone();
-            rusty::thread::spawn(move || {
+            drop(crate::threading::spawn_abort_on_panic(move || {
                 let conn_opt = weak_conn.upgrade();
                 if conn_opt.is_none() {
                     return;
@@ -911,7 +911,7 @@ impl ClientConnection {
                     || (state as i32) == (ConnectionState::DISCONNECTED as i32) {
                     (*conn).reconnect(Default::default());
                 }
-            }).detach();
+            }));
         }
     }
     // Shared connection operations synchronize channel slots and configuration.
@@ -1404,7 +1404,7 @@ impl ClientConnection {
                 return;
             }
             let weak_conn: WeakClientConnection = self.weak_self_.clone();
-            rusty::thread::spawn(move || {
+            drop(crate::threading::spawn_abort_on_panic(move || {
                 let conn_opt = weak_conn.upgrade();
                 if conn_opt.is_none() {
                     return;
@@ -1420,7 +1420,7 @@ impl ClientConnection {
                     client_log_line(Log::INFO, 0i32, core::ptr::null(), client_text("srpc::ClientConnection: auto-reconnect triggered after connection failure"));
                     (*conn).reconnect(Default::default());
                 }
-            }).detach();
+            }));
         }
     }
     fn check_pending_write_update(&self) -> bool {
@@ -2565,7 +2565,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     // capture leaves the `Ok(final_fu)` below returning a moved-from
     // (null) Arc. The hand-written original captured `final_fu` by copy.
     let final_fu_task: Arc<Future> = final_fu.clone();
-    rusty::thread::spawn(move || {
+    drop(crate::threading::spawn_abort_on_panic(move || {
         let start_us: u64 = Time::now(true);
         let retry_count = Cell::new(0u16);
 
@@ -2674,7 +2674,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
             retry_count.set(retry_count.get() + 1u16);
             (*final_fu_task).retry_count_.set(retry_count.get());
         }
-    }).detach();
+    }));
 
     FutureResult::Ok(final_fu)
 }

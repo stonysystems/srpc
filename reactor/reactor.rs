@@ -43,6 +43,7 @@ use crate::epoll_wrapper::{Epoll, PollMode, PollReady, Pollable};
 use crate::misc::Job;
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 use crate::logging::{log_line, Log};
+use crate::threading::spawn_abort_on_panic;
 use crate::debugging::verify_at;
 use cpp::std as cpp_std;
 use rusty as cpp;
@@ -58,7 +59,7 @@ pub type FdPollableMap = HashMap<i32, PollableProxy>;
 pub type FdModeMap = HashMap<i32, i32>;
 pub type FdSet = HashSet<i32>;
 pub type JobSet = rusty::ReactorJobSet<Arc<dyn Job>>;
-pub type PollJoinSlot = std::sync::Mutex<Option<rusty::thread::JoinHandle<()>>>;
+pub type PollJoinSlot = std::sync::Mutex<Option<std::thread::JoinHandle<()>>>;
 // The historical callback ABI is Vec<std::pair<u16, i64>>, not a Rust tuple.
 // Use the checked facade that maps exactly to std::pair in generated C++.
 pub type QuorumDanglingVec = Vec<rusty::StdPair<u16, i64>>;
@@ -211,7 +212,7 @@ pub trait EventPollable {
 
 trait EventCore: EventPollable {
     fn core_status(&self) -> &Cell<EventStatus>;
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId;
+    fn core_owner_thread(&self) -> std::thread::ThreadId;
     fn core_state(&self) -> &EventState;
     fn core_state_mut(&mut self) -> &mut EventState;
     fn core_self(&self) -> &Weak<dyn EventPollable>;
@@ -239,7 +240,7 @@ fn event_core_record_place<W: EventCore>(self_: &W, file: SrcFileCStr, line: i32
 #[repr(C)]
 pub struct BoxEvent<Type> {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -305,7 +306,7 @@ impl<Type: Clone + Default + 'static> EventPollable for BoxEvent<Type> {
 
 impl<Type: Clone + Default + 'static> EventCore for BoxEvent<Type> {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -316,7 +317,7 @@ impl<Type: Clone + Default + 'static> EventCore for BoxEvent<Type> {
 fn boxevent_make<Type: Clone + Default + 'static>() -> Arc<BoxEvent<Type>> {
     let sp: Arc<BoxEvent<Type>> = Arc::new(BoxEvent::<Type> {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<BoxEvent<Type>>::new(),
@@ -351,7 +352,7 @@ fn boxevent_clear<Type: Default>(ev: &BoxEvent<Type>) {
 #[repr(C)]
 pub struct IntEvent {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -420,7 +421,7 @@ impl EventPollable for IntEvent {
 
 impl EventCore for IntEvent {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -466,7 +467,7 @@ impl SharedIntEvent {
 #[repr(C)]
 pub struct NeverEvent {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -521,7 +522,7 @@ impl EventPollable for NeverEvent {
 
 impl EventCore for NeverEvent {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -532,7 +533,7 @@ impl EventCore for NeverEvent {
 #[repr(C)]
 pub struct TimeoutEvent {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -586,7 +587,7 @@ impl EventPollable for TimeoutEvent {
 
 impl EventCore for TimeoutEvent {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -601,7 +602,7 @@ fn timeout_event_is_ready(self_: &TimeoutEvent) -> bool {
 #[repr(C)]
 pub struct WaitAny {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -662,7 +663,7 @@ impl EventPollable for WaitAny {
 
 impl EventCore for WaitAny {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -673,7 +674,7 @@ impl EventCore for WaitAny {
 #[repr(C)]
 pub struct WaitAll {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -744,7 +745,7 @@ impl EventPollable for WaitAll {
 
 impl EventCore for WaitAll {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -1120,7 +1121,7 @@ fn stackless_wake_request<WakeDomain>(ingress: &Arc<StacklessWakeIngress>, ticke
 }
 
 fn stackless_wake_ingress<WakeDomain>(reactor: &Reactor) -> Arc<StacklessWakeIngress> {
-    reactor_verify(rusty::thread::current_id() == reactor.thread_id_.get());
+    reactor_verify(std::thread::current().id() == reactor.thread_id_.get());
     let key = stackless_wake_reactor_key::<WakeDomain>(reactor);
     let mut reusable: usize = STACKLESS_UNREGISTERED_SLOT;
     unsafe {
@@ -1381,7 +1382,7 @@ pub struct Reactor {
     pub slow_: Cell<bool>,
     pub slow_count_: Cell<i32>,
     pub trying_count_: Cell<i32>,
-    pub thread_id_: Cell<rusty::thread::ThreadId>,
+    pub thread_id_: Cell<std::thread::ThreadId>,
     pub n_created_fibers_: Cell<i64>,
     pub n_busy_fibers_: Cell<i64>,
     pub n_active_fibers_: Cell<i64>,
@@ -1418,7 +1419,7 @@ impl Reactor {
             // owner here so Drop and the private wake registry remain valid
             // outside the TLS factories; those factories may set the same id
             // again without changing the historical layout or signature.
-            thread_id_: Cell::new(rusty::thread::current_id()),
+            thread_id_: Cell::new(std::thread::current().id()),
             n_created_fibers_: Default::default(),
             n_busy_fibers_: Default::default(),
             n_active_fibers_: Default::default(),
@@ -1447,7 +1448,7 @@ impl Reactor {
         reactor_tls_set_running(fiber);
     }
     pub fn run_loop(&self, infinite: bool, do_check_timeout: bool) {
-        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(std::thread::current().id() == self.thread_id_.get());
         self.looping_.set(infinite);
         loop {
             let mut found_ready_events = true;
@@ -1633,7 +1634,7 @@ impl Reactor {
     }
 
     pub fn enqueue_stackless_task(&self, idx: usize) {
-        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(std::thread::current().id() == self.thread_id_.get());
         stackless_profile_note_enqueue();
         {
             let guard = self.stackless_tasks_.borrow();
@@ -1714,7 +1715,7 @@ impl Reactor {
     // the cast is load-bearing and stays.  Scoped to this one item.
     #[allow(clippy::unnecessary_cast)]
     pub fn process_stackless_tasks(&self) -> bool {
-        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(std::thread::current().id() == self.thread_id_.get());
         let ingress_ready = stackless_wake_take_pending::<()>(self);
         for idx in ingress_ready {
             self.enqueue_stackless_task(idx);
@@ -1834,7 +1835,7 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
-        reactor_verify(rusty::thread::current_id() == self.thread_id_.get());
+        reactor_verify(std::thread::current().id() == self.thread_id_.get());
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
                   self.all_events_.borrow().len(), self.fibers_.borrow().len()));
         // Reject new foreign wakes first. Destroy every Task-bearing closure
@@ -1886,7 +1887,7 @@ pub fn reactor_spawn_stackless_task_with_result<T: 'static, OnReady>(self_: &Rea
 where
     OnReady: FnMut(T) + 'static,
 {
-    reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
+    reactor_verify(std::thread::current().id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
     let mut early_binding = stackless_wake_make_binding(ingress);
     let early_ticket = early_binding.ticket.clone();
@@ -2046,19 +2047,12 @@ pub fn pollworker_is_on_poll_thread() -> bool {
     g_current_poll_worker.with(|worker| !worker.get().is_null())
 }
 
-fn u64_to_thread_id(bits: u64) -> rusty::thread::ThreadId {
-    // The production facade wraps the platform's opaque thread id. Preserve
-    // the incumbent byte-level round trip without pretending that its native
-    // type is an integer in generated C++.
-    unsafe { core::mem::transmute::<u64, rusty::thread::ThreadId>(bits) }
-}
-
 #[repr(C)]
 pub struct PollThread {
     pub sender_: std::sync::mpsc::Sender<PollCommand>,
     pub join_handle_: PollJoinSlot,
-    // Thread id of the poll thread as raw u64 bits (bit_cast of the
-    // native id) — used to detect self-join attempts in shutdown.
+    // Kernel thread ID, with zero meaning the worker has not started.
+    // This avoids inspecting the private representation of std ThreadId.
     pub poll_thread_id_bits_: AtomicU64,
     pub shutdown_called_: AtomicBool,
     /// Number of removal commands accepted by the worker's command queue.
@@ -2089,10 +2083,8 @@ impl PollThread {
         let _dropped_when_worker_gone = self.sender_.send(PollCommand::Shutdown);
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] CmdShutdown sent".to_string());
         // Thread-safe read of the poll thread's id.
-        let current_tid = rusty::thread::current_id();
-        let poll_tid = u64_to_thread_id(
-            self.poll_thread_id_bits_.load(std::sync::atomic::Ordering::Acquire));
-        if current_tid == poll_tid {
+        let poll_tid = self.poll_thread_id_bits_.load(std::sync::atomic::Ordering::Acquire);
+        if current_thread_gettid() as u64 == poll_tid {
             reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Called from poll thread, skipping join".to_string());
             return;
         }
@@ -2104,7 +2096,7 @@ impl PollThread {
             reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] join_handle lock acquired".to_string());
             if (*guard).is_some() {
                 reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] Calling thread.join()...".to_string());
-                (*guard).take().unwrap().join();
+                let _joined = (*guard).take().unwrap().join();
                 reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] thread.join() completed!".to_string());
             } else {
                 reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[PollThread::shutdown] join_handle is None, thread already joined".to_string());
@@ -2213,7 +2205,7 @@ pub enum QuorumPolicy {
 #[repr(C)]
 pub struct QuorumEvent {
     pub status_: Cell<EventStatus>,
-    pub owner_thread_: rusty::thread::ThreadId,
+    pub owner_thread_: std::thread::ThreadId,
     pub state_: EventState,
     pub prunable_: Cell<bool>,
     pub self_: Weak<dyn EventPollable>,
@@ -2341,7 +2333,7 @@ impl EventPollable for QuorumEvent {
 
 impl EventCore for QuorumEvent {
     fn core_status(&self) -> &Cell<EventStatus> { &self.status_ }
-    fn core_owner_thread(&self) -> rusty::thread::ThreadId { self.owner_thread_ }
+    fn core_owner_thread(&self) -> std::thread::ThreadId { self.owner_thread_ }
     fn core_state(&self) -> &EventState { &self.state_ }
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
@@ -2427,7 +2419,7 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
     // instead lowers to the generic `deref_if_pointer_like(reactor_th)` —
     // equivalent, and what this file used to emit.)
     let reactor_th = sp_reactor_th_.with(|slot| slot.borrow().as_ref().unwrap().clone());
-    reactor_verify(reactor_th.thread_id_.get() == rusty::thread::current_id());
+    reactor_verify(reactor_th.thread_id_.get() == std::thread::current().id());
     if ev.core_status().get() == EventStatus::DONE {
         return; // second use of the event
     }
@@ -2479,7 +2471,7 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
         if ev.core_status().get() == EventStatus::INIT {
             ev.core_status().set(EventStatus::DONE);
         } else if ev.core_status().get() == EventStatus::WAIT {
-            if rusty::thread::current_id() == ev.core_owner_thread() {
+            if std::thread::current().id() == ev.core_owner_thread() {
                 // Owner-thread-only: upgrading the weak fiber ref mutates a plain
                 // (non-atomic) Rc strong count; doing this from a foreign thread
                 // races the owner's own Rc<Fiber> clones and corrupts the count.
@@ -2553,7 +2545,7 @@ fn event_state_seed(st: &EventState) {
 fn never_event_make() -> Arc<NeverEvent> {
     let sp = Arc::new(NeverEvent {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<NeverEvent>::new(),
@@ -2567,7 +2559,7 @@ fn never_event_make() -> Arc<NeverEvent> {
 fn timeout_event_make(wait_us: u64) -> Arc<TimeoutEvent> {
     let sp = Arc::new(TimeoutEvent {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<TimeoutEvent>::new(),
@@ -2583,7 +2575,7 @@ fn timeout_event_make(wait_us: u64) -> Arc<TimeoutEvent> {
 fn int_event_make(target: i32) -> Arc<IntEvent> {
     let sp = Arc::new(IntEvent {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<IntEvent>::new(),
@@ -2609,7 +2601,7 @@ fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<Wai
     events.push(b);
     let sp = Arc::new(WaitAny {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<WaitAny>::new(),
@@ -2624,7 +2616,7 @@ fn waitany_make(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<Wai
 fn waitall_make() -> Arc<WaitAll> {
     let sp = Arc::new(WaitAll {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<WaitAll>::new(),
@@ -2644,7 +2636,7 @@ fn waitall_make_from(evs: &Vec<Arc<dyn EventPollable>>) -> Arc<WaitAll> {
     }
     let sp = Arc::new(WaitAll {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<WaitAll>::new(),
@@ -3052,7 +3044,7 @@ fn reactor_tls_get() -> Rc<Reactor> {
         if guard.is_none() {
             reactor_log_create(false);
             let r = reactor_make();
-            r.thread_id_.set(rusty::thread::current_id());
+            r.thread_id_.set(std::thread::current().id());
             *guard = Some(r);
         }
         guard.as_ref().unwrap().clone()
@@ -3065,7 +3057,7 @@ fn reactor_tls_get_disk() -> Rc<Reactor> {
         if guard.is_none() {
             reactor_log_create(true);
             let r = reactor_make();
-            r.thread_id_.set(rusty::thread::current_id());
+            r.thread_id_.set(std::thread::current().id());
             *guard = Some(r);
         }
         guard.as_ref().unwrap().clone()
@@ -3166,7 +3158,7 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
 // MEASURED allow — see the `arc_with_non_send_sync` note on `never_event_make`.
 #[allow(clippy::arc_with_non_send_sync)]
 pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
-    reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
+    reactor_verify(std::thread::current().id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
     let mut early_binding = stackless_wake_make_binding(ingress);
     let early_ticket = early_binding.ticket.clone();
@@ -3578,10 +3570,6 @@ fn pollworker_update_mode(w: &mut PollThreadWorker, poll: &mut dyn Pollable, new
     pollworker_do_update_mode(w, poll.fd(), new_mode);
 }
 
-fn thread_id_to_u64(tid: rusty::thread::ThreadId) -> u64 {
-    unsafe { core::mem::transmute::<rusty::thread::ThreadId, u64>(tid) }
-}
-
 fn pollthread_create() -> Arc<PollThread> {
     let (sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let seed = PollThread {
@@ -3594,15 +3582,10 @@ fn pollthread_create() -> Arc<PollThread> {
     let arc: Arc<PollThread> = Arc::new(seed);
     // rusty atomic ops are const, so a const* suffices through the Arc.
     let thread_id_address = (&arc.poll_thread_id_bits_ as *const std::sync::atomic::AtomicU64) as usize;
-    // One-argument spawn.  The production `rusty::thread::spawn` is variadic
-    // (`auto spawn(F&& func, Args&&... args)`), so both `spawn(f, rx)` and
-    // `spawn(f_capturing_rx)` lower to a valid call; the single-callable form
-    // is the one Rust can model, because Rust has no variadic functions and
-    // the canonical client already spells `spawn(move || { ... })`.
-    let handle = rusty::thread::spawn(move || {
-        let tid = rusty::thread::current_id();
+    let handle = spawn_abort_on_panic(move || {
+        let tid = current_thread_gettid() as u64;
         let thread_id_ptr = thread_id_address as *const std::sync::atomic::AtomicU64;
-        unsafe { (*thread_id_ptr).store(thread_id_to_u64(tid), std::sync::atomic::Ordering::Release) };
+        unsafe { (*thread_id_ptr).store(tid, std::sync::atomic::Ordering::Release) };
         // Raw TLS pointer (not a re-borrow) so fibers on this thread can
         // reach the worker while the borrow_mut guard is held.
         let worker: Rc<RefCell<PollThreadWorker>> = PollThreadWorker::create(receiver);
@@ -3677,7 +3660,7 @@ fn fiber_task_body_invoke(f: &mut FiberTaskFn, y: &mut fiber_yield_t) {
 pub fn quorum_event_make(n_total: i32, quorum: i32) -> Arc<QuorumEvent> {
     let sp = Arc::new(QuorumEvent {
         status_: Cell::new(EventStatus::INIT),
-        owner_thread_: rusty::thread::current_id(),
+        owner_thread_: std::thread::current().id(),
         state_: EventState::new(),
         prunable_: Cell::new(true),
         self_: Weak::<QuorumEvent>::new(),

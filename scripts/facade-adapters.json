@@ -90,14 +90,6 @@
       "category": "standard",
       "sha256": "fedaef4629a510edf89923e291e05b5ccaefc6df3c8b751227f203f4b7201e78"
     },
-    "function:thread::current_id": {
-      "category": "standard",
-      "sha256": "f32802e3e543c154708968d8f311ded63764e20fb1fe58e7c8789aa0993c94de"
-    },
-    "function:thread::spawn": {
-      "category": "standard",
-      "sha256": "518b0a2fcdab9f55de80e9ee7ab88541cab716bc95b248e65c289c21fd854e82"
-    },
     "impl::: std :: sync :: Arc < T > as ReactorJobSetKey < T : ? Sized >": {
       "category": "standard",
       "sha256": "58aaffd84dba7ca159107cdff75dfeb1e2ed58d53d6bf5834943f0dcce30fc6e"
@@ -138,10 +130,6 @@
       "category": "standard",
       "sha256": "e94270665fad4226396d16818f8cadc676ffde474d4befa4674482af27f34e26"
     },
-    "impl:thread::JoinHandle < T > as inherent < T >": {
-      "category": "standard",
-      "sha256": "430206e240842f9f5ef9cb5186fd20855b23bfb741e3952a0ea31d21e993f137"
-    },
     "module:panic": {
       "category": "import",
       "sha256": "4b0e2213d29a417efbf7fd426103a850bcd77c02ae6a073b91ad258893af7a91"
@@ -161,10 +149,6 @@
     "module:std": {
       "category": "import",
       "sha256": "d1339a0d2481914b3fa3fd53d98206b1bcead4c087e4a9c3e1e9f426afecb0fc"
-    },
-    "module:thread": {
-      "category": "import",
-      "sha256": "acb7d02bd4361c9da9f6f529aa81e51ee2f3ac92a4d2b0217ea1c30a7677d79d"
     },
     "static:std::cout": {
       "category": "standard",
@@ -229,14 +213,6 @@
     "struct:std::Cout": {
       "category": "standard",
       "sha256": "d1957bd58a877c02c4a727da3c4f8837b3cb81845f940d443ed202bbe9c1dd0b"
-    },
-    "struct:thread::JoinHandle": {
-      "category": "standard",
-      "sha256": "f96254cb02d20fb604e86017340a85584d299fb3d9d3966700febd9559306de1"
-    },
-    "struct:thread::ThreadId": {
-      "category": "standard",
-      "sha256": "3d1baf3cd56d2c8a78db1487b4da83a50b39435f36eeb3d7e3beacc95d8e3d6c"
     },
     "trait:LoadBalancerClient": {
       "category": "trait-dispatch",
