@@ -96,6 +96,42 @@ TEST(SerializationParity, RawCppStringsPreserveInvalidUtf8AndNul) {
   EXPECT_EQ(Decode<std::string>(Encode(std::string{})), std::string{});
 }
 
+TEST(SerializationParity, ConcreteStringAdaptersKeepErasedDispatch) {
+  std::string original{char(0xff), char(0), 'a'};
+  std::string_view view(original);
+  const std::vector<uint8_t> expected{3, 0xff, 0, 'a'};
+  const auto check_writer = [&](const srpc::Serialize& writer) {
+    srpc::BufferSink sink;
+    srpc::BinaryWriteArchive output{srpc::make_sink_proxy_buffer(&sink)};
+    writer.serialize(output);
+    EXPECT_EQ((std::vector<uint8_t>{sink.bytes.data(), sink.bytes.data() + sink.bytes.len()}), expected);
+  };
+  srpc::SerializeAdapter<std::string> owned_string(original);
+  srpc::SerializeAdapter<std::string> moved_string(std::move(owned_string));
+  check_writer(moved_string);
+  check_writer(srpc::SerializeAdapterRef<std::string>(original));
+  check_writer(srpc::SerializeAdapterRefMut<std::string>(original));
+  srpc::SerializeAdapter<std::string_view> owned_view(view);
+  srpc::SerializeAdapter<std::string_view> moved_view(std::move(owned_view));
+  check_writer(moved_view);
+  check_writer(srpc::SerializeAdapterRef<std::string_view>(view));
+  check_writer(srpc::SerializeAdapterRefMut<std::string_view>(view));
+
+  const auto check_reader = [&](srpc::Deserialize& reader) {
+    auto source = srpc::BufferSource::new_(expected.data(), expected.size());
+    srpc::BinaryReadArchive input{srpc::make_source_proxy_buffer(&source)};
+    reader.deserialize(input);
+    EXPECT_EQ(source.remaining(), 0u);
+  };
+  srpc::DeserializeAdapter<std::string> owned_reader(std::string{});
+  srpc::DeserializeAdapter<std::string> moved_reader(std::move(owned_reader));
+  check_reader(moved_reader);
+  std::string restored;
+  srpc::DeserializeAdapterRefMut<std::string> reader(restored);
+  check_reader(reader);
+  EXPECT_EQ(restored, original);
+}
+
 TEST(SerializationParity, BorrowedFdProxiesForwardToCallerOwnedDescriptors) {
   int descriptors[2];
   ASSERT_EQ(::pipe(descriptors), 0);

@@ -136,4 +136,127 @@ public:
     }
 };
 
+// Preserve the established non-template entry points and concrete adapter ABI.
+// Each body forwards to the same canonical helpers used by the STL templates.
+namespace Serialize_ {
+void serialize(const std::string& value, BinaryWriteArchive& archive) {
+    ::srpc::serialize<BinaryWriteArchive>(value, archive);
+}
+void serialize(const std::string_view& value, BinaryWriteArchive& archive) {
+    ::srpc::serialize<BinaryWriteArchive>(value, archive);
+}
+}
+namespace Deserialize_ {
+void deserialize(std::string& value, BinaryReadArchive& archive) {
+    ::srpc::deserialize<BinaryReadArchive>(value, archive);
+}
+}
+namespace rusty_ext {
+void serialize(const std::string& value, BinaryWriteArchive& archive) {
+    Serialize_::serialize(value, archive);
+}
+void serialize(const std::string_view& value, BinaryWriteArchive& archive) {
+    Serialize_::serialize(value, archive);
+}
+void deserialize(std::string& value, BinaryReadArchive& archive) {
+    Deserialize_::deserialize(value, archive);
+}
+}
+
+template<>
+class SerializeAdapter<std::string> final : public Serialize {
+    std::string value_;
+public:
+    SerializeAdapter(std::string value);
+    SerializeAdapter(SerializeAdapter&& other);
+    void serialize(BinaryWriteArchive& archive) const override;
+};
+SerializeAdapter<std::string>::SerializeAdapter(std::string value) : value_(std::move(value)) {}
+SerializeAdapter<std::string>::SerializeAdapter(SerializeAdapter&& other) : value_(std::move(other.value_)) {}
+void SerializeAdapter<std::string>::serialize(BinaryWriteArchive& archive) const { Serialize_::serialize(value_, archive); }
+
+template<>
+class SerializeAdapterRef<std::string> final : public Serialize {
+    const std::string& value_;
+public:
+    explicit SerializeAdapterRef(const std::string& value);
+    void serialize(BinaryWriteArchive& archive) const override;
+};
+SerializeAdapterRef<std::string>::SerializeAdapterRef(const std::string& value) : value_(value) {}
+void SerializeAdapterRef<std::string>::serialize(BinaryWriteArchive& archive) const { Serialize_::serialize(value_, archive); }
+
+template<>
+class SerializeAdapterRefMut<std::string> final : public Serialize {
+    std::string& value_;
+public:
+    explicit SerializeAdapterRefMut(std::string& value);
+    void serialize(BinaryWriteArchive& archive) const override;
+};
+SerializeAdapterRefMut<std::string>::SerializeAdapterRefMut(std::string& value) : value_(value) {}
+void SerializeAdapterRefMut<std::string>::serialize(BinaryWriteArchive& archive) const { Serialize_::serialize(value_, archive); }
+
+template<>
+class SerializeAdapter<std::string_view> final : public Serialize {
+    std::string_view value_;
+public:
+    SerializeAdapter(std::string_view value);
+    SerializeAdapter(SerializeAdapter&& other);
+    void serialize(BinaryWriteArchive& archive) const override;
+};
+SerializeAdapter<std::string_view>::SerializeAdapter(std::string_view value) : value_(std::move(value)) {}
+SerializeAdapter<std::string_view>::SerializeAdapter(SerializeAdapter&& other) : value_(std::move(other.value_)) {}
+void SerializeAdapter<std::string_view>::serialize(BinaryWriteArchive& archive) const { Serialize_::serialize(value_, archive); }
+
+template<>
+class SerializeAdapterRef<std::string_view> final : public Serialize {
+    const std::string_view& value_;
+public:
+    explicit SerializeAdapterRef(const std::string_view& value);
+    void serialize(BinaryWriteArchive& archive) const override;
+};
+SerializeAdapterRef<std::string_view>::SerializeAdapterRef(const std::string_view& value) : value_(value) {}
+void SerializeAdapterRef<std::string_view>::serialize(BinaryWriteArchive& archive) const { Serialize_::serialize(value_, archive); }
+
+template<>
+class SerializeAdapterRefMut<std::string_view> final : public Serialize {
+    std::string_view& value_;
+public:
+    explicit SerializeAdapterRefMut(std::string_view& value);
+    void serialize(BinaryWriteArchive& archive) const override;
+};
+SerializeAdapterRefMut<std::string_view>::SerializeAdapterRefMut(std::string_view& value) : value_(value) {}
+void SerializeAdapterRefMut<std::string_view>::serialize(BinaryWriteArchive& archive) const { Serialize_::serialize(value_, archive); }
+
+template<>
+class DeserializeAdapter<std::string> final : public Deserialize {
+    std::string value_;
+public:
+    DeserializeAdapter(std::string value);
+    DeserializeAdapter(DeserializeAdapter&& other);
+    void deserialize(BinaryReadArchive& archive) override;
+};
+DeserializeAdapter<std::string>::DeserializeAdapter(std::string value) : value_(std::move(value)) {}
+DeserializeAdapter<std::string>::DeserializeAdapter(DeserializeAdapter&& other) : value_(std::move(other.value_)) {}
+void DeserializeAdapter<std::string>::deserialize(BinaryReadArchive& archive) { Deserialize_::deserialize(value_, archive); }
+
+template<>
+class DeserializeAdapterRef<std::string> final : public Deserialize {
+    const std::string& value_;
+public:
+    explicit DeserializeAdapterRef(const std::string& value);
+    void deserialize(BinaryReadArchive& archive) override;
+};
+DeserializeAdapterRef<std::string>::DeserializeAdapterRef(const std::string& value) : value_(value) {}
+void DeserializeAdapterRef<std::string>::deserialize(BinaryReadArchive&) { std::abort(); }
+
+template<>
+class DeserializeAdapterRefMut<std::string> final : public Deserialize {
+    std::string& value_;
+public:
+    explicit DeserializeAdapterRefMut(std::string& value);
+    void deserialize(BinaryReadArchive& archive) override;
+};
+DeserializeAdapterRefMut<std::string>::DeserializeAdapterRefMut(std::string& value) : value_(value) {}
+void DeserializeAdapterRefMut<std::string>::deserialize(BinaryReadArchive& archive) { Deserialize_::deserialize(value_, archive); }
+
 }  // namespace srpc

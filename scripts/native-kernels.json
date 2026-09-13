@@ -33,7 +33,7 @@
     },
     "misc/serializable_adapters.hpp": {
       "role": "trait-dispatch",
-      "sha256": "a795a22955dcc5846116152a6ae94752b20cef0ea671ffd703dbbd4b2622e8c5"
+      "sha256": "461dbc058ce8ffa03a51550c297c5a00917a4633e9b8f6e12cfa858fc31b4d4f"
     },
     "misc/serializable_envelope.hpp": {
       "role": "import-shim",
