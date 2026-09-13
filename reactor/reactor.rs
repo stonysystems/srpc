@@ -43,7 +43,7 @@ use crate::epoll_wrapper::{Epoll, PollMode, PollReady, Pollable};
 use crate::misc::Job;
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 use crate::logging::{log_line, Log};
-use crate::threading::spawn_abort_on_panic;
+use crate::threading as _;
 use crate::debugging::verify_at;
 use cpp::std as cpp_std;
 use rusty as cpp;
@@ -3632,7 +3632,7 @@ fn pollthread_create() -> Arc<PollThread> {
     let arc: Arc<PollThread> = Arc::new(seed);
     // rusty atomic ops are const, so a const* suffices through the Arc.
     let thread_id_address = (&arc.poll_thread_id_bits_ as *const std::sync::atomic::AtomicU64) as usize;
-    let handle = spawn_abort_on_panic(move || {
+    let handle = crate::threading::spawn_abort_on_panic(move || {
         let tid = current_thread_gettid() as u64;
         let thread_id_ptr = thread_id_address as *const std::sync::atomic::AtomicU64;
         unsafe { (*thread_id_ptr).store(tid, std::sync::atomic::Ordering::Release) };

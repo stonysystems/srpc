@@ -33,12 +33,13 @@ canonical Rust implementation.
 
 Current implementation progress, updated 2026-09-13:
 
-- The combined working tree has 49 facade declarations, down from 195.
+- The combined working tree has 24 facade declarations, down from 195.
   Integrated removals cover direct std imports, Arc access, owned descriptors,
   lazy standard collections, sleep/PID/source locations, boxed callbacks,
   standard TCP streams/listeners/errors, standard threads, standard Future/Wake,
   STL serialization models, source/sink forwarding, and native C/assembly
-  type bindings.
+  type bindings, tuple/vector aliases, optional reply callbacks, job storage
+  and load-balancer traits.
 - The first combined std/descriptor/location batch passes the full C++ build,
   the ABI gate with 2,045 exact provider-owned strong symbols, and all 26 SRPC
   CTest tests. The later combined batch passes the Rust workspace tests;
@@ -67,7 +68,7 @@ Current implementation progress, updated 2026-09-13:
 
 Remaining source work is now concentrated in these areas:
 
-1. Validate the combined source/sink and ADL forwarding change. Its Rust tests
+1. Validate the combined generated C++ build. Its Rust tests
    and eleven isolated C++ serialization tests pass.
 2. Standard IPv4 parsing/formatting and logging remove the remaining platform
    helpers. Pthread, FILE and fiber bindings are integrated with a separate
