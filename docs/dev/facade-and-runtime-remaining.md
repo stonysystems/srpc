@@ -1,38 +1,37 @@
 # Rust lane independence
 
-Updated 2026-09-13. The target is a canonical Cargo lane that runs on Rust std
-and the small C/assembly kernel, without a Rust facade package or C++ runtime.
+Completed 2026-09-13. The canonical Cargo lane runs on Rust std and the small
+C/assembly kernel, without a Rust facade package or C++ runtime.
 The generated C++ lane remains a separate consumer of the same Rust sources.
 
 ## Current status
 
-The integrated tree passes its Cargo independence check. The check
-copies the canonical Rust modules, tests, Cargo inputs and native kernel into a
-new directory. It copies no facade, C++ runtime, C++ source or transpiler, and
-runs Cargo with a restricted tool path and `CXX=/bin/false`.
+The canonical Cargo lane runs on Rust std and the native C/assembly kernel. It
+has no production Rust dependencies and needs no facade package, C++ runtime or
+transpiler.
 
-The isolated copy passes 266 Rust tests and two doctests, with one existing layout
-test ignored. The canonical body audit,
-native source audit, native ABI audit and 47 negative controls also pass.
-The regular workspace tests, doctests and clippy also pass on the integrated
-tree. The complete CMake build also passes, including independent compilation
-of all providers and the umbrella, exact ABI checks, and importer execution
-against fresh objects and the production archive.
+The [independence check](../../scripts/check_rust_independence.py) copies only
+canonical Rust modules, tests, Cargo inputs and native kernel sources into a
+new directory. It copies no facade, C++ runtime,
+C++ source or transpiler, then runs locked offline Cargo tests and doctests with a
+restricted tool path and `CXX=/bin/false`.
 
-All 31 configured SRPC CTests now pass, including all 17 runtime suites and the
-previously failing stackless battery. The repeated-wake fix preserves reusable
-C++ lvalue calls and consuming standard Rust calls, including inferred clones.
+Current acceptance on Linux x86_64/glibc, with Clang 22 and libc++ for C++:
 
-Remaining acceptance work:
+| Check | Result |
+| --- | --- |
+| Isolated Cargo copy | 266 Rust tests and two doctests pass; one existing layout test is ignored |
+| Regular Cargo workspace | Tests, doctests and clippy with warnings denied pass |
+| Ownership and native checks | Canonical body, native source and native ABI audits pass, with all 47 negative controls |
+| Complete CMake and ABI | All 37 providers and the umbrella compile; exact inventories and importer runs against fresh objects and the production archive pass |
+| Configured SRPC CTests | All 31 pass, including all 17 runtime suites |
+| AddressSanitizer / LeakSanitizer | All 17 runtime suites pass with the existing fiber suppressions |
+| UndefinedBehaviorSanitizer | All 17 runtime suites pass with no findings |
+| ThreadSanitizer | All 17 runtime suites pass with no reports |
 
-1. Fix C++ thread-local teardown ownership. AddressSanitizer and ThreadSanitizer
-   each pass three of 17 runtime suites; the other 14 expose the same
-   use-after-free when a reactor
-   destructor calls standard `thread::current()` after the C++ parking token
-   has been destroyed. The ordinary suites do not detect this lifetime error.
-2. Rerun full acceptance with that repair. UndefinedBehaviorSanitizer currently
-   passes all 17 suites with no reported findings. No new suppressions have
-   been added.
+Removal and acceptance are complete. No facade or C++ runtime dependency remains
+in the canonical Rust lane. The C/assembly kernel and the separate C++ consumer
+requirements are described below.
 
 ## Removed dependencies
 
@@ -115,38 +114,43 @@ internal callers now use an absent callback. Public reply signatures are preserv
 The load-balancer traits add eight RTTI/vtable/destructor symbols. The exact
 inventories record these changes and the serialization helper addition.
 
-Combined C++ compilation now passes owner and result-type inference checks.
-The two remaining callback construction errors in `fiber_channel` and `server`
-are fixed with explicit standard type paths and imported callback aliases.
-These let the compiler prove the aliases' identities in the reactor module's
-macro-containing scope. Both providers compile, and Rust tests and clippy pass.
-The client now also compiles with its threading import and explicit callback
-ownership transfers. All 37 providers match the reviewed unique and raw symbol
-inventories, and `libsrpc.a` links. A scanned C++ consumer now keeps the runtime
-umbrella and its dependencies current and supplies its explicit ABI importer
-mapping. This fixes Clang crashes caused by stale synthesized runtime BMIs.
-The original event, fiber-runtime and serialization-parity consumers pass their
-5, 9 and 12 cases; serialization also needed an explicit factory callback type.
-The complete CMake build passed before the final waker repair. CTest passed
-30 of 31 suites; the stackless battery exposed a consumed callback owner on its
-second reusable C++ `wake()` call. The integrated fix gives C++ lvalue calls
-borrowed dispatch and rvalue calls consuming dispatch. Compiler inference keeps
-standard Rust waker clones movable and emits consuming calls. The same-source
-Rust/C++ fixture checks independent clone ownership and immediate release;
-direct C++ tests also cover repeated and concurrent wakes, moved/empty wrappers,
-and retained wakes after cancellation. All pass, including ASan/UBSan runs; the
-old runtime reproduces the crash. The final full CMake build and all 31 CTests
-pass; the stackless battery completes all its cases. The full address run then
-exposes a separate C++ thread-local parking-token lifetime error during reactor
-teardown (14 failing suites, three passing). ThreadSanitizer confirms that same
-lifetime error in the same 14 suites. Its later freed-waker report is downstream
-heap corruption: a thread-runtime-only reproducer shows two simultaneous malloc
-allocations receiving the same address after the invalid TLS access. Removing
-that access or applying the isolated thread-exit repair makes the reproducer
-pass; the direct-reactor case alone also passes 100 thread-sanitized repetitions.
-No independent waker repair is indicated. UndefinedBehaviorSanitizer passes all
-17 suites with no findings. The thread-exit repair and final acceptance remain
-pending.
+Explicit standard type paths and imported callback aliases resolve construction
+in the reactor module's macro-containing scope. Client callback ownership
+transfers and an explicit serialization factory type preserve the C++ interfaces.
+All 37 providers match the reviewed unique and raw symbol inventories.
+
+A scanned C++ consumer keeps the runtime umbrella and its dependencies current
+and supplies the ABI importer's module map. This repairs Clang crashes caused by
+stale synthesized runtime BMIs after canonical providers stopped importing the
+runtime umbrella.
+
+C++ lvalue waker calls retain borrowed dispatch; generated standard Rust wake
+calls consume their receiver. Compiler inference keeps inferred clones movable.
+The same-source Rust/C++ fixture checks independent clone ownership and immediate
+release. Direct tests cover repeated and concurrent wakes, moved/empty wrappers,
+and retained wakes after cancellation, including ASan/UBSan runs.
+
+On glibc, parking-token ownership now survives C++ TLS destructors and is released
+by native thread cleanup or normal process exit. Retained thread handles keep
+their own owner; tokens created by later static destructors receive another
+cleanup. Other platforms retain their existing implementation. Focused tests
+pass for standard and POSIX backends normally, with ASan/LSan and UBSan, and with
+TSan. Each configuration exercises 100 TLS destructors, external threads,
+parking during teardown, retained handles, and late process-exit calls. The two
+Cargo integration tests for this fixture also pass.
+
+The old parking-token lifetime caused both direct use-after-free reports and
+later heap corruption. A runtime-only reproducer showed two simultaneous malloc
+allocations receiving the same address after invalid TLS access; the repair
+passes that reproducer. The later waker report required no independent repair.
+
+The full address run uses the five existing fiber-allocation suppression patterns
+in [scripts/lsan_suppressions.txt](../../scripts/lsan_suppressions.txt). It reports
+no ASan or LSan errors, with nine suppression summaries and nine warnings about
+`__asan_handle_no_return`. Native fiber switches still lack sanitizer fiber hooks;
+these results do not establish that suppressed allocations are leak-free or fully
+validate custom fiber stacks. The paired Rust process is ordinary Cargo and is
+not instrumented by the C++ sanitizer configuration.
 
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).
