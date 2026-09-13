@@ -88,28 +88,6 @@ pub fn make_box<Adapter>(value: Adapter) -> Box<Adapter> {
 pub mod rusty {
 
 
-    pub mod io {
-        pub use ::std::io::Error;
-    }
-
-    pub mod net {
-        use ::std::{io::Error, net::SocketAddrV4};
-
-        pub fn socket_addr_v4_from_str(value: &str) -> Result<SocketAddrV4, Error> {
-            value.parse::<SocketAddrV4>().map_err(|error| {
-                Error::new(::std::io::ErrorKind::InvalidInput, error.to_string())
-            })
-        }
-
-        pub fn socket_addr_v4_to_string(value: SocketAddrV4) -> String {
-            value.to_string()
-        }
-
-
-    }
-
-
-
 }
 
 pub mod panic {

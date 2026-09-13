@@ -25,7 +25,6 @@ use crate::channel::{
 use crate::frame_codec::{FrameDecodeStatus, FrameHeader, FrameStreamReader, FrameView};
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 
-use rusty as cpp;
 
 type TcpOutBuf = Vec<u8>;
 type LegacyOwnedFd = std::os::fd::OwnedFd;
@@ -457,8 +456,7 @@ impl TcpListener {
         }
     }
 
-    // Bind path: rusty::net::TcpListener::bind + socket_addr_v4_from_str
-    // + set_nonblocking — pure flow control over Results, all field
+    // Bind, parse the IPv4 address, and set nonblocking mode. All field
     // writes through the RefCells (listen runs once; the RefCell
     // replaces the old setup-time const_cast pattern).
     pub fn listen(&self, addr: &str) -> ChannelError {
@@ -472,7 +470,7 @@ impl TcpListener {
         {
             return ChannelError::AddressInUse;
         }
-        let parse_result = cpp::rusty::net::socket_addr_v4_from_str(addr);
+        let parse_result = addr.parse::<std::net::SocketAddrV4>();
         if parse_result.is_err() {
             self.listened_.store(false, Ordering::Release);
             return ChannelError::AddressInvalid;
@@ -506,7 +504,7 @@ impl TcpListener {
         let address_string: String;
         match local_result {
             Ok(std::net::SocketAddr::V4(value)) => {
-                address_string = cpp::rusty::net::socket_addr_v4_to_string(value);
+                address_string = value.to_string();
             }
             _ => {
                 address_string = addr.to_string();
@@ -1448,7 +1446,7 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
             return 2;
         }
     }
-    let peer_addr_str = cpp::rusty::net::socket_addr_v4_to_string(peer_v4);
+    let peer_addr_str = peer_v4.to_string();
 
     // Hand the accepted fd to TcpConnection.
     let conn_fd = stream.into_raw_fd();
@@ -1611,7 +1609,7 @@ fn tcp_factory_connect_socket(
 }
 
 pub fn tcp_factory_connect(fac: &TcpFactory, addr: &str) -> ConnectResult {
-    let parse_result = cpp::rusty::net::socket_addr_v4_from_str(addr);
+    let parse_result = addr.parse::<std::net::SocketAddrV4>();
     if parse_result.is_err() {
         return ConnectResult {
             connection: None,

@@ -42,14 +42,6 @@
       "category": "standard",
       "sha256": "9ed02827e1e585d07228e6e0d6a07d13e826df5a194fa27afa600a4fe76dbdb2"
     },
-    "function:rusty::net::socket_addr_v4_from_str": {
-      "category": "standard",
-      "sha256": "f6423f289c97eb96401596aedd9a3a94db2b382554fc24693afddd9e6a0750c2"
-    },
-    "function:rusty::net::socket_addr_v4_to_string": {
-      "category": "standard",
-      "sha256": "54a12fd612b52c9388da04b0facb45197d3a702d399d2e83aa65446bee46f663"
-    },
     "impl::: std :: sync :: Arc < T > as ReactorJobSetKey < T : ? Sized >": {
       "category": "standard",
       "sha256": "58aaffd84dba7ca159107cdff75dfeb1e2ed58d53d6bf5834943f0dcce30fc6e"
@@ -93,14 +85,6 @@
     "module:rusty": {
       "category": "import",
       "sha256": "ad81879a2f8620f69c0f18692a64216aba383ad1b594d2e76009fffe41cc4a31"
-    },
-    "module:rusty::io": {
-      "category": "import",
-      "sha256": "bbd1827adeb35f5397c5b23e69b6169d596aef5abf1c788f4f73bb010f666ee5"
-    },
-    "module:rusty::net": {
-      "category": "import",
-      "sha256": "50b239afca8092e053e50dcfec6b3712d06a309a1f9802264ee75f72c139bdbf"
     },
     "module:std": {
       "category": "import",
@@ -150,10 +134,6 @@
       "category": "standard",
       "sha256": "8da7f977e2375bf95efb057e742292f37ca62d2c403b439076ccbb7d4afaeb75"
     },
-    "use:rusty::io::std :: io :: Error": {
-      "category": "import",
-      "sha256": "1d6b65e206d059ea3ca6ad8be543b2cd4700ed6ebfbbd40c97dbccf22c1e3d80"
-    },
     "use:rusty_cpp_markers :: cpp_inherit": {
       "category": "import",
       "sha256": "1e55160927cda50fb31298223a496472e76d7233f9e71a91d712af982dface35"
@@ -193,10 +173,6 @@
     "use:std :: ops :: { Deref , Index }": {
       "category": "import",
       "sha256": "51390f38b7affece1e760dc707c3a6e56411a5d06b10955891ea5b88ff43e1c6"
-    },
-    "use:rusty::net::std :: { io :: Error , net :: SocketAddrV4 }": {
-      "category": "import",
-      "sha256": "65e15ace09df5fc6b3a194523e0a5774ec5ee58e80b83c5ec7cf8fb56b1cd3e8"
     }
   }
 }
