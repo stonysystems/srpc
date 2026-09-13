@@ -37,48 +37,6 @@ pub mod rusty {
 
 }
 
-pub mod panic {
-    /// Opaque model of the C++ `std::exception_ptr` payload carried out of a
-    /// caught unwind. Production C++ resolves the pair below to
-    /// `rusty::panic::catch_unwind` / `rusty::panic::payload_message`.
-    ///
-    /// Canonical code that only needs to swallow an unwind uses
-    /// `std::panic::catch_unwind` directly (rpc/callbacks.rs,
-    /// rpc/request_queue.rs). This model exists for the one site that inspects
-    /// the payload (the shutdown-hook invoker in rpc/server.rs): std's
-    /// `Err(Box<dyn Any + Send>)` has no C++ spelling, while the runtime's
-    /// payload is a `std::exception_ptr` whose `what()` `payload_message`
-    /// recovers.
-    pub struct PanicPayload(Option<String>);
-
-    /// Production C++ takes a `std::string_view`; `&str` lowers to exactly that.
-    pub fn do_panic(message: &str) -> ! {
-        ::std::panic::panic_any(message.to_string())
-    }
-
-    /// Run `body`, converting an unwind into `Err(PanicPayload)`.
-    pub fn catch_unwind<F: FnMut()>(body: F) -> Result<(), PanicPayload> {
-        let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(body));
-        match result {
-            Ok(()) => Ok(()),
-            Err(payload) => {
-                let message = payload
-                    .downcast_ref::<&str>()
-                    .map(|text| (*text).to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned());
-                Err(PanicPayload(message))
-            }
-        }
-    }
-
-    /// Recover a typed `std::exception::what()` message; an opaque payload
-    /// yields `None`.
-    pub fn payload_message(payload: PanicPayload) -> Option<String> {
-        payload.0
-    }
-}
-
-
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
 }

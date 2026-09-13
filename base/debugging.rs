@@ -145,7 +145,7 @@ pub fn verify_failed(file: &str, line: u32) {
     message.push_str(file);
     message.push_str(", line ");
     message.push_str(&line.to_string());
-    rusty::panic::do_panic(&message)
+    std::panic::panic_any(message)
 }
 
 /// Verify an expression while preserving the C++ caller-location default.

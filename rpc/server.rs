@@ -710,20 +710,21 @@ pub fn server_parse_port(text: &str) -> Option<i32> {
 /// The invoker catches a panicking hook and logs it, exactly as the old
 /// two-arm try/catch did.
 pub fn server_invoke_shutdown_hook_safely(hook: &mut ShutdownHook) {
-    // MEASURED compile pin, not style. `clippy::redundant_closure` wants
-    // `catch_unwind(hook)`. That regenerates as
-    //     rusty::panic::catch_unwind(hook)   // hook: rusty::Function<void()>&
-    // and rusty/panic.hpp's `AssertUnwindSafe(F f)` takes its callable BY
-    // VALUE, while rusty::Function's copy constructor is `= delete`
-    // (rusty/function.hpp:281) -- "call to deleted constructor of
-    // rusty::Function<void ()>". The closure is what keeps it a by-reference
-    // capture.
+    // Keep the move-only C++ hook borrowed by the closure.
     #[allow(clippy::redundant_closure)]
-    let r = rusty::panic::catch_unwind(|| hook());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook()));
     if r.is_ok() {
         return;
     }
-    let msg = rusty::panic::payload_message(r.unwrap_err());
+    let payload = r.unwrap_err();
+    let msg: Option<String>;
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        msg = Some((*text).to_string());
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        msg = Some(text.clone());
+    } else {
+        msg = None;
+    }
     if let Some(text) = msg {
         let message: String = format!(
             "Server::graceful_shutdown: hook threw exception: {}",

@@ -17,22 +17,6 @@
       "category": "standard",
       "sha256": "a57d2bd1cb53fbb086650bc05909603dc53b0a8b4e8b82e19936653d7bd3c6dc"
     },
-    "function:panic::catch_unwind": {
-      "category": "standard",
-      "sha256": "d10cb5f194ec34dac82cdd5126d70d7e00c409cdaed6ee7efdb7a436bc546f78"
-    },
-    "function:panic::do_panic": {
-      "category": "standard",
-      "sha256": "63dd791fe8d23e3fe2d52d9767dbf3b89305d9caa608fc5b61962f87e2f8c42d"
-    },
-    "function:panic::payload_message": {
-      "category": "standard",
-      "sha256": "9ed02827e1e585d07228e6e0d6a07d13e826df5a194fa27afa600a4fe76dbdb2"
-    },
-    "module:panic": {
-      "category": "import",
-      "sha256": "4b0e2213d29a417efbf7fd426103a850bcd77c02ae6a073b91ad258893af7a91"
-    },
     "module:rusty": {
       "category": "import",
       "sha256": "ad81879a2f8620f69c0f18692a64216aba383ad1b594d2e76009fffe41cc4a31"
@@ -40,10 +24,6 @@
     "module:std": {
       "category": "import",
       "sha256": "d1339a0d2481914b3fa3fd53d98206b1bcead4c087e4a9c3e1e9f426afecb0fc"
-    },
-    "struct:panic::PanicPayload": {
-      "category": "standard",
-      "sha256": "751dfe25bbf4ccbc4a1394974678c45f645ba888435a8cae5de4af7238e7a2f4"
     },
     "use:rusty_cpp_markers :: cpp_inherit": {
       "category": "import",
