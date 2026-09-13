@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
-import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -26,15 +26,10 @@ service Beta {
 
 
 def run_rpcgen(repo_root: Path, rpc_path: Path) -> None:
-    cmd = [str(repo_root / "bin/rpcgen"), "--cpp", str(rpc_path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=repo_root)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            "rpcgen failed\n"
-            f"command: {' '.join(cmd)}\n"
-            f"stdout:\n{proc.stdout}\n"
-            f"stderr:\n{proc.stderr}"
-        )
+    sys.path.insert(0, str(repo_root / "pylib"))
+    from simplerpcgen import rpcgen
+
+    rpcgen(str(rpc_path), ["cpp"])
 
 
 def section_between(text: str, start_marker: str, end_marker: str) -> str:
@@ -138,27 +133,27 @@ def verify_alpha_service_block(block: str) -> None:
 
     assert_contains(
         block,
-        "virtual rusty::Result<RpcPingResponse, srpc::i32> ping(const RpcPingRequest& req);",
+        "virtual rusty::Result<RpcPingResponse, srpc::i32> ping(const RpcPingRequest& req) const;",
     )
     assert_contains(
         block,
-        "virtual rusty::Result<RpcNopResponse, srpc::i32> nop(const RpcNopRequest& req);",
+        "virtual rusty::Result<RpcNopResponse, srpc::i32> nop(const RpcNopRequest& req) const;",
     )
     assert_contains(
         block,
-        "virtual rusty::Result<RpcUnnamedResponse, srpc::i32> unnamed(const RpcUnnamedRequest& req);",
+        "virtual rusty::Result<RpcUnnamedResponse, srpc::i32> unnamed(const RpcUnnamedRequest& req) const;",
     )
     assert_contains(
         block,
-        "virtual rusty::Result<RpcMultiResponse, srpc::i32> multi(const RpcMultiRequest& req);",
+        "virtual rusty::Result<RpcMultiResponse, srpc::i32> multi(const RpcMultiRequest& req) const;",
     )
     assert_contains(
         block,
-        "virtual rusty::Result<RpcAsyncSleepResponse, srpc::i32> async_sleep(const RpcAsyncSleepRequest& req);",
+        "virtual rusty::Result<RpcAsyncSleepResponse, srpc::i32> async_sleep(const RpcAsyncSleepRequest& req) const;",
     )
     assert_contains(
         block,
-        "virtual rusty::Task<rusty::Result<RpcAsyncWaitResponse, srpc::i32>> async_wait(const RpcAsyncWaitRequest& req);",
+        "virtual rusty::Task<rusty::Result<RpcAsyncWaitResponse, srpc::i32>> async_wait(const RpcAsyncWaitRequest& req) const;",
     )
     assert_contains(
         block,
@@ -167,12 +162,12 @@ def verify_alpha_service_block(block: str) -> None:
     assert_contains(
         block,
         "// @safe\n"
-        "    virtual void stream(const RpcStreamRequest& req, RpcStreamResponse& resp, srpc::DeferredReply defer);",
+        "    virtual void stream(const RpcStreamRequest& req, RpcStreamResponse& resp, srpc::DeferredReply defer) const;",
     )
     assert_contains(
         block,
         "// @safe\n"
-        "    void __ping__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "    void __ping__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcPingRequest __typed_req__;\n"
@@ -197,7 +192,7 @@ def verify_alpha_service_block(block: str) -> None:
     )
     assert_contains(
         block,
-        "void __nop__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "void __nop__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcNopRequest __typed_req__;\n"
@@ -219,7 +214,7 @@ def verify_alpha_service_block(block: str) -> None:
     )
     assert_contains(
         block,
-        "void __unnamed__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "void __unnamed__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcUnnamedRequest __typed_req__;\n"
@@ -244,7 +239,7 @@ def verify_alpha_service_block(block: str) -> None:
     )
     assert_contains(
         block,
-        "void __multi__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "void __multi__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcMultiRequest __typed_req__;\n"
@@ -271,7 +266,7 @@ def verify_alpha_service_block(block: str) -> None:
     )
     assert_contains(
         block,
-        "void __async_sleep__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "void __async_sleep__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcAsyncSleepRequest __typed_req__;\n"
@@ -300,7 +295,7 @@ def verify_alpha_service_block(block: str) -> None:
     )
     assert_contains(
         block,
-        "void __async_wait__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "void __async_wait__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcAsyncWaitRequest __typed_req__;\n"
@@ -329,7 +324,7 @@ def verify_alpha_service_block(block: str) -> None:
     assert_contains(
         block,
         "// @safe\n"
-        "    void __stream__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "    void __stream__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcStreamRequest __typed_req__;\n"
@@ -370,11 +365,11 @@ def verify_beta_service_block(block: str) -> None:
     )
     assert_contains(
         block,
-        "virtual rusty::Result<RpcPingResponse, srpc::i32> ping(const RpcPingRequest& req);",
+        "virtual rusty::Result<RpcPingResponse, srpc::i32> ping(const RpcPingRequest& req) const;",
     )
     assert_contains(
         block,
-        "void __ping__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {\n"
+        "void __ping__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {\n"
         "        // @unsafe\n"
         "        {\n"
         "            RpcPingRequest __typed_req__;\n"

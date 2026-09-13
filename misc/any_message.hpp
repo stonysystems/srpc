@@ -1,5 +1,4 @@
 #pragma once
 
-// Transitional shim. Contents now live in the srpc.any_message C++23
-// module (src/srpc/misc/any_message.cpp).
+// Compatibility import for srpc.any_message, generated from misc/any_message.rs.
 import srpc.any_message;

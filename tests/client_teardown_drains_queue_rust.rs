@@ -16,15 +16,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc as StdArc;
 
-use srpc::request_queue::{QueuedRequest, QueuedRequestCallback, RequestQueue, RequestQueueConfig};
-
-// The crate's clock is a C kernel (misc/srpc_timing.c) that rustc-only test
-// binaries do not link; every other test here supplies the same stub.
-#[allow(unsafe_code)]
-#[unsafe(no_mangle)]
-pub extern "C" fn srpc_clock_monotonic_us() -> u64 {
-    0
-}
+use srpc::request_queue::{QueuedRequest, RequestQueue, RequestQueueConfig};
 
 fn queue_with_capacity(max: usize) -> RequestQueue {
     let mut cfg = RequestQueueConfig::defaults();
@@ -39,10 +31,10 @@ fn park(q: &RequestQueue, xid: i64, fired: &StdArc<AtomicUsize>, codes: &StdArc<
     let mut qr = QueuedRequest::new();
     qr.xid = xid;
     qr.rpc_id = 7;
-    qr.callback = QueuedRequestCallback::from_callable(move |err: i32| {
+    qr.callback = Some(Box::new(move |err: i32| {
         f.fetch_add(1, Ordering::SeqCst);
         c.lock().unwrap().push(err);
-    });
+    }));
     assert!(q.enqueue(qr), "enqueue of xid {xid} should succeed");
 }
 

@@ -68,23 +68,15 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
         // rpc/circuit_breaker.rs: CircuitBreakerConfig::timeout_ms.
         "cb.timeout_ms",
 
-        // rpc/client.rs: BufferingConfig { behavior, max_pending,
-        // default_ttl_ms, overflow, enabled }. The queue is real and the
-        // fields are real, but ClientConnection::replay_pending_requests
-        // returns 0, so the caveat is required alongside the field names --
-        // documenting the knobs without it is the failure mode this guards.
+        // Buffering encodes once and replays through the canonical channel path.
         "buffering.max_pending",
         "buffering.default_ttl_ms",
-        "**Queued requests are never replayed.**",
+        "Queued requests replay after a successful reconnect.",
 
-        // rpc/client.rs: KeepaliveConfig { enabled, idle_sec, interval_sec,
-        // count }. apply_keepalive_options has an empty body, so the book
-        // deliberately shows no assignment example; the field names are
-        // pinned where the book declares the struct, and the "not wired" row
-        // is required so the names can never appear without the caveat.
+        // TCP applies the configured options; other transports report unsupported.
         "int32_t idle_sec;",
         "int32_t interval_sec;",
-        "| TCP keepalive | **Not wired** |",
+        "| TCP keepalive | **Works** |",
 
         // rpc/callbacks.rs: add_* append, they do not replace.
         "client.add_on_connected",
@@ -102,22 +94,18 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
         // rpc/server.rs: graceful_shutdown(drain_timeout_ms).
         "server.graceful_shutdown(",
 
-        // rpc/connection_metrics.rs accessors. Client::metrics() returns a
-        // per-Client ConnectionMetrics that nothing writes to, so the book
-        // must route readers through Client::connection() and must keep
-        // saying so; requiring the inert call site instead would be wrong
-        // guidance.
+        // Client and ClientConnection share the same live metrics owner.
         "const ConnectionMetrics& m = conn->metrics();",
         "in_flight_requests()",
         "reconnect_count()",
-        "| `Client::metrics()` | **Inert** |",
+        "| `Client::metrics()` | **Works** |",
 
         // The shipping-status table itself. These rows are the book's honest
         // account of what is finished; losing them is the regression.
         "### Shipping status",
         "| Connection state machine | **Works** |",
         "| Latency metrics | **Not wired** |",
-        "| Request buffering while disconnected | **Partial** |",
+        "| Request buffering while disconnected | **Works** |",
         "| Heartbeat | **Partial** |",
 
         // --- Typed request/response API symbols (chapters 12 and 16) --------

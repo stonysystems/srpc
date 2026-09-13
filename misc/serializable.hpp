@@ -1,7 +1,6 @@
 #pragma once
 
-// Transitional shim. The contents of this header now live in the
-// srpc.serializable C++23 module (src/srpc/misc/serializable.cpp).
+// Compatibility import for srpc.serializable, generated from misc/serializable.rs.
 //
 // Consumers that #include "serializable.hpp" at TU scope get the
 // import propagated to them — works because every existing include

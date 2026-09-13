@@ -47,7 +47,7 @@ class EchoService {
     }
 
     void __dispatch__(i32 /*rpc_id*/, rusty::Box<Request> req,
-                      WeakServerConnection sconn) {
+                      WeakServerConnection sconn) const {
         std::string echo;
         srpc::BinaryReadArchive __req_ar__(srpc::make_source_proxy_buffer(&req->src));
         srpc::Deserialize_::deserialize(echo, __req_ar__);

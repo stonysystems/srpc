@@ -133,13 +133,13 @@ def emit_typed_service_signature(service, func, f):
     if func.attr == "defer":
         f.writeln("// @safe")
         if service.abstract or func.abstract:
-            f.writeln("virtual void %s(const %s& req, %s& resp, srpc::DeferredReply defer) = 0;" % (
+            f.writeln("virtual void %s(const %s& req, %s& resp, srpc::DeferredReply defer) const = 0;" % (
                 func.name,
                 request_struct_name,
                 response_struct_name,
             ))
         else:
-            f.writeln("virtual void %s(const %s& req, %s& resp, srpc::DeferredReply defer);" % (
+            f.writeln("virtual void %s(const %s& req, %s& resp, srpc::DeferredReply defer) const;" % (
                 func.name,
                 request_struct_name,
                 response_struct_name,
@@ -149,17 +149,17 @@ def emit_typed_service_signature(service, func, f):
     if func.attr == "async":
         f.writeln("// @safe")
         if service.abstract or func.abstract:
-            f.writeln("virtual %s %s(const %s& req) = 0;" % (async_result_type, func.name, request_struct_name))
+            f.writeln("virtual %s %s(const %s& req) const = 0;" % (async_result_type, func.name, request_struct_name))
             return
-        f.writeln("virtual %s %s(const %s& req);" % (async_result_type, func.name, request_struct_name))
+        f.writeln("virtual %s %s(const %s& req) const;" % (async_result_type, func.name, request_struct_name))
         return
 
     f.writeln("// @safe")
     if service.abstract or func.abstract:
-        f.writeln("virtual %s %s(const %s& req) = 0;" % (result_type, func.name, request_struct_name))
+        f.writeln("virtual %s %s(const %s& req) const = 0;" % (result_type, func.name, request_struct_name))
         return
 
-    f.writeln("virtual %s %s(const %s& req);" % (result_type, func.name, request_struct_name))
+    f.writeln("virtual %s %s(const %s& req) const;" % (result_type, func.name, request_struct_name))
 
 def emit_typed_proxy_sync_signature(func, f):
     request_struct_name = typed_request_struct_name(func)
@@ -315,7 +315,7 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
             f.writeln("return ret;")
         f.writeln("}")
         f.writeln("// @safe - Dispatch for RPC requests")
-        f.writeln("void __dispatch__(srpc::i32 rpc_id, rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {")
+        f.writeln("void __dispatch__(srpc::i32 rpc_id, rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {")
         with f.indent():
             f.writeln("switch (rpc_id) {")
             for func in service.functions:
@@ -340,14 +340,14 @@ def emit_service_and_proxy(service, f, rpc_table, archive=False):
                 postfix = ""
             if func.attr == "raw":
                 f.writeln("// @safe")
-                f.writeln("virtual void %s(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn)%s;" % (func.name, postfix))
+                f.writeln("virtual void %s(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const%s;" % (func.name, postfix))
     f.writeln("private:")
     with f.indent():
         for func in service.functions:
             if func.attr == "raw":
                 continue
             f.writeln("// @safe")
-            f.writeln("void __%s__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) {" % func.name)
+            f.writeln("void __%s__wrapper__(rusty::Box<srpc::Request> req, srpc::WeakServerConnection weak_sconn) const {" % func.name)
             with f.indent():
                 f.writeln("// @unsafe")
                 f.writeln("{")
