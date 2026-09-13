@@ -63,6 +63,8 @@
 
 #[allow(unused_imports)]
 use crate::reactor as _;
+#[allow(unused_imports)]
+use crate::threading as _;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -93,14 +95,14 @@ use crate::connection_state::{connection_state_to_string, ConnectionState, Conne
 use crate::debugging::verify_failed;
 use crate::errors::RpcError;
 use crate::fiber_channel::{FiberChannel, OwnedFrame};
-use crate::heartbeat::{HeartbeatConfig, HeartbeatManager};
+use crate::heartbeat::{HeartbeatConfig, HeartbeatManager, HeartbeatTimeoutCallback};
 use crate::load_balancer::{LoadBalancer, LoadBalancerState, LoadBalancingStrategy};
 use crate::logging::{log_line, Log};
 use crate::misc::OneTimeJob;
 use crate::reconnect_policy::{ReconnectPolicy};
 use crate::request_options::{RequestOptions, TimeoutType};
 use crate::request_queue::{
-    OverflowStrategy, QueuedRequest, RequestQueue, RequestQueueConfig,
+    OverflowStrategy, QueuedRequest, QueuedRequestCallback, RequestQueue, RequestQueueConfig,
     kRequestQueueExpiredError, rq_invoke_callback_safely,
 };
 use crate::serializable::{
@@ -1292,9 +1294,7 @@ impl ClientConnection {
         // does not keep the connection alive (mirrors the legacy [weak_conn]
         // C++ lambda; a move closure's owned capture is escape-safe).
         let weak_conn: WeakClientConnection = self.weak_self_.clone();
-        // Provider alias, not an inline turbofish — see `qr.callback` below.
-        self.heartbeat_manager_.set_on_timeout(
-            Some(Box::new(move || {
+        let mut on_timeout: HeartbeatTimeoutCallback = Some(Box::new(move || {
             let conn_opt = weak_conn.upgrade();
             if conn_opt.is_none() {
                 return;
@@ -1305,8 +1305,9 @@ impl ClientConnection {
             }
             client_log_line(Log::WARN, 0i32, core::ptr::null(), client_text_str("srpc::ClientConnection: heartbeat timeout for ", &(*conn).host(), ""));
             (*conn).handle_error();
-            })),
-        );
+        }));
+        // Keep the take: C++ lowering otherwise makes this local const and copies it.
+        self.heartbeat_manager_.set_on_timeout(on_timeout.take());
     }
     pub fn heartbeat_config(&self) -> HeartbeatConfig { self.heartbeat_manager_.config() }
     pub fn set_circuit_breaker_config(&self, config: &CircuitBreakerConfig) { self.circuit_breaker_.set_config(*config); }
@@ -2259,7 +2260,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
     request.payload = body.bytes;
     let queued: Arc<Mutex<HashMap<i64, Arc<Future>>>> = conn.queued_fu_.clone();
     let weak_connection = conn.weak_self_.clone();
-    request.callback = Some(Box::new(move |error: i32| {
+    let on_queue_error: QueuedRequestCallback = Some(Box::new(move |error: i32| {
         let completed: Option<Arc<Future>> = queued.lock().unwrap().remove(&xid);
         if let Some(future) = completed {
             if let Some(connection) = weak_connection.upgrade() {
@@ -2270,6 +2271,7 @@ where F: FnMut(&mut BinaryWriteArchive) {
             future.notify_ready(future.clone());
         }
     }));
+    request.callback = on_queue_error;
     let admission = {
         let lifecycle = conn.lifecycle_.lock().unwrap();
         if lifecycle.generation != generation {
@@ -2985,7 +2987,9 @@ fn clientconn_decode_response_for_binding(conn: &ClientConnection, generation: u
         }
     }
     if let Some(mut callback) = callback {
-        callback.as_mut().unwrap()(error.get(), unsafe { bytes.add(header_size) }, payload_size);
+        // Keep the typed take: C++ lowering otherwise copies the if-let binding.
+        let mut on_reply: AsyncReplyCallback = std::mem::take(&mut callback);
+        on_reply.as_mut().unwrap()(error.get(), unsafe { bytes.add(header_size) }, payload_size);
     }
     if let Some(future) = future {
         future.notify_ready(future.clone());
