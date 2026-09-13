@@ -1121,15 +1121,11 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         COMPILE_OPTIONS "@${SRPC_BATTERY_MODMAP}"
         OBJECT_DEPENDS "${SRPC_BATTERY_MODMAP}")
 
-    # The suite's built-in fallback is the RELATIVE path "docs/srpc-book.md",
-    # which would resolve against whatever working directory ctest runs the
-    # binary in (the build tree), not the source tree.  Hand it the absolute
-    # source path.  Only the book: the migration guide does not exist in this
-    # repository.  This is a compile DEFINITION, not a compile option, so it
-    # is safe at target scope -- the `@modmap` response file above is the one
-    # thing that must stay at source scope.
+    # The documentation guard checks both the Rust guide and C++ companion.
+    # Absolute source paths also work when CTest runs from the build tree.
     target_compile_definitions(test_rpc_docs_symbols PRIVATE
-        "SRPC_BOOK_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-book.md\"")
+        "SRPC_BOOK_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-book.md\""
+        "SRPC_CPP_BOOK_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-cpp-book.md\"")
 
     add_custom_target(srpc_runtime_battery
         DEPENDS ${SRPC_RUNTIME_BATTERY}
@@ -1333,7 +1329,7 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/rpc_docs_snippet_compile_test.py"
             --lint-only
-            --book "${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-book.md"
+            --book "${CMAKE_CURRENT_SOURCE_DIR}/docs/srpc-cpp-book.md"
             --repo "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     set_tests_properties(srpc_docs_snippet_lint PROPERTIES

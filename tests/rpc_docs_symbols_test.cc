@@ -1,5 +1,5 @@
 /**
- * Documentation guard for docs/srpc-book.md.
+ * Documentation guard for the Rust book and C++ companion.
  *
  * The book is prose, so nothing in the build catches it drifting from the
  * canonical Rust in rpc/, reactor/, base/ and misc/. This test greps the book
@@ -48,12 +48,20 @@ constexpr const char* kSrpcBookPath = SRPC_BOOK_PATH;
 #else
 constexpr const char* kSrpcBookPath = "docs/srpc-book.md";
 #endif
+#ifdef SRPC_CPP_BOOK_PATH
+constexpr const char* kSrpcCppBookPath = SRPC_CPP_BOOK_PATH;
+#else
+constexpr const char* kSrpcCppBookPath = "docs/srpc-cpp-book.md";
+#endif
 
 }  // namespace
 
 TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
-    const std::string book = load_file_contents(kSrpcBookPath);
-    ASSERT_FALSE(book.empty()) << "failed to read " << kSrpcBookPath;
+    const std::string rust_book = load_file_contents(kSrpcBookPath);
+    const std::string cpp_book = load_file_contents(kSrpcCppBookPath);
+    ASSERT_FALSE(rust_book.empty()) << "failed to read " << kSrpcBookPath;
+    ASSERT_FALSE(cpp_book.empty()) << "failed to read " << kSrpcCppBookPath;
+    const std::string book = rust_book + "\n" + cpp_book;
 
     const std::vector<std::string> required = {
         // --- Reliability API symbols (chapter 11) ---------------------------
@@ -66,17 +74,17 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
         "policy.initial_delay_ms",
         "policy.jitter_enabled",
         // rpc/circuit_breaker.rs: CircuitBreakerConfig::timeout_ms.
-        "cb.timeout_ms",
+        "breaker.timeout_ms",
 
         // Buffering encodes once and replays through the canonical channel path.
         "buffering.max_pending",
         "buffering.default_ttl_ms",
-        "Queued requests replay after a successful reconnect.",
+        "Reconnect replays those bytes FIFO and retains the original future.",
 
         // TCP applies the configured options; other transports report unsupported.
         "int32_t idle_sec;",
         "int32_t interval_sec;",
-        "| TCP keepalive | **Works** |",
+        "| TCP keepalive | Native socket options are applied through the TCP channel |",
 
         // rpc/callbacks.rs: add_* append, they do not replace.
         "client.add_on_connected",
@@ -90,25 +98,25 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
         "MARSHALLING_ERROR",
         "CONNECT_TIMEOUT",
 
-        "client->request(",
+        "client.request(",
         // rpc/server.rs: graceful_shutdown(drain_timeout_ms).
         "server.graceful_shutdown(",
 
         // Client and ClientConnection share the same live metrics owner.
-        "const ConnectionMetrics& m = conn->metrics();",
+        "`client.metrics()` and its live connection share the same counter storage",
         "in_flight_requests()",
         "reconnect_count()",
-        "| `Client::metrics()` | **Works** |",
+        "Counters use relaxed atomics",
 
         // The shipping-status table itself. These rows are the book's honest
         // account of what is finished; losing them is the regression.
         "### Shipping status",
-        "| Connection state machine | **Works** |",
-        "| Latency metrics | **Not wired** |",
-        "| Request buffering while disconnected | **Works** |",
-        "| Heartbeat | **Partial** |",
+        "| State transitions | Validated by the synchronized state machine; forced transitions bypass validation |",
+        "| Latency metrics | Need explicit latency instrumentation |",
+        "| Disconnected request queue | Active for future-based requests when buffering is enabled |",
+        "| Protocol heartbeat | Server replies and receive accounting work; no automatic client timer drives probes |",
 
-        // --- Typed request/response API symbols (chapters 12 and 16) --------
+        // --- Typed request/response API symbols (C++ chapters 2 and 4) --------
         // pylib/simplerpcgen/lang_cpp.py: typed_struct_name() emits
         // "Rpc" + PascalCase(method split on '_') + "Request"/"Response".
         // Rpc<M>Request/Rpc<M>Response is the book's placeholder notation;
@@ -120,9 +128,9 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
         // Handler signatures. typed_result_type() is
         // rusty::Result<Rpc<M>Response, srpc::i32>; the `async` attribute
         // wraps it in rusty::Task.
-        "rusty::Result<Rpc<M>Response, srpc::i32> m(const Rpc<M>Request&)",
-        "rusty::Task<rusty::Result<Rpc<M>Response, srpc::i32>> m(const Rpc<M>Request&)",
-        "rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req)",
+        "rusty::Result<Rpc<M>Response, srpc::i32> m(const Rpc<M>Request&) const",
+        "rusty::Task<rusty::Result<Rpc<M>Response, srpc::i32>> m(const Rpc<M>Request&) const",
+        "rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) const",
         // Proxy side: async_<method> takes the request struct.
         "async_<method>",
         "demo.async_sum(req)",
@@ -131,9 +139,9 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
         // it cannot be passed to reg_service(Box<dyn Service>) -- requiring
         // the typed call and the caveat is the point of these three.
         "template<class T> void reg_service_typed(rusty::Box<T> svc);",
-        "server.reg_service_typed(rusty::make_box<",
+        "svr.reg_service_typed(rusty::make_box<",
         "Register with `reg_service_typed`, not `reg_service`",
-        "a generated service class has no base class",
+        "The generated service class has **no base class**",
     };
 
     const std::vector<std::string> forbidden = {
@@ -185,11 +193,11 @@ TEST(SrpcBookApiSymbolsTest, ReliabilityApiNamesMatchShippingHeaders) {
 
     for (const auto& needle : required) {
         EXPECT_NE(book.find(needle), std::string::npos)
-            << "missing required API symbol in srpc-book.md: " << needle;
+            << "missing required API symbol in SRPC documentation: " << needle;
     }
 
     for (const auto& needle : forbidden) {
         EXPECT_EQ(book.find(needle), std::string::npos)
-            << "stale API symbol still present in srpc-book.md: " << needle;
+            << "stale API symbol still present in SRPC documentation: " << needle;
     }
 }

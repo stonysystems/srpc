@@ -1,54 +1,39 @@
 # SRPC
 
-SRPC is an RPC framework written in Rust, with a native Cargo library and a
-C++23 library generated from the same sources. It supports TCP and in-memory
-transports, an epoll reactor, stackful fibers, async tasks, timeouts, retries,
-reconnection and connection pooling.
+SRPC is a Rust RPC library with TCP and in-memory transports, an epoll reactor,
+stackful fibers, async tasks, timeouts, retries, reconnection and connection
+pooling. It runs on Rust std and a small C/assembly kernel.
 
-The Rust library runs on Rust std and a small C/assembly kernel. The C++ lane
-also provides a `.rpc` service generator for typed handlers and client proxies.
-SRPC descends from [simple-rpc](https://github.com/santazhang/simple-rpc).
-
-**[Read the SRPC book](docs/srpc-book.md)** for service examples, API details,
-architecture, configuration and troubleshooting.
+The **[SRPC book](docs/srpc-book.md)** starts with a working Rust service and
+client, then covers the runtime, APIs, configuration and troubleshooting.
 
 ## Build and test
 
-SRPC targets Linux on x86_64 and aarch64. Start with a checkout:
+SRPC targets Linux on x86_64 and aarch64. Install a stable Rust toolchain,
+a C compiler and an archiver, then run:
 
 ```sh
 git clone https://github.com/stonysystems/srpc
 cd srpc
-```
-
-For Rust, install a stable Rust toolchain, a C compiler and an archiver. No
-submodules or C++ toolchain are needed:
-
-```sh
 cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --doc
 ```
 
-For C++, also install Clang 22+ with libc++, CMake 3.30+, Ninja, Cargo with
-clippy, Python 3.11+ and ripgrep. Initialize the submodules before building:
-
-```sh
-git submodule update --init --recursive
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel 4
-ctest --test-dir build -L srpc --output-on-failure
-```
-
-See the book for [setup and build details](docs/srpc-book.md#building-and-testing-srpc)
-and [testing and sanitizer commands](docs/srpc-book.md#tools-that-exist-in-this-repository).
+Cargo needs no submodules or C++ toolchain. See the book for
+[setup and dependencies](docs/srpc-book.md#building-and-testing-srpc) and
+[focused checks](docs/srpc-book.md#use-the-cargo-checks).
 
 ## Using SRPC
 
-- [Rust service example](docs/srpc-book.md#the-shape-of-a-service)
-- [C++ service and client walkthrough](docs/srpc-book.md#20-consuming-srpc-from-c)
-- [Service definition and code generation](docs/srpc-book.md#12-service-definition-and-code-generation-c-lane)
+- [Rust service and client](docs/srpc-book.md#the-shape-of-a-service)
 - [Timeouts, retries and reconnection](docs/srpc-book.md#11-reliability-features)
-- [Running benchmarks](docs/srpc-book.md#reproducing-benchmarks)
+- [Rust API reference](docs/srpc-book.md#16-rust-api-and-verification)
+- [Performance and benchmarks](docs/srpc-book.md#13-performance-tuning)
+- [Verus verification](docs/srpc-book.md#checking-rust-contracts)
 
-The book also covers [Rust and C++ runtime ownership](docs/srpc-book.md#19-the-c-lane-one-source-two-compilers)
-and [Verus verification](docs/srpc-book.md#checking-rust-contracts).
+SRPC also generates a C++23 library from the same Rust sources. The
+**[C++ companion](docs/srpc-cpp-book.md)** covers translation, CMake builds,
+`.rpc` service generation and C++ APIs, including a complete
+[service and client walkthrough](docs/srpc-cpp-book.md#3-c-service-and-client-walkthrough).
+
+SRPC descends from [simple-rpc](https://github.com/santazhang/simple-rpc).
