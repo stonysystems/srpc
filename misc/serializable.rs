@@ -1069,7 +1069,7 @@ impl SerializableRegistry {
     // The proxy is holder-shaped so SerializableEnvelope::load gives
     // unpack_shared<T> a refcount-shared Arc<T>.
     pub fn reg<T: SerializablePayload + Default + 'static>(kind: i32) -> i32 {
-        let factory = Box::new(|| -> SerializableProxy {
+        let factory: SerializableRegistryFactory = Box::new(|| -> SerializableProxy {
             make_serializable_proxy_default::<T>()
         });
         serializable_registry_register_factory(kind, factory);
