@@ -665,6 +665,12 @@ add_custom_target(srpc_goal0_source_gate
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_kernels.py"
     COMMAND
         "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_abi_bindings.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_native_abi_bindings.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_facade_shadow.py"
     COMMAND
         "${Python3_EXECUTABLE}"
@@ -1231,6 +1237,22 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_goal0_contracts.py"
     )
     set_tests_properties(srpc_goal0_contracts PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    add_test(
+        NAME srpc_native_abi_bindings
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_abi_bindings.py"
+    )
+    set_tests_properties(srpc_native_abi_bindings PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "srpc")
+    add_test(
+        NAME srpc_native_abi_binding_controls
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_native_abi_bindings.py"
+    )
+    set_tests_properties(srpc_native_abi_binding_controls PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
     # Both legacy entry points run the shared Rust AST ownership/body audit.

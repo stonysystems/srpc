@@ -18,79 +18,6 @@ pub use ::std::vec::Vec;
 
 pub use rusty_cpp_markers::cpp_inherit;
 
-/// Opaque rustc-only models of the native pthread types used by the
-/// canonical threading wrapper. The checked C++ type map restores the native
-/// typedef spellings; canonical Rust only passes pointers to these values.
-#[repr(C)]
-pub struct PthreadSpinlock {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-pub struct PthreadMutex {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-pub struct PthreadMutexAttr {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-pub struct PthreadCond {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-pub struct PthreadCondAttr {
-    _opaque: [u8; 0],
-}
-
-
-/// Native x86-64 fiber register layout, shared with the C/assembly engine.
-#[cfg(target_arch = "x86_64")]
-#[repr(C)]
-pub struct ReactorFiberContext {
-    pub rsp: *mut core::ffi::c_void,
-    pub rip: *mut core::ffi::c_void,
-    pub rbx: usize,
-    pub rbp: usize,
-    pub r12: usize,
-    pub r13: usize,
-    pub r14: usize,
-    pub r15: usize,
-}
-
-/// Native AArch64 register layout from reactor/srpc_fiber.h.
-#[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct ReactorFiberContext {
-    pub sp: *mut core::ffi::c_void,
-    pub pc: *mut core::ffi::c_void,
-    pub x19: usize,
-    pub x20: usize,
-    pub x21: usize,
-    pub x22: usize,
-    pub x23: usize,
-    pub x24: usize,
-    pub x25: usize,
-    pub x26: usize,
-    pub x27: usize,
-    pub x28: usize,
-    pub fp: usize,
-}
-
-/// Rustc-side layout model for `::srpc_fiber` from `reactor/srpc_fiber.h`.
-#[repr(C)]
-pub struct ReactorFiberState {
-    pub caller_ctx: ReactorFiberContext,
-    pub fiber_ctx: ReactorFiberContext,
-    pub stack_mapping: *mut core::ffi::c_void,
-    pub stack_mapping_bytes: usize,
-    pub state: i32,
-    pub entry_fn: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
-    pub entry_arg: *mut core::ffi::c_void,
-}
 
 /// Rustc-only storage model for the reactor's `std::set<Arc<Job>>` slot.
 ///
@@ -156,18 +83,12 @@ impl<A, B> StdPair<A, B> {
     }
 }
 
-/// Opaque rustc-only model mapped to libc's `FILE` in generated C++.
-#[repr(C)]
-pub struct CFile {
-    _opaque: [u8; 0],
-}
 
 /// Rust-only spelling for exact `std::vector<T>` ABI mappings.
 pub type StdVector<T> = Vec<T>;
 
 
-/// Opaque rustc-only stand-in mapped to C++ `void` at the Serializable C ABI.
-pub enum LegacyCVoid {}
+
 
 /// The production emitter recognizes this call and emits
 /// `rusty::make_box<Adapter>(value)`.  The divergent Rust facade lets the call
@@ -200,32 +121,7 @@ pub mod rusty {
             value.to_string()
         }
 
-        #[repr(C)]
-        pub struct InAddr {
-            pub s_addr: u32,
-        }
 
-        #[repr(C)]
-        pub struct SockAddrIn {
-            pub sin_addr: InAddr,
-            pub sin_port: u16,
-        }
-
-        pub fn sockaddr_in_from_socket_addr_v4(value: SocketAddrV4) -> SockAddrIn {
-            let octets = value.ip().octets();
-            SockAddrIn {
-                sin_addr: InAddr {
-                    // Mirror the C++ runtime (rusty/net/tcp.hpp): assemble the
-                    // HOST-order word from the octets, then htonl.  The old
-                    // `from_ne_bytes(octets).to_be()` double-swapped on
-                    // little-endian -- the octets are already network order in
-                    // memory -- so every connect went to the byte-reversed
-                    // address (127.0.0.1 became 1.0.0.127) and timed out.
-                    s_addr: u32::from_be_bytes(octets).to_be(),
-                },
-                sin_port: value.port().to_be(),
-            }
-        }
     }
 
 

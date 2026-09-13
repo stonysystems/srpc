@@ -1,5 +1,12 @@
 //! Canonical Rust owner for branch hints, verification, and stack traces.
 
+/// Opaque libc FILE binding; Rust only passes borrowed native pointers.
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct CFile {
+    _opaque: [u8; 0],
+}
+
 type LegacyCChar = i8;
 
 pub fn likely(value: bool) -> bool {
@@ -15,17 +22,17 @@ pub fn unlikely(value: bool) -> bool {
 
 #[allow(unsafe_code)]
 mod debugging_ffi {
-    use super::LegacyCChar;
+    use super::{CFile, LegacyCChar};
 
     unsafe extern "C" {
-        pub(super) fn srpc_stderr() -> *mut rusty::CFile;
+        pub(super) fn srpc_stderr() -> *mut CFile;
         pub(super) fn srpc_backtrace_capture(out_symbols: *mut *mut *mut LegacyCChar) -> i32;
         pub(super) fn srpc_backtrace_free(symbols: *mut *mut LegacyCChar);
         pub(super) fn fwrite(
-            data: *const rusty::LegacyCVoid,
+            data: *const core::ffi::c_void,
             size: usize,
             count: usize,
-            stream: *mut rusty::CFile,
+            stream: *mut CFile,
         ) -> usize;
     }
 }
@@ -111,7 +118,7 @@ fn bt_render(capture: &BtCapture) -> String {
 /// `stream` must point to a live libc `FILE` object.
 #[allow(unsafe_code)]
 pub unsafe fn print_stack_trace(
-    #[cfg_attr(any(), cpp_default_argument(stderr))] stream: *mut ::rusty::CFile,
+    #[cfg_attr(any(), cpp_default_argument(stderr))] stream: *mut CFile,
 ) {
     let capture = bt_capture();
     let report = bt_render(&capture);
@@ -119,7 +126,7 @@ pub unsafe fn print_stack_trace(
     // call, and the caller upholds the stream contract.
     unsafe {
         debugging_ffi::fwrite(
-            report.as_ptr() as *const rusty::LegacyCVoid,
+            report.as_ptr() as *const core::ffi::c_void,
             1,
             report.len(),
             stream,

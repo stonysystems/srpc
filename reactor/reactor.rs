@@ -71,8 +71,53 @@ pub type StacklessProfileCountUsize = std::sync::atomic::AtomicUsize;
 // `rust-type-map.toml` maps this established facade name to C++ `char`.
 type LegacyCChar = i8;
 
-type srpc_fiber_ctx = rusty::ReactorFiberContext;
-type srpc_fiber = rusty::ReactorFiberState;
+/// Native x86-64 fiber register layout, shared with the C/assembly engine.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct srpc_fiber_ctx {
+    pub rsp: *mut core::ffi::c_void,
+    pub rip: *mut core::ffi::c_void,
+    pub rbx: usize,
+    pub rbp: usize,
+    pub r12: usize,
+    pub r13: usize,
+    pub r14: usize,
+    pub r15: usize,
+}
+
+/// Native AArch64 register layout from reactor/srpc_fiber.h.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct srpc_fiber_ctx {
+    pub sp: *mut core::ffi::c_void,
+    pub pc: *mut core::ffi::c_void,
+    pub x19: usize,
+    pub x20: usize,
+    pub x21: usize,
+    pub x22: usize,
+    pub x23: usize,
+    pub x24: usize,
+    pub x25: usize,
+    pub x26: usize,
+    pub x27: usize,
+    pub x28: usize,
+    pub fp: usize,
+}
+
+/// Native fiber state shared with reactor/srpc_fiber.h.
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct srpc_fiber {
+    pub caller_ctx: srpc_fiber_ctx,
+    pub fiber_ctx: srpc_fiber_ctx,
+    pub stack_mapping: *mut core::ffi::c_void,
+    pub stack_mapping_bytes: usize,
+    pub state: i32,
+    pub entry_fn: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub entry_arg: *mut core::ffi::c_void,
+}
 
 unsafe extern "C" {
     fn srpc_fiber_init(

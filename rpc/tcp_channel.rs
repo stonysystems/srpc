@@ -1580,11 +1580,14 @@ fn tcp_factory_connect_socket(
     connect_timeout_ms: i32,
     err_out: &mut ChannelError,
 ) -> i32 {
-    let sa = cpp::rusty::net::sockaddr_in_from_socket_addr_v4(peer);
+    let octets = peer.ip().octets();
+    // Preserve the address octets as network-order bytes in the native integer.
+    let addr_be = u32::from_ne_bytes(octets);
+    let port_be = peer.port().to_be();
     let mut err_no: i32 = 0;
     let fd = tcp_connect_socket(
-            sa.sin_addr.s_addr,
-            sa.sin_port,
+            addr_be,
+            port_be,
             connect_timeout_ms,
             &mut err_no,
         );

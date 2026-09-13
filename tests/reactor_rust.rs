@@ -260,3 +260,25 @@ fn incumbent_concrete_layouts_are_pinned() {
 
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
+
+#[test]
+fn native_fiber_layout_matches_the_c_and_assembly_contract() {
+    use core::mem::offset_of;
+    let word = size_of::<usize>();
+    #[cfg(target_arch = "x86_64")]
+    let context_words = 8;
+    #[cfg(target_arch = "aarch64")]
+    let context_words = 13;
+    let context_size = context_words * word;
+    assert_eq!(size_of::<srpc_fiber_ctx>(), context_size);
+    assert_eq!(align_of::<srpc_fiber_ctx>(), word);
+    assert_eq!(offset_of!(srpc_fiber, caller_ctx), 0);
+    assert_eq!(offset_of!(srpc_fiber, fiber_ctx), context_size);
+    assert_eq!(offset_of!(srpc_fiber, stack_mapping), 2 * context_size);
+    assert_eq!(offset_of!(srpc_fiber, stack_mapping_bytes), 2 * context_size + word);
+    assert_eq!(offset_of!(srpc_fiber, state), 2 * context_size + 2 * word);
+    assert_eq!(offset_of!(srpc_fiber, entry_fn), 2 * context_size + 3 * word);
+    assert_eq!(offset_of!(srpc_fiber, entry_arg), 2 * context_size + 4 * word);
+    assert_eq!(size_of::<srpc_fiber>(), 2 * context_size + 5 * word);
+    assert_eq!(align_of::<srpc_fiber>(), word);
+}

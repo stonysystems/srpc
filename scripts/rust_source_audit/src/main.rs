@@ -30,6 +30,13 @@ fn tokens(item: &Item) -> String {
     }
     item.into_token_stream().to_string()
 }
+fn mentions_native_marker(tokens: proc_macro2::TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Ident(ident) => ident == "cpp_native_type",
+        proc_macro2::TokenTree::Group(group) => mentions_native_marker(group.stream()),
+        _ => false,
+    })
+}
 fn attrs(item: &Item) -> &[Attribute] {
     match item {
         Item::Fn(value) => &value.attrs,
@@ -427,6 +434,7 @@ impl Scanner {
             if !self.facade { canonical_bodies.visit_item(item); }
             self.records.push(json!({"kind":kind,"name":name,"path":path,"file":file,"line":item.span().start().line,
                 "tokens":tokens(item),"constant_bodies":bodies.constant_bodies,
+                "native_binding":attrs(item).iter().any(|attr| mentions_native_marker(attr.to_token_stream())),
                 "constant_functions":canonical_bodies.records,
                 "missing_macros":canonical_bodies.missing_macros,
                 "presence":attrs(item).iter().filter(|attr|attr.path().is_ident("cfg")).map(|attr|attr.to_token_stream().to_string()).collect::<Vec<_>>().join(" ")}));

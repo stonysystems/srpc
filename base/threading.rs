@@ -35,27 +35,59 @@ impl<T: Clone> SharedCell<T> {
 pub type AtomicBool = std::sync::atomic::AtomicBool;
 pub type Ordering = std::sync::atomic::Ordering;
 
+// Opaque C pthread bindings. These values are never allocated or passed by
+// value in Rust; the wrappers borrow pointers owned by native callers.
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct PthreadSpinlock {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct PthreadMutex {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct PthreadMutexAttr {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct PthreadCond {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+#[cfg_attr(any(), cpp_native_type)]
+pub struct PthreadCondAttr {
+    _opaque: [u8; 0],
+}
+
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    fn pthread_spin_init(lock: *mut rusty::PthreadSpinlock, pshared: i32) -> i32;
-    fn pthread_spin_lock(lock: *mut rusty::PthreadSpinlock) -> i32;
-    fn pthread_spin_unlock(lock: *mut rusty::PthreadSpinlock) -> i32;
-    fn pthread_spin_destroy(lock: *mut rusty::PthreadSpinlock) -> i32;
+    fn pthread_spin_init(lock: *mut PthreadSpinlock, pshared: i32) -> i32;
+    fn pthread_spin_lock(lock: *mut PthreadSpinlock) -> i32;
+    fn pthread_spin_unlock(lock: *mut PthreadSpinlock) -> i32;
+    fn pthread_spin_destroy(lock: *mut PthreadSpinlock) -> i32;
 
     fn pthread_mutex_init(
-        mutex: *mut rusty::PthreadMutex,
-        attr: *const rusty::PthreadMutexAttr,
+        mutex: *mut PthreadMutex,
+        attr: *const PthreadMutexAttr,
     ) -> i32;
-    fn pthread_mutex_lock(mutex: *mut rusty::PthreadMutex) -> i32;
-    fn pthread_mutex_unlock(mutex: *mut rusty::PthreadMutex) -> i32;
-    fn pthread_mutex_destroy(mutex: *mut rusty::PthreadMutex) -> i32;
+    fn pthread_mutex_lock(mutex: *mut PthreadMutex) -> i32;
+    fn pthread_mutex_unlock(mutex: *mut PthreadMutex) -> i32;
+    fn pthread_mutex_destroy(mutex: *mut PthreadMutex) -> i32;
 
-    fn pthread_cond_init(cond: *mut rusty::PthreadCond, attr: *const rusty::PthreadCondAttr)
+    fn pthread_cond_init(cond: *mut PthreadCond, attr: *const PthreadCondAttr)
         -> i32;
-    fn pthread_cond_destroy(cond: *mut rusty::PthreadCond) -> i32;
-    fn pthread_cond_signal(cond: *mut rusty::PthreadCond) -> i32;
-    fn pthread_cond_broadcast(cond: *mut rusty::PthreadCond) -> i32;
-    fn pthread_cond_wait(cond: *mut rusty::PthreadCond, mutex: *mut rusty::PthreadMutex) -> i32;
+    fn pthread_cond_destroy(cond: *mut PthreadCond) -> i32;
+    fn pthread_cond_signal(cond: *mut PthreadCond) -> i32;
+    fn pthread_cond_broadcast(cond: *mut PthreadCond) -> i32;
+    fn pthread_cond_wait(cond: *mut PthreadCond, mutex: *mut PthreadMutex) -> i32;
 
     fn srpc_cpu_pause();
 }
@@ -66,7 +98,7 @@ unsafe extern "C" {
 ///
 /// `lock` must satisfy `pthread_spin_init`'s pointer and lifetime contract.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_spin_init(lock: *mut rusty::PthreadSpinlock, pshared: i32) {
+pub unsafe fn Pthread_spin_init(lock: *mut PthreadSpinlock, pshared: i32) {
     unsafe { verify_at(pthread_spin_init(lock, pshared) == 0, file!(), line!()) };
 }
 
@@ -76,7 +108,7 @@ pub unsafe fn Pthread_spin_init(lock: *mut rusty::PthreadSpinlock, pshared: i32)
 ///
 /// `lock` must point to a live initialized pthread spin lock.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_spin_lock(lock: *mut rusty::PthreadSpinlock) {
+pub unsafe fn Pthread_spin_lock(lock: *mut PthreadSpinlock) {
     unsafe { verify_at(pthread_spin_lock(lock) == 0, file!(), line!()) };
 }
 
@@ -86,7 +118,7 @@ pub unsafe fn Pthread_spin_lock(lock: *mut rusty::PthreadSpinlock) {
 ///
 /// `lock` must point to a live spin lock held by the current thread.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_spin_unlock(lock: *mut rusty::PthreadSpinlock) {
+pub unsafe fn Pthread_spin_unlock(lock: *mut PthreadSpinlock) {
     unsafe { verify_at(pthread_spin_unlock(lock) == 0, file!(), line!()) };
 }
 
@@ -96,7 +128,7 @@ pub unsafe fn Pthread_spin_unlock(lock: *mut rusty::PthreadSpinlock) {
 ///
 /// `lock` must point to an initialized, unlocked pthread spin lock.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_spin_destroy(lock: *mut rusty::PthreadSpinlock) {
+pub unsafe fn Pthread_spin_destroy(lock: *mut PthreadSpinlock) {
     unsafe { verify_at(pthread_spin_destroy(lock) == 0, file!(), line!()) };
 }
 
@@ -107,8 +139,8 @@ pub unsafe fn Pthread_spin_destroy(lock: *mut rusty::PthreadSpinlock) {
 /// `mutex` and non-null `attr` must satisfy `pthread_mutex_init`'s contract.
 #[allow(unsafe_code)]
 pub unsafe fn Pthread_mutex_init(
-    mutex: *mut rusty::PthreadMutex,
-    attr: *const rusty::PthreadMutexAttr,
+    mutex: *mut PthreadMutex,
+    attr: *const PthreadMutexAttr,
 ) {
     unsafe { verify_at(pthread_mutex_init(mutex, attr) == 0, file!(), line!()) };
 }
@@ -119,7 +151,7 @@ pub unsafe fn Pthread_mutex_init(
 ///
 /// `mutex` must point to a live initialized pthread mutex.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_mutex_lock(mutex: *mut rusty::PthreadMutex) {
+pub unsafe fn Pthread_mutex_lock(mutex: *mut PthreadMutex) {
     unsafe { verify_at(pthread_mutex_lock(mutex) == 0, file!(), line!()) };
 }
 
@@ -129,7 +161,7 @@ pub unsafe fn Pthread_mutex_lock(mutex: *mut rusty::PthreadMutex) {
 ///
 /// `mutex` must point to a live pthread mutex held by this thread.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_mutex_unlock(mutex: *mut rusty::PthreadMutex) {
+pub unsafe fn Pthread_mutex_unlock(mutex: *mut PthreadMutex) {
     unsafe { verify_at(pthread_mutex_unlock(mutex) == 0, file!(), line!()) };
 }
 
@@ -139,7 +171,7 @@ pub unsafe fn Pthread_mutex_unlock(mutex: *mut rusty::PthreadMutex) {
 ///
 /// `mutex` must point to an initialized, unlocked pthread mutex.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_mutex_destroy(mutex: *mut rusty::PthreadMutex) {
+pub unsafe fn Pthread_mutex_destroy(mutex: *mut PthreadMutex) {
     unsafe { verify_at(pthread_mutex_destroy(mutex) == 0, file!(), line!()) };
 }
 
@@ -150,8 +182,8 @@ pub unsafe fn Pthread_mutex_destroy(mutex: *mut rusty::PthreadMutex) {
 /// `cond` and non-null `attr` must satisfy `pthread_cond_init`'s contract.
 #[allow(unsafe_code)]
 pub unsafe fn Pthread_cond_init(
-    cond: *mut rusty::PthreadCond,
-    attr: *const rusty::PthreadCondAttr,
+    cond: *mut PthreadCond,
+    attr: *const PthreadCondAttr,
 ) {
     unsafe { verify_at(pthread_cond_init(cond, attr) == 0, file!(), line!()) };
 }
@@ -162,7 +194,7 @@ pub unsafe fn Pthread_cond_init(
 ///
 /// `cond` must point to an initialized condition variable with no waiters.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_cond_destroy(cond: *mut rusty::PthreadCond) {
+pub unsafe fn Pthread_cond_destroy(cond: *mut PthreadCond) {
     unsafe { verify_at(pthread_cond_destroy(cond) == 0, file!(), line!()) };
 }
 
@@ -172,7 +204,7 @@ pub unsafe fn Pthread_cond_destroy(cond: *mut rusty::PthreadCond) {
 ///
 /// `cond` must point to a live initialized condition variable.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_cond_signal(cond: *mut rusty::PthreadCond) {
+pub unsafe fn Pthread_cond_signal(cond: *mut PthreadCond) {
     unsafe { verify_at(pthread_cond_signal(cond) == 0, file!(), line!()) };
 }
 
@@ -182,7 +214,7 @@ pub unsafe fn Pthread_cond_signal(cond: *mut rusty::PthreadCond) {
 ///
 /// `cond` must point to a live initialized condition variable.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_cond_broadcast(cond: *mut rusty::PthreadCond) {
+pub unsafe fn Pthread_cond_broadcast(cond: *mut PthreadCond) {
     unsafe { verify_at(pthread_cond_broadcast(cond) == 0, file!(), line!()) };
 }
 
@@ -193,7 +225,7 @@ pub unsafe fn Pthread_cond_broadcast(cond: *mut rusty::PthreadCond) {
 /// Both pointers must be live, initialized, and satisfy `pthread_cond_wait`'s
 /// locking and lifetime contract.
 #[allow(unsafe_code)]
-pub unsafe fn Pthread_cond_wait(cond: *mut rusty::PthreadCond, mutex: *mut rusty::PthreadMutex) {
+pub unsafe fn Pthread_cond_wait(cond: *mut PthreadCond, mutex: *mut PthreadMutex) {
     unsafe { verify_at(pthread_cond_wait(cond, mutex) == 0, file!(), line!()) };
 }
 

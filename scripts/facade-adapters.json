@@ -26,10 +26,6 @@
       "category": "import",
       "sha256": "440c9c55f305e438aab1b5237a62340716e133e1e377bc6aecfbcdebc2c428fa"
     },
-    "enum:LegacyCVoid": {
-      "category": "c-layout",
-      "sha256": "1a0a9c1547e9748311f91b3bf8adc845d54eb03e1f43ad746a65a1cca6331dd1"
-    },
     "file-attributes:": {
       "category": "import",
       "sha256": "f3e53b5dda304df5d20e6151d9c6d0d1a4c56670ccad33933f4e32451c8a0c11"
@@ -49,10 +45,6 @@
     "function:panic::payload_message": {
       "category": "standard",
       "sha256": "9ed02827e1e585d07228e6e0d6a07d13e826df5a194fa27afa600a4fe76dbdb2"
-    },
-    "function:rusty::net::sockaddr_in_from_socket_addr_v4": {
-      "category": "standard",
-      "sha256": "d226c0f2905ad11989122414419ceb1cc90069aae7d9e32f2ac011a82fa43481"
     },
     "function:rusty::net::socket_addr_v4_from_str": {
       "category": "standard",
@@ -130,42 +122,6 @@
       "category": "standard",
       "sha256": "230525fab95805e42a431345257605209f7a7457278b817d4394abf5421d5021"
     },
-    "struct:CFile": {
-      "category": "c-layout",
-      "sha256": "5645067ce8f883a428c206c8f78ebdb045c811adf4051a0b7ed4c166402359fa"
-    },
-    "struct:PthreadCond": {
-      "category": "c-layout",
-      "sha256": "0d336edc1a0ec27147b5cfb172d7445563f88faa955bf6d18ae2b9c93a0aaa0f"
-    },
-    "struct:PthreadCondAttr": {
-      "category": "c-layout",
-      "sha256": "a1194cb9e1cbfd71d11139ea5637886a2fb6bc6f17e4a1c83d9a2c724b5097d0"
-    },
-    "struct:PthreadMutex": {
-      "category": "c-layout",
-      "sha256": "5c20c8eacd3398c38e5c9b673d14e617f466863f3f80abb9e04e4aeab0ae1afa"
-    },
-    "struct:PthreadMutexAttr": {
-      "category": "c-layout",
-      "sha256": "fea5aeec4d1f683ae70e75f4d62d99b4fea30f7908fbaa051528891c28300972"
-    },
-    "struct:PthreadSpinlock": {
-      "category": "c-layout",
-      "sha256": "151911373e35be3e74f54f3c59f6b4e7d36c67319f39bad1a20d204b8d22ee25"
-    },
-    "struct:ReactorFiberContext [# [cfg (target_arch = \"aarch64\")]]": {
-      "category": "c-layout",
-      "sha256": "7f342a0a84b63e033e55d6bef487a4d395a90c72273b761f5053d90360e40e80"
-    },
-    "struct:ReactorFiberContext [# [cfg (target_arch = \"x86_64\")]]": {
-      "category": "c-layout",
-      "sha256": "521628fd269c9160c638911c01d77f4a051e66eb889f52e665da8f61be4d902c"
-    },
-    "struct:ReactorFiberState": {
-      "category": "c-layout",
-      "sha256": "62193b81a8b96d2faa08e392e8b8555ba1e562241d7d0226df9d1a7b5db7effa"
-    },
     "struct:ReactorJobSet": {
       "category": "standard",
       "sha256": "a1b2e9ae49bb9e43a7e0ee5d49d6cb57bd835c43f8c644ef46bb9ca5afa9b370"
@@ -177,14 +133,6 @@
     "struct:panic::PanicPayload": {
       "category": "standard",
       "sha256": "751dfe25bbf4ccbc4a1394974678c45f645ba888435a8cae5de4af7238e7a2f4"
-    },
-    "struct:rusty::net::InAddr": {
-      "category": "c-layout",
-      "sha256": "d6f234a887396f724b60610f16ab9e4966443e537b8c56568042bc8b6b43aa3b"
-    },
-    "struct:rusty::net::SockAddrIn": {
-      "category": "c-layout",
-      "sha256": "5f7627fb80ea404ec4de84f1a3555844b64d566ab9cdfaeec461948b642782e8"
     },
     "struct:std::Cout": {
       "category": "standard",
