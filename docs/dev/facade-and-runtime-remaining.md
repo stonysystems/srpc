@@ -110,7 +110,12 @@ These let the compiler prove the aliases' identities in the reactor module's
 macro-containing scope. Both providers compile, and Rust tests and clippy pass.
 The client now also compiles with its threading import and explicit callback
 ownership transfers. All 37 providers match the reviewed unique and raw symbol
-inventories. Complete CMake, CTest and sanitizer acceptance remains pending.
+inventories, and `libsrpc.a` links. A scanned C++ consumer now keeps the runtime
+umbrella and its dependencies current and supplies its explicit ABI importer
+mapping. This fixes Clang crashes caused by stale synthesized runtime BMIs.
+The original event, fiber-runtime and serialization-parity consumers pass their
+5, 9 and 12 cases; serialization also needed an explicit factory callback type.
+Complete CMake, CTest and sanitizer acceptance remains pending.
 
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).

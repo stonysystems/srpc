@@ -145,6 +145,38 @@ class GateStaticContractTests(unittest.TestCase):
                 )
 
 
+    def test_configured_maps_include_scanned_runtime_and_reject_stale_bmis(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="configured-runtime-map-") as raw:
+            build = Path(raw)
+            provider = build / "CMakeFiles/srpc.dir/goal0-crate-cpp/srpc.probe.cppm.o.modmap"
+            runtime = build / "CMakeFiles/srpc_runtime_imports.dir/tests/runtime_imports.cc.o.modmap"
+            retired = build / "CMakeFiles/srpc.dir/retired.cpp.o.modmap"
+            provider_bmi = build / "srpc.probe.pcm"
+            runtime_bmi = build / "rusty.pcm"
+            for path in (provider, runtime, retired):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            provider_bmi.touch()
+            runtime_bmi.touch()
+            provider.write_text(f"-fmodule-output={provider_bmi}\n")
+            runtime.write_text(f"-fmodule-file=rusty={runtime_bmi}\n")
+            retired.write_text("-fmodule-file=rusty=retired-missing.pcm\n")
+            self.assertEqual(
+                GATE.resolve_configured_module_map(ROOT, [str(build)]),
+                {"srpc.probe": provider_bmi, "rusty": runtime_bmi},
+            )
+            alternate = build / "alternate-rusty.pcm"
+            alternate.touch()
+            provider.write_text(
+                f"-fmodule-output={provider_bmi}\n-fmodule-file=rusty={alternate}\n"
+            )
+            with self.assertRaisesRegex(GATE.GateError, "ambiguous"):
+                GATE.resolve_configured_module_map(ROOT, [str(build)])
+            provider.write_text(f"-fmodule-output={provider_bmi}\n")
+            runtime_bmi.unlink()
+            with self.assertRaisesRegex(GATE.GateError, "unavailable"):
+                GATE.resolve_configured_module_map(ROOT, [str(build)])
+
+
 class GateContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

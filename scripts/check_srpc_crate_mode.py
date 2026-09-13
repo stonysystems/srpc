@@ -10144,13 +10144,20 @@ def resolve_configured_module_map(
                 f"configured module-map root is unavailable: {build_root}"
             )
         for modmap in build_root.rglob("*.o.modmap"):
-            if not modmap.is_file() or "srpc.dir" not in modmap.parts:
+            if not modmap.is_file():
                 continue
             # Retired historical .cpp carriers can leave stale CMake modmaps
             # in an incremental build tree. Only generated canonical owners
             # under goal0-crate-cpp define the dependency closure for this
             # lane; inline providers live elsewhere and are not queried here.
-            if "goal0-crate-cpp" not in modmap.parts:
+            canonical_provider = (
+                "srpc.dir" in modmap.parts and "goal0-crate-cpp" in modmap.parts
+            )
+            # The importer also uses the runtime umbrella. Its scanned consumer
+            # supplies the active runtime BMI closure now that canonical Rust
+            # providers import individual standard-library ports directly.
+            runtime_consumer = "srpc_runtime_imports.dir" in modmap.parts
+            if not canonical_provider and not runtime_consumer:
                 continue
             for line in modmap.read_text(encoding="utf-8").splitlines():
                 fields = shlex.split(line)

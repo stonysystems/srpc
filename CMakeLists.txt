@@ -866,6 +866,21 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     endforeach()
 endif()
 
+# Keep an actual scanned consumer of the runtime umbrella. Canonical providers
+# now import individual std ports, so their dependency graph alone does not
+# build the umbrella BMI that C++ consumers still import. Match srpc's flags
+# and link only the runtime here to avoid the mixed std-module closure below.
+add_library(srpc_runtime_imports OBJECT EXCLUDE_FROM_ALL
+    tests/runtime_imports.cc
+)
+set_target_properties(srpc_runtime_imports PROPERTIES CXX_SCAN_FOR_MODULES ON)
+target_include_directories(srpc_runtime_imports PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${SRPC_RUSTY_CPP_DIR}/include
+)
+target_compile_options(srpc_runtime_imports PRIVATE ${SRPC_CXXFLAGS})
+target_link_libraries(srpc_runtime_imports PRIVATE rusty)
+
 add_custom_target(srpc_goal0_dual_compile ALL
     COMMAND "$<TARGET_FILE:srpc_goal0_rand_kernel_smoke>"
     COMMAND
@@ -893,6 +908,7 @@ add_dependencies(srpc_goal0_dual_compile
     srpc
     srpc_goal0_crate_codegen
     srpc_goal0_rand_kernel_smoke
+    srpc_runtime_imports
     ${SRPC_GOAL0_RUNTIME_TARGETS}
 )
 
@@ -939,8 +955,8 @@ endif()
 # the pinned CMake 4.3.4 there is a single __cmake_cxx_std_23 target and no
 # synth split at all; the modmap is then simply redundant, not wrong.)
 #
-# This sits OUTSIDE the GoogleTest guard below: it depends only on `srpc` and
-# the emitter script, and `rpcbench` consumes it without linking gtest.
+# This sits OUTSIDE the GoogleTest guard below: it depends on `srpc`, the
+# scanned runtime consumer and the emitter; `rpcbench` uses it without gtest.
 set(SRPC_BATTERY_MODMAP
     ${CMAKE_CURRENT_BINARY_DIR}/goal0-battery-modules.modmap)
 add_custom_command(
@@ -953,6 +969,7 @@ add_custom_command(
         --output "${SRPC_BATTERY_MODMAP}"
     DEPENDS
         srpc
+        srpc_runtime_imports
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/emit_module_map.py"
     COMMENT "Collecting the srpc module map for the Goal-0 module consumers"
     VERBATIM
