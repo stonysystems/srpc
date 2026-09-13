@@ -4,10 +4,6 @@
 
 use crate::basetypes::SparseInt;
 use crate::debugging::verify_at;
-use cpp::rusty as cpp_rusty;
-#[allow(unused_imports)]
-use cpp::std as _;
-use rusty as cpp;
 use std::sync::Arc;
 
 pub type v32 = crate::basetypes::v32;
@@ -15,8 +11,8 @@ pub type v64 = crate::basetypes::v64;
 
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    fn srpc_fd_write_once(fd: i32, pointer: *const rusty::LegacyCVoid, length: usize) -> i64;
-    fn srpc_fd_read_once(fd: i32, pointer: *mut rusty::LegacyCVoid, length: usize) -> i64;
+    fn srpc_fd_write_once(fd: i32, pointer: *const core::ffi::c_void, length: usize) -> i64;
+    fn srpc_fd_read_once(fd: i32, pointer: *mut core::ffi::c_void, length: usize) -> i64;
     fn srpc_fd_last_errno() -> i32;
     fn srpc_fd_interrupted_errno() -> i32;
 }
@@ -137,7 +133,7 @@ impl SourceBase for BufferSource {
 /// for every use of the returned proxy.
 #[allow(unsafe_code)]
 pub unsafe fn make_sink_proxy_buffer(sink: *mut BufferSink) -> SinkProxy {
-    rusty::make_box::<rusty::RustcSinkBaseAdapterRefMut<BufferSink>>(unsafe { &mut *sink })
+    Box::new(borrowed_io::BorrowedSink { pointer: sink })
 }
 
 /// # Safety
@@ -148,7 +144,7 @@ pub unsafe fn make_sink_proxy_buffer(sink: *mut BufferSink) -> SinkProxy {
 /// that lifetime.
 #[allow(unsafe_code)]
 pub unsafe fn make_source_proxy_buffer(source: *mut BufferSource) -> SourceProxy {
-    rusty::make_box::<rusty::RustcSourceBaseAdapterRefMut<BufferSource>>(unsafe { &mut *source })
+    Box::new(borrowed_io::BorrowedSource { pointer: source })
 }
 
 pub struct FdSink {
@@ -171,7 +167,7 @@ impl SinkBase for FdSink {
         let mut written = 0usize;
         while written < n {
             let count = unsafe {
-                srpc_fd_write_once(self.fd_, p.add(written) as *const rusty::LegacyCVoid, n - written)
+                srpc_fd_write_once(self.fd_, p.add(written) as *const core::ffi::c_void, n - written)
             };
             if count < 0 && unsafe { srpc_fd_last_errno() == srpc_fd_interrupted_errno() } {
                 continue;
@@ -204,7 +200,7 @@ impl SourceBase for FdSource {
         let mut got = 0usize;
         while got < n {
             let count = unsafe {
-                srpc_fd_read_once(self.fd_, p.add(got) as *mut rusty::LegacyCVoid, n - got)
+                srpc_fd_read_once(self.fd_, p.add(got) as *mut core::ffi::c_void, n - got)
             };
             if count < 0 && unsafe { srpc_fd_last_errno() == srpc_fd_interrupted_errno() } {
                 continue;
@@ -221,82 +217,40 @@ impl SourceBase for FdSource {
     }
 }
 
-// Rustc-lane bodies for the erased sink and source proxies.  These six impls
-// emit NO C++: the transpiler lowers a trait impl to nothing when its self type
-// is a raw pointer or a trait object rather than a nominal type.  The rule is
-// narrow -- the same shape on a nominal struct DOES emit a member and its symbol
-// -- so do not restate any of these on a named type.
-//
-// They exist because `SinkProxy` is `Box<dyn SinkBase>`, so a proxy must OWN a
-// concrete `SinkBase`.  `rusty::RustcSinkBaseAdapterRefMut<T>` is `*mut T`
-// (the honest model of a C++ adapter whose only member is a `T&`), and
-// `rusty::make_box` returns `Box<Adapter>`, so the unsizing coercion to
-// `Box<dyn SinkBase>` fires at each `make_*_proxy_*` return position -- inside
-// the crate that owns the trait, which is the only place coherence allows it.
-// Without them every proxy construction panicked and nothing could serialize
-// under rustc.
-#[allow(unsafe_code)]
-impl SinkBase for *mut BufferSink {
-    // SAFETY: the proxy constructor's contract keeps the target alive, unmoved
-    // and exclusively borrowed for the proxy's whole lifetime.
-    unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
-        unsafe { (**self).write_bytes(p, n) }
-    }
-}
+mod borrowed_io {
+    use super::{SinkBase, SourceBase};
 
-#[allow(unsafe_code)]
-impl SinkBase for *mut FdSink {
-    // SAFETY: same exclusive-target contract as the buffer sink above.
-    unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
-        unsafe { (**self).write_bytes(p, n) }
+    // The proxy owns a pointer carrier. Its unsafe constructor keeps the target
+    // exclusively borrowed and alive; both lanes use this forwarding implementation
+    // and ordinary Box trait-object coercion.
+    pub(super) struct BorrowedSink<T: SinkBase> {
+        pub(super) pointer: *mut T,
     }
-}
 
-#[allow(unsafe_code)]
-impl SourceBase for *mut BufferSource {
-    // SAFETY: same exclusive-target contract, read side.
-    unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
-        unsafe { (**self).read_bytes(p, n) }
+    #[allow(unsafe_code)]
+    #[cfg_attr(any(), cpp_inherit)]
+    impl<T: SinkBase> SinkBase for BorrowedSink<T> {
+        unsafe fn write_bytes(&mut self, pointer: *const u8, length: usize) {
+            // SAFETY: construction pins the exclusive target borrow; the caller
+            // supplies the unchanged byte-range contract.
+            unsafe { (*self.pointer).write_bytes(pointer, length) }
+        }
     }
-}
 
-#[allow(unsafe_code)]
-impl SourceBase for *mut FdSource {
-    // SAFETY: same exclusive-target contract, read side.
-    unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
-        unsafe { (**self).read_bytes(p, n) }
+    pub(super) struct BorrowedSource<T: SourceBase> {
+        pub(super) pointer: *mut T,
     }
-}
 
-// The runtime ADL adapter delegates to these canonical implementations.
-#[allow(unsafe_code)]
-impl<T: Serialize + ?Sized> cpp::RustcAdlSerialize<T> for BinaryWriteArchive {
-    unsafe fn rustc_adl_serialize(&mut self, value: &T) {
-        value.serialize(self)
+    #[allow(unsafe_code)]
+    #[cfg_attr(any(), cpp_inherit)]
+    impl<T: SourceBase> SourceBase for BorrowedSource<T> {
+        unsafe fn read_bytes(&mut self, pointer: *mut u8, length: usize) -> usize {
+            // SAFETY: construction pins the exclusive target borrow; the caller
+            // supplies the unchanged byte-range contract.
+            unsafe { (*self.pointer).read_bytes(pointer, length) }
+        }
     }
-}
 
-#[allow(unsafe_code)]
-impl<T: Deserialize + ?Sized> cpp::RustcAdlDeserialize<T> for BinaryReadArchive {
-    unsafe fn rustc_adl_deserialize(&mut self, value: &mut T) {
-        value.deserialize(self)
-    }
-}
-
-#[allow(unsafe_code)]
-impl cpp::RustcSinkDyn for dyn SinkBase {
-    // SAFETY: forwards the caller's pointer/length contract unchanged.
-    unsafe fn rustc_sink_write(&mut self, pointer: *const u8, length: usize) {
-        unsafe { self.write_bytes(pointer, length) }
-    }
-}
-
-#[allow(unsafe_code)]
-impl cpp::RustcSourceDyn for dyn SourceBase {
-    // SAFETY: forwards the caller's pointer/length contract unchanged.
-    unsafe fn rustc_source_read(&mut self, pointer: *mut u8, length: usize) -> usize {
-        unsafe { self.read_bytes(pointer, length) }
-    }
 }
 
 /// # Safety
@@ -307,7 +261,7 @@ impl cpp::RustcSourceDyn for dyn SourceBase {
 /// function does not take descriptor ownership.
 #[allow(unsafe_code)]
 pub unsafe fn make_sink_proxy_fd(sink: *mut FdSink) -> SinkProxy {
-    rusty::make_box::<rusty::RustcSinkBaseAdapterRefMut<FdSink>>(unsafe { &mut *sink })
+    Box::new(borrowed_io::BorrowedSink { pointer: sink })
 }
 
 /// # Safety
@@ -318,7 +272,7 @@ pub unsafe fn make_sink_proxy_fd(sink: *mut FdSink) -> SinkProxy {
 /// does not take descriptor ownership.
 #[allow(unsafe_code)]
 pub unsafe fn make_source_proxy_fd(source: *mut FdSource) -> SourceProxy {
-    rusty::make_box::<rusty::RustcSourceBaseAdapterRefMut<FdSource>>(unsafe { &mut *source })
+    Box::new(borrowed_io::BorrowedSource { pointer: source })
 }
 
 pub struct BinaryWriteArchive {
@@ -327,19 +281,11 @@ pub struct BinaryWriteArchive {
 
 #[allow(unsafe_code)]
 impl BinaryWriteArchive {
-    // Emit raw bytes (used for unstructured payloads).
-    // @unsafe - virtual write through the type-erased sink proxy.
-    // The explicit `(*self.sink_)` deref is LOAD-BEARING: SinkProxy is a
-    // hand-written C++ alias, so the transpiler cannot see the Box
-    // behind it and a bare `self.sink_.write_bytes(..)` lowers to a `.`
-    // member access on the handle (which does not compile). The deref
-    // lowers through rusty::detail::deref_if_pointer_like, i.e. exactly
-    // the `(*sink_).write_bytes(..)` the old kernel spelled `sink_->`.
     /// # Safety
     ///
     /// `p` must satisfy [`SinkBase::write_bytes`]'s readable-buffer contract.
     pub unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
-        unsafe { cpp_rusty::srpc_sink_write(&mut *self.sink_, p, n) }
+        unsafe { (*self.sink_).write_bytes(p, n) }
     }
 }
 
@@ -460,6 +406,14 @@ pub fn serialize_pair_fields<First: Serialize + ?Sized, Second: Serialize + ?Siz
 ) {
     Serialize_::serialize(first, ar);
     Serialize_::serialize(second, ar);
+}
+
+/// Read a map entry or pair in its canonical field order.
+pub fn deserialize_pair_fields<First: Deserialize + ?Sized, Second: Deserialize + ?Sized>(
+    first: &mut First, second: &mut Second, ar: &mut BinaryReadArchive,
+) {
+    Deserialize_::deserialize(first, ar);
+    Deserialize_::deserialize(second, ar);
 }
 
 /// Write the common collection length and traverse each element once.
@@ -668,36 +622,27 @@ impl<K: Serialize, V: Serialize> Serialize for std::collections::HashMap<K, V> {
     }
 }
 
-// rusty::StdPair: write first then second, no length prefix (each side
-// already knows the type and consumes its own bytes). It stays last in
-// the trait block; codegen emits every Serialize_ overload declaration
-// before any definition, so both element calls see the complete set.
-impl<T1: Serialize, T2: Serialize> Serialize for rusty::StdPair<T1, T2> {
+// Rust tuples and C++ std::pair use the same field order.
+impl<First: Serialize, Second: Serialize> Serialize for (First, Second) {
     fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        serialize_pair_fields(&self.first, &self.second, ar);
+        serialize_pair_fields(&self.0, &self.1, ar);
     }
 }
 
 #[allow(non_snake_case, unsafe_code)]
 pub mod Serialize_ {
-    use super::{cpp, BinaryWriteArchive, Serialize};
-    use cpp::rusty as cpp_rusty;
+    use super::{BinaryWriteArchive, Serialize};
 
-    fn adl_serialize_bridge<T: Serialize + ?Sized>(value: &T, archive: &mut BinaryWriteArchive) {
-        // SAFETY: the runtime bridge borrows both arguments only for this call
-        // and performs a poison-scoped, ADL-only lookup. A missing overload
-        // remains a hard C++ template-instantiation error.
-        unsafe { cpp_rusty::srpc_adl_serialize(value, archive) }
+    // Rust dispatches its canonical trait directly. The module epilogue defines
+    // the C++ counterpart with the existing poison-scoped ADL call adapter.
+    #[cfg_attr(any(), cpp_declaration)]
+    pub fn adl_serialize_bridge<T: Serialize + ?Sized>(value: &T, archive: &mut BinaryWriteArchive) {
+        Serialize::serialize(value, archive)
     }
 
     #[allow(non_snake_case)]
     pub mod adl_detail_ {
         use super::{BinaryWriteArchive, Serialize};
-
-        // Historical lookup poison: declaration only, deliberately undefined.
-        unsafe extern "Rust" {
-            pub fn serialize();
-        }
 
         pub fn dispatch_serialize<T: Serialize + ?Sized>(value: &T, archive: &mut BinaryWriteArchive) {
             super::adl_serialize_bridge(value, archive)
@@ -718,19 +663,13 @@ pub struct BinaryReadArchive {
 
 #[allow(unsafe_code)]
 impl BinaryReadArchive {
-    // Read into raw bytes; false if the source ran out.
-    // @unsafe - virtual read through the type-erased source proxy.
-    // The explicit `(*self.source_)` deref is load-bearing for exactly
-    // the same reason as BinaryWriteArchive::write_bytes above:
-    // SourceProxy is a hand-written C++ alias, so the transpiler cannot
-    // see the Box behind it and would emit a `.` on the handle.
     /// # Safety
     ///
     /// `p` and the concrete source retained by `self.source_` must satisfy all
     /// of [`SourceBase::read_bytes`]'s destination, non-overlap, and retained
     /// backing-storage requirements.
     pub unsafe fn read_exact(&mut self, p: *mut u8, n: usize) -> bool {
-        let got: usize = unsafe { cpp_rusty::srpc_source_read(&mut *self.source_, p, n) };
+        let got: usize = unsafe { (*self.source_).read_bytes(p, n) };
         got == n
     }
     // Read exactly n bytes or abort — the operator>> truncation contract
@@ -881,10 +820,9 @@ impl Deserialize for String {
 // only insert (the clang-22 mangler crash is in ENUMERATION, which
 // only the serialize side does).
 
-impl<T1: Deserialize, T2: Deserialize> Deserialize for rusty::StdPair<T1, T2> {
+impl<First: Deserialize, Second: Deserialize> Deserialize for (First, Second) {
     fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        Deserialize_::deserialize(&mut self.first, ar);
-        Deserialize_::deserialize(&mut self.second, ar);
+        deserialize_pair_fields(&mut self.0, &mut self.1, ar);
     }
 }
 
@@ -970,23 +908,18 @@ impl<K: Default + Deserialize + Eq + std::hash::Hash, V: Default + Deserialize> 
 
 #[allow(non_snake_case, unsafe_code)]
 pub mod Deserialize_ {
-    use super::{cpp, BinaryReadArchive, Deserialize};
-    use cpp::rusty as cpp_rusty;
+    use super::{BinaryReadArchive, Deserialize};
 
-    fn adl_deserialize_bridge<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
-        // SAFETY: same bounded ADL bridge contract as the write side, with the
-        // payload mutably borrowed for the duration of the call only.
-        unsafe { cpp_rusty::srpc_adl_deserialize(value, archive) }
+    // Rust dispatches its canonical trait directly. The module epilogue defines
+    // the C++ counterpart with the existing poison-scoped ADL call adapter.
+    #[cfg_attr(any(), cpp_declaration)]
+    pub fn adl_deserialize_bridge<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
+        Deserialize::deserialize(value, archive)
     }
 
     #[allow(non_snake_case)]
     pub mod adl_detail_ {
         use super::{BinaryReadArchive, Deserialize};
-
-        // Historical lookup poison: declaration only, deliberately undefined.
-        unsafe extern "Rust" {
-            pub fn deserialize();
-        }
 
         pub fn dispatch_deserialize<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
             super::adl_deserialize_bridge(value, archive)

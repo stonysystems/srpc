@@ -458,3 +458,21 @@ fn raw_byte_helpers_preserve_invalid_utf8_and_embedded_nul() {
     assert_eq!(restored, original);
     assert_eq!(remaining, 0);
 }
+
+#[test]
+fn standard_tuple_fields_match_pair_wire_order() {
+    let original = (17i32, String::from("pair"));
+    let bytes = encode(|archive| original.serialize(archive));
+    let expected = encode(|archive| {
+        original.0.serialize(archive);
+        original.1.serialize(archive);
+    });
+    assert_eq!(bytes, expected);
+    let (restored, remaining) = decode(&bytes, |archive| {
+        let mut restored = (0i32, String::new());
+        restored.deserialize(archive);
+        restored
+    });
+    assert_eq!(restored, original);
+    assert_eq!(remaining, 0);
+}

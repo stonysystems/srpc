@@ -201,22 +201,6 @@ callable_signatures = []
 kind = "function"
 callable_signatures = ["OwnedFd(int)"]
 
-[modules.rusty.symbols.srpc_adl_serialize]
-kind = "function_template"
-callable_signatures = ["void(const T&,Archive&)"]
-
-[modules.rusty.symbols.srpc_adl_deserialize]
-kind = "function_template"
-callable_signatures = ["void(T&,Archive&)"]
-
-[modules.rusty.symbols.srpc_sink_write]
-kind = "function_template"
-callable_signatures = ["void(Sink&,const uint8_t*,size_t)"]
-
-[modules.rusty.symbols.srpc_source_read]
-kind = "function_template"
-callable_signatures = ["size_t(Source&,uint8_t*,size_t)"]
-
 [modules.rusty.symbols.srpc_arc_default]
 kind = "function_template"
 callable_signatures = ["rusty::Arc<T>()"]

@@ -22,14 +22,6 @@
     }
   },
   "declarations": {
-    "alias:RustcSinkBaseAdapterRefMut": {
-      "category": "import",
-      "sha256": "501807aee310d221ab2dd3998ae59aef4f2e9a21a3f929193d866e15b21c5cfa"
-    },
-    "alias:RustcSourceBaseAdapterRefMut": {
-      "category": "import",
-      "sha256": "95558c63d3f8d222ad9ded037222ad119ccf0b9a89d9d8774e5fa3c2c73d396b"
-    },
     "alias:StdVector": {
       "category": "import",
       "sha256": "440c9c55f305e438aab1b5237a62340716e133e1e377bc6aecfbcdebc2c428fa"
@@ -69,22 +61,6 @@
     "function:rusty::net::socket_addr_v4_to_string": {
       "category": "standard",
       "sha256": "54a12fd612b52c9388da04b0facb45197d3a702d399d2e83aa65446bee46f663"
-    },
-    "function:rusty::srpc_adl_deserialize": {
-      "category": "trait-dispatch",
-      "sha256": "4b4779b800692ff8f34854b20db23efd2235ff78410a19b67de100a045bcd0a6"
-    },
-    "function:rusty::srpc_adl_serialize": {
-      "category": "trait-dispatch",
-      "sha256": "d15c63ca967041f796de717bd7f1e58586e7218160ffe63b38166f68919b0239"
-    },
-    "function:rusty::srpc_sink_write": {
-      "category": "trait-dispatch",
-      "sha256": "e8cf6692c6ffe5725b7c53795176cbd47b6590bc2198070bb744f6f83958f8b3"
-    },
-    "function:rusty::srpc_source_read": {
-      "category": "trait-dispatch",
-      "sha256": "d0810bad928a00f0aed25a304a1ded0108dc0966f37c211bf1c5153c8d4d399f"
     },
     "function:std::make_pair": {
       "category": "standard",
@@ -233,22 +209,6 @@
     "trait:ReactorJobSetKey": {
       "category": "standard",
       "sha256": "6224086cab38ebb3fcd1a542ab1d1ec564734ad4220ec806c268ace3d26bd7e5"
-    },
-    "trait:RustcAdlDeserialize": {
-      "category": "trait-dispatch",
-      "sha256": "ecb7074234fa170c763ce261494a01864cbb69e8bbaa9799e0e7e020d03ab4df"
-    },
-    "trait:RustcAdlSerialize": {
-      "category": "trait-dispatch",
-      "sha256": "4e0394a952a84382c80e20a92106b74d6bc2729e8509176520afcbc5544ddcd6"
-    },
-    "trait:RustcSinkDyn": {
-      "category": "trait-dispatch",
-      "sha256": "16d606a05b96fd9e7679a04195aa3d43f3c9e3cce0a7087fd547ffe2c67d3b1b"
-    },
-    "trait:RustcSourceDyn": {
-      "category": "trait-dispatch",
-      "sha256": "e0d7d44629fa04a496903c0a50d435a51766854c5b674524febd07785246b8c0"
     },
     "trait:RustyFunctionIsEmpty": {
       "category": "standard",

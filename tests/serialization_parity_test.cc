@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 #include <rusty/rusty.hpp>
 #include "../misc/any_message.hpp"
 #include "../misc/serializable_envelope.hpp"
@@ -93,6 +94,34 @@ TEST(SerializationParity, RawCppStringsPreserveInvalidUtf8AndNul) {
   EXPECT_EQ(Encode(std::string_view(original)), expected);
   EXPECT_EQ(Decode<std::string>(expected), original);
   EXPECT_EQ(Decode<std::string>(Encode(std::string{})), std::string{});
+}
+
+TEST(SerializationParity, BorrowedFdProxiesForwardToCallerOwnedDescriptors) {
+  int descriptors[2];
+  ASSERT_EQ(::pipe(descriptors), 0);
+  {
+    srpc::FdSink sink{descriptors[1]};
+    srpc::BinaryWriteArchive output{srpc::make_sink_proxy_fd(&sink)};
+    srpc::Serialize_::serialize(int32_t{73}, output);
+    srpc::FdSource source{descriptors[0]};
+    srpc::BinaryReadArchive input{srpc::make_source_proxy_fd(&source)};
+    int32_t restored = 0;
+    srpc::Deserialize_::deserialize(restored, input);
+    EXPECT_EQ(restored, 73);
+  }
+  EXPECT_EQ(::close(descriptors[0]), 0);
+  EXPECT_EQ(::close(descriptors[1]), 0);
+}
+
+TEST(SerializationParity, ImportedPairFieldsKeepTupleWireOrder) {
+  const std::pair<int32_t, std::string> original{17, "pair"};
+  auto expected = Encode(original.first);
+  const auto second = Encode(original.second);
+  expected.insert(expected.end(), second.begin(), second.end());
+  EXPECT_EQ(Encode(original), expected);
+  EXPECT_EQ((Decode<std::pair<int32_t, std::string>>(expected)), original);
+  static_assert(sizeof(srpc::SerializeAdapter<std::pair<int32_t, std::string>>) > 0);
+  static_assert(sizeof(srpc::DeserializeAdapter<std::pair<int32_t, std::string>>) > 0);
 }
 
 TEST(SerializationParity, MapsKeepFirstDuplicateWireKey) {

@@ -22,8 +22,8 @@ std::int32_t srpc_fd_last_errno();
 std::int32_t srpc_fd_interrupted_errno();
 }
 
-// C++ ADL and erased sink/source call adapters. The Rust counterparts forward
-// into canonical traits; all serialization and payload ownership lives there.
+// C++ ADL call adapters. The Rust counterparts forward into canonical traits;
+// serialization and payload ownership live in those traits.
 namespace rusty {
 namespace srpc_adl_detail {
 
@@ -54,16 +54,6 @@ void srpc_adl_deserialize(T& value, Archive& archive) {
     srpc_adl_detail::call_deserialize(value, archive);
 }
 
-template <typename Sink>
-void srpc_sink_write(Sink& sink, const unsigned char* pointer, std::size_t length) {
-    sink.write_bytes(pointer, length);
-}
-
-template <typename Source>
-std::size_t srpc_source_read(Source& source, unsigned char* pointer, std::size_t length) {
-    return source.read_bytes(pointer, length);
-}
-
 }  // namespace rusty
 
 // These overloads belong to the global module fragment. Every call to a
@@ -75,10 +65,12 @@ template<class T, class A> inline constexpr bool srpc_stl_sequence<std::vector<T
 template<class T, class A> inline constexpr bool srpc_stl_sequence<std::list<T, A>> = true;
 template<class T, class C, class A> inline constexpr bool srpc_stl_sequence<std::set<T, C, A>> = true;
 template<class T, class H, class E, class A> inline constexpr bool srpc_stl_sequence<std::unordered_set<T, H, E, A>> = true;
+template<class T> inline constexpr bool srpc_stl_pair = false;
+template<class First, class Second> inline constexpr bool srpc_stl_pair<std::pair<First, Second>> = true;
 template<class T> inline constexpr bool srpc_stl_map = false;
 template<class K, class V, class C, class A> inline constexpr bool srpc_stl_map<std::map<K, V, C, A>> = true;
 template<class K, class V, class H, class E, class A> inline constexpr bool srpc_stl_map<std::unordered_map<K, V, H, E, A>> = true;
-template<class T> inline constexpr bool srpc_stl_serialize = srpc_stl_sequence<T> || srpc_stl_map<T>
+template<class T> inline constexpr bool srpc_stl_serialize = srpc_stl_sequence<T> || srpc_stl_map<T> || srpc_stl_pair<T>
     || std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view>;
 template<class T> inline constexpr bool srpc_stl_deserialize = srpc_stl_serialize<T>
     && !std::is_same_v<T, std::string_view>;
@@ -100,6 +92,16 @@ void deserialize(std::string& value, Archive& archive) {
     deserialize_bytes_with(value, archive,
         [](auto& storage, std::size_t count) { storage.resize(count); },
         [](auto& storage) { return reinterpret_cast<std::uint8_t*>(storage.data()); });
+}
+
+template<class Pair, class Archive> requires rusty::srpc_stl_pair<Pair>
+void serialize(const Pair& value, Archive& archive) {
+    serialize_pair_fields(value.first, value.second, archive);
+}
+
+template<class Pair, class Archive> requires rusty::srpc_stl_pair<Pair>
+void deserialize(Pair& value, Archive& archive) {
+    deserialize_pair_fields(value.first, value.second, archive);
 }
 
 template<class Container, class Archive> requires rusty::srpc_stl_sequence<Container>

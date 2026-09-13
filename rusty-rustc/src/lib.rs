@@ -166,68 +166,6 @@ pub struct CFile {
 pub type StdVector<T> = Vec<T>;
 
 
-/// Rustc stand-ins for the compiler-generated trait adapters.
-///
-/// `rust-type-map.toml` pins these NAMES to the C++ spellings
-/// `SinkBaseAdapterRefMut` / `SourceBaseAdapterRefMut`, so the emitted turbofish
-/// is fixed no matter what the Rust side means by them.  That frees the Rust
-/// meaning to be the honest one: a C++ `SinkBaseAdapterRefMut<T>` holds exactly
-/// one `T&`, so the Rust model is the raw pointer itself.  Being an alias rather
-/// than a struct is what lets `misc/serializable.rs` implement `SinkBase` for
-/// `*mut BufferSink` -- an impl the emitter lowers to nothing, because its self
-/// type is a pointer rather than a nominal type.
-pub type RustcSinkBaseAdapterRefMut<T> = *mut T;
-pub type RustcSourceBaseAdapterRefMut<T> = *mut T;
-
-/// Callable surface for the erased sink and source the archive layer writes
-/// through.
-///
-/// `srpc_sink_write` / `srpc_source_read` below stand in for C++ helpers whose
-/// parameter is unconstrained, so their Rust signatures take `?Sized` -- and an
-/// unbounded type parameter has no callable surface, which is why both were
-/// empty stubs that silently dropped every byte.  These traits are the bound
-/// that gives them one.  They are declared here because only `srpc` can
-/// implement them: coherence puts the impl next to the trait it forwards to.
-pub trait RustcSinkDyn {
-    /// # Safety
-    ///
-    /// `pointer` must address `length` readable bytes for the call.
-    #[allow(unsafe_code)]
-    unsafe fn rustc_sink_write(&mut self, pointer: *const u8, length: usize);
-}
-
-/// Rust bound for the poison-scoped ADL bridges `srpc_adl_serialize` /
-/// `srpc_adl_deserialize` below.  In C++ those are open-set ADL calls, so
-/// their Rust signatures historically left both parameters unconstrained --
-/// and an unbounded type parameter has no callable surface, which is why both
-/// were empty stubs that silently discarded every value.  The archive is
-/// `Self` here rather than the value: an `impl<T: Serialize> ... for T`
-/// blanket in `srpc` would leave `T` uncovered and violate the orphan rule,
-/// while the archive is a type `srpc` owns.
-pub trait RustcAdlSerialize<T: ?Sized> {
-    /// # Safety
-    ///
-    /// Both borrows are held only for the duration of the call.
-    #[allow(unsafe_code)]
-    unsafe fn rustc_adl_serialize(&mut self, value: &T);
-}
-
-pub trait RustcAdlDeserialize<T: ?Sized> {
-    /// # Safety
-    ///
-    /// Both borrows are held only for the duration of the call.
-    #[allow(unsafe_code)]
-    unsafe fn rustc_adl_deserialize(&mut self, value: &mut T);
-}
-
-pub trait RustcSourceDyn {
-    /// # Safety
-    ///
-    /// `pointer` must address `length` writable bytes for the call.
-    #[allow(unsafe_code)]
-    unsafe fn rustc_source_read(&mut self, pointer: *mut u8, length: usize) -> usize;
-}
-
 /// Opaque rustc-only stand-in mapped to C++ `void` at the Serializable C ABI.
 pub enum LegacyCVoid {}
 
@@ -241,9 +179,7 @@ pub fn make_box<Adapter>(value: Adapter) -> Box<Adapter> {
     Box::new(value)
 }
 
-/// Declarations for module-local C++ templates supplied by
-/// `misc/serializable_support.hpp`.  They preserve structural C++ dispatch
-/// while giving direct rustc a fully typed foreign boundary.
+/// Remaining compatibility names for standard runtime modules.
 pub mod rusty {
 
 
@@ -292,59 +228,6 @@ pub mod rusty {
         }
     }
 
-    /// # Safety
-    ///
-    /// The C++ associated namespace for `T` must provide a compatible
-    /// `serialize(const T&, Archive&)` overload which does not retain either
-    /// borrowed argument.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_adl_serialize<T: ?Sized, Archive: crate::RustcAdlSerialize<T> + ?Sized>(
-        value: &T,
-        archive: &mut Archive,
-    ) {
-        unsafe { archive.rustc_adl_serialize(value) }
-    }
-
-    /// # Safety
-    ///
-    /// The C++ associated namespace for `T` must provide a compatible
-    /// `deserialize(T&, Archive&)` overload which does not retain either
-    /// borrowed argument.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_adl_deserialize<T: ?Sized, Archive: crate::RustcAdlDeserialize<T> + ?Sized>(
-        value: &mut T,
-        archive: &mut Archive,
-    ) {
-        unsafe { archive.rustc_adl_deserialize(value) }
-    }
-
-    /// # Safety
-    ///
-    /// If `_length` is nonzero, `_pointer` must address that many initialized
-    /// readable bytes for the duration of the call.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_sink_write<Sink: crate::RustcSinkDyn + ?Sized>(
-        sink: &mut Sink,
-        pointer: *const u8,
-        length: usize,
-    ) {
-        // SAFETY: the caller's contract is forwarded unchanged to the impl.
-        unsafe { sink.rustc_sink_write(pointer, length) }
-    }
-
-    /// # Safety
-    ///
-    /// If `_length` is nonzero, `_pointer` must address that many writable
-    /// bytes for the duration of the call.
-    #[allow(unsafe_code)]
-    pub unsafe fn srpc_source_read<Source: crate::RustcSourceDyn + ?Sized>(
-        source: &mut Source,
-        pointer: *mut u8,
-        length: usize,
-    ) -> usize {
-        // SAFETY: the caller's contract is forwarded unchanged to the impl.
-        unsafe { source.rustc_source_read(pointer, length) }
-    }
 
 
 }

@@ -1,15 +1,35 @@
 #pragma once
 
 // Included in the exported module epilogue after the canonical declarations.
-// These specializations expose trait interfaces for C++ STL fields. All calls
-// forward through the same bounded ADL adapters as ordinary archives.
+// The generic bridges and STL trait adapters provide C++ call dispatch only.
+// Canonical Rust functions own byte handling and collection traversal.
 namespace srpc {
+
+namespace Serialize_ {
+namespace adl_detail_ { void serialize(); }
+template<class T>
+void adl_serialize_bridge(const T& value, BinaryWriteArchive& archive) {
+    rusty::srpc_adl_serialize(value, archive);
+}
+}
+namespace Deserialize_ {
+namespace adl_detail_ { void deserialize(); }
+template<class T>
+void adl_deserialize_bridge(T& value, BinaryReadArchive& archive) {
+    rusty::srpc_adl_deserialize(value, archive);
+}
+}
 
 // Match the generated adapters' recursive trait bounds. Container shape alone
 // does not make an unsupported element serializable.
 template<class T> inline constexpr bool stl_serialize_adapter = [] {
     if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view>) {
         return true;
+    } else if constexpr (rusty::srpc_stl_pair<T>) {
+        return (requires { sizeof(SerializeAdapter<typename T::first_type>); }
+                || std::is_base_of_v<Serialize, typename T::first_type>)
+            && (requires { sizeof(SerializeAdapter<typename T::second_type>); }
+                || std::is_base_of_v<Serialize, typename T::second_type>);
     } else if constexpr (rusty::srpc_stl_map<T>) {
         return (requires { sizeof(SerializeAdapter<typename T::key_type>); }
                 || std::is_base_of_v<Serialize, typename T::key_type>)
@@ -33,6 +53,11 @@ template<class T> inline constexpr bool stl_deserialize_key = [] {
 template<class T> inline constexpr bool stl_deserialize_adapter = [] {
     if constexpr (std::is_same_v<T, std::string>) {
         return true;
+    } else if constexpr (rusty::srpc_stl_pair<T>) {
+        return (requires { sizeof(DeserializeAdapter<typename T::first_type>); }
+                || std::is_base_of_v<Deserialize, typename T::first_type>)
+            && (requires { sizeof(DeserializeAdapter<typename T::second_type>); }
+                || std::is_base_of_v<Deserialize, typename T::second_type>);
     } else if constexpr (rusty::srpc_stl_map<T>) {
         return (requires { sizeof(DeserializeAdapter<typename T::key_type>); }
                 || std::is_base_of_v<Deserialize, typename T::key_type>)
