@@ -47,8 +47,10 @@ use crate::threading as _;
 use crate::debugging::verify_at;
 
 pub type SrcFileCStr = &'static str;
-pub type EventTestFn = Option<Box<dyn Fn(i32) -> bool>>;
-pub type FiberFn = Option<Box<dyn FnMut()>>;
+pub type EventTestFn = ::core::option::Option<
+    ::std::boxed::Box<dyn ::core::ops::Fn(::core::primitive::i32) -> ::core::primitive::bool>,
+>;
+pub type FiberFn = ::core::option::Option<::std::boxed::Box<dyn ::core::ops::FnMut()>>;
 pub type FiberTaskFn = Option<Box<dyn FnMut(&mut fiber_yield_t)>>;
 pub type StacklessPollFn = Option<Box<dyn FnMut(&mut Context<'_>) -> bool>>;
 pub type TaskVoid = Pin<Box<dyn Future<Output = ()>>>;

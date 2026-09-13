@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 
 #[allow(unused_imports)]
 use crate::reactor as _;
+use crate::reactor::EventTestFn;
 
 use crate::channel::{
     ChannelConnectionBase, ChannelConnectionProxy, ChannelError, ChannelFrame,
@@ -141,7 +142,7 @@ impl FiberChannel {
         let event: Arc<crate::reactor::IntEvent> = crate::reactor::create_sp_int_event(1_i32);
         let queue: Arc<Mutex<LegacyStdDeque<OwnedFrame>>> = self.queue_.clone();
         let closed: Arc<AtomicBool> = self.closed_.clone();
-        let predicate: crate::reactor::EventTestFn = Some(Box::new(move |_value| {
+        let predicate: EventTestFn = Some(Box::new(move |_value| {
             closed.load(Ordering::Acquire) || !queue.lock().unwrap().is_empty()
         }));
         // Only the owner reactor touches the event. Transport callbacks
