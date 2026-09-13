@@ -1,8 +1,7 @@
 // Canonical Rust source for the srpc.logging module.
 // Compiled directly by rustc and translated by rusty-cpp crate mode.
 use crate::debugging::verify_at;
-use cpp::std as cpp_std;
-use rusty as cpp;
+use std::io::Write;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 // Consumer type mappings restore the historical C++ spellings.
@@ -70,16 +69,12 @@ pub unsafe fn log_line(level: i32, line: i32, file: *const i8, msg: &str) {
     }
 }
 
-/// Write the exact line bytes, append one newline, and flush `std::cout`.
-#[allow(unsafe_code)]
+/// Write the exact line bytes, append one newline, and flush stdout.
 pub fn log_sink_write(line: &str) {
-    // SAFETY: `line.as_ptr()` remains valid for `line.len()` bytes for the
-    // duration of these synchronous output calls.
-    unsafe {
-        cpp_std::cout.write(line.as_ptr() as *const LegacyCChar, line.len());
-        cpp_std::cout.put(b'\n' as LegacyCChar);
-        cpp_std::cout.flush();
-    }
+    let mut output = std::io::stdout();
+    let _ = output.write_all(line.as_bytes());
+    let _ = output.write_all(b"\n");
+    let _ = output.flush();
 }
 
 #[allow(unsafe_code)]

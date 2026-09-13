@@ -210,6 +210,22 @@ void poll_count_checks() {
     worker->remove_fd(socket.value);
     require(worker->get_remove_count() == 32, "shutdown rejects later removal");
 }
+void logging_sink_checks() {
+    struct Sink : std::stringbuf {
+        unsigned flushes = 0;
+        int sync() override {
+            ++flushes;
+            return std::stringbuf::sync();
+        }
+    } sink;
+    auto* original = std::cout.rdbuf(&sink);
+    srpc::log_sink_write(std::string_view("a\0b\n", 4));
+    srpc::log_sink_write("");
+    std::cout.rdbuf(original);
+    require(sink.str() == std::string("a\0b\n\n\n", 6),
+            "logging sink changed bytes or newline count");
+    require(sink.flushes == 2, "logging sink did not flush each line");
+}
 void value_checks() {
     for (const auto& [text, expected] : std::vector<std::pair<std::string, std::int32_t>>{
              {"0", 0}, {"  +123port", 123}, {"-42tail", -42},
@@ -253,6 +269,7 @@ int main() {
 
     try {
         value_checks();
+        logging_sink_checks();
         fd_checks();
         tcp_checks();
         keepalive_checks();

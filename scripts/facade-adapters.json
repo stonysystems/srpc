@@ -29,10 +29,6 @@
       "category": "standard",
       "sha256": "9ed02827e1e585d07228e6e0d6a07d13e826df5a194fa27afa600a4fe76dbdb2"
     },
-    "impl:std::Cout as inherent ": {
-      "category": "standard",
-      "sha256": "e94270665fad4226396d16818f8cadc676ffde474d4befa4674482af27f34e26"
-    },
     "module:panic": {
       "category": "import",
       "sha256": "4b0e2213d29a417efbf7fd426103a850bcd77c02ae6a073b91ad258893af7a91"
@@ -45,17 +41,9 @@
       "category": "import",
       "sha256": "d1339a0d2481914b3fa3fd53d98206b1bcead4c087e4a9c3e1e9f426afecb0fc"
     },
-    "static:std::cout": {
-      "category": "standard",
-      "sha256": "230525fab95805e42a431345257605209f7a7457278b817d4394abf5421d5021"
-    },
     "struct:panic::PanicPayload": {
       "category": "standard",
       "sha256": "751dfe25bbf4ccbc4a1394974678c45f645ba888435a8cae5de4af7238e7a2f4"
-    },
-    "struct:std::Cout": {
-      "category": "standard",
-      "sha256": "d1957bd58a877c02c4a727da3c4f8837b3cb81845f940d443ed202bbe9c1dd0b"
     },
     "use:rusty_cpp_markers :: cpp_inherit": {
       "category": "import",
@@ -88,10 +76,6 @@
     "use:std :: vec :: Vec": {
       "category": "import",
       "sha256": "8207458988047880f46893a2523505c399ea0cd59118156821eae0bb88eb9e77"
-    },
-    "use:std::std :: io :: Write as _": {
-      "category": "import",
-      "sha256": "ef6188338614e29365fbb31931a002820361ae30bfae79788109891a5904856d"
     }
   }
 }

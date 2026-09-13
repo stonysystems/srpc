@@ -692,7 +692,6 @@ EXPECTED_IMPORTS = {
     ],
     "srpc.logging": [
         'vec_port.vec',
-        'std',
         'srpc.debugging',
     ],
     "srpc.idempotency": ["vec_port.vec", "srpc.serializable"],

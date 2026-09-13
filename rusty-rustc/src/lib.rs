@@ -81,39 +81,4 @@ pub mod panic {
 
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
-    use ::std::io::Write as _;
-
-    pub struct Cout;
-
-    #[allow(non_upper_case_globals)]
-    pub static cout: Cout = Cout;
-
-    impl Cout {
-        /// # Safety
-        ///
-        /// `data` must denote `size` readable bytes.
-        #[allow(unsafe_code)]
-        pub unsafe fn write(&self, data: *const i8, size: usize) {
-            let bytes = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
-            let _ = ::std::io::stdout().write_all(bytes);
-        }
-
-        /// # Safety
-        ///
-        /// The byte is written synchronously and has no additional precondition.
-        #[allow(unsafe_code)]
-        pub unsafe fn put(&self, value: i8) {
-            let _ = ::std::io::stdout().write_all(&[value as u8]);
-        }
-
-        /// # Safety
-        ///
-        /// The flush is synchronous and has no additional precondition.
-        #[allow(unsafe_code)]
-        pub unsafe fn flush(&self) {
-            let _ = ::std::io::stdout().flush();
-        }
-    }
-
-
 }
