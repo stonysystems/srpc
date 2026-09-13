@@ -34,10 +34,6 @@
       "category": "import",
       "sha256": "440c9c55f305e438aab1b5237a62340716e133e1e377bc6aecfbcdebc2c428fa"
     },
-    "alias:task::TaskPoller": {
-      "category": "future",
-      "sha256": "32767f176b43c12de3177f5bfebb2c955363eeff4573c5ba8167b3ccdb857134"
-    },
     "enum:LegacyCVoid": {
       "category": "c-layout",
       "sha256": "1a0a9c1547e9748311f91b3bf8adc845d54eb03e1f43ad746a65a1cca6331dd1"
@@ -45,10 +41,6 @@
     "file-attributes:": {
       "category": "import",
       "sha256": "f3e53b5dda304df5d20e6151d9c6d0d1a4c56670ccad33933f4e32451c8a0c11"
-    },
-    "file-attributes:task": {
-      "category": "import",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "function:make_box": {
       "category": "standard",
@@ -146,22 +138,6 @@
       "category": "standard",
       "sha256": "e94270665fad4226396d16818f8cadc676ffde474d4befa4674482af27f34e26"
     },
-    "impl:task::Poll < T > as inherent < T : Default >": {
-      "category": "future",
-      "sha256": "3e59e9e6f16086d91bfb8a200eaa72105bbcb10ba189dcd4fa05219f55fc2dbf"
-    },
-    "impl:task::Poll < T > as inherent < T >": {
-      "category": "future",
-      "sha256": "8f0c0a01660549991a18f0ba7f1d757ea015c4abdaef97d1120e9f5ea990ad08"
-    },
-    "impl:task::Task < T > as inherent < T >": {
-      "category": "future",
-      "sha256": "36d3db1ed492f27106ad22b5c8d0f36ce07457c42bce49114df4fd2ab8d721ef"
-    },
-    "impl:task::Waker as inherent ": {
-      "category": "future",
-      "sha256": "750ee8a151b3c6a8f5b37317a1a54d8a88642e11da4e1bb3cf8f7e7cfeede123"
-    },
     "impl:thread::JoinHandle < T > as inherent < T >": {
       "category": "standard",
       "sha256": "430206e240842f9f5ef9cb5186fd20855b23bfb741e3952a0ea31d21e993f137"
@@ -185,10 +161,6 @@
     "module:std": {
       "category": "import",
       "sha256": "d1339a0d2481914b3fa3fd53d98206b1bcead4c087e4a9c3e1e9f426afecb0fc"
-    },
-    "module:task": {
-      "category": "import",
-      "sha256": "0341743ab8ffe711d4c0c47a4368c63c5ca922e0457a5f34fa0c38e78b710103"
     },
     "module:thread": {
       "category": "import",
@@ -257,22 +229,6 @@
     "struct:std::Cout": {
       "category": "standard",
       "sha256": "d1957bd58a877c02c4a727da3c4f8837b3cb81845f940d443ed202bbe9c1dd0b"
-    },
-    "struct:task::Context": {
-      "category": "future",
-      "sha256": "8f99f03991bab13cd7fc56be79a8a94970e78e043066549dddc1996fe0878e91"
-    },
-    "struct:task::Poll": {
-      "category": "future",
-      "sha256": "caf6322c4eec3fe4c4d10ee78fec899f9dc22d74cb61c493b57fca0f9bec499d"
-    },
-    "struct:task::Task": {
-      "category": "future",
-      "sha256": "d6b303dc6e115fb6aaf00f943c35d8cb52d56ae4b6e4c4e4a5a88dd7342d7e18"
-    },
-    "struct:task::Waker": {
-      "category": "future",
-      "sha256": "8fd7b057237e374b81624b0310d796cef97b245c1cbaf5b6f568100d48bae536"
     },
     "struct:thread::JoinHandle": {
       "category": "standard",
@@ -369,14 +325,6 @@
     "use:std::std :: io :: Write as _": {
       "category": "import",
       "sha256": "ef6188338614e29365fbb31931a002820361ae30bfae79788109891a5904856d"
-    },
-    "use:task :: { Context , Poll , Task , Waker }": {
-      "category": "import",
-      "sha256": "aa7599b3f1cc7f129f394b7dd699e0b6a976e7deafc8f1533b01fa8df506f27b"
-    },
-    "use:task::super :: *": {
-      "category": "import",
-      "sha256": "5d9f812e6d6973f484fcf6f9205e773ecbb4503112229f85e702d7904367395b"
     },
     "use:std :: ops :: { Deref , Index }": {
       "category": "import",

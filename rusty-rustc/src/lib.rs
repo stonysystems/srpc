@@ -114,8 +114,6 @@ pub mod thread {
     }
 }
 
-mod task;
-pub use task::{Context, Poll, Task, Waker};
 
 /// Native x86-64 fiber register layout, shared with the C/assembly engine.
 #[cfg(target_arch = "x86_64")]

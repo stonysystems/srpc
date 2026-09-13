@@ -29,8 +29,8 @@ impl Future for PendingOnce {
 
 /// The composed workload both tests spawn: suspend once, then run the
 /// canonical `async fn` chain (7 -> 14).
-fn suspending_workload() -> rusty::Task<i64> {
-    rusty::Task::from_future(async {
+fn suspending_workload() -> Pin<Box<dyn Future<Output = i64>>> {
+    Box::pin(async {
         let seven = PendingOnce { polls: 0 }.await;
         srpc::misc::async_double(seven).await
     })
@@ -58,4 +58,20 @@ fn layer1_manual_run_loop_completes_a_suspended_task() {
         14,
         "PendingOnce yields 7, async_double doubles it"
     );
+}
+
+#[test]
+fn pending_task_completes_with_a_non_default_non_clone_output() {
+    struct Outcome(i64);
+
+    let reactor = Reactor::get_reactor();
+    let (sender, receiver) = mpsc::channel::<Outcome>();
+    reactor_spawn_stackless_task_with_result(
+        &reactor,
+        Box::pin(async { Outcome(PendingOnce { polls: 0 }.await) }),
+        move |value| sender.send(value).expect("receiver alive"),
+    );
+    assert!(receiver.try_recv().is_err());
+    reactor.run_loop(false, true);
+    assert_eq!(receiver.try_recv().expect("woken task completes").0, 7);
 }

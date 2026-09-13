@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll, Wake, Waker};
 
 struct RetainWake {
     slot: Arc<Mutex<Option<Waker>>>,
@@ -17,27 +17,28 @@ impl Future for RetainWake {
     }
 }
 
+struct CountWake {
+    calls: Arc<AtomicUsize>,
+}
+
+impl Wake for CountWake {
+    fn wake(self: Arc<Self>) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[test]
-#[allow(unsafe_code)]
 fn retained_native_waker_owns_its_callback_after_task_and_context_drop() {
     let calls = Arc::new(AtomicUsize::new(0));
     let callback_lifetime = Arc::downgrade(&calls);
     let slot = Arc::new(Mutex::new(None));
     {
-        let mut waker = rusty::Waker {
-            wake_fn: Arc::new(move || {
-                calls.fetch_add(1, Ordering::Relaxed);
-            }),
-        };
-        let mut context = rusty::Context {
-            waker: &raw mut waker,
-        };
-        let mut task = rusty::Task::from_future(RetainWake { slot: slot.clone() });
-        // SAFETY: the local Waker remains live and unchanged during this poll.
-        assert!(unsafe { task.poll(&mut context) }.is_pending());
+        let waker = Waker::from(Arc::new(CountWake { calls }));
+        let mut context = Context::from_waker(&waker);
+        let mut task = Box::pin(RetainWake { slot: slot.clone() });
+        assert!(task.as_mut().poll(&mut context).is_pending());
     }
-    // This assertion detects a raw borrowed-waker bridge without dereferencing
-    // its freed allocation. The retained native waker must own the capture.
+    // The retained standard waker keeps its target alive beyond the poll.
     assert!(callback_lifetime.upgrade().is_some());
     let retained = slot.lock().unwrap().take().unwrap();
     let observed = callback_lifetime.clone();

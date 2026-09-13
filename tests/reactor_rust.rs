@@ -13,12 +13,12 @@ fn worker_transfer_types_prove_auto_traits() {
     assert_send_sync::<PollThread>();
     assert_send::<PollableProxy>();
     assert_send_sync::<Arc<dyn Job>>();
-    assert_send_sync::<rusty::Waker>();
+    assert_send_sync::<std::task::Waker>();
 }
 
 #[test]
 fn historical_export_surface_is_rust_visible() {
-    type SpawnWithResultFn = fn(&Reactor, rusty::Task<()>, fn(()));
+    type SpawnWithResultFn = fn(&Reactor, TaskVoid, fn(()));
     let _spawn_with_result: SpawnWithResultFn =
         reactor_spawn_stackless_task_with_result::<(), fn(())>;
 

@@ -134,6 +134,21 @@ rusty::Task<int> gate_task(ManualGate* gate, int value) {
     co_return value;
 }
 
+struct NonDefaultOutput {
+    int value;
+    NonDefaultOutput() = delete;
+    explicit NonDefaultOutput(int number) : value(number) {}
+    NonDefaultOutput(NonDefaultOutput&&) = default;
+    NonDefaultOutput(const NonDefaultOutput&) = delete;
+};
+
+rusty::Task<NonDefaultOutput> nondefault_gate_task(ManualGate* gate) {
+    while (!gate->ready.load(std::memory_order_acquire)) {
+        co_await GateAwaiter{gate};
+    }
+    co_return NonDefaultOutput{42};
+}
+
 // The void lane has no on_ready callback, so it reports completion from inside
 // the coroutine.  It is worth its own coverage because
 // reactor_spawn_stackless_task_impl(const Reactor&, Task<void>) is a separate
@@ -200,6 +215,20 @@ TEST_F(StacklessBatteryTest, pollthread_counts_only_accepted_remove_commands) {
     EXPECT_EQ(poll_thread->get_remove_count(), 32);
     ::close(sockets[0]);
     ::close(sockets[1]);
+}
+
+TEST_F(StacklessBatteryTest, stackless_pending_nondefault_output) {
+    SRPC_TEST_WATCHDOG("stackless_pending_nondefault_output");
+    auto reactor = Reactor::get_reactor();
+    ManualGate gate;
+    int result = 0;
+    reactor_spawn_stackless_task_with_result<NonDefaultOutput>(
+        *reactor, nondefault_gate_task(&gate),
+        [&result](NonDefaultOutput value) { result = value.value; });
+    EXPECT_EQ(result, 0);
+    gate.open_and_wake();
+    ASSERT_TRUE(drive_until(reactor, [&result] { return result != 0; }));
+    EXPECT_EQ(result, 42);
 }
 
 // ---------------------------------------------------------------------------

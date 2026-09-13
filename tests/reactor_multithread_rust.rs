@@ -29,7 +29,7 @@ impl Future for PendingOnce {
 
 fn drive_one_reactor(seed: i64) -> (i64, usize) {
     let reactor = Reactor::get_reactor();
-    let task = rusty::Task::from_future(async move {
+    let task = Box::pin(async move {
         let v = PendingOnce {
             polls: 0,
             value: seed,

@@ -15,7 +15,7 @@
 //!
 //! Stackless wakeups use a private owner-thread ingress.  Wakers retain only
 //! thread-safe heap tickets/queues; the Reactor pointer never crosses threads,
-//! and every Context/Waker allocation remains stable through Task destruction.
+//! and each poll borrows a Context built from an owned standard Waker.
 //! Native generated-C++ race, teardown, layout, and symbol gates are still
 //! mandatory before promotion.
 
@@ -32,6 +32,9 @@
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Wake, Waker};
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 
@@ -48,8 +51,8 @@ pub type SrcFileCStr = &'static str;
 pub type EventTestFn = Option<Box<dyn Fn(i32) -> bool>>;
 pub type FiberFn = Option<Box<dyn FnMut()>>;
 pub type FiberTaskFn = Option<Box<dyn FnMut(&mut fiber_yield_t)>>;
-pub type StacklessPollFn = Option<Box<dyn FnMut(&mut rusty::Context) -> bool>>;
-pub type TaskVoid = rusty::Task<()>;
+pub type StacklessPollFn = Option<Box<dyn FnMut(&mut Context<'_>) -> bool>>;
+pub type TaskVoid = Pin<Box<dyn Future<Output = ()>>>;
 pub type PollCmdReceiver = std::sync::mpsc::Receiver<PollCommand>;
 pub type FdPollableMap = HashMap<i32, PollableProxy>;
 pub type FdModeMap = HashMap<i32, i32>;
@@ -919,10 +922,24 @@ struct StacklessWakeIngress {
     pending: std::sync::Mutex<VecDeque<Arc<StacklessWakeTicket>>>,
 }
 
+struct StacklessWakeTarget {
+    ingress: Arc<StacklessWakeIngress>,
+    ticket: Arc<StacklessWakeTicket>,
+}
+
+impl Wake for StacklessWakeTarget {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        stackless_wake_request::<()>(&self.ingress, &self.ticket);
+    }
+}
+
 struct StacklessWakeBinding {
     ticket: Arc<StacklessWakeTicket>,
-    waker: rusty::Waker,
-    context: rusty::Context,
+    waker: Waker,
 }
 
 struct StacklessWakeOwner {
@@ -932,16 +949,11 @@ struct StacklessWakeOwner {
 }
 
 struct StacklessResultTaskState<T, OnReady> {
-    // C++ destroys fields in reverse declaration order.  Keep Task last so
-    // its retained Context pointer is destroyed before the early binding.
-    early_binding: Box<StacklessWakeBinding>,
     on_ready: RefCell<Option<OnReady>>,
-    task: RefCell<rusty::Task<T>>,
+    task: RefCell<Pin<Box<dyn Future<Output = T>>>>,
 }
 
 struct StacklessVoidTaskState {
-    // See StacklessResultTaskState: Task must die before its Context/Waker.
-    early_binding: Box<StacklessWakeBinding>,
     task: RefCell<TaskVoid>,
 }
 
@@ -1147,29 +1159,16 @@ fn stackless_wake_ingress<WakeDomain>(reactor: &Reactor) -> Arc<StacklessWakeIng
     ingress
 }
 
-fn stackless_wake_make_binding<WakeDomain>(ingress: Arc<StacklessWakeIngress>) -> Box<StacklessWakeBinding> {
+fn stackless_wake_make_binding(ingress: Arc<StacklessWakeIngress>) -> Box<StacklessWakeBinding> {
     let ticket = Arc::new(StacklessWakeTicket {
         slot: std::sync::atomic::AtomicUsize::new(STACKLESS_UNREGISTERED_SLOT),
         enqueued: std::sync::atomic::AtomicBool::new(false),
     });
-    let wake_ingress = ingress.clone();
-    let wake_ticket = ticket.clone();
-    let waker = rusty::Waker::from_callable(move || {
-        stackless_wake_request::<WakeDomain>(&wake_ingress, &wake_ticket);
-    });
-    let mut binding = Box::new(StacklessWakeBinding {
-        ticket,
-        waker,
-        context: rusty::Context { waker: core::ptr::null_mut() },
-    });
-    binding.context.waker = &raw mut binding.waker;
-    binding
-}
-
-// MEASURED allow — see the `extra_unused_type_parameters` note on `stackless_wake_owners_slot`.
-#[allow(clippy::extra_unused_type_parameters)]
-fn stackless_wake_binding_context<WakeDomain>(binding: &mut Box<StacklessWakeBinding>) -> &mut rusty::Context {
-    &mut binding.context
+    let waker = Waker::from(Arc::new(StacklessWakeTarget {
+        ingress,
+        ticket: ticket.clone(),
+    }));
+    Box::new(StacklessWakeBinding { ticket, waker })
 }
 
 fn stackless_wake_attach<WakeDomain>(reactor: &Reactor, idx: usize, binding: Box<StacklessWakeBinding>) {
@@ -1193,7 +1192,7 @@ fn stackless_wake_attach<WakeDomain>(reactor: &Reactor, idx: usize, binding: Box
     reactor_verify(false);
 }
 
-fn stackless_wake_context_ptr<WakeDomain>(reactor: &Reactor, idx: usize) -> *mut rusty::Context {
+fn stackless_wake_waker<WakeDomain>(reactor: &Reactor, idx: usize) -> Waker {
     let key = stackless_wake_reactor_key::<WakeDomain>(reactor);
     unsafe {
         let owners = &mut *stackless_wake_owners_ptr::<WakeDomain>();
@@ -1202,12 +1201,13 @@ fn stackless_wake_context_ptr<WakeDomain>(reactor: &Reactor, idx: usize) -> *mut
             if owners[i].reactor_key == key {
                 reactor_verify(idx < owners[i].bindings.len());
                 let binding = owners[i].bindings[idx].as_mut().unwrap();
-                return &raw mut binding.context;
+                return binding.waker.clone();
             }
             i += 1usize;
         }
     }
-    core::ptr::null_mut()
+    reactor_verify(false);
+    std::process::abort()
 }
 
 fn stackless_wake_close<WakeDomain>(reactor: &Reactor, idx: usize) {
@@ -1391,11 +1391,9 @@ pub struct Reactor {
     // These three fields ARE the executor's state: a task table, a free list,
     // and a ready queue.  `run_loop` drains the ready queue via
     // `process_stackless_tasks()` each pass; waking a task pushes its index
-    // back onto it.  The rustc-lane half (`Task`/`Waker`/`Context` and the
-    // `std::task::Waker` bridge) lives in rusty-rustc, and `pollworker_poll_loop`
-    // (below) pumps `run_loop` after every epoll pass.  It is small, single-threaded
-    // per reactor and cooperative -- by design, because every piece has to have
-    // a C++20 coroutine counterpart.  See docs/async-runtime.md.
+    // back onto it. Standard pinned Futures are polled with a borrowed
+    // Context, and each Waker owns its wake target. `pollworker_poll_loop`
+    // pumps `run_loop` after every epoll pass. See docs/async-runtime.md.
     pub stackless_tasks_: RefCell<Vec<StacklessTaskEntry>>,
     pub free_stackless_task_slots_: RefCell<Vec<usize>>,
     pub ready_stackless_tasks_: RefCell<VecDeque<usize>>,
@@ -1699,7 +1697,7 @@ impl Reactor {
             (*tasks_guard)[idx].poll_once = poller;
             stackless_profile_note_register(scanned, true, tasks_guard.len());
         }
-        let binding = stackless_wake_make_binding::<()>(ingress);
+        let binding = stackless_wake_make_binding(ingress);
         stackless_wake_attach::<()>(self, idx, binding);
         idx
     }
@@ -1762,7 +1760,7 @@ impl Reactor {
                     if ready {
                         // Close the ticket before publishing the slot for
                         // reuse. Then destroy the Task-bearing poll closure
-                        // before releasing its stable Context/Waker binding.
+                        // before releasing its owned Waker binding.
                         stackless_wake_close::<()>(self, idx);
                         let mut tasks_guard = self.stackless_tasks_.borrow_mut();
                         if idx < tasks_guard.len() {
@@ -1776,7 +1774,7 @@ impl Reactor {
                         // Task/coroutine destruction may run arbitrary awaiter
                         // destructors that re-enter registration.  Do not
                         // publish this index for reuse until both the old Task
-                        // and its retained Context/Waker binding are gone.
+                        // and its owned Waker binding are gone.
                         drop(poll_fn);
                         stackless_wake_detach::<()>(self, idx);
                         let mut free_guard = self.free_stackless_task_slots_.borrow_mut();
@@ -1840,7 +1838,7 @@ impl Drop for Reactor {
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
                   self.all_events_.borrow().len(), self.fibers_.borrow().len()));
         // Reject new foreign wakes first. Destroy every Task-bearing closure
-        // while its stable Context/Waker binding still exists, then retire the
+        // while its owned Waker binding still exists, then retire the
         // private ingress. Reactor's public field layout remains unchanged.
         stackless_wake_shutdown_begin::<()>(self);
         // Count what teardown is about to cancel BEFORE the queues are cleared.
@@ -1882,55 +1880,50 @@ impl Drop for Reactor {
     }
 }
 
-// Entry point of srpc's async runtime: register `task` in the executor's table
-// and return its slot index.  See docs/async-runtime.md for how a canonical
-// `async fn` gets from rustc's Future state machine to this table.
-pub fn reactor_spawn_stackless_task_with_result<T: 'static, OnReady>(self_: &Reactor, mut task: rusty::Task<T>, mut on_ready: OnReady)
+// Poll once immediately, register a pending future, and deliver its completed
+// value through on_ready. See docs/async-runtime.md for the wake protocol.
+pub fn reactor_spawn_stackless_task_with_result<T: 'static, OnReady>(self_: &Reactor, mut task: Pin<Box<dyn Future<Output = T>>>, mut on_ready: OnReady)
 where
     OnReady: FnMut(T) + 'static,
 {
     reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
-    let mut early_binding = stackless_wake_make_binding::<()>(ingress);
+    let mut early_binding = stackless_wake_make_binding(ingress);
     let early_ticket = early_binding.ticket.clone();
-    let ectx: &mut rusty::Context = stackless_wake_binding_context::<()>(&mut early_binding);
-    // SAFETY: early_binding owns this Context and Waker throughout the poll.
-    let mut early_poll = unsafe { task.poll(ectx) };
-    if early_poll.is_ready() {
-        on_ready(early_poll.value);
-        // Task retains Context*. Destroy it explicitly while the heap binding
-        // is still alive; the binding is dropped on return afterwards.
-        drop(task);
+    let mut ectx = Context::from_waker(&early_binding.waker);
+    if let Poll::Ready(value) = task.as_mut().poll(&mut ectx) {
+        on_ready(value);
         return;
     }
 
     let ts = StacklessResultTaskState {
-        early_binding,
         on_ready: RefCell::<Option<OnReady>>::new(Some(on_ready)),
-        task: RefCell::<rusty::Task<T>>::new(task),
+        task: RefCell::<Pin<Box<dyn Future<Output = T>>>>::new(task),
     };
     let state: Arc<StacklessResultTaskState<T, OnReady>> = Arc::new(ts);
     let completion_ticket = early_ticket.clone();
-    let poller: StacklessPollFn = Some(Box::new(move |ctx: &mut rusty::Context| -> bool {
-        // Scoped so the task borrow is released before on_ready runs.
-        // SAFETY: the owner reactor pins each binding throughout task polling.
-        let poll_result = unsafe { state.task.borrow_mut().poll(ctx) };
-        if !poll_result.is_ready() {
-            return false;
-        }
-        completion_ticket.slot.store(
-            STACKLESS_UNREGISTERED_SLOT,
-            std::sync::atomic::Ordering::Release,
-        );
-        // take() moves the callback out and leaves None, so it fires once.
-        let cb: Option<OnReady> = {
-            let mut cbguard = state.on_ready.borrow_mut();
-            (*cbguard).take()
+    let poller: StacklessPollFn = Some(Box::new(move |ctx: &mut Context<'_>| -> bool {
+        // Release the task borrow before invoking user completion code.
+        let poll_result = {
+            let mut task_guard = state.task.borrow_mut();
+            (*task_guard).as_mut().poll(ctx)
         };
-        if let Some(mut f) = cb {
-            f(poll_result.value);
+        if let Poll::Ready(value) = poll_result {
+            completion_ticket.slot.store(
+                STACKLESS_UNREGISTERED_SLOT,
+                std::sync::atomic::Ordering::Release,
+            );
+            let cb: Option<OnReady> = {
+                let mut cbguard = state.on_ready.borrow_mut();
+                (*cbguard).take()
+            };
+            if let Some(mut f) = cb {
+                f(value);
+            }
+            true
+        } else {
+            false
         }
-        true
     }));
     let idx = self_.register_stackless_poller(poller);
     if idx == STACKLESS_UNREGISTERED_SLOT {
@@ -2980,12 +2973,10 @@ fn reactor_poll_one(r: &Reactor, idx: usize, poll_fn: *mut StacklessPollFn) -> b
     if stackless_profile_enabled() {
         g_stackless_profile.poll_calls.fetch_add(1u64, std::sync::atomic::Ordering::Relaxed);
     }
-    // The binding is heap-stable and owned by the private owner-thread
-    // registry. Task::poll may retain Context* until the Task is destroyed.
-    let ctx_ptr = stackless_wake_context_ptr::<()>(r, idx);
-    reactor_verify(!ctx_ptr.is_null());
-    let ctx_ref: &mut rusty::Context = unsafe { &mut *ctx_ptr };
-    unsafe { (*poll_fn).as_mut().unwrap()(ctx_ref) }
+    // The Waker owns its wake target; the Context is borrowed for this poll.
+    let waker = stackless_wake_waker::<()>(r, idx);
+    let mut context = Context::from_waker(&waker);
+    unsafe { (*poll_fn).as_mut().unwrap()(&mut context) }
 }
 
 fn stackless_profile_note_poll_ready() {
@@ -3177,28 +3168,23 @@ fn reactor_create_run_fiber_at_impl(self_: &Reactor, func: FiberFn, file: SrcFil
 pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     reactor_verify(rusty::thread::current_id() == self_.thread_id_.get());
     let ingress = stackless_wake_ingress::<()>(self_);
-    let mut early_binding = stackless_wake_make_binding::<()>(ingress);
+    let mut early_binding = stackless_wake_make_binding(ingress);
     let early_ticket = early_binding.ticket.clone();
-    let ectx: &mut rusty::Context = stackless_wake_binding_context::<()>(&mut early_binding);
-    // SAFETY: early_binding owns this Context and Waker throughout the poll.
-    if unsafe { task.poll(ectx) }.is_ready() {
-        // Task retains Context*. Keep the binding alive through destruction.
-        drop(task);
+    let mut ectx = Context::from_waker(&early_binding.waker);
+    if task.as_mut().poll(&mut ectx).is_ready() {
         return;
     }
 
     let ts = StacklessVoidTaskState {
-        early_binding,
         task: RefCell::<TaskVoid>::new(task),
     };
     let state: Arc<StacklessVoidTaskState> = Arc::new(ts);
     let completion_ticket = early_ticket.clone();
-    let poller: StacklessPollFn = Some(Box::new(move |ctx: &mut rusty::Context| -> bool {
+    let poller: StacklessPollFn = Some(Box::new(move |ctx: &mut Context<'_>| -> bool {
         // Scoped so the task borrow is released before the ready-path store.
         let ready: bool = {
             let mut tguard = state.task.borrow_mut();
-            // SAFETY: the owner reactor pins the binding throughout polling.
-            unsafe { (*tguard).poll(ctx) }.is_ready()
+            (*tguard).as_mut().poll(ctx).is_ready()
         };
         if !ready {
             return false;

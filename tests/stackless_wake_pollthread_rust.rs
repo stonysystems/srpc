@@ -33,8 +33,8 @@ impl Future for PendingOnce {
 
 /// The composed workload both tests spawn: suspend once, then run the
 /// canonical `async fn` chain (7 -> 14).
-fn suspending_workload() -> rusty::Task<i64> {
-    rusty::Task::from_future(async {
+fn suspending_workload() -> Pin<Box<dyn Future<Output = i64>>> {
+    Box::pin(async {
         let seven = PendingOnce { polls: 0 }.await;
         srpc::misc::async_double(seven).await
     })
@@ -92,7 +92,7 @@ fn foreign_wake_resumes_the_task_on_its_original_poll_thread() {
     let (wake_tx, wake_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
     let job: Arc<dyn Job> = Arc::new(OneTimeJob::new(Box::new(move || {
-        let task = rusty::Task::from_future(ForeignWake {
+        let task = Box::pin(ForeignWake {
             ready: readiness.clone(), wake_sender: wake_tx.clone(), published: false,
         });
         let result = result_tx.clone();
@@ -117,7 +117,7 @@ fn retained_wake_after_poll_thread_shutdown_is_rejected_safely() {
     let (wake_tx, wake_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
     let job: Arc<dyn Job> = Arc::new(OneTimeJob::new(Box::new(move || {
-        let task = rusty::Task::from_future(ForeignWake {
+        let task = Box::pin(ForeignWake {
             ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake_sender: wake_tx.clone(),
             published: false,
@@ -152,7 +152,7 @@ fn void_task_foreign_wake_completes_on_owner_and_retained_wake_is_safe() {
             ready: readiness.clone(), wake_sender: wake_tx.clone(), published: false,
         };
         let result = result_tx.clone();
-        let task = rusty::Task::from_future(async move {
+        let task = Box::pin(async move {
             let owner = waiting.await;
             result.send(owner).unwrap();
         });

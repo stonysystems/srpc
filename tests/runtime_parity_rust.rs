@@ -92,7 +92,7 @@ fn runtime_parity_transcript() {
     let result = wake_result.clone();
     let on_owner = completion_owner.clone();
     reactor_spawn_stackless_task_with_result(&reactor,
-        rusty::Task::from_future(WakeGate { ready: ready.clone(), sender: wake_tx }),
+        Box::pin(WakeGate { ready: ready.clone(), sender: wake_tx }),
         move |value| {
             result.set(value);
             on_owner.set(std::thread::current().id() == owner);

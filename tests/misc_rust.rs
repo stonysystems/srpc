@@ -82,8 +82,7 @@ fn thousands_formatter_matches_the_legacy_surface() {
 // The async-fn lowering demos, exercised the two ways the Rust lane can
 // drive them.  Under rustc an `async fn` is an ordinary Rust future (the
 // C++ lane gets a coroutine returning `rusty::Task` from the same bytes);
-// `Task::from_future` is the facade bridge that lets the canonical stackless
-// spawn path hold one as a task value.
+// The canonical stackless spawn path accepts a boxed standard Future.
 #[test]
 fn async_double_resolves_as_a_plain_rust_future() {
     use std::future::Future;
@@ -100,21 +99,14 @@ fn async_double_resolves_as_a_plain_rust_future() {
 }
 
 #[test]
-#[allow(unsafe_code)]
-fn async_double_drives_through_the_facade_task_bridge() {
-    // The same shape the canonical reactor uses: a facade Context wrapping a
-    // facade Waker, polled through `Task::from_future`.
-    let mut waker = rusty::Waker {
-        wake_fn: std::sync::Arc::new(|| {}),
-    };
-    let mut cx = rusty::Context {
-        waker: &raw mut waker,
-    };
-    let mut task = rusty::Task::from_future(srpc::misc::async_double(21));
-    // SAFETY: the local Waker remains live and unchanged during this poll.
-    let poll = unsafe { task.poll(&mut cx) };
-    assert!(poll.is_ready(), "ready future resolves on the first task poll");
-    assert_eq!(poll.value, 42);
+fn async_double_drives_through_a_boxed_standard_future() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    let mut task: Pin<Box<dyn Future<Output = i64>>> = Box::pin(srpc::misc::async_double(21));
+    let mut context = Context::from_waker(Waker::noop());
+    assert_eq!(task.as_mut().poll(&mut context), Poll::Ready(42));
 }
 
 // The thread_local! pilot: each thread must see its own counter.  Under
