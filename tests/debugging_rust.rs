@@ -31,4 +31,3 @@ fn verification_failure_renders_a_real_backtrace_and_reports_the_call_site() {
     assert!(message.contains("canonical-test.rs"), "{message}");
     assert!(message.contains("37"), "{message}");
 }
-
