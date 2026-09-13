@@ -26,7 +26,9 @@ SerializableBase = "SerializableBase"
 SerializableProxy = "rusty::Arc<SerializableBase>"
 SerializableSharedPtrHolder = "details::SerializableSharedPtrHolder"
 SrcFileCStr = "const char*"
-NullableArc = "rusty::Arc"
+# Standard Option aliases at boundaries that retain the nullable C++ owner ABI.
+NullableCallbackManager = "rusty::Arc<::srpc::CallbackManager>"
+NullablePendingCounter = "rusty::Arc<rusty::sync::atomic::AtomicI32>"
 NullableChannelConnectionProxy = "::srpc::ChannelConnectionProxy"
 NullableChannelFactoryProxy = "::srpc::ChannelFactoryProxy"
 

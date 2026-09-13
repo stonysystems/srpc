@@ -78,8 +78,9 @@ use crate::callback_wrapper as _;
 
 
 
-use crate::basetypes::{Counter, NullableArc, Time};
+use crate::basetypes::{Counter, Time};
 use crate::callbacks::CallbackManager;
+type NullableCallbackManager = Option<Arc<CallbackManager>>;
 use crate::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ConnectResult, OnClosedCallback,
@@ -752,7 +753,7 @@ pub struct ClientConnection {
     keepalive_config_: ClientCloneCell<KeepaliveConfig>,
     heartbeat_manager_: HeartbeatManager,
     circuit_breaker_: CircuitBreaker,
-    callback_manager_: NullableArc<CallbackManager>,
+    callback_manager_: NullableCallbackManager,
     last_activity_time_: ClientCloneCell<u64>,
     metrics_: Arc<ConnectionMetrics>,
     weak_self_: WeakClientConnection,
@@ -1135,7 +1136,7 @@ impl ClientConnection {
         drop(retired);
     }
     fn abort_reconnect(&mut self) { self.reconnect_.reconnect_abort_.store(true, std::sync::atomic::Ordering::Release); }
-    fn set_callback_manager(&mut self, callback_manager: &NullableArc<CallbackManager>) {
+    fn set_callback_manager(&mut self, callback_manager: &NullableCallbackManager) {
         if callback_manager.is_some() {
             self.callback_manager_ = callback_manager.clone();
         }

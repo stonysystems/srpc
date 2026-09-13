@@ -24,7 +24,7 @@ use std::sync::{Arc, Weak as ArcWeak};
 // exact spelling.
 use std::collections::{HashMap, HashSet};
 
-use crate::basetypes::{NullableArc, Time};
+use crate::basetypes::Time;
 use crate::channel::{
     channel_error_to_string, ChannelConnectionBase, ChannelConnectionProxy, ChannelError,
     ChannelFactoryBase, ChannelFactoryProxy, ChannelFrame, ChannelListenerBase,
@@ -111,6 +111,7 @@ pub fn shutdown_phase_to_string(phase: ShutdownPhase) -> &'static str {
 // move in `add_shutdown_hook`, and invoked by reference inside the
 // graceful-shutdown loop.
 pub type ShutdownHook = Box<dyn FnMut()>;
+type NullablePendingCounter = Option<Arc<AtomicI32>>;
 
 /// The raw packet sent from client will be like this:
 /// `<size> <xid> <rpc_id> <arg1> <arg2> ... <argN>`
@@ -123,7 +124,7 @@ pub type ShutdownHook = Box<dyn FnMut()>;
 /// pending-request counter on drop. The matching increment is done at the
 /// guard's single construction site (`Request::attach_pending_guard`).
 pub struct PendingRequestGuard {
-    pending_counter: NullableArc<AtomicI32>,
+    pending_counter: NullablePendingCounter,
 }
 
 impl Drop for PendingRequestGuard {
@@ -143,7 +144,7 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn attach_pending_guard(&mut self, counter: &NullableArc<AtomicI32>) {
+    pub fn attach_pending_guard(&mut self, counter: &NullablePendingCounter) {
         if self.pending_guard.is_none() {
             if let Some(counter) = counter.as_ref() {
                 counter.fetch_add(1i32, Ordering::Relaxed);
