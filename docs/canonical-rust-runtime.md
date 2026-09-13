@@ -3,10 +3,11 @@
 SRPC's Rust files own its runtime and protocol behavior. Cargo compiles those sources directly, and
 rusty-cpp generates the C++ named-module providers from the same files. The
 [translation audit](translation-parity-audit.md) records the earlier substitutes that prompted this
-repair. This document describes the changed implementation and public contracts. The C++ and address
-sanitizer results below record the earlier runtime repair based on SRPC `9bba8a7`, with the toolchain
-and limits identified in the validation record. Current facade-removal acceptance is tracked separately
-in [Rust lane independence](dev/facade-and-runtime-remaining.md).
+repair. This document describes the changed implementation and public contracts. The historical
+validation below covers the earlier runtime repair based on SRPC `9bba8a7`, including the subsequent
+ThreadSanitizer and UndefinedBehaviorSanitizer passes recorded with `624c083` on 2026-09-11.
+Current facade-removal acceptance is tracked separately in
+[Rust lane independence](dev/facade-and-runtime-remaining.md).
 
 ## Implementation owners
 
@@ -290,8 +291,24 @@ facade-removal acceptance is tracked in
 | Additional runtime checks | All 25 metrics tests passed; retry and reconnect each passed 20 repetitions. The seven Arc ownership cases and all six serialization cases passed, including rejection with a retained Weak and successful loading after its release. |
 | Documentation examples | All seven tagged C++ snippets compiled; all 63 C++ fences passed lint. |
 | AddressSanitizer and LeakSanitizer | Build and all 17 runtime checks passed, script exit 0. Test time: 22.75 seconds. No sanitizer error report appeared in the direct-fixture output; stack warnings and leak suppressions apply as described below. |
-| ThreadSanitizer | Initial run: 12 of 17 passed. Descriptor-lifetime and test-helper races require repair and a fresh run. |
-| UndefinedBehaviorSanitizer | **Pending.** |
+| ThreadSanitizer | After descriptor-lifetime and test-helper repairs, all 17 runtime checks passed on 2026-09-11. The retained console and CTest logs record that pass; commit `624c083` records zero data races. This supersedes the initial 12-of-17 result. |
+| UndefinedBehaviorSanitizer | All 17 runtime checks passed on 2026-09-11. The retained console log records the pass; commit `624c083` records zero findings. |
+
+The follow-up repairs and verification are recorded in `624c083`, an ancestor ten commits before
+the facade-removal starting tree `c591960`. TCP registrations retain descriptor owners through epoll
+removal. Test pollables use atomic mode fields, publish descriptor retirement with release/acquire
+ordering, and join workers before caller-side close. The commit records an initial ten race reports,
+followed by the passing ThreadSanitizer and UndefinedBehaviorSanitizer runs.
+
+The retained machine-local console logs are
+`/var/tmp/srpc-san-thread-2071411.log` and `/var/tmp/srpc-san-undefined-2071411.log`.
+They end with all 17 tests passing and the corresponding sanitizer battery success message.
+`build-san-thread/Testing/Temporary/LastTest.log`, dated 2026-09-11, also records all 17 passes.
+The older `LastTestsFailed.log`, dated 2026-09-09, still lists `test_reactor`,
+`test_rpc_pollthread_proxy_storage`, `test_rpc_transport_matrix`, `test_rpc_metrics` and
+`test_native_policy`. That stale summary does not describe the later run. The original warning
+stacks were not found in the preserved SRPC logs checked during the facade-removal investigation;
+the ten-report count comes from the commit's verification record.
 
 The sanitizer script uses the five existing fiber-allocation LeakSanitizer suppressions in
 [scripts/lsan_suppressions.txt](../scripts/lsan_suppressions.txt). The address run printed suppression
@@ -311,6 +328,7 @@ Cargo and is not instrumented by the C++ sanitizer configuration.
 The paired driver checks independently specified timer, wake-owner, and RPC outcomes for its bounded
 fixtures. Retry tests also observe detached worker completion by requiring a retained Weak to expire
 after user ownership is released. These checks cover the exercised operations and schedules; they do
-not prove equivalence for every input, interleaving, platform, or shutdown path. Full acceptance remains
-pending until the remaining sanitizer results are recorded. The gitlink and executable gate files
-remain the authoritative pin and inventory definitions.
+not prove equivalence for every input, interleaving, platform, or shutdown path. These historical
+sanitizer passes do not validate the current facade-removal changes; their acceptance remains tracked
+in [Rust lane independence](dev/facade-and-runtime-remaining.md). The gitlink and executable gate
+files remain the authoritative pin and inventory definitions.
