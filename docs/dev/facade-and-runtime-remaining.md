@@ -19,14 +19,18 @@ tree. The complete CMake build also passes, including independent compilation
 of all providers and the umbrella, exact ABI checks, and importer execution
 against fresh objects and the production archive.
 
+All 31 configured SRPC CTests now pass, including all 17 runtime suites and the
+previously failing stackless battery. The repeated-wake fix preserves reusable
+C++ lvalue calls and consuming standard Rust calls, including inferred clones.
+
 Remaining acceptance work:
 
-1. Rebuild and rerun CTest with the integrated repeated-wake fix. The prior run
-   passed 30 of 31 suites. C++ lvalue wakes now retain their owner; generated
-   standard Rust wake calls consume it, including inferred clones. Focused
-   ownership, concurrency and cancellation tests pass under ASan/UBSan.
-2. Run the full runtime sanitizer batteries and record their results here before
-   declaring the migration complete.
+1. Fix C++ thread-local teardown ownership. AddressSanitizer passes three of
+   17 runtime suites; the other 14 expose the same use-after-free when a reactor
+   destructor calls standard `thread::current()` after the C++ parking token
+   has been destroyed. The ordinary suites do not detect this lifetime error.
+2. Rerun full acceptance with that repair and complete the undefined-behavior
+   and thread sanitizer batteries. No new suppressions have been added.
 
 ## Removed dependencies
 
@@ -85,6 +89,9 @@ The first integrated std/descriptor/location batch passed the complete C++
 build, the existing ABI inventory, and all 26 then-configured SRPC CTests.
 Later slices have independent C++ checks:
 
+- The final compiler unit/codegen suite passes 2,472 tests with one existing
+  ignored test. Two old panic entry-point expectations were updated to match
+  the standard owned-payload lowering.
 - Native C/fiber type binding changes preserve every defined symbol in five
   affected providers.
 - Standard IPv4 parsing matches 637 Rust-derived cases. TCP retains all
@@ -126,7 +133,10 @@ standard Rust waker clones movable and emits consuming calls. The same-source
 Rust/C++ fixture checks independent clone ownership and immediate release;
 direct C++ tests also cover repeated and concurrent wakes, moved/empty wrappers,
 and retained wakes after cancellation. All pass, including ASan/UBSan runs; the
-old runtime reproduces the crash. Full rebuilt CTest and sanitizer acceptance
+old runtime reproduces the crash. The final full CMake build and all 31 CTests
+pass; the stackless battery completes all its cases. The full address run then
+exposes a separate C++ thread-local parking-token lifetime error during reactor
+teardown (14 failing suites, three passing). Repair and sanitizer acceptance
 remain pending.
 
 The authoritative symbol expectations remain in
