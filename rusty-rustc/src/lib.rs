@@ -71,22 +71,6 @@ impl<T: ReactorJobSetKey> ReactorJobSet<T> {
 }
 
 
-/// Rust-only representation of `std::pair<A, B>` used by canonical sources.
-pub struct StdPair<A, B> {
-    pub first: A,
-    pub second: B,
-}
-
-impl<A, B> StdPair<A, B> {
-    pub fn new(first: A, second: B) -> StdPair<A, B> {
-        StdPair { first, second }
-    }
-}
-
-
-/// Rust-only spelling for exact `std::vector<T>` ABI mappings.
-pub type StdVector<T> = Vec<T>;
-
 
 
 
@@ -203,7 +187,6 @@ impl<T: ?Sized> RustyFunctionIsEmpty for Box<T> {
 
 /// Rust-only declarations behind `use cpp::std` in canonical code.
 pub mod std {
-    use crate::StdPair;
     use ::std::io::Write as _;
 
     pub struct Cout;
@@ -238,14 +221,7 @@ pub mod std {
         }
     }
 
-    /// # Safety
-    ///
-    /// This facade has no caller-side precondition. `unsafe` records the
-    /// foreign named-module boundary at canonical Rust call sites.
-    #[allow(unsafe_code)]
-    pub unsafe fn make_pair<A, B>(first: A, second: B) -> StdPair<A, B> {
-        StdPair::new(first, second)
-    }
+
 }
 
 /// Rust-only contract for metric views used by the canonical load-balancer module.

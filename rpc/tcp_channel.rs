@@ -27,7 +27,7 @@ use crate::pollable_proxy::{PollableBase, PollableProxy};
 
 use rusty as cpp;
 
-type TcpOutBuf = rusty::StdVector<u8>;
+type TcpOutBuf = Vec<u8>;
 type LegacyOwnedFd = std::os::fd::OwnedFd;
 type LegacyTcpListener = std::net::TcpListener;
 type LegacySocketAddrV4 = std::net::SocketAddrV4;

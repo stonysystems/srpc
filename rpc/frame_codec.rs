@@ -238,7 +238,7 @@ pub struct FrameView {
     pub payload_size: usize,
 }
 
-type FrameBytes = rusty::StdVector<u8>;
+type FrameBytes = Vec<u8>;
 pub type FrameCursor = std::io::Cursor<FrameBytes>;
 
 pub fn make_frame_cursor() -> FrameCursor {

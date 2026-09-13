@@ -22,6 +22,10 @@ import rusty;
 using namespace srpc;
 using namespace std::chrono;
 
+static_assert(std::is_same_v<decltype(make_promise<int>()),
+                             std::pair<FiberPromise<int>, FiberFuture<int>>>);
+static_assert(std::is_same_v<QuorumDangling, std::pair<std::uint16_t, std::int64_t>>);
+
 // Simple test service for Future testing
 class TestFutureService : public Service {
 public:

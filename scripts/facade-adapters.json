@@ -22,10 +22,6 @@
     }
   },
   "declarations": {
-    "alias:StdVector": {
-      "category": "import",
-      "sha256": "440c9c55f305e438aab1b5237a62340716e133e1e377bc6aecfbcdebc2c428fa"
-    },
     "file-attributes:": {
       "category": "import",
       "sha256": "f3e53b5dda304df5d20e6151d9c6d0d1a4c56670ccad33933f4e32451c8a0c11"
@@ -54,10 +50,6 @@
       "category": "standard",
       "sha256": "54a12fd612b52c9388da04b0facb45197d3a702d399d2e83aa65446bee46f663"
     },
-    "function:std::make_pair": {
-      "category": "standard",
-      "sha256": "fedaef4629a510edf89923e291e05b5ccaefc6df3c8b751227f203f4b7201e78"
-    },
     "impl::: std :: sync :: Arc < T > as ReactorJobSetKey < T : ? Sized >": {
       "category": "standard",
       "sha256": "58aaffd84dba7ca159107cdff75dfeb1e2ed58d53d6bf5834943f0dcce30fc6e"
@@ -81,10 +73,6 @@
     "impl:ReactorJobSet < T > as inherent < T : ReactorJobSetKey >": {
       "category": "standard",
       "sha256": "e4e010901a78ee812f4a7c9e27f7f21d16f679e1ce07f9c6b977f7b200b1c065"
-    },
-    "impl:StdPair < A , B > as inherent < A , B >": {
-      "category": "standard",
-      "sha256": "8951b016347940909dc3cd1f33573abe1b047037245c2517e6f5b3b40c63dc2d"
     },
     "impl:T as LoadBalancerClientHandle < T >": {
       "category": "trait-dispatch",
@@ -125,10 +113,6 @@
     "struct:ReactorJobSet": {
       "category": "standard",
       "sha256": "a1b2e9ae49bb9e43a7e0ee5d49d6cb57bd835c43f8c644ef46bb9ca5afa9b370"
-    },
-    "struct:StdPair": {
-      "category": "standard",
-      "sha256": "3dffbb0292cc563cac5ffe8689eb2063400c968da608fc649cc1db5c765aed4d"
     },
     "struct:panic::PanicPayload": {
       "category": "standard",
@@ -201,10 +185,6 @@
     "use:std :: vec :: Vec": {
       "category": "import",
       "sha256": "8207458988047880f46893a2523505c399ea0cd59118156821eae0bb88eb9e77"
-    },
-    "use:std::crate :: StdPair": {
-      "category": "import",
-      "sha256": "26939a598e5e6525706f7f3f5ca1c28ff4d9b1ed16597663378c0104805c97ec"
     },
     "use:std::std :: io :: Write as _": {
       "category": "import",

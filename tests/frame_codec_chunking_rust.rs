@@ -31,7 +31,7 @@ fn view() -> FrameView {
 // on-wire bytes.
 #[allow(unsafe_code)]
 fn encode_frame(payload: &[u8], extended: bool) -> Vec<u8> {
-    let mut out = rusty::StdVector::<u8>::new();
+    let mut out = Vec::<u8>::new();
     let ok = unsafe {
         frame_codec_encode_into(
             &mut out,

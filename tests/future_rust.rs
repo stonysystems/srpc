@@ -44,8 +44,8 @@ fn invalid_future_reports_invalid_without_waiting() {
 #[test]
 fn factories_preserve_pair_and_ready_value_behavior() {
     let mut pair = make_promise::<Vec<i32>>();
-    pair.first.set_value(&vec![1, 2, 3]);
-    assert_eq!(pair.second.get(), vec![1, 2, 3]);
+    pair.0.set_value(&vec![1, 2, 3]);
+    assert_eq!(pair.1.get(), vec![1, 2, 3]);
 
     let mut future = make_ready_future::<i32>(42);
     assert!(future.valid());

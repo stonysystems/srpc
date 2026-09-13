@@ -8,11 +8,6 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use crate::reactor as _;
 
-// `rusty` is the rustc-only facade package. The emitter drops this alias and
-// treats the following `cpp::` paths as checked C++ named-module imports.
-use cpp::std as cpp_std;
-use rusty as cpp;
-
 /// Construct the `BoxEvent<T>` state owned by a new promise.
 pub fn fiber_make_state<T: Clone + Default + 'static>() -> Arc<crate::reactor::BoxEvent<T>> {
     crate::reactor::create_sp_box_event::<T>()
@@ -135,17 +130,17 @@ pub fn fiber_promise_get_future<T: Clone + Default + 'static>(self_: &mut FiberP
     future
 }
 
+/// The Rust tuple keeps the established std::pair C++ profile.
+pub type PromisePair<Promise, Future> = (Promise, Future);
+
 /// Create a promise/future pair sharing one event state.
-#[allow(unsafe_code)]
 #[allow(unused_mut)]
-pub fn make_promise<T: Clone + Default + 'static>() -> rusty::StdPair<FiberPromise<T>, FiberFuture<T>> {
+pub fn make_promise<T: Clone + Default + 'static>() -> PromisePair<FiberPromise<T>, FiberFuture<T>> {
     let mut promise: FiberPromise<T> = FiberPromise::<T>::default();
     // `mut` is load-bearing for C++: it prevents std::move from degrading to
-    // a deleted copy when the move-only future enters std::make_pair.
+    // a deleted copy when the move-only future enters the pair.
     let mut future: FiberFuture<T> = promise.get_future();
-    // SAFETY: `std::make_pair` has no caller-side safety precondition; the
-    // explicit block records the checked foreign C++ module call.
-    unsafe { cpp_std::make_pair(promise, future) }
+    (promise, future)
 }
 
 /// Create a future whose value has already been delivered.

@@ -32,9 +32,9 @@ fn historical_export_surface_is_rust_visible() {
     reactor_prune_hwm_th_.with(|hwm| assert_eq!(hwm.get(), 64));
     g_current_poll_worker.with(|worker| assert!(worker.get().is_null()));
 
-    let dangling: QuorumDanglingVec = vec![rusty::StdPair::new(7u16, 11i64)];
-    assert_eq!(dangling[0].first, 7u16);
-    assert_eq!(dangling[0].second, 11i64);
+    let dangling: QuorumDanglingVec = vec![(7u16, 11i64)];
+    assert_eq!(dangling[0].0, 7u16);
+    assert_eq!(dangling[0].1, 11i64);
 
 }
 

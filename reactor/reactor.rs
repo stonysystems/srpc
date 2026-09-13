@@ -60,9 +60,9 @@ pub type FdModeMap = HashMap<i32, i32>;
 pub type FdSet = HashSet<i32>;
 pub type JobSet = rusty::ReactorJobSet<Arc<dyn Job>>;
 pub type PollJoinSlot = std::sync::Mutex<Option<std::thread::JoinHandle<()>>>;
-// The historical callback ABI is Vec<std::pair<u16, i64>>, not a Rust tuple.
-// Use the checked facade that maps exactly to std::pair in generated C++.
-pub type QuorumDanglingVec = Vec<rusty::StdPair<u16, i64>>;
+// The tuple alias keeps the historical std::pair callback element profile.
+pub type QuorumDangling = (u16, i64);
+pub type QuorumDanglingVec = Vec<QuorumDangling>;
 pub type QuorumFinalizeFn = Option<Box<dyn FnMut(&mut QuorumDanglingVec) -> bool>>;
 pub type StacklessProfileCountU64 = std::sync::atomic::AtomicU64;
 pub type StacklessProfileCountUsize = std::sync::atomic::AtomicUsize;
@@ -3737,9 +3737,8 @@ fn quorum_collect_dangling(qe: *const QuorumEvent) -> QuorumDanglingVec {
     let mut v: QuorumDanglingVec = Default::default();
     let guard = unsafe { (*qe).xids_.borrow_mut() };
     for it in (*guard).iter() {
-        // SAFETY: std::make_pair has no caller-side precondition; this checked
-        // foreign call preserves the historical std::pair callback ABI.
-        v.push(unsafe { cpp_std::make_pair(*it.0, *it.1) });
+        let dangling: QuorumDangling = (*it.0, *it.1);
+        v.push(dangling);
     }
     v
 }

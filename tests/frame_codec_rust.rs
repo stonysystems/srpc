@@ -141,7 +141,7 @@ fn header_boundaries_and_transactional_encode() {
         );
     }
 
-    let mut encoded = rusty::StdVector::from(vec![9, 8]);
+    let mut encoded = vec![9, 8];
     let before = encoded.to_vec();
     assert!(!unsafe { frame_codec_encode_into(&mut encoded, core::ptr::null(), -1, false) });
     assert_eq!(encoded, before);
@@ -155,8 +155,8 @@ fn header_boundaries_and_transactional_encode() {
 fn fragmented_coalesced_and_compacted_streams() {
     let first_payload = *b"abc";
     let second_payload = [0x55, 0xaa];
-    let mut first = rusty::StdVector::default();
-    let mut second = rusty::StdVector::default();
+    let mut first = Vec::default();
+    let mut second = Vec::default();
     assert!(unsafe {
         frame_codec_encode_into(
             &mut first,
@@ -239,7 +239,7 @@ fn fragmented_coalesced_and_compacted_streams() {
     let compact_payload: Vec<u8> = (0..COMPACT_TOTAL - 4)
         .map(|index| ((index * 17) & 0xff) as u8)
         .collect();
-    let mut compact = rusty::StdVector::default();
+    let mut compact = Vec::default();
     assert!(unsafe {
         frame_codec_encode_into(
             &mut compact,
