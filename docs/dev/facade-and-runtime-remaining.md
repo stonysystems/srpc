@@ -31,55 +31,55 @@ by a standalone Cargo build with the C++ toolchain and facade sources absent.
 C++ compatibility work must keep serialization and scheduling policy in the
 canonical Rust implementation.
 
-Current implementation progress, updated 2026-09-13 (combined working tree):
+Current implementation progress, updated 2026-09-13:
 
-- The facade has 158 declarations, down from 195. Removed the Arc extension,
-  both descriptor models/aliases, unused std re-exports, collection models,
-  sleep/PID helpers, and the source-location model.
-- TCP and epoll use std `OwnedFd`. Their isolated Rust workspace, doctest,
-  clippy, audit and C++ compile checks pass. Provider symbols are unchanged;
-  epoll loses its unused `rusty` import and local import-initialization guard.
-- Canonical code imports std directly, uses inert inheritance annotations,
-  lazily initializes standard registry collections, sleeps through std, and
-  gets the process ID through std. Combined Rust tests pass. All generated
-  C++ providers compile and `libsrpc.a` links. The full ABI gate passes,
-  including 2,045 exact provider-owned strong symbols. All 26 SRPC CTest
-  tests pass.
-- `verify` now takes a standard `core::panic::Location`. Upstream tests run
-  native Rust and generated C++ and verify the C++ default captures the
-  importer's call site. The SRPC debugging provider compiles in the combined
-  C++ build.
-- Upstream nullable callback lowering now accepts standard Send/Sync bounds;
-  std mpsc and unsigned process-ID support are implemented. The integrated
-  compiler pin is `4cd99d8b362c0623c92bf32f1e16046acf32afd4`.
-- Async runtime work supports non-default and move-only poll payloads, owns
-  suspended tasks' polling contexts, and resumes nested pending tasks. Direct
-  runtime tests pass with address/undefined sanitizers. Standard Future
-  lowering is implemented. The canonical executor now passes Rust tests with
-  standard Future/Wake, including a non-default, non-cloneable output; its
-  combined C++ checks remain pending in an isolated worktree.
-- The STL serialization slice is validated and ready for integration: 37
-  facade declarations removed, 21 Rust tests and nine import-only C++ parity
-  tests passed. Wire-format loops and error handling stay canonical. C++
-  adapters expose individual container operations, including insert-if-vacant
-  to preserve duplicate-key behavior with one map lookup.
-- Standard TCP stream/listener migration is validated and ready for
-  integration. Rust lifecycle tests and fresh C++ compilation pass; all
-  strong and SRPC-owned TCP symbols are unchanged. Existing C++ IPv4 APIs
-  remain available alongside the standard address-returning operations.
-- Standard boxed callbacks replace the padded Function model in an isolated
-  slice, removing 19 declarations. Rust tests, doctests and clippy pass.
-  Whole-crate generation exposed missing nullable callback borrow operations;
-  upstream tests now cover shared/mutable views, guards and empty unwraps.
-  Whole-crate generation passes with that borrowing support.
-- Standard thread handles and IDs replace the facade thread module in an
-  isolated slice. The worker still aborts on panic and avoids joining itself
-  using its native kernel thread ID. Rust tests, including worker self-shutdown,
-  clippy and whole-crate generation pass; fresh C++ compilation is running.
-- Remaining implementation work covers source/sink and ADL forwarding,
-  native C/assembly type declarations, standard thread handles/IDs, panic
-  payloads, job ordering, domain load-balancer traits, pair/vector aliases,
-  handle presence, and deleting the facade package/build dependency itself.
+- The combined working tree has 49 facade declarations, down from 195.
+  Integrated removals cover direct std imports, Arc access, owned descriptors,
+  lazy standard collections, sleep/PID/source locations, boxed callbacks,
+  standard TCP streams/listeners/errors, standard threads, standard Future/Wake,
+  STL serialization models, source/sink forwarding, and native C/assembly
+  type bindings.
+- The first combined std/descriptor/location batch passes the full C++ build,
+  the ABI gate with 2,045 exact provider-owned strong symbols, and all 26 SRPC
+  CTest tests. The later combined batch passes the Rust workspace tests;
+  its complete generated-C++ validation is pending.
+- Standard Future tests cover pending work with non-default, non-cloneable
+  outputs. Upstream runtime tests cover move-only payloads, retained wakers,
+  nested suspension, cancellation and context ownership with address/undefined
+  sanitizers. Whole-crate generation passes in the isolated executor slice.
+- Callback borrowing now supports shared/mutable views, guards and empty
+  unwraps. Fresh C++ compilation found a further unit-return inference gap in
+  a boxed callback. A missing canonical thread-helper import is corrected;
+  the thread runtime already handles unit outputs. Callback return/argument
+  corrections are in progress before the next combined C++ build.
+- Standard threads retain the canonical abort-on-panic policy. Worker shutdown
+  compares kernel thread IDs to avoid joining itself. Rust tests include that
+  self-shutdown path.
+- STL wire loops and error handling stay canonical. C++ adapters expose single
+  container operations, including insert-if-vacant for first-value-wins map
+  decoding. Twenty-one isolated Rust tests and nine import-only C++ parity
+  tests passed. TCP's isolated C++ check preserves all strong and SRPC-owned
+  provider symbols.
+- The integrated compiler commits include standard Future/Wake, callback
+  borrowing, standard networking, module epilogues, typed generic C++
+  declarations, and explicit native C type bindings. The optimized compiler build is clean at
+  `51001c606857116e5b280f7011706ac58edd834c`.
+
+Remaining source work is now concentrated in these areas:
+
+1. Validate the combined source/sink and ADL forwarding change. Its Rust tests
+   and eleven isolated C++ serialization tests pass.
+2. Standard IPv4 parsing/formatting and logging remove the remaining platform
+   helpers. Pthread, FILE and fiber bindings are integrated with a separate
+   native ABI audit; all defined symbols match in five affected C++ providers.
+3. Tuple/vector aliases used by existing C++ consumers. Rust tuples and Vec
+   need scoped C++ type mappings that retain the current pair/vector ABI.
+4. Optional handle and callback presence. Required Rust owners must stop
+   carrying facade methods that return constant validity values.
+5. Job identity ordering, load-balancer trait ownership and panic payloads.
+6. Delete the facade and marker Cargo packages/dependencies, revise the
+   independence checks, and prove a copied Cargo tree builds and tests without
+   facade sources or the C++ runtime/toolchain.
 
 The inventory and probe tables below record the starting investigation.
 Completed removals above supersede their candidate status.
