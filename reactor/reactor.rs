@@ -3449,6 +3449,8 @@ fn job_spawn_work(job: &Arc<dyn Job>) {
     });
 }
 
+// The C++ BTreeMap uses an explicit new_ factory and has no default constructor.
+#[allow(clippy::mem_replace_with_default)]
 fn pollworker_trigger_job(w: &mut PollThreadWorker) {
     let jobs_exec = core::mem::replace(&mut w.jobs_, JobSet::new());
     for job in jobs_exec.values() {
