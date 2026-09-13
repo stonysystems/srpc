@@ -25,12 +25,14 @@ C++ lvalue calls and consuming standard Rust calls, including inferred clones.
 
 Remaining acceptance work:
 
-1. Fix C++ thread-local teardown ownership. AddressSanitizer passes three of
-   17 runtime suites; the other 14 expose the same use-after-free when a reactor
+1. Fix C++ thread-local teardown ownership. AddressSanitizer and ThreadSanitizer
+   each pass three of 17 runtime suites; the other 14 expose the same
+   use-after-free when a reactor
    destructor calls standard `thread::current()` after the C++ parking token
    has been destroyed. The ordinary suites do not detect this lifetime error.
-2. Rerun full acceptance with that repair and complete the undefined-behavior
-   and thread sanitizer batteries. No new suppressions have been added.
+2. Rerun full acceptance with that repair. UndefinedBehaviorSanitizer currently
+   passes all 17 suites with no reported findings. No new suppressions have
+   been added.
 
 ## Removed dependencies
 
@@ -136,8 +138,15 @@ and retained wakes after cancellation. All pass, including ASan/UBSan runs; the
 old runtime reproduces the crash. The final full CMake build and all 31 CTests
 pass; the stackless battery completes all its cases. The full address run then
 exposes a separate C++ thread-local parking-token lifetime error during reactor
-teardown (14 failing suites, three passing). Repair and sanitizer acceptance
-remain pending.
+teardown (14 failing suites, three passing). ThreadSanitizer confirms that same
+lifetime error in the same 14 suites. Its later freed-waker report is downstream
+heap corruption: a thread-runtime-only reproducer shows two simultaneous malloc
+allocations receiving the same address after the invalid TLS access. Removing
+that access or applying the isolated thread-exit repair makes the reproducer
+pass; the direct-reactor case alone also passes 100 thread-sanitized repetitions.
+No independent waker repair is indicated. UndefinedBehaviorSanitizer passes all
+17 suites with no findings. The thread-exit repair and final acceptance remain
+pending.
 
 The authoritative symbol expectations remain in
 [scripts/check_srpc_crate_mode.py](../../scripts/check_srpc_crate_mode.py).
