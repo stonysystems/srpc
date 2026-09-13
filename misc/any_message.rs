@@ -100,7 +100,7 @@ pub mod any_message_registry {
         0_i32
     }
 
-    pub fn create(name: &String) -> Option<SerializableProxy> {
+    pub fn create(name: &str) -> Option<SerializableProxy> {
         let mut guard = REGISTRY.lock().unwrap();
         if guard.is_none() {
             *guard = Some(RegistryMap {
@@ -111,7 +111,7 @@ pub mod any_message_registry {
         let map = guard.as_mut().unwrap();
         let mut factory = map.by_name.remove(name)?;
         let payload = factory();
-        map.by_name.insert(name.clone(), factory);
+        map.by_name.insert(name.to_string(), factory);
         Some(payload)
     }
 
@@ -130,7 +130,7 @@ pub mod any_message_registry {
         }
     }
 
-    pub fn is_registered_name(name: &String) -> bool {
+    pub fn is_registered_name(name: &str) -> bool {
         let mut guard = REGISTRY.lock().unwrap();
         if guard.is_none() {
             *guard = Some(RegistryMap {

@@ -673,7 +673,7 @@ pub fn server_run_shutdown_hooks(hooks: &std::sync::Mutex<Vec<ShutdownHook>>) {
 /// Parse the decimal prefix accepted by the historical `std::stoi` path.
 /// Leading ASCII whitespace and a sign are permitted; trailing text is ignored.
 /// Keep the old 63-byte limit and reject missing digits or int32 overflow.
-pub fn server_parse_port(text: &String) -> Option<i32> {
+pub fn server_parse_port(text: &str) -> Option<i32> {
     let bytes = text.as_bytes();
     if bytes.len() > 63 {
         return None;

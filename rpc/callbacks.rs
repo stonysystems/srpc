@@ -21,7 +21,7 @@ use crate::errors as _;
 type LegacyRpcError = crate::errors::RpcError;
 
 pub type ConnectionCallback = Arc<Box<dyn Fn() + Send + Sync>>;
-pub type ErrorCallback = Arc<Box<dyn Fn(LegacyRpcError, &String) + Send + Sync>>;
+pub type ErrorCallback = Arc<Box<dyn Fn(LegacyRpcError, &str) + Send + Sync>>;
 pub type ReconnectCallback = Arc<Box<dyn Fn(bool) + Send + Sync>>;
 
 fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
@@ -36,7 +36,7 @@ fn invoke_connection_callback_safely(callback: &ConnectionCallback) {
 fn invoke_error_callback_safely(
     callback: &ErrorCallback,
     error: LegacyRpcError,
-    message: &String,
+    message: &str,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         (**callback)(error, message);
@@ -128,7 +128,7 @@ impl CallbackManager {
     #[allow(clippy::type_complexity)]
     pub fn add_on_error(
         &self,
-        callback: Box<dyn Fn(LegacyRpcError, &String) + Send + Sync>,
+        callback: Box<dyn Fn(LegacyRpcError, &str) + Send + Sync>,
     ) {
         let callback: ErrorCallback = Arc::new(callback);
         let mut guard = self.callbacks_field.lock().unwrap();
@@ -177,7 +177,7 @@ impl CallbackManager {
         self.inflight_exit();
     }
 
-    pub fn invoke_on_error(&self, error: LegacyRpcError, message: &String) {
+    pub fn invoke_on_error(&self, error: LegacyRpcError, message: &str) {
         self.inflight_enter();
         let callbacks = {
             let guard = self.callbacks_field.lock().unwrap();

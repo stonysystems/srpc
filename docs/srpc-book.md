@@ -3934,7 +3934,7 @@ invocation is wrapped so a throwing callback cannot take down the dispatch.
 ```cpp srpc-compile-client
 client.add_on_connected([]() { /* connect succeeded */ });
 client.add_on_disconnected([]() { /* channel closed or transport error */ });
-client.add_on_error([](RpcError err, const rusty::String& msg) { /* ... */ });
+client.add_on_error([](RpcError err, std::string_view msg) { /* ... */ });
 client.add_on_reconnecting([]() { /* a reconnect attempt is starting */ });
 client.add_on_reconnected([](bool success) { /* attempt finished */ });
 ```
@@ -5458,18 +5458,18 @@ class ClientPool {
     static ClientPool new_(rusty::Option<rusty::Arc<PollThread>> poll_thread,
                            PoolConfig config);
 
-    rusty::Option<rusty::Arc<Client>> get_client(const rusty::String& addr);
+    rusty::Option<rusty::Arc<Client>> get_client(std::string_view addr);
 
     void set_pool_config(PoolConfig config);
     PoolConfig pool_config() const;
 
     size_t total_client_count() const;
     size_t address_count() const;
-    size_t get_healthy_client_count(const rusty::String& addr) const;
+    size_t get_healthy_client_count(std::string_view addr) const;
 
-    size_t remove_unhealthy_clients(const rusty::String& addr);
+    size_t remove_unhealthy_clients(std::string_view addr);
     size_t remove_all_unhealthy();
-    size_t close_idle_clients(const rusty::String& addr, uint64_t current_time_ms);
+    size_t close_idle_clients(std::string_view addr, uint64_t current_time_ms);
     size_t close_all_idle(uint64_t current_time_ms);
 
     bool is_client_healthy(const rusty::Arc<Client>& client) const;

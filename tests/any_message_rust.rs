@@ -51,9 +51,7 @@ fn registry_and_pack_preserve_name_type_and_shared_payload_identity() {
     assert!(any_message_registry::name_for_type_owned(TypeId::of::<GraphPayload>()).is_empty());
 
     reset_and_register();
-    assert!(any_message_registry::is_registered_name(
-        &GRAPH_NAME.to_owned()
-    ));
+    assert!(any_message_registry::is_registered_name(GRAPH_NAME));
     assert!(any_message_registry::is_registered_type(TypeId::of::<
         GraphPayload,
     >()));

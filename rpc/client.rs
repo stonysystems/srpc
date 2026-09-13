@@ -117,13 +117,12 @@ pub type AsyncReplyCallback = rusty::Function<dyn FnMut(i32, *const u8, usize) +
 pub type OnReconnectCompleteCallbackFn = rusty::Function<dyn FnMut(bool) + Send>;
 pub type OnServerRestartCallbackFn = rusty::Function<dyn FnMut(u64, u64) + Send>;
 pub type OnConnectedCallbackFn = Box<dyn Fn() + Send + Sync>;
-pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &String) + Send + Sync>;
+pub type OnErrorCallbackFn = Box<dyn Fn(RpcError, &str) + Send + Sync>;
 pub type OnReconnectedCallbackFn = Box<dyn Fn(bool) + Send + Sync>;
 
 // Use the canonical sparse integer values for wire headers.
 type v32 = crate::basetypes::v32;
 type v64 = crate::basetypes::v64;
-pub type LegacyStdStringView<'a> = &'a str;
 pub type LegacyCallbackWrapper<F> = crate::callback_wrapper::detail::CallbackWrapper<F>;
 
 pub struct ClientCloneCell<T>(Mutex<T>);
@@ -1343,7 +1342,7 @@ impl ClientConnection {
     // Takes the owned string by reference (`const rusty::String&` in C++),
     // matching the `OnErrorCallbackFn` surface it forwards to; the literal
     // call sites build the owned string.
-    fn invoke_error_callback(&self, err: i32, message: &String) {
+    fn invoke_error_callback(&self, err: i32, message: &str) {
         if !self.callback_manager_.is_valid() {
             return;
         }
@@ -2009,7 +2008,7 @@ impl ClientPool {
         clientpool_is_client_healthy_with(self.pool_config(), client)
     }
 
-    pub fn get_healthy_client_count(&self, addr: &String) -> usize {
+    pub fn get_healthy_client_count(&self, addr: &str) -> usize {
         clientpool_get_healthy_client_count(self, addr)
     }
 
@@ -2029,11 +2028,11 @@ impl ClientPool {
         guard.cache.len()
     }
 
-    pub fn remove_unhealthy_clients(&self, addr: &String) -> usize {
+    pub fn remove_unhealthy_clients(&self, addr: &str) -> usize {
         clientpool_remove_unhealthy_clients(self, addr)
     }
 
-    pub fn close_idle_clients(&self, addr: &String, current_time_ms: u64) -> usize {
+    pub fn close_idle_clients(&self, addr: &str, current_time_ms: u64) -> usize {
         clientpool_close_idle_clients(self, addr, current_time_ms)
     }
 
@@ -2045,7 +2044,7 @@ impl ClientPool {
         clientpool_close_all_idle(self, current_time_ms)
     }
 
-    pub fn get_client(&self, addr: &String) -> Option<Arc<Client>> {
+    pub fn get_client(&self, addr: &str) -> Option<Arc<Client>> {
         clientpool_get_client(self, addr)
     }
 }
@@ -3024,7 +3023,7 @@ pub fn clientpool_is_client_healthy_with(cfg: PoolConfig, client: &Arc<Client>) 
 
 // clippy::unnecessary_unwrap -- measured: emits an extra `decltype(auto)` binding and re-shapes the branch. See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_unwrap)]
-pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &String) -> usize {
+pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &str) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant.
     let cfg: PoolConfig = self_.pool_config();
     let guard = self_.state_.lock().unwrap();
@@ -3046,7 +3045,7 @@ pub fn clientpool_get_healthy_client_count(self_: &ClientPool, addr: &String) ->
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &String) -> usize {
+pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &str) -> usize {
     // Config snapshot BEFORE `state_`, per the lock-order invariant.
     let cfg: PoolConfig = self_.pool_config();
     let mut guard = self_.state_.lock().unwrap();
@@ -3089,7 +3088,7 @@ pub fn clientpool_remove_unhealthy_clients(self_: &ClientPool, addr: &String) ->
 // clippy::reserve_after_initialization -- measured: emits Vec::with_capacity() and drops the reserve() call. See the Task-2 measurement block above.
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::reserve_after_initialization, clippy::unnecessary_get_then_check)]
-pub fn clientpool_close_idle_clients(self_: &ClientPool, addr: &String, current_time_ms: u64) -> usize {
+pub fn clientpool_close_idle_clients(self_: &ClientPool, addr: &str, current_time_ms: u64) -> usize {
     let cfg: PoolConfig = self_.pool_config();
 
     // If idle timeout is 0, no timeout
@@ -3269,7 +3268,7 @@ pub fn clientpool_close_all_idle(self_: &ClientPool, current_time_ms: u64) -> us
 
 // The owned NUL terminator keeps the C address valid for the synchronous
 // connect call in Rust and generated C++ alike.
-pub fn clientpool_connect_client(client: &Arc<Client>, addr: &String) -> i32 {
+pub fn clientpool_connect_client(client: &Arc<Client>, addr: &str) -> i32 {
     let mut address_bytes = addr.as_bytes().to_vec();
     address_bytes.push(0u8);
     client.connect(address_bytes.as_ptr() as *const i8, true)
@@ -3324,7 +3323,7 @@ pub fn clientpool_select(
 
 // clippy::unnecessary_get_then_check -- measured: emits contains_key() where the C++ surface has get().is_some(). See the Task-2 measurement block above.
 #[allow(clippy::unnecessary_get_then_check)]
-pub fn clientpool_get_client(self_: &ClientPool, addr: &String) -> Option<Arc<Client>> {
+pub fn clientpool_get_client(self_: &ClientPool, addr: &str) -> Option<Arc<Client>> {
     let mut sp_cl: Option<Arc<Client>> = None;
     let cfg: PoolConfig = self_.pool_config();
     let num_connections: i32 = cfg.min_connections;
@@ -3336,7 +3335,7 @@ pub fn clientpool_get_client(self_: &ClientPool, addr: &String) -> Option<Arc<Cl
     // shared get() probe is enough.
     let has_lb: bool = guard.lb_state.get(addr).is_some();
     if !has_lb {
-        guard.lb_state.insert(addr.clone(), LoadBalancerState::new());
+        guard.lb_state.insert(addr.to_string(), LoadBalancerState::new());
     }
     let has_cached: bool = guard.cache.get(addr).is_some();
     if has_cached {
@@ -3437,7 +3436,7 @@ pub fn clientpool_get_client(self_: &ClientPool, addr: &String) -> Option<Arc<Cl
             let pick2: usize =
                 client_rand(0i32, parallel_clients.len() as i32 - 1i32) as usize;
             sp_cl = Some(parallel_clients[pick2].clone());
-            guard.cache.insert(addr.clone(), parallel_clients);
+            guard.cache.insert(addr.to_string(), parallel_clients);
         }
         // If not ok, parallel_clients cleans up via the Arc drops
     }

@@ -75,12 +75,12 @@ impl InMemorySwitchboard {
         true
     }
 
-    pub fn unregister_listener(&self, address: &String) {
+    pub fn unregister_listener(&self, address: &str) {
         let mut guard = self.listeners_.lock().unwrap();
         guard.remove(address);
     }
 
-    pub fn find_listener(&self, address: &String) -> Option<Arc<InMemoryListener>> {
+    pub fn find_listener(&self, address: &str) -> Option<Arc<InMemoryListener>> {
         let mut guard = self.listeners_.lock().unwrap();
         let upgraded: Option<Arc<InMemoryListener>> = match guard.get(address) {
             Some(listener) => listener.upgrade(),
