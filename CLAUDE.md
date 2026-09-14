@@ -428,9 +428,10 @@ revision. [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) describes 
 and migration contracts, with final whole-crate and sanitizer acceptance tracked separately.
 
 `RUST_CANARY.md` and `reactor/CANONICAL_CHECKPOINT.md` contain older inventories and compiler blockers.
-`docs/srpc-book.md` also has pre-migration mutable service/channel and reply-guard examples. Check those
-against the canonical source and current migration notes before copying them. Use `git show` at the
-recorded baseline when investigating a historical claim.
+`docs/srpc-book.md` documents the current native Rust APIs; `docs/srpc-cpp-book.md` covers generated
+C++ APIs and translation. Older book revisions contain mutable service/channel and reply-guard
+examples that no longer match the sources. Use `git show` at the recorded baseline when investigating
+a historical claim.
 
 When prose and code disagree, `CMakeLists.txt`, `rust-modules.toml`, and the current gates in `scripts/`
 define the build contracts. Record measured results from the revision actually being accepted.

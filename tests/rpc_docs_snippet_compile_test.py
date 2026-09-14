@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lint the ```cpp fences in docs/srpc-book.md, and (when a build tree is
+"""Lint the ```cpp fences in docs/srpc-cpp-book.md, and (when a build tree is
 available) syntax-check the compile-tagged snippets against the real srpc
 module graph.
 
@@ -303,8 +303,8 @@ int main() {{
 }}
 """
     if profile == "codegen":
-        # No `Marshal`, no `operator>>`: SRPC has neither (docs/srpc-book.md
-        # ch. 10). Generated code calls the two free dispatchers
+        # No `Marshal`, no `operator>>`: SRPC has neither (docs/srpc-cpp-book.md
+        # serialization chapter). Generated code calls the two free dispatchers
         # `srpc::Serialize_::serialize` / `srpc::Deserialize_::deserialize`
         # over a BinaryWriteArchive / BinaryReadArchive; canonical source is
         # misc/serializable.rs (module srpc.serializable, pulled in by
@@ -444,11 +444,11 @@ def default_repo_root() -> Path:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compile/lint srpc-book cpp snippets.")
+    parser = argparse.ArgumentParser(description="Compile/lint SRPC C++ companion snippets.")
     parser.add_argument(
         "--book",
         default=None,
-        help="Path to docs/srpc-book.md (default: <repo>/docs/srpc-book.md)",
+        help="Path to docs/srpc-cpp-book.md (default: <repo>/docs/srpc-cpp-book.md)",
     )
     parser.add_argument(
         "--repo",
@@ -480,7 +480,7 @@ def main():
     repo_root = Path(args.repo).resolve() if args.repo else default_repo_root()
     build_dir = Path(args.build_dir).resolve() if args.build_dir else None
     book_path = (
-        Path(args.book).resolve() if args.book else repo_root / "docs" / "srpc-book.md"
+        Path(args.book).resolve() if args.book else repo_root / "docs" / "srpc-cpp-book.md"
     )
 
     if not book_path.exists():
@@ -495,7 +495,7 @@ def main():
         return 2
 
     if total_cpp_fences == 0:
-        print("expected at least one cpp fence in srpc-book", file=sys.stderr)
+        print("expected at least one cpp fence in srpc-cpp-book", file=sys.stderr)
         return 2
 
     if violations:
@@ -569,7 +569,7 @@ def main():
         return 1
 
     print(
-        f"compiled {len(snippets)} tagged srpc-book snippets successfully "
+        f"compiled {len(snippets)} tagged C++ companion snippets successfully "
         f"({cxx}, module map {modmap})"
     )
     return 0

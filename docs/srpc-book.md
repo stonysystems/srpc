@@ -1,3385 +1,2281 @@
-# The SRPC Book
+# The SRPC book
 
-A developer's guide to **SRPC** — a Simple RPC framework for C++23.
+SRPC is an RPC library written in Rust. This book starts with a working Rust
+service and client, then explains the runtime, protocol and public APIs used by
+native Cargo applications. The Rust library uses Rust std and a small C/assembly
+kernel.
 
-You describe a service in a small `.rpc` file, run the code generator, and get a typed
-server base class and a typed client proxy. Underneath sits an epoll reactor, stackful
-fibers, a pluggable transport, binary serialization, and the usual production plumbing:
-timeouts, retries, reconnect, circuit breaking, connection pooling.
+The [C++ companion](srpc-cpp-book.md) covers translation, CMake builds, service
+code generation and C++ application APIs. Those tools are a separate way to use
+the canonical Rust implementation.
 
-SRPC is a standalone library. It descends from
-[simple-rpc](https://github.com/santazhang/simple-rpc), so the IDL will look familiar;
-the generated C++ will not. Handlers take a typed request struct and return
-`rusty::Result`, and everything lives in namespace `srpc::`.
+## Contents
 
-### How to read this book
-
-The repository's `README.md` is the quick start — clone, write a `.rpc` file, generate,
-build, run. This book is the reference behind it, taking the same machinery apart layer
-by layer: the fiber context switch, the reactor, the wire format, the client and server
-state machines, and the code generator that ties them to your service definition.
-
-Two conventions to know before you start.
-
-**Code blocks are tagged.** Every C++ block carries exactly one of `srpc-compile`,
-`srpc-compile-client`, `srpc-compile-server`, `srpc-compile-codegen` or
-`srpc-no-compile` after the language word. `tests/rpc_docs_snippet_compile_test.py`
-reads those tags and compiles the ones that claim to be compilable, against a build
-tree's own module map. `srpc-no-compile` marks a fragment that is illustrative: it
-needs a generated header, a surrounding function, or some other context the harness
-cannot supply. A tagged-compilable snippet is a claim the harness checks; an untagged
-one fails the test outright.
-
-**Ground truth is Rust.** SRPC's 37 production modules are canonical Rust files living
-at their historical C++ paths in `base/`, `misc/`, `reactor/` and `rpc/`; the C++
-modules that ship in `libsrpc.a` are generated from exactly those bytes. When this book
-and a `.cc` file under `tests/` disagree, believe the `.rs` — CMake compiles only 9 of
-the 76 test files, and the rest have drifted. Chapter 1 introduces that arrangement, and
-Chapter 14 goes into the memory-safety machinery that comes with it.
-
----
-
-## Table of Contents
-
-**Part I — the framework, in its source language (Rust)**
-
-1. [Introduction](#1-introduction)
-2. [Architecture Overview](#2-architecture-overview)
-3. [Fibers (Stackful)](#3-fibers-stackful)
-4. [The Reactor Pattern](#4-the-reactor-pattern)
-5. [Event System](#5-event-system)
-6. [I/O Layer: Polling and Connections](#6-io-layer-polling-and-connections)
-7. [RPC Protocol](#7-rpc-protocol)
-8. [RPC Client](#8-rpc-client)
-9. [RPC Server](#9-rpc-server)
+1. [Getting started](#1-getting-started)
+2. [Architecture](#2-architecture)
+3. [Fibers](#3-fibers)
+4. [The reactor pattern](#4-the-reactor-pattern)
+5. [Event system](#5-event-system)
+6. [I/O layer: polling and connections](#6-io-layer-polling-and-connections)
+7. [RPC protocol](#7-rpc-protocol)
+8. [RPC client](#8-rpc-client)
+9. [RPC server](#9-rpc-server)
 10. [Serialization](#10-serialization)
-11. [Reliability Features](#11-reliability-features)
-13. [Threading and Synchronization](#13-threading-and-synchronization)
-15. [Performance Tuning](#15-performance-tuning)
-17. [Pitfalls and Best Practices](#17-pitfalls-and-best-practices)
-18. [Troubleshooting](#18-troubleshooting)
-
-**Part II — the generated C++ lane**
-
-12. [Service Definition and Code Generation](#12-service-definition-and-code-generation-c-lane)
-14. [Memory Safety (RustyCpp)](#14-memory-safety-rustycpp-c-lane)
-16. [API Reference](#16-api-reference-c-lane)
-19. [The C++ Lane: One Source, Two Compilers](#19-the-c-lane-one-source-two-compilers)
-20. [Consuming SRPC from C++](#20-consuming-srpc-from-c)
+11. [Reliability features](#11-reliability-features)
+12. [Threading and synchronization](#12-threading-and-synchronization)
+13. [Performance tuning](#13-performance-tuning)
+14. [Pitfalls and best practices](#14-pitfalls-and-best-practices)
+15. [Troubleshooting](#15-troubleshooting)
+16. [Rust API and verification](#16-rust-api-and-verification)
 
 ---
 
-## 1. Introduction
+## 1. Getting started
 
-SRPC is a Simple RPC framework **written in Rust** that ships as two artifacts from one
-set of sources: a native Rust library you build with plain `cargo`, and a generated
-C++23 named-module library produced by the pinned `rusty-cpp` transpiler. The 37
-production modules are one set of `.rs` files; rustc compiles them directly, and the
-transpiler emits an `srpc.<name>.cppm` C++ module from each. When this book says
-"`rpc/client.rs`" it means both the Rust module `srpc::client` and the C++ module
-`srpc.client` — they are the same file.
+SRPC is a Rust RPC library. Applications implement services, serialize requests and
+use clients through the `srpc` crate. The runtime provides TCP and in-memory
+transports, an epoll poller, stackful fibers, standard Rust futures, and request
+reliability policies.
 
-This book describes the framework in its source language. Part II (Chapters 19-20,
-plus the code-generation and memory-safety chapters) covers the C++ lane: how the
-translation works, what it guarantees, and how a C++ program consumes the result.
+The library uses Rust std plus a small C/assembly kernel for native operations and
+fiber context switching. Cargo builds it without the C++ runtime, transpiler or
+submodules. The [C++ companion](srpc-cpp-book.md) describes a separate consumer of
+the same Rust implementation, including its service generator and typed proxies.
 
-The framework has two halves, and it helps to think about them separately.
+### Scope and requirements
 
-The first is a **code generator** for the C++ lane. You write an interface in a small
-`.rpc` file, run `simplerpcgen.rpcgen` over it, and get a C++ header containing a typed
-service base class, a client proxy, and request/response structs per method. (There is
-no Rust code generator yet; a Rust service implements the dispatch-level `Service` trait
-directly, shown below.)
+SRPC supports Linux on x86_64 and aarch64. Install a stable Rust toolchain, a C
+compiler and an archiver. `build.rs` uses `CC` and `AR` when set, otherwise `cc` and
+`ar`, and selects the fiber assembly for the target architecture. The native build
+currently assumes those tools produce code for the Cargo target.
 
-The second is the **runtime**: an epoll reactor driving poll threads, stackful fibers so
-a handler may block, stackless tasks for `async fn` handlers, a framed binary transport
-over TCP (or an in-process switchboard for tests), futures, and a layer of reliability
-machinery — reconnect policy, circuit breaker, request timeouts and retries, a
-connection pool.
+The root Cargo package has no production Rust dependencies. Its property tests use
+`proptest` as a development dependency. The library is consumed from a checkout;
+`Cargo.toml` currently sets `publish = false`.
 
-In Rust everything lives in the `srpc` crate, one module per source file. In C++
-everything lives in namespace `srpc::`, one named module per source file.
+### Building and testing SRPC
+
+```sh
+git clone https://github.com/stonysystems/srpc
+cd srpc
+cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --doc
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo doc --locked --no-deps --open
+```
+
+These commands need no submodule initialization. For an application beside the
+checkout, create a Cargo project and add a path dependency:
+
+```sh
+cargo new ../hello-srpc
+```
+
+In `hello-srpc/Cargo.toml`:
+
+```toml
+[dependencies]
+srpc = { path = "../srpc" }
+```
+
+`bench/` and `verify/` are separate Cargo workspaces. The regular test command does
+not run benchmarks or Verus; the performance and verification sections give their
+commands. Tests and documentation checks run locally; this repository has no CI.
 
 ### The shape of a service
 
-A Rust service implements the `Service` trait: `__reg_to__` registers each RPC id with
-a dispatch mode, and `__dispatch__` decodes the request and replies. This is the
-dispatch-level surface the C++ generator's typed wrappers sit on, used directly. The
-shape below is the in-repo round-trip test (`tests/rpc_roundtrip_inmemory_rust.rs`),
-which echoes a doubled integer:
+A Rust service implements `srpc::server::Service`. Registration associates an RPC id
+with a dispatch mode. Dispatch reads the arguments and supplies a writer for the
+reply. Choose ids as part of your protocol and keep client and server definitions in
+agreement.
+
+The following complete `src/main.rs` performs an RPC without opening a network
+port. Both endpoints use factories backed by one in-memory switchboard. It exercises
+the real client, service dispatch and serialization code.
 
 ```rust
+use std::ffi::CString;
+use std::sync::Arc;
+
+use srpc::client::{deserialize_from, Client, FutureAttr};
+use srpc::inmemory_channel::{make_inmemory_factory_proxy, InMemoryFactory, InMemorySwitchboard};
+use srpc::reactor::PollThread;
 use srpc::serializable::{BinaryReadArchive, BinaryWriteArchive, Deserialize, Serialize};
 use srpc::server::{Request, Server, ServerReplyFn, Service, WeakServerConnection};
 
-const ECHO_DOUBLE_RPC_ID: i32 = 0x00E0_0042;
+const DOUBLE: i32 = 0x00E0_0042;
 
-struct EchoDoubleService;
+struct DoubleService;
 
-impl Service for EchoDoubleService {
-    fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32 {
-        // Fast registration: dispatch inline on the delivering thread.
-        // reg_rpc instead spawns a stackful fiber per request.
-        server.reg_fast_rpc(ECHO_DOUBLE_RPC_ID, svc_index)
+impl Service for DoubleService {
+    fn __reg_to__(&mut self, server: &mut Server, service_index: usize) -> i32 {
+        server.reg_fast_rpc(DOUBLE, service_index)
     }
 
-    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
-        let mut value = 0i64;
+    fn __dispatch__(&self, rpc_id: i32, mut req: Box<Request>, connection: WeakServerConnection) {
+        assert_eq!(rpc_id, DOUBLE);
+        let mut value = 0_i64;
         {
-            let mut ar = BinaryReadArchive {
+            let mut reader = BinaryReadArchive {
+                // SAFETY: the boxed request owns this source for the entire read.
                 source_: unsafe {
                     srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
                 },
             };
-            Deserialize::deserialize(&mut value, &mut ar);
+            Deserialize::deserialize(&mut value, &mut reader);
         }
-        let sconn = sconn.upgrade().expect("connection alive during dispatch");
-        let writer: ServerReplyFn = Box::new(move |ar: &mut BinaryWriteArchive| {
-            Serialize::serialize(&(value * 2), ar);
-        });
-        sconn.reply(&req, 0, writer);
+
+        if let Some(connection) = connection.upgrade() {
+            let writer: ServerReplyFn = Some(Box::new(move |out: &mut BinaryWriteArchive| {
+                Serialize::serialize(&(value * 2), out);
+            }));
+            connection.reply(&req, 0, writer);
+        }
     }
+}
+
+fn main() {
+    let switchboard = Arc::new(InMemorySwitchboard::new());
+    let address = CString::new("inmemory://double").unwrap();
+    let server_poll = PollThread::create();
+    let client_poll = PollThread::create();
+
+    let mut server = Server::new(Some(server_poll.clone()));
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(
+        InMemoryFactory::new(switchboard.clone()),
+    ))));
+    server.reg_service(Box::new(DoubleService));
+    // SAFETY: address is NUL-terminated and remains alive for the call.
+    assert_eq!(unsafe { server.start(address.as_ptr()) }, 0);
+
+    let client = Client::create(client_poll.clone());
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(
+        InMemoryFactory::new(switchboard),
+    ))));
+    assert_eq!(client.connect(address.as_ptr(), true), 0);
+
+    let reply = client.request(DOUBLE, &FutureAttr::default(), |out| {
+        Serialize::serialize(&21_i64, out);
+    }).expect("request accepted");
+    reply.wait();
+    assert_eq!(reply.get_error_code(), 0);
+    let mut doubled = 0_i64;
+    deserialize_from(reply.get_reply(), &mut doubled);
+    assert_eq!(doubled, 42);
+    println!("double(21) = {doubled}");
+
+    client.close();
+    drop(client);
+    server.graceful_shutdown(1_000);
+    drop(server);
+    client_poll.shutdown();
+    server_poll.shutdown();
 }
 ```
 
-A handler replies with error code `0` and a writer closure that serializes the payload,
-or a nonzero `errno`-style code of its choosing. Handlers registered with `reg_rpc` run
-on their own stackful fiber and may block; `reg_fast_rpc` handlers run inline on the
-poll thread and must not.
+Run it with `cargo run --manifest-path ../hello-srpc/Cargo.toml` from the SRPC
+checkout. The expected output includes `double(21) = 42`. The maintained
+[in-memory round-trip tests](../tests/rpc_roundtrip_inmemory_rust.rs) cover the same
+path and an unknown RPC id.
 
-The caller side is the mirror image. Connect a `Client` and issue a request with a
-writer for the arguments; the returned `Future` resolves with the reply:
+`reg_fast_rpc` dispatches inline on the delivering thread. A handler on that path
+must finish without blocking. `reg_rpc` gives the handler a stackful fiber. The
+server chapter explains dispatch choices and deferred replies.
 
-```rust
-use srpc::client::{deserialize_from, Client, FutureAttr};
+The callback is `Some(Box::new(...))` because `ServerReplyFn` is an optional owned
+writer. The service has a shared `&self` dispatch receiver and must satisfy
+`Send + Sync`. Synchronize mutable application state instead of treating dispatch
+as an exclusive borrow of the service.
 
-let fu = client
-    .request(ECHO_DOUBLE_RPC_ID, &FutureAttr::default(), |ar| {
-        Serialize::serialize(&21_i64, ar);
-    })
-    .expect("request accepted");
-fu.wait();
-assert_eq!(fu.get_error_code(), 0);
+The in-memory transport delivers inline and does not reproduce TCP stream framing
+or asynchronous network timing. Use the TCP and runtime tests as well when changing
+transport behavior.
 
-let mut doubled = 0i64;
-deserialize_from(fu.get_reply(), &mut doubled);
-assert_eq!(doubled, 42);
-```
+### Navigating the Rust API
 
-The C++ lane wraps exactly this machinery in generated, typed classes — a
-`rusty::Result`-returning virtual per method and a proxy whose `sum(req)` hides the
-id, the writer and the future. Chapter 12 covers the IDL and generator; Chapter 20
-shows the C++ consumption end to end.
+Import types from their modules, for example `srpc::client::Client`,
+`srpc::server::Service` and `srpc::reactor::PollThread`. `src/lib.rs` declares those
+modules; it does not re-export every type at the crate root.
 
-### Why a custom framework?
+Use ordinary Rust ownership and error handling: `Arc`, `Rc`, `Box`, `Option`,
+`Result`, closures and standard futures. An `Arc<T>` does not make `T` thread-safe.
+In particular, each application thread owns its own `Client`; reactor events and
+fibers also stay on their creating thread.
 
-gRPC and Thrift solve a problem SRPC does not have: talking to a heterogeneous fleet
-over a contract that has to stay stable for years. If that is your problem, use them.
-SRPC is built for the opposite situation — a cluster of machines you control, running
-binaries you built together, where you would rather be able to read and change the whole
-stack than negotiate with it.
+There are three different future mechanisms:
 
-Four things follow from that.
+| Type | What drives it |
+| --- | --- |
+| `srpc::client::Future` | RPC reply delivery; its blocking waits use an OS condition variable |
+| `srpc::future::FiberFuture<T>` | A promise resolved while a stackful fiber yields to its reactor |
+| `std::future::Future` | Polling by the reactor's stackless task support |
 
-**It is small enough to read.** The entire library is 37 modules in one crate: no
-protobuf, no HTTP/2, no external RPC runtime, no tokio — the concurrency runtime is part
-of the library and about as large as it needs to be. The request path — proxy or raw
-request call, `Client::request`, the connection, the channel, the poll thread, the
-server's dispatch, the reply — runs through four files you can walk end to end in an
-afternoon, and instrument anywhere along it.
-
-**The wire format is minimal.** A 4-byte frame header, then `v64 xid`, `i32 rpc_id`, then
-the arguments; replies carry `v64 xid`, `v32 error_code`, `v64 server_instance_id`, then
-the payload. No metadata map, no content negotiation, no compression handshake. The
-header is **native-endian**, which is a deliberate trade: it is free to write and read on
-both ends, and it only works between machines that agree on byte order. Chapter 7 has the
-details. The two lanes are wire-identical by construction — a C++ client drives a Rust
-server (and vice versa) with no shims, which is also how the cross-lane benchmarks in
-Chapter 15 are run.
-
-**Handlers are allowed to block.** A `reg_rpc` handler runs in its own stackful fiber,
-so it can make a nested RPC call, wait on an event, or sleep, without stalling the poll
-thread it arrived on. Frameworks built purely on callbacks or stackless coroutines make
-that pattern awkward; here it is a registration choice. When you do not want a fiber:
-`fast` runs inline on the poll thread, `defer` hands you a reply handle to use whenever
-the answer is ready, and `async` handlers are `async fn`s — ordinary Rust futures under
-rustc, C++ coroutines in the generated lane — driven by the reactor's stackless task
-machinery. Chapter 12 works through the dispatch modes; Chapter 9 covers what the server
-does around your handler.
-
-**It is meant to be modified.** The C++ generator is about a thousand lines of readable
-Python in `pylib/`, not a plugin API. Adding a dispatch mode, changing the header layout,
-or instrumenting the scheduler are all normal-sized edits rather than upstream
-negotiations.
-
-What you give up is real, and worth stating plainly: there is no TLS, no authentication,
-no streaming, no cross-language client beyond the generated C++ and Python stubs, and no
-wire compatibility guarantee across generator runs — method ids are random integers kept
-stable only by scraping them back out of the header the generator is about to overwrite.
-
-### Key features
-
-| Feature | Description |
-|---------|-------------|
-| **One source, two artifacts** | 37 canonical Rust modules; `cargo` builds the Rust library and the pinned rusty-cpp transpiler generates the C++23 module library. Exact ABI checks and behavior tests cover both outputs. |
-| **Typed code generation (C++)** | `.rpc` IDL to a typed service base class, a client proxy, and per-method request/response structs |
-| **Stackful fibers** | 1 MiB mmap'd stacks with a guard page, switched by hand-written x86_64 / aarch64 assembly |
-| **`async fn` handlers** | canonical `async fn`s: Rust futures under rustc, `rusty::Task` C++ coroutines in the generated lane, one source |
-| **Reactor** | epoll-based poll threads, timers, and event primitives (int, timeout, wait-any, wait-all, quorum); per-thread via `thread_local!` |
-| **Pluggable transport** | framed TCP, or an in-process switchboard with fault injection for tests |
-| **Binary serialization** | `Serialize`/`Deserialize` traits over `BinaryWriteArchive` / `BinaryReadArchive` |
-| **Reliability** | reconnect policy, circuit breaker, per-request timeouts and retries, connection pooling |
-| **Machine-checked contracts** | Verus specifications on `misc/stat.rs` and `rpc/internal_protocol.rs` |
-
-### The two lanes
-
-The Rust lane is the fast inner loop: `cargo test --locked --workspace --all-targets`
-compiles the canonical sources directly, links no C++ anywhere, and runs in seconds. It
-is also a complete runtime: the real epoll poll thread, real TCP transport, fibers
-through the same C context-switch engine the C++ lane uses, and `async fn` handlers.
-Behavior tests exercise the dispatch modes in both lanes. Chapter 15 records older
-benchmark results; they are not performance acceptance for the current revision. Its documented
-boundaries: one `Client` is not shareable across threads (use one per thread, which
-is what the benchmark drivers do anyway), and a single `Server` does not yet spread
-its connections across several poll threads. Reliability machinery — retries,
-reconnect, circuit breaker, buffering — is live in both lanes.
-
-The C++ lane is the shipped `libsrpc.a`: every generated module recompiled, linked,
-and held to a frozen symbol census by the dual-compile gate. A change to a `.rs` file
-is simultaneously a Rust change and a C++ ABI change, and the build enforces that; a
-green `cargo test` proves nothing about whether the C++ still builds or kept its ABI.
-Because the source of truth is Rust, functional contracts can also be machine-checked
-in place: two modules carry Verus specifications behind `#[cfg(verus)]` — the
-response-header codec round-trip in `rpc/internal_protocol.rs`, and a first-sample
-invariant in `misc/stat.rs` that pins a bug which actually shipped.
-`docs/verification.md` is the standing reference for that lane, and it is honest about
-how narrow it is.
-
-Chapters 14 and 19 return to all of this in detail.
-
-### Performance
-
-Chapter 15 carries measured numbers for both lanes — same wire, same benchmark client,
-same minutes — and the raw trials behind them. Reproduce them before trusting them on
-your hardware; the drivers are `tests/rpcbench.cc` for the C++ lane and an out-of-repo
-cargo crate for the Rust lane, and CMake deliberately builds no benchmark target.
-
-What can be said without measuring is where the costs sit structurally. A `fast` handler
-runs inline on the poll thread with no fiber at all, which makes it the cheapest option
-and also means it must never block: if it does, every connection on that thread stalls. A
-`reg_rpc` handler costs one fiber per request — a 1 MiB mmap'd stack (`kDefaultStackBytes`
-in `reactor/reactor.rs`) plus a guard page, and a context switch in and out — in exchange
-for being allowed to block; with the `REUSE_FIBER` pool the mmap is amortized away, and
-without it fiber dispatch is roughly an order of magnitude slower. `defer` also takes a
-fiber but decouples the reply from the handler's return. `async` is entered inline on the
-poll thread, so it has the same don't-block rule up to its first suspension point.
-
-Two facts will shape your first measurements more than anything on that list. The
-blocking `Future::wait()` is hard-capped at **one second** and then latches `ETIMEDOUT`
-(110) — a later reply cannot mark it ready — so any call slower than a second looks like
-a timeout. Escaping it takes the whole recipe: go through `request_with_options`, call
-`set_options` on the future it hands back (the coordinator future is deliberately
-created with `timeout_ms = 0`), and then wait with `wait_with_options()` — the only
-waiter that reads those options. Plain `wait()` ignores them and re-imposes the
-one-second cap. And in the C++ lane `-march=native` is mandatory: it is a
-module-compatibility requirement rather than a tuning knob, which incidentally means a
-build tree cannot be copied to a machine with a different CPU. Chapter 15 covers tuning
-properly.
-
-### Rough edges
-
-Some parts of the surface are present but not live. They are called out again where they
-belong, and collected in the shipping-status table in Chapter 11, but knowing them up
-front will save you a debugging session:
-
-- Automatic request completion does not record latency; latency-based pool selection
-  needs explicit latency samples. Request counts and in-flight metrics are live.
-- The heartbeat protocol is implemented end to end, but nothing currently ticks the
-  client-side timer.
-- Retries are opt-in twice over: `max_retries` does nothing unless `idempotent` is also
-  set.
-
-### Scope and requirements
-
-SRPC targets **Linux**. The poll layer is epoll and nothing else — the kqueue twin and
-the macOS branches were removed, with canonical policy in `reactor/epoll_wrapper.rs` and raw syscalls in
-`reactor/srpc_epoll.c`. Fiber context-switch assembly exists for x86_64 and
-aarch64.
-
-The Rust lane needs a current stable Rust toolchain, a C compiler and an archiver on
-one of those Linux architectures. SRPC's `build.rs` compiles the nine C kernels and
-the selected fiber assembly automatically for the library, its tests and downstream
-Cargo consumers. Run `cargo test --locked --workspace --all-targets` for the Rust tests.
-Building the C++ lane needs **Clang 22 or newer with libc++**, CMake 3.30+,
-Ninja, Cargo (with clippy), and Python 3.11+. There is no `install()` and no CMake
-package config, so downstream C++ consumption is `add_subdirectory` and repeating srpc's
-toolchain settings by hand; and there is no CI, so the pre-commit sequence in `CLAUDE.md`
-is the entire safety net.
-
-One thing this book cannot do is compile itself against a fully checked-out tree; the
-`third-party/` submodules are not required to be present to read it. Snippets tagged
-`srpc-no-compile` are illustrative by construction, and the rest are checked by
-`tests/rpc_docs_snippet_compile_test.py` only when you run it against a configured build
-directory.
+Calling `.wait()` on an RPC future blocks the calling OS thread. It is not an
+`.await` operation and cannot make progress if that same thread must deliver the
+reply. The client and reactor chapters explain these differences in detail.
 
 ---
 
-## 2. Architecture Overview
+## 2. Architecture
 
-### One source, two toolchains
+### The crate and its modules
 
-Before any diagram of layers, there is a fact about this repository that governs
-everything else: **SRPC is a C++23 named-module library whose production modules are not
-hand-written C++.** All 37 of them are canonical **Rust** files living at their historical
-C++ paths — `base/`, `misc/`, `reactor/`, `rpc/` — and the pinned `rusty-cpp` transpiler
-turns each one into a complete C++23 module provider named `srpc.<module>`.
+The production library is one Cargo crate. Its Rust modules live in `base/`,
+`misc/`, `reactor/` and `rpc/`; `src/lib.rs` includes them with `#[path]` declarations.
+The source layout groups responsibilities without creating separate Rust crates.
 
-Two toolchains read the exact same bytes:
+| Area | Main responsibilities |
+| --- | --- |
+| `base/` | Numeric and timing helpers, logging, diagnostics and synchronization helpers |
+| `misc/` | Serialization, payload containers, statistics and randomness |
+| `reactor/` | Epoll polling, stackful fibers, events, fiber futures and standard-future scheduling |
+| `rpc/` | Services, clients, transports, wire framing, request policies and connection state |
 
-- **rustc / Cargo**, through the *generated* crate index `src/lib.rs`, which is nothing
-  but a list of `#[path = "../rpc/frame_codec.rs"] pub mod frame_codec;` declarations.
-  `src/` contains that one file and nothing else.
-- **rusty-cpp**, in one whole-crate invocation, which emits all 37
-  `srpc.<name>.cppm` files into the build tree (`build/goal0-crate-cpp/`). Those
-  generated interface units are the only *providers* inside `libsrpc.a`.
+`Client`, `ClientConnection`, `ClientPool` and the RPC `Future` are all in
+`rpc/client.rs`, exposed as `srpc::client`. `Reactor`, `Fiber`, `PollThread` and the
+event types are in `reactor/reactor.rs`, exposed as `srpc::reactor`. The separate
+`srpc::future` module contains fiber promises and futures.
 
-So when this book says "`rpc/client.rs`", it means both the Rust module `srpc::client`
-that `cargo test` compiles and the C++ module `srpc.client` that your `import srpc.client;`
-resolves against. They are one file. The practical consequence, and the one worth
-remembering: **a change to a `.rs` file is simultaneously a Rust change and a C++ ABI
-change.** A green `cargo test` proves nothing about whether the C++ still builds or kept
-its ABI.
+The reactor uses the transport-facing `PollableBase` contract from
+`rpc/pollable_proxy.rs`. Directory names therefore do not define a strict dependency
+hierarchy. Read module imports and trait bounds when changing ownership across a
+boundary.
 
-The build checks that equivalence rather than trusting it. The `srpc_goal0_dual_compile`
-target recompiles every generated module on its own, links one importer program twice —
-once over those fresh objects placed ahead of `libsrpc.a`, once against `libsrpc.a` alone
-— runs both, and compares per-module `nm` strong-symbol sets. The archive must carry
-exactly the reviewed providers and native symbols. Current symbol expectations and
-platform ownership are maintained in `scripts/check_srpc_crate_mode.py`; changes require
-fresh measurements and review rather than copied historical totals in this book.
+### Runtime ownership
 
-Hand-written non-Rust does survive, but only as *seam*, never as logic:
-
-- Nine plain-C kernels (`base/srpc_base.c`, `misc/srpc_io.c`, `misc/srpc_rand.c`,
-  `misc/srpc_timing.c`, `reactor/srpc_fiber.c`, `rpc/srpc_connect.c`, `rpc/srpc_net.c`,
-  `rpc/srpc_server.c`, `reactor/srpc_epoll.c`) and their ABI headers. Syscall numbers and build flags live here
-  precisely because their values are arch- and build-dependent and must not be frozen into
-  a Rust constant.
-- Two assembly files, `reactor/fiber_context_x86_64.S` and `reactor/fiber_context_aarch64.S`,
-  which perform the actual fiber context switch.
-- A handful of C++ headers: the umbrella `srpc.hpp`, `std_compat.hpp`, `base/all.hpp`,
-  `misc/serializable_support.hpp` and `misc/serializable_adapters.hpp` for ADL and
-  erased serialization forwarding, and several `#pragma once` shims whose entire body is
-  `import srpc.<module>;`.
-
-That last category is a trap for readers browsing the tree. Finding `rpc/frame_codec.hpp`
-next to `rpc/frame_codec.rs` does not mean there are two implementations; the `.hpp` is a
-one-line shim. Never look for behavior in one.
-
-### The layers
-
-Directories, not crates. Everything is one flat `srpc` crate, and the layering is a
-convention the sources honor rather than something the build enforces:
-
-```
-+------------------------------------------------------------+
-|  Your application: generated service classes and proxies    |
-+------------------------------------------------------------+
-|  rpc/     22 modules                                        |
-|    client.rs   Client, ClientConnection, ClientPool, Future |
-|    server.rs   Server, Service, Request, DeferredReply      |
-|    channel.rs  transport trait; tcp_channel / inmemory      |
-|    frame_codec.rs, internal_protocol.rs   wire format       |
-|    circuit_breaker, heartbeat, reconnect_policy,            |
-|    connection_state, request_queue, connection_metrics      |
-|    pollable_proxy.rs   the Pollable facade the reactor uses |
-+------------------------------------------------------------+
-|  reactor/  4 modules                                        |
-|    reactor.rs  Reactor, Fiber, PollThread, PollThreadWorker |
-|                IntEvent / SharedIntEvent / TimeoutEvent /   |
-|                NeverEvent / BoxEvent<T> / WaitAll / WaitAny |
-|                / QuorumEvent, and the stackless Task driver |
-|    fiber.rs    this_fiber:: operations on the current fiber |
-|    future.rs   FiberPromise / FiberFuture                   |
-|    epoll_wrapper.rs   Epoll over the platform seam          |
-+------------------------------------------------------------+
-|  misc/     5 modules                                        |
-|    serializable.rs, serializable_envelope.rs, any_message.rs|
-|    rand.rs, stat.rs                                         |
-+------------------------------------------------------------+
-|  base/     6 modules                                        |
-|    basetypes.rs (i8..i64 aliases, SparseInt, v32/v64,       |
-|      Counter, Time, Timer), threading.rs, logging.rs,       |
-|      debugging.rs, misc.rs, callback_wrapper.rs             |
-+------------------------------------------------------------+
-|  Shared native C kernels and fiber context-switch assembly |
-+------------------------------------------------------------+
-|  System: POSIX sockets, epoll, pthreads                     |
-+------------------------------------------------------------+
+```mermaid
+flowchart TD
+    App["Rust application: Service and Client"] --> RPC["RPC dispatch, serialization and reliability"]
+    RPC --> TCP["TCP transport"]
+    RPC --> Memory["In-memory transport"]
+    Memory --> Inline["Peer callback on the sending thread"]
+    TCP --> Poll["PollThread and epoll"]
+    Poll --> Reactor["Thread-local Reactor"]
+    Reactor --> Fiber["Fibers and standard futures"]
+    Poll --> Native["Native C/assembly kernel"]
+    Fiber --> Native
 ```
 
-The nominal direction is `base/` → `misc/` → `reactor/` → `rpc/`, and if you grep the
-`use crate::` lines you will find it mostly holds: `misc/serializable.rs` reaches down to
-`basetypes` and nothing else, `rpc/client.rs` reaches down to eighteen modules spread over
-`base/`, `misc/` and `rpc/`, and no module under `base/` has a `use crate::` line at all.
+A `PollThread` owns a worker thread that services commands and I/O. Each worker has
+its own thread-local reactor. Commands cross that boundary through synchronized
+queues; the reactor's fibers and events do not move to the submitting thread.
 
-Two inversions are worth knowing before you go looking for them.
+A server freezes service registration before dispatch. Its shared service context
+owns boxed `Service` implementations, whose `Send + Sync` bounds and shared dispatch
+receiver let the implementation synchronize application state explicitly. With TCP,
+one server currently uses one dispatch poll thread. The `Server` configuration and lifecycle
+handle is not itself a freely shared Rust value.
 
-**`reactor/reactor.rs` imports `crate::pollable_proxy`, which lives under `rpc/`.** The
-poll thread stores what it is watching as `FdPollableMap = HashMap<i32, PollableProxy>`,
-and `PollableProxy` — an alias for `Box<dyn PollableBase>` — along with the trait itself
-and the typed `Arc` adapter `PollableArcShim<T>`, is owned by `rpc/pollable_proxy.rs`.
-So the reactor's central data structure is typed by an `rpc/` module. (Do not confuse
-`PollableBase` with `epoll_wrapper::Pollable`; `reactor.rs` imports both, and they are
-different traits.) The layering is upside down at exactly this one seam.
-
-Client, server, TCP, fiber helpers, and fiber futures import the canonical
-`crate::reactor` implementation. Cargo executes those Rust methods directly; rusty-cpp
-lowers them into the corresponding named modules. Explicit dependency anchors preserve
-imports where required by the compiler. Cargo uses Rust std and the shared C/assembly
-kernel, with no production Rust dependency or C++ runtime. The `rusty-rustc` facade and
-`rusty-cpp-markers` packages have been removed. The generated C++ lane still uses the
-vendored rusty-cpp runtime and compiler mappings for standard Rust types and operations.
-
-The current ownership and adapter contracts are documented in
-[Canonical Rust runtime and migration notes](canonical-rust-runtime.md).
-
-One naming caution while reading the reactor layer. There are two unrelated "future"
-types. `reactor/future.rs` holds `FiberPromise<T>` / `FiberFuture<T>`, a fiber-blocking
-handoff. The RPC `Future` you get back from `Client::request` is a *different* type
-declared in `rpc/client.rs`. Chapter 8 covers the second; do not go looking for it under
-`reactor/`.
+Clients retain shared connections and RPC futures, but the `Client` handle contains
+thread-confined configuration and a connection slot. Connection state, future
+completion and reliability managers use their own synchronization. Keep the
+properties of these types separate when designing a multithreaded application.
 
 ### The path of one request
 
-The layers above are easier to hold onto with one request traced through them. Chapters 7
-through 9 do this properly; here is the shape.
+1. The application calls `Client::request`, `request_with_options` or
+   `request_async`, supplying a method id and an argument writer.
+2. The client connection checks admission and request policy, assigns a transaction
+   id, and serializes `v64 xid | i32 rpc_id | arguments`.
+3. TCP adds the frame header and sends the bytes. The receiving TCP channel handles
+   partial reads and reconstructs complete frames. In-memory delivery uses a shared
+   switchboard directly.
+4. The server selects the registered service and dispatch mode. Its `Service`
+   implementation decodes arguments and replies through a live connection.
+5. The reply carries `v64 xid | v32 error | v64 server_instance_id | payload`.
+   Client delivery finds the matching callback or future and completes it.
 
-A generated proxy calls `Client::request(rpc_id, attr, write_fn)`, which hands off to
-`ClientConnection`. That connection is where the reliability machinery lives — the
-circuit-breaker gate, stale-request expiry and the offline queue are all consulted before
-anything is written. A `Future` is created against the transaction id and parked in the
-pending map, and the body is serialized as `v64 xid | i32 rpc_id | args`. The channel then
-sends the frame, and **the TCP backend, not the codec, prepends the 4-byte header** — a
-native-endian word whose bit 31 is the extended-header flag and whose low 31 bits are the
-payload size, capped by `kMaxFramePayloadSize` (64 MiB) as a stream-integrity bound rather
-than a resource policy.
+Request completion, timeout, close and retry can race. The client chapter describes
+which object owns each stage and how replay relates to the caller's wait budget.
+The wire protocol chapter describes the framing and native-endian encoding limits.
 
-On the far side, the server's `TcpConnection` re-frames the byte stream — that logic lives
-in `rpc/tcp_channel.rs`, not `server.rs` — and dispatches. Methods registered on the fast
-path — `fast`, `prefix` and `async` — run inline on the poll thread; everything else gets a
-stackful fiber. The reply goes back as
-`v64 xid | v32 error_code | v64 server_instance_id | payload`, and the client resolves the
-async slot (`xid % 16384`, `kAsyncSlotCount`) first, then the pending-future map. A reply
-matching neither is dropped silently — the normal outcome after a timeout, and it leaves
-no trace in any log.
+### The native kernel
 
-Concurrency underneath is both stackful and stackless. Fibers are mmap'd stacks (1 MiB
-default plus a guard page) switched by the two `.S` files, and the field order of
-`srpc_fiber_ctx` in `reactor/srpc_fiber.h` *is* the ABI contract with that assembly. The
-`Reactor` is genuinely per-thread in both lanes: its statics are spelled with Rust's
-`thread_local!`, which rustc compiles natively and the transpiler lowers to C++
-`thread_local rusty::LocalKey` storage, so each poll thread constructs and owns its own
-reactor. The same reactor also drives the stackless task machinery behind `async fn`
-handlers.
+Cargo compiles the nine C sources listed in
+[native-kernel-sources.txt](../scripts/native-kernel-sources.txt), plus the selected
+architecture's fiber assembly, and links them as `libsrpc_native.a`. They provide
+native OS/resource operations, clock and entropy access, platform layouts, stack
+allocation and context switching.
 
-### Directory structure
+Scheduling decisions, events, serialization, framing and RPC policies remain Rust
+code. A native binding is not a second implementation of those policies. The
+[ownership notes](canonical-rust-runtime.md) and [native binding inventory](../scripts/native-abi-bindings.json)
+record the boundary in more detail.
 
-The tree as it actually is. `.rs` files under `base/ misc/ reactor/ rpc/` are the
-canonical sources; `.hpp` files beside them are shims or seam, never a second
-implementation.
+Unsafe contracts are concentrated at raw archive pointers, native handles, FFI and
+context switching. Standard Rust ownership still applies on either side of a safe
+wrapper; each unsafe operation needs its documented lifetime and ownership
+preconditions to hold.
 
-```
-srpc/
-  base/                     6 canonical modules + seam
-    basetypes.rs              primitive aliases, SparseInt, v32/v64, Counter,
-                              Time, Timer
-    callback_wrapper.rs       callback ownership adapter
-    debugging.rs              assertions and debug helpers
-    logging.rs                FATAL/ERROR/WARN/INFO/DEBUG
-    misc.rs                   general utilities
-    threading.rs              SpinLock plus pthread mutex/cond wrappers
-    all.hpp                   five-import umbrella for base/
-    srpc_base.c               plain-C: execinfo backtrace capture and a
-                              path-basename scan (no header)
+### Finding code and tests
 
-  misc/                     5 canonical modules + seam
-    any_message.rs            the AnyMessage payload container
-    rand.rs                   random generator
-    serializable.rs           BinaryWriteArchive / BinaryReadArchive over
-                              BufferSink / BufferSource / FdSink / FdSource
-    serializable_envelope.rs  SerializableEnvelope<PayloadSet>
-    stat.rs                   statistics (carries Verus specs)
-    serializable_support.hpp  the real open-set ADL serialize/deserialize
-    any_message.hpp, serializable.hpp, serializable_envelope.hpp   import shims
-    srpc_io.c, srpc_rand.c, srpc_timing.c   plain-C kernels (only rand and
-                              timing have headers; srpc_io.c is declared
-                              extern "C" at its call sites)
+| Path | What to read there |
+| --- | --- |
+| `src/lib.rs` | Public module index, generated from `rust-modules.toml` |
+| `base/`, `misc/`, `reactor/`, `rpc/` | Canonical library implementation |
+| `build.rs` | Cargo's native C/assembly build |
+| `tests/*_rust.rs` | Rust integration and property tests |
+| `bench/` | Separate Cargo microbenchmark package |
+| `verify/` | Separate Verus verification package |
+| `scripts/` | Source/native audits, benchmark commands and verification entry points |
 
-  reactor/                  4 canonical modules + seam
-    reactor.rs                3.7k lines: Reactor, Fiber, PollThread,
-                              PollThreadWorker, the whole event family,
-                              QuorumEvent, stackless Task support
-    fiber.rs                  this_fiber:: surface
-    future.rs                 FiberPromise / FiberFuture
-    epoll_wrapper.rs          Epoll type over the platform seam
-    srpc_epoll.c, srpc_epoll.h   raw epoll syscalls and fixed event-record ABI
-    fiber_context_x86_64.S    context-switch assembly
-    fiber_context_aarch64.S
-    srpc_fiber.c, srpc_fiber.h   mmap+guard stacks, the ABI context seed, the
-                                 thread-local active-fiber slot, and the
-                                 resume/yield/finish state machine. The struct
-                                 field order in the .h is the ABI contract
-                                 with the .S files
-    CANONICAL_CHECKPOINT.md   stale, rrr-era; useful only for its ABI tables
+Changes to `src/lib.rs` come from `scripts/extract_srpc_rust.py`; edit the module
+manifest and canonical sources instead of adding an alternative implementation
+under `src/`.
 
-  rpc/                      22 canonical modules + seam
-    client.rs                 Client, ClientConnection, ClientPool, Future,
-                              FutureAttr, BufferingConfig, PoolConfig
-    server.rs                 Server, Service, Request, DeferredReply,
-                              ServerConnection, shutdown state machine
-    channel.rs                ChannelConnectionBase / ChannelFactoryBase traits
-    tcp_channel.rs            TcpConnection, TcpListener, TcpFactory; also the
-                              server-side re-framing and the outgoing header
-    inmemory_channel.rs       frameless, synchronous loopback transport
-    fiber_channel.rs          adapts callback delivery to a blocking recv_frame
-    frame_codec.rs            header write/parse, FrameStreamReader
-    internal_protocol.rs      reply-header bit layout (carries Verus specs)
-    errors.rs                 error codes
-    callbacks.rs              connection lifecycle callbacks
-    circuit_breaker.rs        breaker state machine
-    connection_state.rs       connection state machine
-    connection_metrics.rs     per-connection counters
-    heartbeat.rs              keep-alive protocol
-    reconnect_policy.rs       backoff calculation
-    request_options.rs        per-request timeout/retry configuration
-    request_queue.rs          offline request buffering
-    load_balancer.rs          ClientPool selection strategies
-    pollable_proxy.rs         the Pollable facade the reactor imports
-    completion_tracker.rs     standalone utility, unused by client/server
-    idempotency.rs            standalone utility, unused by client/server
-    utils.rs                  port and hostname helpers
-    *.hpp                     import shims (frame_codec.hpp also carries the
-                              load-bearing <queue>/<stack> includes)
-    srpc_connect.c, srpc_net.c, srpc_server.c   plain-C syscall kernels
-                              (srpc_connect.h and srpc_server.h only)
-
-  src/
-    lib.rs                    GENERATED crate index; never hand-edit, and never
-                              add any other file under src/
-
-  pylib/                    the .rpc code generator
-    simplerpcgen/             rpcgen.py (the live generator), lang_cpp.py,
-                              lang_python.py, misc.py, rpcgen.g (stale grammar)
-    yapps/                    parser runtime only, no compiler
-
-  tests/                    41 tests/*_rust.rs, 76 .cc files (9 are built),
-                            plus the benchmark_service IDL example
-  scripts/                  the gates: extract_srpc_rust.py,
-                            check_srpc_crate_mode.py, srpc_dsl_check.sh,
-                            verify_srpc.sh, tests/
-  verify/                   workspace-excluded Verus harness that #[path]-links
-                            the real sources
-  docs/                     verification.md, and this book
-  third-party/              rusty-cpp (pinned transpiler), googletest
-
-  srpc.hpp                  the consumer umbrella header
-  std_compat.hpp            the only library file that spells `import std;`
-  CMakeLists.txt            module inventories, gates, ABI checks
-  rust-modules.toml         the 37-row canonical module manifest
-```
-
-Root-level TOML files beyond the manifest configure the emitter:
-`module-preambles.toml` (C++ includes and foreign symbols a module needs),
-`cpp-module-index.toml`, and `rust-type-map.toml` (exact legacy type spellings).
-
-Two absences in that tree are worth calling out, because older documentation promises
-them. There is no `src/rrr/` and no `src/srpc/`: `src/` holds the generated `lib.rs` and
-nothing else, and adding any other file — or a symlink — under it fails the gates.
-And `pylib/` contains only the *generator*, not a Python runtime. There is no
-`pylib/simplerpc/` package here, so the Python stub that `lang_python.py` emits — which
-opens with `from simplerpc.marshal import Marshal` — has nothing to import against in a
-standalone checkout. `pylib/` is not wired into CMake either; generator output is checked
-in, and `tests/benchmark_service.rpc` is its only input.
-
-### What the umbrella header gives you
-
-`srpc.hpp` is the header nearly every consumer includes. It is a textual `#include`
-chain followed by a hand-maintained list of `import srpc.*;` lines, in that order — libc++
-rejects the reverse and fails with ODR errors inside its own internals, which is also why
-`std_compat.hpp` exists to do the same for the `std` module. At the very bottom it
-declares the one alias the library ships:
-
-```cpp srpc-no-compile
-namespace base = srpc;
-```
-
-Nothing generates or checks that import list, so it can drift, and eight modules are
-deliberately commented out of it: `srpc.circuit_breaker`, `srpc.connection_metrics`,
-`srpc.epoll_wrapper`, `srpc.heartbeat`, `srpc.internal_protocol`, `srpc.load_balancer`,
-`srpc.reconnect_policy` and `srpc.request_options`. Each carries the same note — *nothing
-outside srpc names it (build-time opt)* — though nothing in the repository measures that
-build-time cost, so treat re-adding one as a claim to measure rather than an obvious fix.
-
-If you name a type from one of those — `ConnectionMetrics` to read live counters, say, or
-`RequestOptions` to set a per-request timeout — including `srpc.hpp` is not enough and you
-must import the module yourself:
-
-```cpp srpc-no-compile
-#include "srpc.hpp"
-import srpc.connection_metrics;
-import srpc.request_options;
-```
-
-Finally, a name that used to be here and is gone: there is no `Marshal` class. Binary
-serialization is `srpc::Serialize_::serialize` / `Deserialize_::deserialize` over
-`BinaryWriteArchive` and `BinaryReadArchive`, which you build from proxies. Chapter 10
-covers it.
+The repository also contains C++ headers, generation metadata and CMake targets for
+the optional translated library. They are explained in the
+[C++ companion](srpc-cpp-book.md). Cargo does not load them. Contributors changing
+canonical code must validate both consumers as described in [CLAUDE.md](../CLAUDE.md).
 
 ---
 
-## 3. Fibers (Stackful)
+---
 
-srpc runs almost every request handler on a **fiber**: a stackful execution
-context with its own 1 MiB stack, scheduled cooperatively by the thread-local
-`Reactor`. Because the stack is real, a fiber can suspend from any depth — deep
-inside a nested call, inside a library you did not write — and resume later on
-that same stack. That is what lets a handler that *looks* like ordinary blocking
-code make a nested RPC call without blocking its thread.
+## 3. Fibers
 
-There is a second, stackless lane as well: `async fn` handlers, which are ordinary
-Rust futures under rustc and `rusty::Task` C++20 coroutines in the generated lane,
-polled by the same reactor. It gets its own section at the end of this chapter.
+A fiber lets a handler suspend in the middle of an ordinary function and resume
+with its local variables intact. SRPC uses stackful fibers for handlers that need
+to wait for another RPC. Each fiber has its own stack, but fibers on one reactor
+share one operating-system thread and run cooperatively.
 
-The `Fiber` type and the `Reactor` live in `reactor/reactor.rs` (module
-`srpc::reactor` / `srpc.reactor`); the `this_fiber` helpers live in
-`reactor/fiber.rs` (`srpc::fiber` / `srpc.fiber`). In C++ both are re-exported
-through the umbrella header, so `#include "srpc.hpp"` is enough to reach either.
+`srpc::reactor::{Fiber, Reactor}` contains the scheduler and fiber handles.
+`srpc::fiber::this_fiber` provides operations on the currently running fiber.
+The same reactor also polls standard Rust futures, described later in this chapter.
 
 ### Why fibers instead of threads
 
-| | Threads | Fibers |
-|---|---------|--------|
-| Stack | whatever `ulimit -s` says, typically 8 MiB | exactly `kDefaultStackBytes` = 1 MiB, plus one guard page |
-| Allocation | pthread stack | one `mmap(MAP_PRIVATE\|MAP_ANONYMOUS)` per fiber, faulted in lazily |
-| Switch | kernel scheduler | `fiber_swap_context` — eight register stores and eight loads on x86-64 |
-| Synchronization | mutexes and atomics | none needed for state confined to one reactor |
-| Parallelism | true, multi-core | concurrent only; one reactor is one thread |
+A suspended fiber leaves its worker free to handle other requests. Creating one
+operating-system thread for every waiting request would instead leave scheduling
+and a much larger population of threads to the kernel. SRPC fibers reserve a
+1 MiB stack plus a guard page by default. The mapped stack does not imply that
+all of those pages are resident.
 
-The switch cost is a handful of instructions, but this repository ships no
-benchmark, so treat "fibers are cheaper than threads" as a structural claim, not
-a measured one. What *is* structural: a fiber's 1 MiB is an anonymous mapping,
-so an idle fiber that has touched only a few frames costs a few pages of
-resident memory rather than a megabyte.
+| Property | Operating-system thread | SRPC fiber |
+|----------|-------------------------|------------|
+| Scheduling | The kernel can preempt it | Runs until it yields, waits, or returns |
+| Parallel execution | Can run on another CPU | Shares its reactor's thread |
+| Waiting | A blocking call blocks this thread | An SRPC fiber wait suspends this fiber |
+| State shared with peers | Usually needs synchronization | Can use `Cell` and `RefCell` on the same thread |
+| Stack | Allocated by the thread runtime | Native fiber stack, 1 MiB by default |
 
-Fiber reuse blunts the allocation cost further. The library's default flags
-include `-DREUSE_FIBER`, and with it a fiber that finishes is pushed onto the
-reactor's `available_fibers_` list, stack and all, and handed out again to the
-next `create_run` instead of being torn down.
+A blocking socket call, `std::thread::sleep`, or a long computation still blocks
+the entire reactor thread. Use the fiber sleep helpers for a delay inside a
+fiber. Move blocking work to a separate thread, and arrange an owner-thread
+notification when it finishes.
 
-### No locks needed — within one reactor
+### Sharing state within one reactor
 
-Fibers belonging to the same reactor **never run simultaneously**. Control
-passes from one to another only at an explicit suspension point, so state that
-lives entirely inside one reactor thread needs no synchronization:
+Use `Rc<Cell<T>>` for small copyable values and `Rc<RefCell<T>>` for compound
+state shared by local fibers. Release every `RefCell` borrow before a suspension
+point. Another fiber may access that state before the first one resumes.
+
+This complete example runs two fibers on the calling thread. Both finish before
+`create_run` returns, so the result is immediately available.
 
 ```rust
-// Safe as long as every toucher runs on this reactor's fibers.
-struct Counter {
-    value: Cell<i32>, // interior mutability, no lock: fibers never preempt
-}
+use srpc::reactor::Fiber;
+use std::cell::Cell;
+use std::rc::Rc;
 
-impl Counter {
-    fn increment(&self) {
-        self.value.set(self.value.get() + 1);
+fn main() {
+    let count = Rc::new(Cell::new(0));
+    for _ in 0..2 {
+        let count = count.clone();
+        Fiber::create_run(move || count.set(count.get() + 1));
     }
+    assert_eq!(count.get(), 2);
 }
 ```
 
-The scoping matters. The reactor is per-thread (`thread_local!`), so a process
-with several poll threads has *several* reactors, each with its own fiber set. State shared
-across poll threads is shared across threads in the ordinary sense and still
-needs a mutex or an atomic. The fiber discipline buys you freedom from locks
-inside a thread, not across the process.
+Cooperative scheduling does not relax Rust's aliasing rules. Do not keep an
+exclusive borrow of shared state across a call that can suspend, including an
+RPC wait. A retained `RefMut` will make a competing borrow panic; constructing
+another mutable reference with a raw pointer can instead cause undefined behavior.
 
 ### The fiber API
 
-`Fiber::create_run` takes any callable and returns `Rc<Fiber>`. The
-`this_fiber` module holds the operations that address whichever fiber is
-currently running:
+`Fiber::create_run` takes an `FnMut() + 'static` closure and returns `Rc<Fiber>`.
+Move owned values or cloned handles into the closure. The `'static` bound prevents
+it from borrowing a local variable that may disappear while the fiber is paused.
+
+| Operation | Behavior |
+|-----------|----------|
+| `Fiber::create_run(body)` | Run the body immediately until its first suspension or completion |
+| `Fiber::current_fiber()` | Return `Option<Rc<Fiber>>` for this thread's running fiber |
+| `fiber.finished()` | Report whether the body has finished or its fiber has been recycled |
+| `reactor.continue_fiber(&fiber)` | Resume a paused fiber on its owning reactor |
+| `this_fiber::current()` | Return the current fiber, or `None` |
+| `this_fiber::get_id()` | Return its local ID, or zero outside a fiber |
+| `this_fiber::in_fiber_context()` | Distinguish running inside a fiber from ordinary thread code |
+| `this_fiber::r#yield()` | Suspend until the owner explicitly resumes the fiber; a no-op outside a fiber |
+| `this_fiber::sleep_us(us)` | Suspend for a relative delay in microseconds |
+| `this_fiber::sleep_ms(ms)` / `sleep_s(seconds)` | Convert to microseconds and sleep |
+| `this_fiber::sleep_until_us(deadline)` | Sleep until an absolute `Time::now(true)` deadline |
+
+`yield` is a Rust keyword, so the function uses the raw identifier `r#yield`.
+Fiber IDs begin at zero on each thread. The first fiber's ID can therefore equal
+the value returned outside fiber context. Test `in_fiber_context()` or `current()`
+when that distinction matters. IDs are not a process-wide identity, and a reused
+fiber receives a fresh ID.
+
+A positive sleep requires fiber context. Zero-duration sleeps and deadlines that
+have already passed return immediately. The millisecond and second helpers use
+wrapping multiplication, so keep their arguments within the microsecond range.
+`Fiber::sleep(us)` is another entry point for the relative microsecond sleep.
+
+### `create_run` runs the body immediately
+
+A plain yield does not put a fiber on an automatic runnable queue. Keep the
+returned handle and resume it when your own scheduling condition is satisfied.
+The reactor's `run_loop` wakes event waiters and ready futures; it does not resume
+an arbitrary fiber that only called `r#yield()`.
 
 ```rust
 use srpc::fiber::this_fiber;
 use srpc::reactor::{Fiber, Reactor};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-let reactor = Reactor::get_reactor();
-
-let fiber = Fiber::create_run(|| {
-    let id = this_fiber::get_id(); // ids start at 0, so `id != 0` is
-                                   // NOT a fiber-context test
-    let _ = id;
-
-    this_fiber::r#yield();      // give up the CPU, stay runnable
-    this_fiber::sleep_ms(100);  // park on a timeout event
-
-    assert!(this_fiber::in_fiber_context());
-});
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let trace = Rc::new(RefCell::new(Vec::new()));
+    let inside = trace.clone();
+    let fiber = Fiber::create_run(move || {
+        inside.borrow_mut().push(1);
+        this_fiber::r#yield();
+        inside.borrow_mut().push(3);
+    });
+    assert_eq!(&*trace.borrow(), &[1]);
+    trace.borrow_mut().push(2);
+    reactor.continue_fiber(&fiber);
+    assert!(fiber.finished());
+    assert_eq!(&*trace.borrow(), &[1, 2, 3]);
+}
 ```
 
-(`yield` is a Rust keyword, hence the `r#yield` spelling; the C++ lane spells it
-`this_fiber::yield()`.)
-
-The complete surface of `srpc.fiber` is small enough to list:
-
-| Call | Returns | Behaviour |
-|---|---|---|
-| `this_fiber::get_id()` | `u64` | the running fiber's id, or `0` outside fiber context |
-| `this_fiber::current()` | `Option<Rc<Fiber>>` | `None` outside fiber context |
-| `this_fiber::in_fiber_context()` | `bool` | whether a fiber is installed on this thread |
-| `this_fiber::r#yield()` | `()` | suspends the fiber; a **no-op** outside fiber context |
-| `this_fiber::sleep_us(u64)` | `()` | parks on a timeout event |
-| `this_fiber::sleep_ms(u64)` | `()` | `sleep_us(ms * 1000)` |
-| `this_fiber::sleep_s(u64)` | `()` | `sleep_us(s * 1000000)` |
-| `this_fiber::sleep_until_us(u64)` | `()` | absolute monotonic deadline; a past deadline returns immediately |
-
-Two of these are traps in the same place. `yield()` outside a fiber quietly does
-nothing, but a **sleep of non-zero duration outside a fiber aborts the process**:
-it creates a timeout event and waits on it, and `Event::wait` asserts that a
-fiber is running to park. The two exceptions are `sleep_us(0)`, which returns
-before creating an event at all, and `sleep_until_us` with a deadline already
-past, which does the same. Anything else must run on a fiber.
-
-The fiber object itself also exposes `yield_()`, `continue_()`, `finished()` and
-the associated `Fiber::current_fiber()` and `Fiber::sleep(us)`. `this_fiber::r#yield()`
-is the polite spelling of
-
-```rust
-Fiber::current_fiber().unwrap().yield_();
-```
-
-with the difference that `this_fiber::r#yield()` tolerates being called outside a
-fiber, where `unwrap()` on a `None` would not.
-
-Ids come from a per-thread counter (`thread_local!`), so ids are
-unique **per reactor thread**, not process-wide, and a recycled fiber is stamped
-with a fresh id when it is handed out again. Do not use an id as a global key.
-The counter also starts at **zero** and returns its pre-increment value, so the
-first fiber on a thread has id `0` — the very value `get_id()` returns outside
-fiber context. `get_id() != 0` is therefore not a fiber-context test;
-`in_fiber_context()` is the only correct one.
-
-### `create_run` runs the body immediately
-
-This surprises everyone once. `Fiber::create_run` does not queue anything: it
-takes or recycles a fiber, installs it as the running fiber, registers it with
-the reactor, and *runs the body on the spot*, right up to the first suspension
-point. Only then does it make a single non-blocking reactor pass and return.
-
-```rust
-let step = Rc::new(Cell::new(0));
-let reactor = Reactor::get_reactor();
-
-let step_in = step.clone();
-let fiber = Fiber::create_run(move || {
-    step_in.set(1);
-    this_fiber::r#yield();
-    step_in.set(2);
-});
-
-assert_eq!(step.get(), 1);      // already true — the body ran inside create_run
-
-reactor.continue_fiber(&fiber); // resume it explicitly
-assert_eq!(step.get(), 2);
-```
-
-Because the current fiber is saved and restored around that call, `create_run`
-nests: a fiber may create and run another fiber, and control returns to the
-creator when the child suspends or finishes.
+Each temporary borrow in this example ends at its semicolon, before the yield.
+For production code, an event wait usually expresses the condition more clearly
+than a bare yield and a separately stored fiber handle.
 
 ### Lifecycle
 
-The state machine is the `FiberStatus` enum:
+The public `FiberStatus` values describe the scheduler's state transitions.
 
-```
-INIT      constructed — nothing has run yet
-  |
-  v
-STARTED   the body is executing on the fiber stack
-  |
-  |-- yield_() / event wait --> PAUSED
-  |                               |
-  |                    continue_fiber() / the reactor
-  |                    waking the event's fiber
-  |                               v
-  |                            RESUMED  (executing again)
-  |<------------------------------+
-  v
-FINISHED  the body returned
-  |
-  |-- REUSE_FIBER build --> RECYCLED  (pushed onto available_fibers_,
-  |                                    stack retained, re-armed with a new
-  v                                    body and a new id by create_run)
-destroyed
-```
+| State | Meaning |
+|-------|---------|
+| `INIT` | Allocated, not yet entered |
+| `STARTED` | Running for the first time |
+| `PAUSED` | Suspended on the fiber stack |
+| `RESUMED` | Running after a continuation |
+| `FINISHED` | The submitted body returned |
+| `RECYCLED` | Finished storage has entered the reactor's reuse pool |
+| `FINALIZING` | Retained state value; it is not a stack-unwinding cancellation mechanism |
 
-`FINALIZING` also exists in the enum and is accepted by `yield_`, but nothing in
-the canonical reactor drives a fiber into it; treat it as vestigial.
-`Fiber::finished()` reports true for both `FINISHED` and `RECYCLED`.
-
-The recycling trick is worth understanding, because it explains why a fiber's
-stack survives its body. The engine-level entry point is an infinite loop: it
-invokes the body, clears it, marks the fiber `FINISHED`, and yields back to the
-caller. When that fiber is later handed a new body and continued, the loop's
-next iteration invokes *that* body — on the same stack, from the same
-`srpc_fiber`, with no new `mmap`.
+The reactor owns its active fiber registry and restores the previously running
+fiber after a nested `create_run` or continuation. When reuse is enabled, a
+finished fiber can supply a stack for another body. Do not use a retained handle
+to a completed fiber as a durable task identity or resume it after completion.
 
 ### Abandoning a paused fiber
 
-A fiber that has suspended and is never continued simply never resumes. Its
-stack is not unwound, so destructors for its locals never run and any resource
-it was holding is not released:
+Dropping the handle returned by `create_run` does not cancel the task. The
+reactor also owns the fiber, so a registered event can still wake it.
 
-```rust
-let step = Rc::new(Cell::new(0));
-{
-    let step_in = step.clone();
-    let _fiber = Fiber::create_run(move || {
-        step_in.set(1);
-        this_fiber::r#yield();
-        step_in.set(2);        // never reached if nobody continues the fiber
-    });
-    assert_eq!(step.get(), 1);
-} // dropping the handle does NOT unwind the fiber
-
-assert_eq!(step.get(), 1);
-```
-
-Dropping your `Rc<Fiber>` does not even destroy the fiber: the reactor's
-`fibers_` registry holds its own reference until the fiber finishes and is
-recycled. The mapping stays alive until the reactor itself is destroyed, which
-is exactly the shape of leak the built `fiber_test.cc` suite documents in its
-`DriveUntil` helper — a fiber parked on a millisecond timeout, a single
-`run_loop(false, true)` pass that returns long before the timeout fires, and a
-suspended frame still holding the reactor alive. If you park a fiber on a timer,
-drive the reactor until it actually completes.
+Destroying the reactor with suspended fibers is more serious. The native engine
+unmaps those stacks; it does not unwind the Rust frames on them. Local guards and
+other values on an abandoned stack do not get their normal `Drop` calls. `FINALIZING`
+and the old finalization flag do not change that behavior. Finish outstanding work
+or arrange for waiting fibers to resume and return before tearing down the owner.
 
 ### Where fibers come from in the RPC path
 
-You rarely call `create_run` yourself on the server side; the dispatcher does it
-for you. When a request arrives for an RPC id that was **not** registered on the
-fast path, the server connection spawns a fiber for the handler precisely so it
-can yield — for a nested RPC call, a timeout, an event. RPC ids registered
-through `reg_fast_rpc` (the `fast`, `prefix` and `async` attributes) are
-dispatched inline on the poll thread with no fiber at all, which is why a `fast`
-handler must never block: there is nothing to yield to, and every connection on
-that poll thread stalls behind it.
+A service registers an ordinary handler with `Server::reg_rpc`. Dispatch then
+starts a fiber for that request, so the handler can make a nested RPC and wait
+cooperatively. A handler registered with `reg_fast_rpc` runs inline in the
+transport's frame callback. With TCP, that callback runs on the poll thread.
+A fast handler must return promptly or start work that can complete later.
 
 ### Implementation: the C engine and the assembly
 
-The raw-memory half of the fiber runtime is plain C, in
-`reactor/srpc_fiber.{h,c}`. It owns the stack mapping, the thread-local
-active-fiber slot, and the resume/yield/finish state machine. The C++ side
-supplies exactly one callback — `entry_fn(entry_arg)`, invoked on the fiber
-stack.
+Canonical Rust owns scheduling, closures, event state, and task lifetimes. The
+small native engine in `reactor/srpc_fiber.{h,c}` owns the stack mapping and saved
+registers. Rust supplies an entry callback that the engine invokes on the fiber
+stack. `fiber_context_x86_64.S` and `fiber_context_aarch64.S` perform the register
+switch for the supported Linux targets.
 
-The register bag is architecture-specific, and **its field order is the ABI
-contract** with `reactor/fiber_context_{x86_64,aarch64}.S`. Reordering the
-struct silently breaks the assembly, which addresses the fields by numeric
-offset:
+The register layout is an ABI between the C header and the assembly. The x86_64
+context has eight machine words: `rsp`, `rip`, `rbx`, `rbp`, and `r12` through
+`r15`, at offsets 0 through 56. The aarch64 context has thirteen: `sp`, `pc`,
+`x19` through `x28`, and `fp`, at offsets 0 through 96. Changing the C structure
+requires changing the matching assembly offsets.
 
-```cpp srpc-no-compile
-// reactor/srpc_fiber.h — x86_64 arm of the #if. Do not reorder.
-typedef struct srpc_fiber_ctx {
-    void*     rsp;   // offset  0
-    void*     rip;   // offset  8
-    uintptr_t rbx;   // offset 16
-    uintptr_t rbp;   // offset 24
-    uintptr_t r12;   // offset 32
-    uintptr_t r13;   // offset 40
-    uintptr_t r14;   // offset 48
-    uintptr_t r15;   // offset 56
-} srpc_fiber_ctx;
+On x86_64 the switch saves a local resume label and returns through the saved
+stack. On aarch64 it saves the caller's link register as the resume PC. Stack
+allocation uses `mmap` and places an inaccessible guard page at the low end.
+The initial stack is aligned to 16 bytes, with the x86_64 entry adjustment needed
+for its calling convention. Allocation and guard-page setup failures abort.
+The trampoline invokes the Rust entry callback and records completion before
+switching back. The engine cannot unwind a suspended Rust stack.
 
-extern "C" void fiber_swap_context(srpc_fiber_ctx* from, srpc_fiber_ctx* to);
-```
+Native task storage must stay at a stable address while a context refers to it.
+Use the managed `Fiber::create_run` path; the low-level engine structs and entry
+functions are implementation details. The native kernel also provides thread-ID
+and fiber-reuse configuration queries. Ordinary Rust collections and ownership
+remain in the Rust library.
 
-The AArch64 arm of the same `#if` holds `sp`, `pc`, `x19`–`x28` and `fp`, at
-offsets 0 through 96, matching the `stp`/`ldp` pairs in the ARM64 trampoline.
-Those two are the only architectures the assembly covers; on anything else the
-`.S` files compile to nothing and the link fails on `fiber_swap_context`.
+### Standard futures and stackless tasks
 
-On x86-64, `fiber_swap_context` does not save the caller's actual return address.
-It stores the address of a local label (`.Lfiber_resume`) whose entire body is
-`ret`, so resuming a saved context lands on that `ret` and returns to whoever
-called `fiber_swap_context` the first time. The AArch64 arm needs no such trick:
-it stores the real link register (`str x30, [x0, #8]`) and restores it straight
-back into `x30` before its own `ret`.
+The reactor can drive a normal Rust `Future`, including an `async` block that
+captures `Rc` state. It does not require the task or its output to be `Send`.
+`reactor_spawn_stackless_task_with_result` accepts a
+`Pin<Box<dyn Future<Output = T>>>` and an `FnMut(T) + 'static` completion callback.
+`Box::pin` creates the pinned task; `T` only needs to be `'static`.
 
-Stack setup, in `srpc_fiber_init`:
-
-- `mmap` `stack_bytes + one page`, anonymous and private. Aborts on failure.
-- `mprotect` the *first* page to `PROT_NONE`. The stack grows down, so that page
-  is the guard: an overflow faults instead of scribbling on the neighbouring
-  mapping.
-- Align the top of the mapping down to 16 bytes; on x86-64 push a null return
-  address so `%rsp % 16 == 8` at entry, as the SysV ABI expects.
-- Seed `rip`/`pc` with the entry trampoline, so the first `srpc_fiber_resume`
-  enters it.
-
-The trampoline sets the state to `RUNNING`, calls the entry callback, sets
-`FINISHED`, and swaps back to the caller — then `abort()`s, because a finished
-fiber must never be resumed past that point. `srpc_fiber_resume` is a no-op on a
-finished fiber, and `srpc_fiber_yield` aborts if called on a fiber that is not
-running. Invariant violations in this layer abort; they are not exceptions.
-
-The only caller of `srpc_fiber_init` passes `kDefaultStackBytes`, which is
-`1 << 20`, a compile-time constant. The C function takes a size, but there is no
-public way to ask for a different one — the stack size is fixed at 1 MiB in
-practice.
-
-`Fiber` itself has deleted move operations (spelled in the canonical Rust as a
-`PhantomPinned` field). It hands its own address to the C engine, so a move
-would leave the engine pointing at the old object.
-
-The same C translation unit answers two questions that canonical Rust cannot ask
-because they are C preprocessor facts: `srpc_reactor_gettid()` returns
-`syscall(SYS_gettid)` using the target's own syscall number, and
-`srpc_reactor_reusing_fiber()` reports whether the library was compiled with
-`REUSE_FIBER` or `REUSE_CORO`. Both are deliberately *not* Rust constants, which
-would freeze one architecture and one build configuration into portable source.
-
-### The other lane: `async fn` and stackless tasks
-
-The reactor drives stackless tasks as well. `Reactor::run_loop` calls
-`process_stackless_tasks()` on every pass, alongside the event queues, so both
-lanes make progress on the same thread.
-
-An async handler is a canonical `async fn`. Under rustc it is an ordinary Rust
-future; the transpiler lowers the same source to a C++ coroutine returning
-`rusty::Task<T>` (`.await` becomes `co_await`, `return` becomes `co_return`).
-The first canonical pair lives in `base/misc.rs` and is exercised by both
-lanes' test batteries:
-
-```rust
-pub async fn async_double(x: i64) -> i64 {
-    x * 2
-}
-
-pub async fn async_double_twice(x: i64) -> i64 {
-    let once = async_double(x).await;
-    async_double(once).await
-}
-```
-
-A task is spawned through the same canonical call in both lanes:
+This complete example deliberately returns `Pending` once and wakes itself.
+It is adapted from `tests/stackless_wake_pump_rust.rs`.
 
 ```rust
 use srpc::reactor::{reactor_spawn_stackless_task_with_result, Reactor};
+use std::cell::Cell;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll};
 
-let reactor = Reactor::get_reactor();
-let task = Box::pin(async_double(21));
-reactor_spawn_stackless_task_with_result(&reactor, task, |value| {
-    // completion: runs inline if the task was ready on its first poll
-    assert_eq!(value, 42);
-});
-```
+struct PendingOnce(bool);
 
-The Rust spawn function accepts `Pin<Box<dyn Future<Output = T>>>`; `Box::pin`
-pins the future and the call coerces it to that type. In generated C++, calling the
-coroutine yields a `rusty::Task<T>`, which the dispatcher passes directly to spawn.
-The spawn polls the task once inline; if it completes
-immediately the callback runs right there and nothing is registered. Otherwise
-the task is parked with a stable `Waker` binding, and the reactor re-polls it
-when the waker fires. The canonical poll-worker loop calls `run_loop` to drain
-the wake queue in both Rust and generated C++. Spawning must happen on the reactor's own
-thread; a spawn refused during reactor teardown destroys the task and its
-callback rather than pretending to succeed, so a waiter fails instead of
-hanging.
+impl Future for PendingOnce {
+    type Output = i64;
 
-This is the machinery behind the IDL's `async` attribute in the C++ lane. An
-`async` method's generated handler signature is
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<i64> {
+        if self.0 {
+            Poll::Ready(7)
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
 
-```cpp srpc-no-compile
-virtual rusty::Task<rusty::Result<RpcMethodResponse, srpc::i32>>
-method(const RpcMethodRequest& req);
-```
-
-and the generated dispatcher registers it on the fast path, calls it inline on
-the poll thread, and hands the returned task to
-`reactor_spawn_stackless_task_with_result` with a completion lambda that upgrades
-the weak server connection and replies. Finish such a handler with `co_return`:
-
-```cpp srpc-no-compile
-rusty::Task<rusty::Result<BenchmarkService::RpcAsyncNopResponse, i32>>
-BenchmarkService::async_nop(const RpcAsyncNopRequest& req) {
-    (void)req;
-    co_return rusty::Result<RpcAsyncNopResponse, i32>::Ok(RpcAsyncNopResponse{});
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let result = Rc::new(Cell::new(None));
+    let completed = result.clone();
+    reactor_spawn_stackless_task_with_result(
+        &reactor,
+        Box::pin(async { PendingOnce(false).await * 2 }),
+        move |value| completed.set(Some(value)),
+    );
+    assert_eq!(result.get(), None);
+    reactor.run_loop(false, true);
+    assert_eq!(result.get(), Some(14));
 }
 ```
 
-Two consequences follow from "entered inline on the poll thread". First, an
-`async` handler must not block *before* its first suspension point, exactly like
-a `fast` handler. Second, srpc ships no ready-made awaitable for its own events.
-Under rustc any Rust future composes with `.await` as usual (the wake routes
-through the task's parked binding). In hand-written C++, `co_await`ing anything
-means writing an awaiter that reaches `rusty::current_context()` and copies the
-`Waker` out of it, then wakes that copy when the result is ready. Copy the
-waker; never alias the reactor's `Context`, which may be retired the moment the
-task completes.
+Spawn polls once inline. If that poll completes, the completion callback runs
+inside the spawn call and no parked task remains. Otherwise the reactor retains
+the task and polls it again when its waker fires. A wake during the initial poll
+is retained, as this example requires. The callback runs after releasing the
+reactor's mutable borrow of the completed task, so it can submit more work.
 
-Choose the stackful lane when the code reads better as straight-line blocking
-logic, or when the thing you need to suspend inside is a call you do not
-control — only a real stack can suspend from arbitrary depth. Choose the
-stackless lane when you can express the flow as a coroutine and want to avoid a
-1 MiB mapping per in-flight request.
+Spawn and future polling belong to the owner thread. A cloned standard `Waker`
+can cross threads: the wake records a request in synchronized storage, and the
+owner drains that queue during `run_loop`. It does not move the future or the
+reactor to the waking thread. Copy `cx.waker()` with `clone()` when registering a
+notification; never retain a reference to the temporary `Context`.
+
+SRPC does not supply a ready-made standard `Future` adapter for its events.
+A future's `poll` must return promptly instead of using a stackful event wait.
+Likewise, an `async` body runs synchronously until its first pending `.await`.
+Blocking there blocks the worker just as it would in a fast handler.
+
+Reactor teardown cancels parked tasks and closes wake admission. Retained wakers
+remain safe to use after completion or owner teardown, but they cannot make a
+cancelled task run. See [the async runtime notes](async-runtime.md) for the wake
+and cancellation protocol.
 
 ### Observability
 
-The reactor keeps public counters you can read directly while debugging:
-`n_created_fibers_`, `n_busy_fibers_`, `n_idle_fibers_` and `n_active_fibers_`,
-each a `Cell<i64>`. The reactor also logs a line every 1024 fibers created, and
-warns at reactor construction when the library was built *without* fiber reuse.
+The reactor exposes fiber counters such as `n_created_fibers_`,
+`n_busy_fibers_`, `n_idle_fibers_`, and `n_active_fibers_` as `Cell<i64>` fields.
+Read them on the owner thread. Creation also emits periodic diagnostics every
+1024 fibers. Use these to distinguish accumulating suspended work from normal
+stack reuse; they are not synchronized cross-thread metrics.
 
----
+## 4. The reactor pattern
 
-## 4. The Reactor Pattern
+SRPC separates scheduling from I/O ownership. `Reactor` schedules local fibers,
+events, and standard futures. `PollThreadWorker` owns epoll registrations, jobs,
+and the I/O loop. `PollThread` is a shareable handle that sends commands to that
+worker. All three live in `srpc::reactor`.
 
-srpc runs on two cooperating loops, and most of the confusion about the runtime comes
-from treating them as one.
+### The reactor
 
-The **`Reactor`** is a fiber and event scheduler. It owns the fibers, events and
-stackless tasks belonging to a single thread, and it never touches a file descriptor.
-The **`PollThreadWorker`** is the epoll loop: it owns the poll set, dispatches readiness
-to connections, and calls into that thread's reactor once per pass so the fibers those
-callbacks unblocked actually get to run. **`PollThread`** is the handle you hold onto
-for the worker thread — a mailbox, not the worker itself.
+`Reactor::get_reactor()` lazily creates the calling thread's reactor and returns
+an `Rc<Reactor>`. Repeated calls on that thread return the same owner. The reactor
+records `std::thread::ThreadId` and checks it when running the loop or spawning
+stackless tasks. Its `Rc`, `Cell`, and `RefCell` state must remain on that thread.
 
-All three live in `reactor/reactor.rs` — module `srpc::reactor` in Rust,
-`srpc.reactor` in C++ (imported for you by the umbrella `srpc.hpp`).
+`Reactor::get_disk_reactor()` accesses a separate local reactor. The normal RPC
+poll worker uses `get_reactor()`; obtaining the disk reactor does not start a
+background disk executor.
 
-### The Reactor
-
-`Reactor::get_reactor()` returns the calling thread's reactor as `Rc<Reactor>`,
-creating it on first use and stamping the creating thread's id into it. Its state is
-four event queues — `all_events_`, `waiting_events_`, `timeout_events_`,
-`composite_events_` — a registry of live fibers with a free list of recycled ones, and a
-slab of stackless task pollers.
-
-Thread affinity is checked, not merely documented. `run_loop`, `process_stackless_tasks`,
-`enqueue_stackless_task`, both stackless-task spawn paths and the destructor each begin
-with a comparison against the recorded owner id, routed through `srpc::verify`, which
-prints a stack trace and panics on failure. Getting this wrong aborts loudly instead of
-corrupting the queues.
-
-Two things you will notice the first time a thread calls `get_reactor()`. It logs
-`create a fiber scheduler` at DEBUG, and unless the build defines `REUSE_FIBER` it also
-logs `reusing fiber not enabled!` at WARN. Fiber recycling is a compile-time constant
-read through a plain-C seam (`srpc_reactor_reusing_fiber`), not a runtime switch, so
-that warning is a build property and not something you can fix at run time.
-
-There is a second, entirely separate reactor per thread: `Reactor::get_disk_reactor()`
-("create a disk fiber scheduler" in the log). It is an ordinary `Reactor` with its own
-queues and its own owner check. Nothing under `rpc/` uses it — the RPC path only ever
-touches the main one.
+The reactor keeps a registry of fibers, an optional fiber reuse pool, and separate
+queues for waiting, timed, composite, and ready events. It also retains parked
+future pollers and a queue of task indices ready to be polled again. It does not
+own socket descriptors or perform `epoll_wait`.
 
 ### Running the loop
 
+For a manually driven reactor, call `run_loop(false, true)` to process available
+work and check deadlines. The arguments are `infinite` and `do_check_timeout`.
+
+A pass polls ready standard futures, tests waiting and composite events, and
+optionally checks timeout deadlines. It then resumes fibers whose events became
+ready or timed out. The event's weak fiber reference must still upgrade to a
+fiber in this reactor's registry. Normal readiness becomes `DONE` before the
+continuation; a timeout stays `TIMEOUT` so the resumed code can inspect it.
+The loop repeats while it finds more ready work.
+
+`run_loop(false, true)` does not wait for a future deadline and does not poll
+sockets. This complete example supplies an outer loop for a fiber timer.
+
 ```rust
-let reactor = Reactor::get_reactor();
+use srpc::fiber::this_fiber;
+use srpc::reactor::{Fiber, Reactor};
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-reactor.create_run_fiber(Some(Box::new(|| {
-    this_fiber::r#yield();
-})));
-
-reactor.run_loop(false, true); // drain whatever is ready, then return
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let done = Rc::new(Cell::new(false));
+    let completed = done.clone();
+    Fiber::create_run(move || {
+        this_fiber::sleep_ms(5);
+        completed.set(true);
+    });
+    let started = Instant::now();
+    while !done.get() && started.elapsed() < Duration::from_secs(2) {
+        reactor.run_loop(false, true);
+        std::thread::yield_now();
+    }
+    assert!(done.get(), "timer did not complete");
+}
 ```
 
-The signature is `run_loop(bool infinite, bool do_check_timeout)`. (The name is
-`run_loop`, and it always takes both booleans.) A single pass does this, in this order:
+Setting `do_check_timeout` to false skips the deadline queue. Event predicates
+can still become ready, but `wait_timeout` deadlines need a timeout-enabled pass.
+`run_loop(true, true)` repeatedly scans even when idle. It can busy-spin, so use
+the poll worker for a long-lived network runtime. An owner-thread callback can
+clear `reactor.looping_` to stop an infinite loop once the current work drains.
 
-1. **Stackless tasks.** Wakeups that arrived on the private owner-thread ingress are
-   enqueued, then every ready task poller is polled; a poller that reports
-   ready has its slot closed and released.
-2. **`waiting_events_`.** Every event's `test()` is called, then the ones that turned
-   `READY` are moved to a local ready list and the `DONE` ones are dropped from the queue.
-3. **`composite_events_`.** The same two steps for `WaitAll` / `WaitAny` / `QuorumEvent`.
-4. **Timeouts**, only when `do_check_timeout` is true. `check_timeout` walks
-   `timeout_events_`, and for each event whose wakeup time has passed marks it `READY` if
-   its condition happens to hold and `TIMEOUT` otherwise, then moves both kinds onto the
-   ready list.
-5. **Dispatch.** For each collected event that is not already `DONE`, upgrade the weak
-   handle to the waiting fiber; if that fiber is gone, or is no longer in the registry,
-   skip it. Otherwise assert the fiber is `PAUSED`, flip a `READY` event to `DONE` —
-   a `TIMEOUT` event deliberately keeps its status, which is how a waiter can tell
-   afterwards that it timed out — and resume the fiber via `continue_fiber`.
-
-The pass repeats as long as it found work. With `infinite == false` it returns once a
-full pass produces nothing. That is the form the runtime itself uses — both of srpc's own
-calls, the one at the end of `create_run_fiber` and the one at the end of every poll-worker
-pass, pass `false` — and the one you want in tests: "run everything that is currently
-runnable, then give me control back."
-
-`infinite == true` keeps looping until something clears the reactor's public `looping_`
-flag, which `run_loop` seeds from `infinite` on entry and re-reads at the end of every
-outer pass. A fiber running on that reactor ends the loop with
-`Reactor::get_reactor()->looping_.set(false);`. Nothing else clears it, and the loop does
-not block anywhere — waiting on a descriptor is the poll thread's job — so until then it
-is a spin, not a sleep. Use it only as the last statement of a thread whose whole purpose
-is to drive a reactor.
-
-Note what is *not* in that list: there is no `epoll_wait`, no descriptor handling, and no
-command channel. The reactor is pure scheduling.
-
-Event creation touches the reactor too. Every `create_sp_*` factory registers the new
-event in `all_events_` and then calls `prune_finished_events()`, which compacts the
-queue once it exceeds a high-water mark (64 to start, then twice the surviving length
-plus 64). So the sweep is amortized over event creation rather than run per pass.
+Event factories register their `Arc` with the local reactor. Pruning begins at
+an initial high-water mark of 64 events, retains externally referenced or
+non-prunable events, and adjusts the next threshold to twice the retained count
+plus 64. Queued waits also hold references. Dropping your last handle therefore
+does not immediately destroy an event that the reactor still needs.
 
 ### `create_run_fiber` runs the body immediately
 
-`create_run_fiber` is not a "queue it for later" call. It takes a fiber from the free
-list or makes a new one, saves the currently running fiber, registers the new one, and
-**runs it on the calling thread right there** — to its first yield, or to completion.
-If it finished, the fiber is recycled. Only then does it call `run_loop(false, true)`,
-and finally restore the fiber that was running before.
-
-Two consequences worth internalizing: a fiber body with no yield point runs
-synchronously inside `create_run_fiber`, and calling `create_run_fiber` from inside a
-fiber nests correctly (the outer fiber is saved and restored around the inner one).
+The lower-level equivalent of `Fiber::create_run` is
+`reactor.create_run_fiber(Some(Box::new(body)))`. It takes the explicit optional
+boxed callback type and has the same immediate-entry behavior. Prefer
+`Fiber::create_run` for ordinary use. It constructs the callback and selects the
+current reactor for you.
 
 ### PollThread and PollThreadWorker
 
-```rust
-let poll = PollThread::create(); // Arc<PollThread>; spawns the thread
-// ... build a Server or a Client on it ...
-poll.shutdown();                 // sends Shutdown, then joins
-```
+`PollThread::create()` starts a native Rust worker thread and returns
+`Arc<PollThread>`. Cloning that handle shares the command sender and shutdown
+state. It does not expose the worker's reactor for use on another thread.
 
-`PollThread::create()` spawns the worker thread and returns an `Arc<PollThread>`.
-The `PollThread` object itself holds almost nothing: the sending half of an mpsc channel,
-the join handle, the worker's thread id as raw bits, and a `shutdown_called_` flag. The
-`PollThreadWorker` — the epoll descriptor, the fd-to-pollable map, the mode map, the
-deferred-removal set and the job set — is constructed *on the poll thread* and never
-leaves it.
+The worker waits for I/O, handles readiness callbacks and commands, runs jobs,
+and calls its own `Reactor::run_loop(false, true)`. `Epoll::Wait` uses a 1 ms
+maximum idle wait. This keeps an idle worker checking timers frequently; it is
+not a guaranteed timer resolution or a promise of 1000 passes per second.
+Callbacks and operating-system scheduling can delay a pass.
 
-Every mutator on the handle is therefore a message, not a call. Chapter 6 owns that
-material — the command table, the worker's ten-step pass and its shutdown protocol. Two
-steps of the pass matter here. `epoll_wait` runs with a **1 ms timeout**, so the poll
-thread turns at least a thousand times a second whether or not there is traffic; timers
-and the fiber scheduler make progress on their own, and nothing has to poke the loop to
-get a timeout delivered. And every pass ends with
-`Reactor::get_reactor()->run_loop(false, true)` on the poll thread's own reactor —
-**that is where server handler fibers actually run.**
-
-`PollMode` and `PollReady` live in module `srpc.epoll_wrapper`, which is trimmed from the
-consumer umbrella; name them and you need an explicit `import srpc.epoll_wrapper;`.
+The handle's thread identifier is a native kernel thread ID used to avoid
+joining the worker from itself. The reactor's Rust `ThreadId` checks are a
+separate owner check.
 
 ### Jobs
 
-`PollThread::add(Arc<dyn Job>)` hands the worker a `Job` — `Ready()`, `Work()`,
-`Done()` (the trait lives in `base/misc.rs`). Three times per pass the worker asks each job whether it is `Ready()`; the
-first time one says yes, the worker spawns a fiber to run its `Work()` and **drops the
-job from the set**. So a job fires at most once and is not a recurring timer, and
-`Done()` is never consulted by the worker at all. `PollCommand::RemoveJob` exists in the
-enum and is handled by the worker, but no `PollThread` method sends it. Internally srpc
-uses jobs for deferred connection close and for the client's receive pump.
+`PollThread::add(Arc<dyn Job>)` sends work to the worker. Once a job's `Ready()`
+returns true, the worker starts a fiber for `Work()` and removes the job from its
+pending set. Jobs run at most once per submission. `Done()` exists on the trait
+but the scheduler does not consult it. Chapter 6 gives a complete `OneTimeJob`
+example and the requirements for custom jobs.
 
 ### Per-thread design
 
-Each thread gets its own reactor because the storage behind `get_reactor()` is
-per-thread in both lanes: the reactor statics are spelled with Rust's `thread_local!`,
-which rustc compiles natively and the transpiler lowers to C++
-`thread_local rusty::LocalKey` storage. Two threads that each call `get_reactor()` get
-two independent reactors — `tests/reactor_multithread_rust.rs` pins exactly that, two
-reactors running independent suspend/wake cycles in one process.
-
-The runtime owner check rejects use from another thread. Rust also rejects moving
-an `Rc<Reactor>` into a spawned thread because `Rc` is not `Send`:
+Create the reactor inside a spawned thread when it needs an independent scheduler.
+Communicate results with channels or synchronized state; return values instead of
+returning `Rc<Reactor>`.
 
 ```rust
-// WRONG - the reactor belongs to the thread that created it
-let reactor = Reactor::get_reactor();
-std::thread::spawn(move || {
-    // This closure does not compile: its captured Rc<Reactor> is not Send.
-    reactor.create_run_fiber(Some(Box::new(|| {})));
-});
+use srpc::reactor::{Fiber, Reactor};
+use std::cell::Cell;
+use std::rc::Rc;
 
-// RIGHT - ask for the reactor on the thread that will use it
-std::thread::spawn(|| {
-    let reactor = Reactor::get_reactor(); // this thread's own
-    reactor.create_run_fiber(Some(Box::new(|| { /* ... */ })));
-    reactor.run_loop(false, true);
-});
+fn main() {
+    let worker = std::thread::spawn(|| {
+        let reactor = Reactor::get_reactor();
+        let result = Rc::new(Cell::new(0));
+        let output = result.clone();
+        Fiber::create_run(move || output.set(42));
+        reactor.run_loop(false, true);
+        result.get()
+    });
+    assert_eq!(worker.join().unwrap(), 42);
+}
 ```
 
-The same rule covers the objects the reactor hands out: fibers are `Rc`, and
-events are owned by the reactor that created them. Do not move either across a thread
-boundary. When you use the RPC framework you rarely construct any of this yourself —
-`Server` and `Client` take a `PollThread`, and everything above happens on it.
+`Rc<Reactor>`, `Rc<Fiber>`, and the concrete event types are not cross-thread
+handles. `Arc<PollThread>` and `Waker` are. The maintained tests
+`reactor_multithread_rust.rs` and `stackless_wake_pollthread_rust.rs` exercise
+independent local schedulers and foreign-thread wakes respectively.
 
-Events themselves are chapter 5; the pollables the worker dispatches to are chapter 6.
+## 5. Event system
 
----
-
-## 5. Event System
-
-Events are how a fiber waits for something. Calling `wait()` on an event suspends the
-*calling fiber* and hands control back to the reactor loop (Chapter 4); the OS thread
-keeps running other fibers. When the event becomes ready the loop resumes the fiber
-exactly where it yielded.
-
-Three things to know before the vocabulary below, because none of these names is the one
-you would guess:
-
-* **There is no class called `Event`.** The polymorphic base is `EventPollable` — a Rust
-  trait in `reactor/reactor.rs` that the emitter lowers to an abstract C++ class. Every
-  concrete event inherits it.
-* **There is no `Reactor::create_sp_event<T>()` template.** Each event type has its own
-  named free function, and those are the only constructors.
-* **Methods are lowercase**: `wait`, `wait_timeout`, `test`, `set`, `get`, `is_ready`,
-  `prunable`, `set_prunable`.
-
-There is also no `WaitN` and no `NEvent`. The N-of-M primitive is `QuorumEvent`.
+An event records a readiness condition and, while waiting, a weak reference to
+one fiber to resume. Construct events through the named functions in
+`srpc::reactor`; these register the event with the correct thread-local reactor.
+`EventPollable` is the shared trait for readiness and status inspection.
 
 ### The event vocabulary
 
-| factory | type | ready when |
-| --- | --- | --- |
-| `create_sp_int_event(target)` | `IntEvent` | `value_ >= target_` |
-| `create_sp_timeout_event(wait_us)` | `TimeoutEvent` | the deadline fixed at construction has passed |
-| `create_sp_never_event()` | `NeverEvent` | never |
-| `create_sp_box_event<T>()` | `BoxEvent<T>` | a `T` has been stored in the slot |
-| `create_sp_waitany(a, b)` | `WaitAny` | *either* of exactly two children is ready |
-| `create_sp_waitall()`, `create_sp_waitall_from(vec)` | `WaitAll` | every child is ready or already `DONE` |
-| `janus::create_sp_quorum_event(n_total, quorum)` | `QuorumEvent` | a quorum of yes votes, or enough no votes |
+| Factory | Result | Ready when |
+|---------|--------|------------|
+| `create_sp_int_event(target)` | `Arc<IntEvent>` | Value reaches the target, or its custom predicate succeeds |
+| `create_sp_timeout_event(wait_us)` | `Arc<TimeoutEvent>` | The deadline set at creation has passed |
+| `create_sp_never_event()` | `Arc<NeverEvent>` | Never by its own condition; use a timed wait |
+| `create_sp_box_event::<T>()` | `Arc<BoxEvent<T>>` | A value has been set |
+| `create_sp_waitany(a, b)` | `Arc<WaitAny>` | Either of exactly two child conditions is ready |
+| `create_sp_waitall()` | `Arc<WaitAll>` | Every added child is ready or done |
+| `create_sp_waitall_from(&events)` | `Arc<WaitAll>` | Every child in the supplied vector is ready or done |
+| `create_sp_quorum_event(total, quorum)` | `Arc<QuorumEvent>` | Voting policy permits completion |
 
-Every one of these returns an `Arc<T>` of the *concrete* type — you keep the typed
-handle, and it coerces to `Arc<dyn EventPollable>` where a base handle is wanted. The
-factory also stamps the event with the current thread id, records the creating fiber, and
-files the event in the calling thread's reactor registry. `Reactor::get_reactor()` creates
-that reactor on demand, so the factory never fails for lack of one — but an event created
-on a thread whose reactor is never run can never be woken, and `wait()` *does* abort unless
-the calling thread has a reactor whose thread id matches. Create events on the thread that
-will run the loop.
+These are standard `std::sync::Arc` handles, but their contents include local
+`Cell`, `RefCell`, and weak fiber state. An `Arc` does not make an event `Send` or
+`Sync`. Create, set, and wait on the event on its owning thread. Use a poll-thread
+job or a standard waker to deliver work from another thread.
 
-`SharedIntEvent` is the one member of the family that is *not* built this way; it is
-described at the end of the chapter.
+Most events provide `wait()` and `wait_timeout(timeout_us)`. A timeout value of
+zero means an indefinite wait. Bring `EventPollable` into scope to call trait
+methods such as `status()` or `is_ready()`.
 
 ### EventStatus
 
-```rust
-EventStatus::INIT     // 0
-EventStatus::WAIT     // 1
-EventStatus::READY    // 2
-EventStatus::DONE     // 3
-EventStatus::TIMEOUT  // 4
-EventStatus::DEBUG    // 5
-```
+| Value | Status | Meaning |
+|-------|--------|---------|
+| 0 | `INIT` | No pending waiter or completion yet |
+| 1 | `WAIT` | A fiber is suspended on this event |
+| 2 | `READY` | Readiness has been observed; the waiter can resume |
+| 3 | `DONE` | Readiness was consumed, or was already true when tested |
+| 4 | `TIMEOUT` | The deadline expired; retained for the resumed waiter to inspect |
+| 5 | `DEBUG` | Internal diagnostic state |
 
-Those are the six members, in that order, with those values; the enum is `i32`-wide.
-`DEBUG` is declared and never assigned — the only place it appears in the runtime is an
-assertion that the status *isn't* `DEBUG`. Read the current status off any event with
-`ev.status_.get()`.
+A wait whose condition is already true returns immediately and marks the event
+`DONE`. It need not be called from a fiber in that case. Otherwise the wait must
+run inside a fiber: it records that fiber, enters `WAIT`, and suspends.
+Setting an event can change `WAIT` to `READY`, but it does not run the waiting
+fiber inline. `run_loop` performs the continuation and changes `READY` to `DONE`.
 
-The lifecycle is worth knowing, because half the questions about "my fiber didn't wake up"
-are answered by it:
-
-* An event is born `INIT`.
-* `wait()` first re-checks `is_ready()`. If the condition already holds, the status goes
-  straight to `DONE` and **the fiber never suspends** — no reactor round trip at all.
-* Otherwise the event is filed in the reactor's `waiting_events_` queue (plus
-  `composite_events_` if it is a `WaitAll`/`WaitAny`/`QuorumEvent`, plus `timeout_events_`
-  if a non-zero timeout was given), the status becomes `WAIT`, and the fiber yields.
-* `test()` is what re-evaluates the condition. `IntEvent::set()` calls it inline, and the
-  reactor loop calls it on everything in the waiting and composite queues. A ready event
-  in `WAIT` becomes `READY`.
-* The loop moves `READY` events out of the queues, flips them to `DONE`, and resumes the
-  waiting fiber.
-* A timed-out event goes `WAIT` → `TIMEOUT` and its fiber is resumed too — with the status
-  left at `TIMEOUT`, which is how the fiber tells the two outcomes apart.
-
-Note the asymmetry: after a successful wait the status the fiber observes is `DONE`, not
-`READY`. Test against `DONE` and `TIMEOUT`.
+The numeric state is useful for diagnostics, but ordinary code should use the
+enum variants and event methods. A timed-out event keeps `TIMEOUT` even if its
+condition later becomes true. Check the condition as well when that distinction
+matters to the operation.
 
 ### IntEvent
 
-`IntEvent` is the workhorse: a counter with a threshold. The target is a required
-constructor argument, the value starts at zero, and the ready predicate is
-`value_ >= target_` — greater-or-equal, not equality, so overshooting still fires.
+An `IntEvent` starts at zero and is ready when `value >= target`. `set(value)`
+returns the previous value, updates the value, and tests readiness.
 
 ```rust
-let reactor = Reactor::get_reactor();
-let ev = create_sp_int_event(1); // ready once value_ >= 1
+use srpc::reactor::{create_sp_int_event, EventPollable, EventStatus, Fiber, Reactor};
+use std::cell::Cell;
+use std::rc::Rc;
 
-let ev_in = ev.clone();
-reactor.create_run_fiber(Some(Box::new(move || {
-    ev_in.wait(); // suspends this fiber
-    // resumed: ev_in.status_.get() == EventStatus::DONE
-})));
-
-ev.set(1);                      // tests inline; returns the PREVIOUS value
-reactor.run_loop(false, true);  // the loop resumes the fiber
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let event = create_sp_int_event(2);
+    let finished = Rc::new(Cell::new(false));
+    let waiting = event.clone();
+    let output = finished.clone();
+    Fiber::create_run(move || {
+        waiting.wait();
+        assert_eq!(waiting.get(), 2);
+        output.set(true);
+    });
+    assert_eq!(event.set(1), 0);
+    assert!(!finished.get());
+    assert_eq!(event.set(2), 1);
+    assert_eq!(event.status(), EventStatus::READY);
+    reactor.run_loop(false, true);
+    assert!(finished.get());
+    assert_eq!(event.status(), EventStatus::DONE);
+}
 ```
 
-`set()` returns the value the event held before the write, which is occasionally useful
-for detecting a double-signal. `get()` reads the current value; `value_` and `target_`
-are also public `Cell` fields (`ev.value_.get()`, `ev.target_.set(n)`) if you need to
-retarget an event after construction.
-
-The RPC layer uses exactly this shape. `FiberChannel` (in `rpc/fiber_channel.rs`) turns
-callback-style frame delivery into a fiber-blocking `recv_frame()` by arming a *fresh*
-`IntEvent` before each wait, having the inbound callback `set(1)` it, and waiting on it:
-
-```rust
-// The arm / signal / wait shape, as the fiber channel uses it.
-let pending = create_sp_int_event(1); // arm before you can block
-// ... producer side, when a frame lands:
-pending.set(1);
-// ... consumer fiber:
-pending.wait();
-```
-
-A new event per wait is the point, not an inefficiency — see the reuse rule below.
+A custom readiness predicate is stored in `event.state_.test_` as
+`Option<Box<dyn Fn(i32) -> bool>>`. On a fresh event, assign
+`Some(Box::new(predicate))` through `borrow_mut()`, then release that borrow
+before waiting or setting. This overrides the usual target comparison.
+Use it sparingly; named event types make ordinary conditions easier to follow.
 
 ### TimeoutEvent
 
-A `TimeoutEvent` bakes its deadline in at construction: `create_sp_timeout_event(wait_us)`
-records `Time::now(true) + wait_us` (all durations in this subsystem are microseconds).
-It exposes `wait()` only — the duration is already in the object, so there is no
-`wait_timeout` overload on this type.
+`create_sp_timeout_event(wait_us)` fixes an absolute deadline when the event is
+created, using monotonic microseconds from `Time::now(true)`. Its `wait()` waits
+for that condition. Time spent between creation and waiting counts toward the
+delay. `TimeoutEvent` does not have a separate `wait_timeout` method.
 
-```rust
-let t = create_sp_timeout_event(1_000_000); // one second, in microseconds
-t.wait();
-// one second has elapsed (assuming the loop was run with do_check_timeout = true)
-```
-
-`Fiber::sleep(microseconds)` is implemented as precisely this — create a timeout event,
-wait on it — with a zero duration short-circuiting to a no-op. Prefer `Fiber::sleep` for a
-plain delay and keep `TimeoutEvent` for cases where you want the deadline as a first-class
-object you can hand to `create_sp_waitany`.
+For a relative delay in the running fiber, prefer `this_fiber::sleep_us` or its
+millisecond helper. A zero-duration fiber sleep is a no-op; a zero-duration
+`TimeoutEvent` still follows event readiness and scheduling rules.
 
 ### NeverEvent
 
-`create_sp_never_event()` builds an event whose `is_ready()` is unconditionally `false`.
-It exposes `wait_timeout(us)` and no plain `wait()`, for the obvious reason. Use it as a
-park: a fiber that should sleep for a bounded time but be woken by nothing except its own
-deadline, or a placeholder in a composite where one branch must never fire.
+`create_sp_never_event()` produces a condition that never becomes ready by
+itself. `wait_timeout(us)` is useful for a timeout-only wait. Passing zero waits
+indefinitely. Inspect `status() == EventStatus::TIMEOUT` after resumption.
+Do not use an indefinite never-event wait as cancellation; the paused stack
+still needs to finish before reactor teardown.
 
-### BoxEvent&lt;T&gt; — a typed one-shot slot
+### BoxEvent<T>: a typed one-shot slot
 
-`create_sp_box_event<T>()` is an event that carries a payload. `set(const T&)` stores a
-value and marks the slot full (which also runs `test()`); `get()` copies the value out;
-`clear()` empties it again; `is_ready()` reports whether the slot is full.
-
-```rust
-let slot = create_sp_box_event::<i32>();
-
-let slot_in = slot.clone();
-reactor.create_run_fiber(Some(Box::new(move || {
-    slot_in.wait();
-    let v = slot_in.get();
-    let _ = v;
-})));
-
-slot.set(&7);
-reactor.run_loop(false, true);
-```
-
-`T` must be `Default + Clone` (in C++: default-constructible and copyable) —
-`clear()` default-constructs and `get()` copies.
-
-This is not a curiosity: `BoxEvent<T>` is the engine underneath `FiberPromise<T>` and
-`FiberFuture<T>` in the `srpc.future` module (`reactor/future.rs`). The promise owns the
-box, `set_value` writes it, and `FiberFuture::get()` waits on the box and copies the value
-out. `FiberFuture::wait_for(timeout_us)` forwards to `wait_timeout` and treats a zero
-timeout as "wait indefinitely", matching the plain `wait()`. Do not confuse
-`FiberFuture<T>` with the RPC-level `srpc::Future`, which is a different type in a
-different module with its own (much less forgiving) timeout behaviour.
-
-### WaitAny — either of exactly two
+`BoxEvent<T>` stores one payload with `T: Clone + Default + 'static`. `set(&value)`
+clones a value into the slot and tests readiness. `get()` returns a clone.
+`clear()` empties the slot and replaces the payload with `T::default()`.
+A fresh slot avoids the event-status complications of reuse.
 
 ```rust
-let e1 = create_sp_int_event(1);
-let e2 = create_sp_int_event(1);
-let any = create_sp_waitany(e1.clone(), e2.clone());
+use srpc::reactor::{create_sp_box_event, Fiber, Reactor};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-let any_in = any.clone();
-reactor.create_run_fiber(Some(Box::new(move || {
-    any_in.wait(); // returns as soon as EITHER child is ready
-})));
-e2.set(1);
-reactor.run_loop(false, true);
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let event = create_sp_box_event::<String>();
+    let result = Rc::new(RefCell::new(None));
+    let waiting = event.clone();
+    let output = result.clone();
+    Fiber::create_run(move || {
+        waiting.wait();
+        *output.borrow_mut() = Some(waiting.get());
+    });
+    event.set(&"ready".to_owned());
+    reactor.run_loop(false, true);
+    assert_eq!(result.borrow().as_deref(), Some("ready"));
+}
 ```
 
-The arity is fixed: `create_sp_waitany` takes exactly two `Arc<dyn EventPollable>`
-arguments and there is no `add_event` on `WaitAny`. For three or more, nest — or, if what
-you actually want is "the first of these, or a deadline", pair the real event with a
-`TimeoutEvent`, which is the common use.
-
-If a child is already ready when the `WaitAny` is created, the wait returns immediately
-without suspending.
-
-### WaitAll — all of them
-
-`WaitAll` is the composite that grows. Either build it empty and add children, or build it
-from a vector:
+`srpc::future::{FiberPromise, FiberFuture}` uses a shared `BoxEvent` internally.
+`make_promise::<T>()` returns a promise/future pair; `make_ready_future(value)`
+returns an already satisfied future. These are fiber-based waits, distinct from
+`std::future::Future` and from the RPC client's response `Future`.
 
 ```rust
-let event1 = create_sp_int_event(1);
-let event2 = create_sp_int_event(1);
+use srpc::future::make_promise;
+use srpc::reactor::{Fiber, Reactor};
+use std::cell::Cell;
+use std::rc::Rc;
 
-let events: Vec<Arc<dyn EventPollable>> = vec![event1.clone(), event2.clone()];
-let and_event = create_sp_waitall_from(&events);
-
-let and_in = and_event.clone();
-reactor.create_run_fiber(Some(Box::new(move || {
-    and_in.wait();
-})));
-
-event1.set(1);
-reactor.run_loop(false, true); // still waiting: only one child is ready
-event2.set(1);
-reactor.run_loop(false, true); // now the fiber resumes
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let (mut promise, mut future) = make_promise::<i64>();
+    let result = Rc::new(Cell::new(None));
+    let output = result.clone();
+    Fiber::create_run(move || output.set(Some(future.get())));
+    promise.set_value(&42);
+    reactor.run_loop(false, true);
+    assert_eq!(result.get(), Some(42));
+}
 ```
 
-The incremental form is `let all = create_sp_waitall();` followed by
-`all.add_event(child);` for each child, where `child` is an `Arc<dyn EventPollable>`.
+Retrieve a promise's future once and set its value once. Repeating either
+operation asserts. `FiberFuture::get(&mut self)` waits if needed and clones the
+stored value. `wait_for(&mut self, timeout_us)` returns whether a value is ready;
+zero waits indefinitely. A default future is invalid, while a default promise
+has an event ready to receive a value. `valid()` checks for state without waiting.
 
-`WaitAll::is_ready()` accepts a child that is *either* currently ready *or* already
-`DONE`. That matters: a child that was individually waited on and consumed earlier still
-counts as satisfied, so a `WaitAll` over already-finished events fires immediately rather
-than hanging.
+### WaitAny: either of exactly two
 
-### QuorumEvent — the N-of-M primitive
+`create_sp_waitany` accepts two `Arc<dyn EventPollable>` handles. Concrete event
+`Arc`s coerce to those trait objects at the call. A `WaitAny` is ready when either
+child's current `is_ready()` condition is true. Unlike `WaitAll`, it does not
+separately count a child's `DONE` status as readiness.
 
-`QuorumEvent` is the only N-of-M event in the tree. It counts yes and no votes against a
-total and a threshold, and becomes ready as soon as the outcome is decided in either
-direction.
+### WaitAll: all of them
 
-In Rust the quorum surface is spelled like everything else in `srpc::reactor`. Its
-C++ spelling is different: `janus::QuorumEvent`, in the **global** `::janus` namespace,
-not `srpc::` — an ABI contract carried by an inert
-`#[cfg_attr(any(), cpp_namespace(::janus))]` marker on each of the three types and five
-free functions in the quorum surface. `srpc::QuorumEvent` and `srpc::janus::QuorumEvent`
-mangle differently and are not substitutes. Everything else in this chapter lands in
-plain `srpc::` on the C++ side.
+`create_sp_waitall()` starts with no children, so it is immediately ready.
+Call `add_event` before waiting to add requirements. Alternatively, pass a
+`Vec<Arc<dyn EventPollable>>` to `create_sp_waitall_from(&events)`.
+Each child must report `is_ready()` or have status `DONE`.
+
+This complete example waits for two independent conditions. Neither child has
+a separate waiter; the composite owns the suspended fiber's wait.
 
 ```rust
-let q = create_sp_quorum_event(3, 2); // 3 replicas, 2 needed
+use srpc::reactor::{create_sp_int_event, create_sp_waitall, Fiber, Reactor};
+use std::cell::Cell;
+use std::rc::Rc;
 
-q.vote_yes();
-// q.is_ready() is still false
-q.vote_yes();
-// q.is_ready() is true, and q.yes() is true
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let first = create_sp_int_event(1);
+    let second = create_sp_int_event(1);
+    let all = create_sp_waitall();
+    all.add_event(first.clone());
+    all.add_event(second.clone());
+    let done = Rc::new(Cell::new(false));
+    let output = done.clone();
+    Fiber::create_run(move || {
+        all.wait();
+        output.set(true);
+    });
+    first.set(1);
+    reactor.run_loop(false, true);
+    assert!(!done.get());
+    second.set(1);
+    reactor.run_loop(false, true);
+    assert!(done.get());
+}
 ```
 
-`vote_yes()` / `vote_no()` bump the counters, run `test()`, and also tick an internal
-`IntEvent` that counts *all* replies, which is what `finalize()` waits on.
+### QuorumEvent: voting among replicas
 
-* `yes()` is `n_voted_yes_ >= quorum_`.
-* `no()` is `n_voted_no_ > n_total_ - quorum_` under the default policy — i.e. enough
-  refusals that a yes-quorum is now impossible.
-* `is_ready()` is `timeouted_ || yes() || no()` under the default policy — setting the
-  public `timeouted_` cell makes the event ready on its own — plus the policy adjustments
-  below. Only `ALL_NO` ignores `timeouted_`.
-
-`QuorumPolicy` has four members: `DEFAULT = 0`, `ALL_NO = 1`, `COMMITTED_SHORT = 3`, and
-`ALWAYS_READY = 4` (there is no `2`). Under `ALL_NO`, `no()` requires *every* participant
-to have refused. Under `COMMITTED_SHORT`, a set `committed_seen_` flag short-circuits to
-ready. Under `ALWAYS_READY`, `is_ready()` is unconditionally true.
-
-The policy lives in a public `Cell` field, as do `committed_seen_`, `timeouted_`,
-`highest_term_`, `leader_id_`, `par_id_` and `id_`. srpc initialises them and then never
-writes them again — they are knobs for the caller to set directly. Two of them the reactor
-reads back: `timeouted_` and `committed_seen_` are consulted by `is_ready()` above, so
-setting either one changes when the event fires. The rest carry meaning only for the
-caller's protocol.
-
-Two more pieces of the surface:
-
-* `add_xid(site, xid)` / `remove_xid(site)` maintain a map of outstanding request ids per
-  site. `finalize(timeout_us, fn)` spawns a fiber that snapshots that map *first*, then
-  waits up to `timeout_us` for *all* replies, and — only if that wait times out — calls
-  `fn` with that snapshot so the caller can cancel the requests. The order is deliberate:
-  the quorum event may already have been freed by the time the wait returns, so the map
-  cannot be re-read afterwards. What `fn` receives is therefore the set outstanding at
-  `finalize()` time, **not** the set still outstanding at the deadline — a site that
-  replied and was `remove_xid`'d in between is still in the list, so the caller must
-  tolerate cancelling a request that already finished.
-* `is_slow()` reads and clears the reactor's global `slow_` flag. It ignores the event it
-  is called on entirely; the flag is per-reactor, not per-quorum.
-
-`janus::QuorumEventWrapper` is a thin by-value handle, built from the same
-`n_total` / `quorum` pair, that owns an `Arc<QuorumEvent>` and forwards `wait`, `wait_timeout`, `vote_yes`, `vote_no`, `yes`,
-`no`, `is_ready`, `is_slow`, `test`, `add_xid`, `remove_xid`, `finalize`, `log` and
-`get_fiber_id`, with `q()` returning the underlying event by reference.
-
-### SharedIntEvent — many waiters on one counter
-
-`SharedIntEvent` breaks the "one waiter per event" rule from the outside by not being a
-single event at all. It is a plain struct — a current value plus a vector of per-waiter
-`IntEvent`s — and it is constructed directly, not through a `create_sp_*` factory.
+`create_sp_quorum_event(total, quorum)` tracks yes and no votes. Its default
+policy succeeds when yes votes reach `quorum`; it rejects when no votes make
+that threshold impossible. Check `yes()` and `no()` after the wait to distinguish
+the result. Validate application counts so `0 <= quorum <= total` and count
+each response only once; the event does not deduplicate replicas.
 
 ```rust
-// `counter` is a plain SharedIntEvent value — a field of your own type, say.
-// There is no create_sp_* factory for it.
+use srpc::reactor::{create_sp_quorum_event, Fiber, Reactor};
+use std::cell::Cell;
+use std::rc::Rc;
 
-// fiber A — returns true if it gave up before the value arrived
-let timed_out = counter.wait_until_gte(5, 100_000); // want >= 5, 100 ms budget
-
-// fiber B
-counter.set(5); // wakes every waiter whose target is satisfied
+fn main() {
+    let reactor = Reactor::get_reactor();
+    let quorum = create_sp_quorum_event(3, 2);
+    let accepted = Rc::new(Cell::new(false));
+    let waiting = quorum.clone();
+    let output = accepted.clone();
+    Fiber::create_run(move || {
+        waiting.wait();
+        output.set(waiting.yes());
+    });
+    quorum.vote_yes();
+    quorum.vote_no();
+    reactor.run_loop(false, true);
+    assert!(!accepted.get());
+    quorum.vote_yes();
+    reactor.run_loop(false, true);
+    assert!(accepted.get());
+}
 ```
 
-`set(v)` overwrites the value, returns the previous one, and signals every parked waiter
-whose target is now met. `wait_until_gte(x, timeout_us)` returns immediately (with
-`false`) if the value already satisfies `x`; otherwise it mints a fresh `IntEvent` seeded
-with the current value, waits with the timeout, unregisters itself, and returns whether it
-timed out. Note the timeout here is a 32-bit microsecond count, unlike the `u64` timeouts
-everywhere else in the chapter. `wait(pred)` is the general form: it installs a predicate
-over the current value on a fresh event, which is the supported way to get a condition
-other than "value reached target".
+The policy is a `Cell<QuorumPolicy>` in `policy_`.
 
-Note the methods take `&mut self` (non-const in C++): a `SharedIntEvent` you intend to
-signal cannot be held behind a shared reference.
+| Policy | Readiness |
+|--------|-----------|
+| `DEFAULT` | Yes quorum, impossible quorum, or `timeouted_` |
+| `ALL_NO` | Yes quorum or every replica voted no; ignores the `timeouted_` flag |
+| `COMMITTED_SHORT` | Default readiness, also short-circuiting on `committed_seen_` |
+| `ALWAYS_READY` | Immediately ready |
+
+An ordinary `wait_timeout` deadline is separate from `timeouted_` and can still
+end an `ALL_NO` wait. Fields such as `highest_term_`, `leader_id_`, `par_id_`, and
+`id_` are caller-managed metadata. Voting does not assign their values.
+`is_slow()` reads and clears the owning reactor's slow flag.
+
+`add_xid(site, xid)` and `remove_xid(site)` maintain a site-to-request map for
+cleanup. `finalize(timeout_us, callback)` starts a fiber waiting for all replies,
+using an internal integer event updated by both voting methods. If it times out,
+it calls the supplied `Some(Box::new(...))` callback with a mutable vector of
+`(u16, i64)` site/xid pairs. The callback must be present if timeout is possible;
+its boolean return is currently ignored.
+
+That vector is a snapshot taken before the wait, not a fresh list at timeout.
+It can include requests that finished in the meantime, so cancellation must
+tolerate already completed requests. A zero timeout waits indefinitely for all
+replies. `QuorumEventWrapper` forwards the same operations to an owned quorum
+event; it does not add a different voting policy.
+
+### SharedIntEvent: the mutable counter API
+
+`SharedIntEvent` contains `value_: i32` and a vector of integer-event waiters.
+`set(&mut self, &value)` returns the old value. `wait_until_gte(&mut self, target,
+timeout_us)` returns true on timeout, and false when the value already satisfies
+the target or the wait completes normally. Its timeout argument is `i32`; use
+nonnegative values. `wait(&mut self, predicate)` takes an
+`Option<Box<dyn Fn(i32) -> bool>>` and requires a present predicate.
+
+These methods hold `&mut self` across suspension. That limits their use as a
+shared counter in safe Rust. Wrapping the value in `Rc<RefCell<SharedIntEvent>>`
+and borrowing it mutably to wait would retain the borrow while another fiber
+needs to signal it. Do not copy that pattern. For several local waiters, keep a
+separate fresh `IntEvent` for each waiter and signal those through shared event
+handles. Custom `IntEvent` predicates also avoid the mutable counter wrapper.
 
 ### Composite events need the loop to poll them
 
-Ordinary events are self-notifying — `set()` runs `test()` inline. Composites are not:
-nothing about `e1->set(1)` tells the enclosing `WaitAll` to re-evaluate. That is why
-composite events are filed in a second queue and re-tested by the reactor on every pass,
-and why a composite only makes progress while the loop is running.
-
-Timeouts have the same dependency, plus one more: they are only checked when the loop is
-asked to check them.
-
-```rust
-reactor.run_loop(false, true); // (infinite, do_check_timeout)
-```
-
-With `do_check_timeout = false` a `wait_timeout` deadline is never examined and the fiber
-waits forever. The runtime test suites all pass `true`. `run_loop(false, ...)` drains
-until no further progress is possible and returns; `run_loop(true, ...)` keeps spinning
-until a fiber clears the reactor's `looping_` flag (Chapter 4).
+Child changes do not directly resume a fiber waiting on a composite. The owner
+must call `run_loop` to test `WaitAny`, `WaitAll`, and quorum conditions and then
+resume ready fibers. The poll worker does this on each pass. A manually driven
+reactor must do it explicitly, including timeout checking for timed waits.
 
 ### Rules and gotchas
 
-**One waiter per event.** The event stores a single weak fiber handle, and a second
-`wait()` from a different fiber overwrites it — the first fiber is then never resumed.
-The runtime says so in as many words at the point where it captures the fiber. If you need
-several fibers to wait on one condition, give each its own event: that is exactly what
-`SharedIntEvent` and `FiberChannel` do.
+An event supports one pending fiber waiter. Use separate events for independent
+waiters. A second `wait()` on an event already marked `DONE` returns immediately,
+even if application code expected a new notification.
 
-**Waiting twice on a finished event returns immediately.** `wait()` on an event already in
-`DONE` is an explicit early return, not a block. Conversely an event whose condition
-*stops* holding is quietly rearmed: `test()` moves a `DONE` event back to `INIT` when
-`is_ready()` goes false again. Neither behaviour is a substitute for a fresh event, and a
-fresh event is the idiom.
+`test()` can move a `DONE` event back to `INIT` when its condition becomes false,
+but reuse requires careful control of all references and queues. Fresh events are
+the simpler default. Do not reset public status fields to force reuse while a
+wait or timeout remains registered. Event factories also set internal weak-self
+and owner state, so constructing their public fields by hand is not a substitute
+for a factory.
 
-**Wait from inside a fiber, on the owning thread.** `wait()` aborts unless there is a
-reactor on the current thread, that reactor's thread id matches, and — in the case where
-the event is not already ready — a fiber is running. These are `verify()` calls, which
-panic in every build; they are not `NDEBUG`-gated asserts. Events capture their owner
-thread at construction and are `Cell`/`RefCell`-based throughout: treat an event as
-belonging to one reactor thread and never share one across threads.
+Pending waits require fiber context and the owner reactor. Timeout units are
+microseconds unless an API explicitly says otherwise. `Arc` ownership keeps the
+event alive; it does not authorize cross-thread mutation.
 
-**Events stay registered until they are pruned.** Every factory files the event in the
-reactor's `all_events_` registry, and `prune_finished_events()` — run on each creation,
-past a growing high-water mark — drops the ones nobody else holds a reference to. If you
-want an event to survive that with no outstanding handle, call `set_prunable(false)`.
+## 6. I/O layer: polling and connections
 
-**A zero timeout means "forever".** `wait_timeout(0)` registers no deadline and behaves
-like `wait()`.
+The poll worker owns each registration until it has unregistered the descriptor.
+Its `Box<dyn PollableBase>` proxy can share a transport's synchronized state, but
+must retain the native descriptor for the registration's whole lifetime. This
+separation lets application code close a connection logically without racing
+an in-progress epoll operation against descriptor reuse.
 
-**`IntEvent` fires on `>=`, not `==`.** Setting a value past the target still triggers it.
+| Source | Responsibility |
+|--------|----------------|
+| `reactor/epoll_wrapper.rs` | `srpc::epoll_wrapper`, including `Epoll`, `PollMode`, `PollReady`, and `Pollable` |
+| `reactor/srpc_epoll.c` | Linux epoll syscalls and event-record marshalling |
+| `rpc/pollable_proxy.rs` | `srpc::pollable_proxy::{PollableBase, PollableProxy}` and internal adapters |
+| `reactor/reactor.rs` | Poll-thread commands, worker state, loop, and job scheduling |
+| `base/misc.rs` | `srpc::misc::{Job, OneTimeJob}` |
 
----
-
-## 6. I/O Layer: Polling and Connections
-
-Every socket in srpc is owned by exactly one poll thread. That thread runs a Linux
-`epoll` loop, dispatches readiness to registered *pollables*, drains a command
-channel that other threads write to, and drives the reactor's fibers and stackless
-tasks between passes. Nothing else touches the epoll set, and nothing else owns a
-registered pollable — which is why the whole layer has no locks around its
-descriptor tables.
-
-The layer is four files:
-
-| File | Role |
-|------|------|
-| `reactor/epoll_wrapper.rs` | `PollMode` / `PollReady` constants, the `Pollable` trait, the `Epoll` RAII wrapper |
-| `reactor/srpc_epoll.c` | raw Linux epoll syscalls and event-record ABI marshalling |
-| `rpc/pollable_proxy.rs` | `PollableBase`, `PollableProxy`, the `Arc`-backed shim |
-| `reactor/reactor.rs` | `PollThread`, `PollThreadWorker`, `PollCommand`, the poll loop, and job *scheduling* (the `Job` trait and `OneTimeJob` themselves live in `base/misc.rs`, module `srpc.misc`) |
-
-`srpc.pollable_proxy` and `srpc.reactor` are both re-exported by the `srpc.hpp`
-umbrella. `srpc.epoll_wrapper` is **not** — it is one of the eight modules the
-umbrella trims. Naming `Epoll`, `PollMode`, `PollReady`, or `Pollable` from C++
-means importing it yourself:
-
-```cpp srpc-no-compile
-#include "srpc.hpp"
-import srpc.epoll_wrapper;   // trimmed from the umbrella; name it directly
-```
+Most applications use `Client` and `Server` and let their TCP channels register
+with a `PollThread`. This chapter explains the lower-level contracts for custom
+transports and for debugging readiness or close ordering.
 
 ### Linux only
 
-There is no kqueue path or macOS support. The canonical epoll wrapper calls the Linux
-kernel through `reactor/srpc_epoll.c`, listed in the shared native source manifest.
-The `old_mode` parameter on `epoll_update_impl` remains a compatibility input;
-`EPOLL_CTL_MOD` replaces the whole interest set, so Linux does not need the old flags.
+The production poller uses Linux epoll. There is no kqueue, IOCP, or portable
+polling fallback. The native Rust build supports Linux x86_64 and little-endian
+aarch64, which also have the required fiber context-switch assembly.
 
 ### Poll modes and readiness bits
 
-Both sets live in `reactor/epoll_wrapper.rs` as plain `i32` constants inside
-namespace-shaped modules:
+`PollMode` and `PollReady` are modules containing `i32` constants.
 
-```rust
-PollMode::READ       // 0x1  — interest in readability
-PollMode::WRITE      // 0x2  — interest in writability
-PollMode::NO_CHANGE  // -1   — handle_write()'s "leave my interest alone"
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `PollMode::READ` | `0x1` | Read interest |
+| `PollMode::WRITE` | `0x2` | Write interest |
+| `PollMode::NO_CHANGE` | `-1` | Preserve the current mode when returned by a handler |
+| `PollReady::READABLE` | `0x1` | Readable notification |
+| `PollReady::WRITABLE` | `0x2` | Writable notification |
+| `PollReady::ERROR` | `0x4` | Error, hangup, or peer half-close notification |
 
-PollReady::READABLE  // 0x1
-PollReady::WRITABLE  // 0x2
-PollReady::ERROR     // 0x4  — EPOLLERR | EPOLLHUP | EPOLLRDHUP, collapsed
-```
-
-`PollMode` values are what you *ask for*; `PollReady` values are what the kernel
-*reports*. They happen to share the low two bit positions, but they are separate
-vocabularies and the code never mixes them.
+Interest and readiness are separate sets of bits. A write handler can return a
+new interest mask or `NO_CHANGE`; the worker updates epoll only when needed.
 
 ### The Epoll wrapper
 
-`Epoll` is a move-only RAII owner of the poll descriptor. Its constructor allocates
-eagerly — `epoll_create(10)`, whose size hint Linux has ignored since 2.6.8 but
-still requires to be positive — and aborts through `verify` if the call fails. Note
-the capitalized method names; they are the historical C++ spelling, kept verbatim:
+`Epoll::new()` eagerly creates an owned epoll descriptor. It is released on drop.
+The public method names retain their capitalization.
 
-```rust
-impl Epoll {
-    pub fn new() -> Epoll;                 // allocates the poll fd
-    pub fn fd(&self) -> i32;               // the poll fd itself
+| Method | Arguments and behavior |
+|--------|------------------------|
+| `Add(fd, mode)` | Register a descriptor; returns an `i32` result |
+| `Remove(fd)` | Attempt unregistration; ignores the syscall result and returns zero |
+| `Update(fd, mode, old_mode)` | Replace interest; the current implementation ignores `old_mode` |
+| `Wait(on_ready)` | Perform one wait and invoke an `FnMut(i32, i32)` callback for each fd/readiness pair |
 
-    pub fn Add(&mut self, fd: i32, poll_mode: i32) -> i32;   // register
-    pub fn Remove(&mut self, fd: i32) -> i32;                // unregister
-    pub fn Update(&mut self, fd: i32, new_mode: i32, old_mode: i32) -> i32;
+`Wait` uses a fixed array of 100 events and a 1 ms timeout. It maps `EPOLLIN` to
+`READABLE`, `EPOLLOUT` to `WRITABLE`, and `EPOLLERR`, `EPOLLHUP`, or `EPOLLRDHUP`
+to `ERROR`. A failed or interrupted `epoll_wait` produces no callbacks for that
+pass. There is no dedicated EINTR retry inside `Wait`; the worker's next loop
+iteration calls it again.
 
-    pub fn Wait<F: FnMut(i32, i32)>(&mut self, on_ready: F); // (fd, ready_bits)
-}
-```
+Registrations use edge-triggered epoll. `Add` always requests `EPOLLIN` and
+`EPOLLRDHUP`, plus `EPOLLOUT` when the supplied mode includes write interest.
+`Update` includes read and write interest according to its new mask. Custom
+nonblocking transports must consume readiness correctly, normally reading or
+writing until `WouldBlock` rather than assuming another edge will arrive while
+work remains.
 
-`Wait` is one poll pass, not a loop: a fixed 100-entry event array and a **1 ms**
-timeout, hard-coded. It translates `EPOLLIN` to `READABLE`, `EPOLLOUT` to `WRITABLE`,
-and any of `EPOLLERR | EPOLLHUP | EPOLLRDHUP` to `ERROR`, then calls `on_ready` once
-per event that carried at least one of those bits. A failed `epoll_wait` returns a
-negative count and produces zero callbacks — the loop counter is deliberately signed
-so that falls out for free.
+The wrapper has specific recovery rules. On `EEXIST`, `Add` deletes the old
+registration and retries once. An `EBADF` add returns `-1`; other unsuccessful
+adds assert. `Update` treats `ENOENT` and `EBADF` as a registration that has
+already disappeared, and otherwise asserts success. Creation failure also
+asserts. These APIs do not provide a general `io::Result` error-reporting layer.
 
-Registration is **edge-triggered**. `Add` sets `EPOLLET | EPOLLIN | EPOLLRDHUP`, plus
-`EPOLLOUT` when the requested mode has `WRITE`. There is an asymmetry worth knowing:
-`Add` registers `EPOLLIN` unconditionally regardless of whether `PollMode::READ` was
-requested, while `Update` starts from `EPOLLET | EPOLLRDHUP` and adds `EPOLLIN` and
-`EPOLLOUT` only for the bits actually set in `new_mode`. A pollable can therefore lose
-read interest through `Update` that it could never have avoided at `Add` time.
-
-Because it is edge-triggered, a `handle_read` that stops before the socket returns
-`EAGAIN` will simply not be woken again. `TcpConnection::handle_read` drains in a loop
-until a short read for exactly this reason.
-
-The kernel's event payload is the **file descriptor**, not a pointer: `Add` and
-`Update` both write `ev.data.fd = fd`, and the wait path reads `events[i].fd` back.
-Nothing in this layer stores a `Pollable*` as epoll userdata, so a pollable freed
-between an event and its dispatch cannot be dereferenced through a stale event.
-
-Three errno cases are tolerated rather than fatal, all of them teardown races:
-
-- `EPOLL_CTL_ADD` returning `EEXIST` — a stale registration for a reused descriptor.
-  The code issues a `DEL` and retries the `ADD` once.
-- `EPOLL_CTL_ADD` returning `EBADF` — the fd was closed between the registration
-  request being queued and this syscall. `Add` returns `-1` and the caller drops the
-  pollable.
-- `EPOLL_CTL_MOD` returning `ENOENT` or `EBADF` — the fd was closed or removed
-  concurrently. Treated as success.
-
-Anything else trips `verify(result == 0)` and aborts. `Remove` is the exception: it
-discards `epoll_ctl`'s return entirely and always reports `0`, on the grounds that a
-closed descriptor is already out of the epoll set.
+The epoll user data contains an integer fd, not a pointer to a transport object.
+Callbacks look up that fd in the worker's current map. The map and native socket
+ownership must still be correct: an integer fd can be reused after close.
 
 ### The native epoll boundary
 
-Canonical `reactor/epoll_wrapper.rs` owns epoll flags, registration recovery, error
-handling, interruption retry, and readiness dispatch. `reactor/srpc_epoll.c` performs
-individual syscalls and copies Linux event records into the fixed ABI declared by
-`reactor/srpc_epoll.h`. Rust and generated C++ link the same native source manifest.
-
-The former `reactor/epoll_platform_linux.cc` implementation has been removed. No
-production inline-Rust DSL carrier remains.
+Canonical Rust chooses interest flags, handles registration recovery, and
+converts readiness into worker callbacks. `reactor/srpc_epoll.c` performs the
+individual Linux syscalls and copies the platform event records into the fixed
+layout declared by `reactor/srpc_epoll.h`. No native C code owns a reactor queue
+or decides which fiber runs next.
 
 ### Pollable, PollableBase, and the proxy
 
-There are two interfaces here, and the distinction is the thing to get right.
+`PollableBase: Send` is the trait the worker actually dispatches through.
+`PollableProxy` is its owned type alias, `Box<dyn PollableBase>`.
 
-`Pollable` lives in `srpc.epoll_wrapper` and is close to vestigial. Only two
-signatures still take one — `PollThread::remove` and `PollThreadWorker::update_mode`
-— and both do nothing with it but read `fd()`:
+| Method | Receiver | Purpose |
+|--------|----------|---------|
+| `fd()` | `&self` | Registered descriptor |
+| `poll_mode()` | `&self` | Initial read/write interest |
+| `content_size()` | `&mut self` | Amount of buffered content |
+| `handle_read()` | `&mut self` | Process readable data; the worker currently ignores the returned boolean |
+| `handle_write()` | `&mut self` | Flush output and return an interest mask or `NO_CHANGE` |
+| `handle_error()` | `&mut self` | Handle the reported error or hangup |
+| `close()` | `&mut self` | Close after the worker unregisters |
+| `check_pending_write_update()` | `&self` | Consume a pending request for write interest |
+| `is_closed()` | `&self` | Report logical closure |
 
-```rust srpc-no-compile
-pub trait Pollable {
-    fn fd(&self) -> i32;
-    fn poll_mode(&self) -> i32;
-    fn content_size(&mut self) -> usize;
-    fn handle_read(&mut self) -> bool;
-    fn handle_write(&mut self) -> i32;
-    fn handle_error(&mut self);
-    fn close(&mut self);
-    fn check_pending_write_update(&self) -> bool;
-    fn is_closed(&self) -> bool;
-}
-```
+`srpc::epoll_wrapper::Pollable` declares the same operations and remains accepted
+by compatibility methods such as `PollThread::remove`. The worker's registrations
+use `PollableBase`, so implementing `Pollable` alone does not register a transport.
 
-`PollableBase` in `srpc.pollable_proxy` declares the same nine methods and is the
-interface the poll worker actually dispatches through. Everything the worker stores
-is a `PollableProxy`, which is `Box<dyn PollableBase>` — `rusty::Box<PollableBase>`
-in C++. Nothing inherits `Pollable` any more; connection types are wired in by
-handing the worker a proxy that forwards to them.
+For an external Rust transport, implement `PollableBase` and transfer a boxed
+implementation to `add_proxy`. Its `Send` bound permits that transfer. The proxy
+must retain its fd until unregistration, even if another handle closes the
+transport logically. Sharing an `Arc` to an object is insufficient when a close
+operation can replace or drop the object's interior socket owner.
 
-`pollable_proxy.rs` also ships a generic `Arc`-backed adapter,
-`PollableArcShim<T>` with the factory `make_pollable_proxy_from_typed_arc(arc)`,
-whose forwarding methods take `&self` on the target so several proxies can share one
-`Arc`. Note that it is bounded on a *private* trait (`PollableSharedTarget`), so no
-out-of-crate Rust type can satisfy it, and no library code calls it — the TCP backend
-writes its own shims instead. It is exercised only by the test battery: `test_reactor`
-and `test_rpc_pollthread_proxy_storage` both register their pollables through it.
-Its target must keep the registered descriptor alive until the worker unregisters it.
-TCP uses dedicated proxies that retain the socket owner even when the transport closes.
-
-The method contract as the worker enforces it:
-
-| Method | When the worker calls it | What it does with the result |
-|--------|--------------------------|------------------------------|
-| `fd()` | once at registration, to key the tables | `< 0` means "already closed" — the proxy is dropped |
-| `poll_mode()` | once at registration | seeds the interest set |
-| `handle_read()` | on `READABLE` | **return value ignored** |
-| `handle_write()` | on `WRITABLE` | any value but `PollMode::NO_CHANGE` becomes an interest update |
-| `handle_error()` | on `ERROR`, after read/write for the same event | — |
-| `check_pending_write_update()` | once per loop pass, for every registered fd | `true` re-arms read **and** write interest |
-| `is_closed()` | once per loop pass, for every registered fd | `true` unregisters, calls `close()`, drops the proxy |
-| `close()` | from the `is_closed` sweep and from `ClosePollable` | — |
-| `content_size()` | **never** | — |
+`make_pollable_proxy_from_typed_arc` uses the private `PollableSharedTarget`
+trait. It is an internal adapter rather than an extensible downstream Rust trait.
+Use a direct `PollableBase` implementation or the TCP transport's dedicated
+proxy factory, which also retains the socket registration's ownership.
 
 ### What is actually registered
 
-In the current tree exactly two types are pollable, and both live in
-`rpc/tcp_channel.rs`: `TcpConnection` and `TcpListener`. Each is wrapped by a private
-shim (`TcpPollableShim`, `TcpListenerPollableShim`) holding an `Arc`, and registration
-happens at three points — when a listener binds, when it accepts, and when the client
-factory connects.
+The TCP runtime registers connection and listener proxies. RPC `ClientConnection`
+and `ServerConnection` objects sit above the channel and do not become epoll
+registrations merely by having similarly named methods. In particular, a method
+on an RPC wrapper is not automatically a poll-loop hook.
 
-`ServerConnection` and `ClientConnection` are **not** pollables and are never handed
-to a poll thread. `ClientConnection` still carries a set of Pollable-shaped methods
-from an older design, and they are inert placeholders: `fd()` returns `-1`,
-`handle_read()` returns `false`, `handle_write()` returns no-change,
-`content_size()` returns `0`. Do not read them as the client's I/O path; the real one
-is the `TcpConnection` underneath the channel proxy.
+Transport callbacks hand complete payload frames to RPC decoding. The worker
+owns its proxy and registration tables; channels and application handles can
+also own synchronized references to the underlying connection state.
 
-### PollThread — the cross-thread handle
+### PollThread: the cross-thread handle
 
-`PollThread` is what every other thread holds. It owns the `Sender` end of the command
-channel, the join handle for the worker thread, and two atomics for shutdown
-bookkeeping. It never touches the epoll set directly — every mutator is a message.
+Clone `Arc<PollThread>` to send commands from another thread. The handle's public
+operations enqueue work; they do not directly edit the worker's tables.
 
-```rust
-let pt: Arc<PollThread> = PollThread::create();
+| Operation | Effect |
+|-----------|--------|
+| `add_proxy(proxy)` | Transfer an owned pollable proxy to the worker |
+| `remove(&mut pollable)` | Read its fd and request unregistration |
+| `remove_fd(fd)` | Request unregistration without calling `close()` |
+| `request_close(fd)` | Request unregistration followed by proxy `close()` |
+| `update_mode(fd, mask)` | Request a change to an existing registration |
+| `add(job)` | Submit an `Arc<dyn Job>` |
+| `shutdown()` | Request stop and join, unless called on the worker itself |
+| `get_remove_count()` | Count admitted remove requests, including absent fds |
 
-pt.add_proxy(proxy);      // register a Box<dyn PollableBase>
-pt.remove_fd(fd);         // unregister, do NOT close
-pt.request_close(fd);     // unregister, close() through the proxy, drop it
-pt.update_mode(fd, PollMode::READ | PollMode::WRITE);
-pt.add(job);              // Arc<dyn Job>
-pt.shutdown();            // stop the loop and join
-```
+The raw-fd methods require the descriptor to remain owned until the command is
+processed. A command names a current registration, not a durable connection
+identity. Never retain an old integer fd and later apply it to a replacement
+connection.
 
-`create()` spawns the worker thread, which publishes its own thread id back into the
-handle before entering the loop. There is also a `remove(Pollable&)` overload that
-does nothing but call `remove_fd(p.fd())`.
-
-Every one of these sends is best-effort: the only way `Sender::send` fails is that
-the receiver is gone, which means the worker already exited and there is no epoll set
-left to mutate. The code discards those errors deliberately — except `update_mode`,
-which logs at `ERROR`.
-
-`get_remove_count()` returns a synchronized count of accepted `remove_fd` commands.
-It includes requests for unregistered descriptors. A call rejected after shutdown
-leaves the count unchanged. It measures command admission, not successful epoll removal.
-
-`shutdown()` is idempotent (an atomic `swap` on `shutdown_called_` returns early on
-the second call) and self-join aware: if it is invoked *from* the poll thread it sends
-the command and returns without joining. `PollThread`'s destructor calls it, so a
-handle going out of scope is a clean shutdown.
+Shutdown is idempotent. Its first ordinary caller joins the worker; a call made
+on the worker itself only requests stop. Later calls return immediately, so do
+not use a second call as a join barrier after worker-initiated shutdown. Dropping
+the last handle also invokes shutdown.
+Commands rejected after worker exit cannot run. Most methods discard the send
+error, while `update_mode` logs a disconnected channel. Submission is therefore
+not an acknowledgment that work completed. Use an explicit reply channel when
+the caller needs one, as in the job example below.
 
 ### PollThreadWorker and the loop
 
-The worker runs on the spawned thread and is the sole owner of everything mutable:
+The worker owns an epoll descriptor, an fd-to-proxy map, the current interest
+map, a pending-removal set, and pending jobs keyed by object identity. Its
+thread-local current-worker slot lets transport code recognize execution on
+the owning worker. Callers should use `pollworker_is_on_poll_thread()` rather
+than accessing that internal pointer.
 
-```rust
-pub struct PollThreadWorker {
-    pub receiver_: PollCmdReceiver,      // commands from other threads
-    pub poll_: Epoll,                    // the epoll fd
-    pub fd_to_pollable_: FdPollableMap,  // registered proxies, by fd
-    pub mode_: FdModeMap,                // current interest set, by fd
-    pub pending_remove_: FdSet,          // deferred unregistrations
-    pub jobs_: JobSet,                   // pending jobs
-    pub stop_: bool,
-}
-```
+One normal pass proceeds in this order.
 
-While the worker is running it publishes a raw pointer to itself into
-`g_current_poll_worker` so fibers on the same thread can ask
-`pollworker_is_on_poll_thread()`. That predicate is what the TCP send path uses to
-decide between a direct flag and a channel message — see below. Like the reactor's
-other per-thread statics, `g_current_poll_worker` is a `thread_local!` slot
-(`Cell<*mut PollThreadWorker>`), per-thread in both lanes. Cargo and generated C++
-run this same canonical worker and use the predicate to select the owner-thread path.
+1. Run ready jobs.
+2. Wait for epoll readiness and collect fd/bit pairs.
+3. Dispatch read, write, and error handlers, looking up each fd again as needed.
+4. Drain the command channel.
+5. Run ready jobs again.
+6. Apply deferred removals.
+7. Run ready jobs a third time.
+8. Drive the local reactor with `run_loop(false, true)`.
+9. Consume pending write-interest flags and update epoll.
+10. Sweep closed registrations, unregistering before closing and dropping them.
 
-One pass of `poll_loop` does, in order:
-
-1. **Run ready jobs.**
-2. **`poll_.Wait(...)`** — one 1 ms epoll pass. The readiness batch is collected into
-   a vector *first*, then dispatched, so a handler that re-enters the worker is not
-   running inside a borrow of the epoll object.
-3. **Dispatch each ready fd.** `handle_read()` on `READABLE`; `handle_write()` on
-   `WRITABLE`, applying the returned mode if it is not `NO_CHANGE`; `handle_error()`
-   on `ERROR`, re-looked-up by fd because the earlier calls may have removed it.
-4. **Drain the command channel** with non-blocking `try_recv` until it is empty.
-5. **Run ready jobs** again.
-6. **Process `pending_remove_`.**
-7. **Run ready jobs** a third time.
-8. **`Reactor::get_reactor()->run_loop(false, true)`** — one non-infinite reactor
-   pass, so fibers that became runnable during dispatch actually run, with timeout
-   checking on.
-9. **Sweep `check_pending_write_update()`** over every registered fd; a `true` re-arms
-   `READ | WRITE`.
-10. **Sweep `is_closed()`** over every registered fd, collecting first and mutating
-    second because `close()` can re-enter. For each closed fd, detach its proxy,
-    unregister it from epoll, and erase its mode and pending removal before invoking
-    `close()`. The local proxy keeps the descriptor alive through unregister and the callback.
-
-Both sweeps in steps 9 and 10 share one snapshot of the key set, which is sound
-because nothing between them can add an fd.
-
-When `stop_` is set, the loop unregisters every remaining fd from epoll and clears all
-three tables. It does **not** call `close()` on the survivors — that is the difference
-between shutdown and the `is_closed` sweep.
+Callbacks can request closure, so the worker retains ownership while it detaches
+and unregisters a proxy. On loop exit it unregisters the remaining descriptors
+and drops the maps. It does not explicitly invoke every remaining proxy's
+`close()` method during that final cleanup; ordinary ownership drops release
+whatever resources have no remaining owners.
 
 ### The command channel
 
-`PollCommand` is a Rust enum carried over an mpsc channel. The poll thread is the sole
-consumer and the sole owner of everything the commands manipulate, so the whole layer
-needs no locks.
+`PollCommand` carries `Send` payloads to the worker.
 
-| Command | Effect on the worker |
-|---------|----------------------|
-| `AddPollable { pollable }` | drop it if `fd() < 0`, it is closed, or a live registration already owns the fd; retire any closed registration first, then insert and call `Epoll::Add`, rolling back if `Add` fails |
-| `RemovePollable { fd }` | insert into `pending_remove_`; the actual unregistration happens later in the pass |
-| `ClosePollable { fd }` | detach the proxy, cancel pending removal, unregister from epoll, erase its mode, then call `close()` while retaining the proxy |
-| `UpdateMode { fd, new_mode }` | no-op unless the fd is registered; record `new_mode` and call `Epoll::Update` only if it differs from the old one |
-| `AddJob { job }` / `RemoveJob { job }` | insert into / erase from `jobs_` |
-| `Shutdown` | set `stop_` |
+| Command | Worker action |
+|---------|---------------|
+| `AddPollable` | Reject an invalid or closed incoming proxy and a duplicate live registration; retire a closed old registration before adding a replacement |
+| `RemovePollable` | Put the fd in the deferred-removal set |
+| `ClosePollable` | Detach, cancel pending removal, unregister, erase interest, then call `close()` |
+| `UpdateMode` | Ignore absent registrations; update epoll only when the mode changes |
+| `AddJob` / `RemoveJob` | Insert or remove the job by shared object identity |
+| `Shutdown` | Set the worker's stop flag |
 
-`RemovePollable` is the only deferred one. Removing an fd from the tables in the
-middle of a dispatch batch would invalidate the lookup for events already collected
-from the same `epoll_wait`, so it is parked and applied at step 6.
+`RemovePollable` defers map changes until the removal phase. A remove request
+that refers to no current registration still counts as admitted if its command
+was accepted. `RemoveJob` exists in the command enum, but `PollThread` has no
+corresponding convenience method.
 
-The TCP backend closes the transport directly and the worker notices on its next
-`is_closed()` sweep. Closing clears the transport's socket slot, so `fd()` returns
-`-1`, and shuts the socket down immediately. Each queued or active TCP registration
-retains a shared socket owner. The descriptor cannot be physically closed or reused
-until the worker unregisters and releases that owner. A queued registration that was
-closed before admission is rejected without calling epoll.
-
-The integer-based `remove_fd`, `request_close`, and `update_mode` APIs address the
-caller's current descriptor. The caller must keep that descriptor valid until the
-command is processed, or ask the worker to perform the close. An old integer alone
-cannot identify a previous socket after its descriptor has been reused.
+TCP logical close shuts down the socket and clears the connection's fd slot.
+A registration proxy retains a separate socket owner until the worker has
+unregistered it. This prevents a close/reuse race from turning an epoll operation
+into an operation on an unrelated newly opened descriptor.
 
 ### Handing write interest back to the poll thread
 
-`TcpConnection::poll_mode()` reports `READ`, plus `WRITE` while the outbound buffer is
-non-empty. Queuing a frame sets the connection's `pending_write_update_` atomic.
-The worker reads this flag through its owned proxy in the write-interest sweep and
-re-arms `READ | WRITE`. This works for sends from both the poll thread and other threads.
+A send from another thread can append output while the connection is registered
+for reads only. TCP records pending write interest on the connection with an
+atomic flag. The worker consumes that flag and enables `READ | WRITE` for the
+still-registered proxy. It avoids sending a delayed raw-fd update that could
+outlive the connection to which it belonged.
 
-`check_pending_write_update()` uses `swap(false)` to consume the update. Keeping the
-request on the connection avoids a delayed raw-descriptor command changing another
-socket's interest after descriptor reuse.
+When output drains, `handle_write()` can return a read-only mask. Edge-triggered
+write notification should be enabled while there is output to flush, rather
+than treated as a recurring timer.
 
 ### The job system
 
-A job is a unit of work the poll thread runs from inside its own loop, so that it lands
-in order with respect to the commands already queued. The trait and its one
-implementation live in `base/misc.rs` (module `srpc.misc`), not in the reactor —
-`reactor.rs` imports them and owns only the scheduling. The trait is three methods:
+`Job` is an unsafe trait with `Send + Sync` bounds. Its `Ready`, `Work`, and
+`Done` methods all take `&mut self`. An implementation promises that submission
+gives the worker exclusive mutable execution of the reachable job state, even
+though handles use `Arc`. Do not expose aliases that can mutate that state
+concurrently, and do not submit the same job for concurrent execution on several
+workers. The compiler's auto-trait checks do not establish this extra invariant.
+
+`OneTimeJob` provides the normal safe constructor. It takes
+`Box<dyn FnMut() + Send + Sync>`, starts ready, invokes its callback once, and
+records completion. Its fields are private, so callers retaining an `Arc` cannot
+mutate them behind the worker.
 
 ```rust
-pub unsafe trait Job: Send + Sync {
-    fn Ready(&mut self) -> bool; // may this run now?
-    fn Work(&mut self);          // do it
-    fn Done(&mut self) -> bool;  // declared, but nothing in srpc calls it
+use srpc::misc::{Job, OneTimeJob};
+use srpc::reactor::PollThread;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
+
+fn main() {
+    let worker = PollThread::create();
+    let (sent, received) = mpsc::channel();
+    let job: Arc<dyn Job> = Arc::new(OneTimeJob::new(Box::new(move || {
+        sent.send(42).unwrap();
+    })));
+    worker.add(job);
+    let result = received.recv_timeout(Duration::from_secs(2));
+    worker.shutdown();
+    assert_eq!(result.unwrap(), 42);
 }
 ```
 
-(The trait is `unsafe` because the worker takes exclusive mutable dispatch over a job
-held by `Arc`; in C++ it is an ordinary abstract class with virtuals.)
+The worker removes a ready job from the pending set before running `Work` in a
+fiber. `Done()` does not keep it scheduled, and an unready job is tested again
+on a later pass. Repeating work needs another submission. Jobs are keyed by
+`Arc` identity, so removal must refer to the same object that was added.
 
-The worker's scheduling rule is simple and has one surprise in it. On each of the
-three job passes it takes the whole set, and for every job asks `Ready()`. A job that
-answers `true` is **spawned in a new stackful fiber running `Work()` and is not put
-back** — so a plain `Job` runs at most once. A job that answers `false` is reinserted
-and asked again next pass. `Done()` is never consulted anywhere in the tree.
+SRPC uses `OneTimeJob` for deferred channel close and for starting receive work.
+It orders that work on the owning poll thread and keeps captured owners alive
+until the callback returns. A custom job that waits inside its fiber must obey
+the same borrow and teardown rules as any other fiber.
 
-The only implementation shipped is `OneTimeJob`, which matches that rule exactly: it
-starts `Ready()`, and `Work()` clears ready, invokes the callback, and sets done.
-There is no `FrequentJob` — a job that should repeat has to re-add itself.
+## 7. RPC protocol
 
-The set is identity-keyed (`std::set<rusty::Arc<Job>>` in the C++ lane), so
-`RemoveJob` must be handed the same `Arc` that was added.
+The transport carries a complete RPC body. For TCP, it prepends a four-byte
+length header and reconstructs complete frames from incoming byte streams.
+`Client` and `Server` encode and decode only the bodies. The in-memory transport
+can therefore deliver the same bodies directly without a TCP length header.
 
-Both in-tree uses are deferred teardown or spawn, never a repeating timer. `Server`'s destructor schedules
-the channel-mode listener close as a `OneTimeJob` so it is ordered behind commands
-already in the queue, and the client does the same for its channel-mode close and for
-spawning its receive loop:
-
-```rust srpc-no-compile
-// rpc/server.rs, Server::drop — close the listener on the poll thread so the
-// close is ordered behind whatever commands are already queued.
-let close_job: Arc<OneTimeJob> = Arc::new(OneTimeJob::new(Box::new(move || {
-    listener_box.close();
-})));
-pt.add(close_job);
-```
-
-That is the pattern to copy when you need something to happen *on* the poll thread
-from outside it and `update_mode` / `request_close` do not cover it.
-
----
-
-## 7. RPC Protocol
-
-SRPC's wire protocol has two layers that are worth keeping separate in your head,
-because they live in different files and are owned by different pieces of code.
-
-The **framing layer** turns a byte stream into a sequence of length-delimited
-frames. It knows nothing about RPC: a frame is a 4-byte header followed by an
-opaque payload. Its decoder is `rpc/frame_codec.rs`, its header bit-layout helpers
-are `rpc/internal_protocol.rs`, and its encoder — for the TCP transport — is
-open-coded inside `rpc/tcp_channel.rs`.
-
-The **RPC layer** decides what goes in the payload. Requests are encoded by
-`clientconn_request_via_channel` in `rpc/client.rs`; replies by `sconn_reply` in
-`rpc/server.rs`. Neither one writes a length prefix — they hand a finished body to
-`send_frame` and the transport frames it.
-
-There is no handshake, no magic number, no protocol version, and no checksum.
-A connection starts with the first frame.
+There is no handshake, magic number, protocol version, or checksum. The first
+bytes on a TCP connection are the first frame. Peers must agree on the method
+IDs, argument types, reply types, and native byte order before connecting.
 
 ### The frame header
 
-Four bytes, laid out as one `i32` in **native byte order**:
+The header is one native-endian `i32`, interpreted as bits.
 
-```
-   byte 0        byte 1        byte 2        byte 3
- +-------------+-------------+-------------+-------------+
- |         encoded_size : i32, NATIVE endian             |
- +-------------------------------------------------------+
-        bit 31       extended-header flag   (kResponseHeaderExtFlag = 0x80000000)
-        bits 30..0   payload size in bytes  (kResponseSizeMask      = 0x7fffffff)
+```text
+bit 31       extended-header flag, 0x80000000
+bits 30..0   payload size in bytes, 0x7fffffff
+
+[encoded_size: 4 bytes][payload: encoded_size & 0x7fffffff bytes]
 ```
 
-The size **excludes** the four header bytes. `kFrameHeaderSize` is 4.
+The size excludes the four header bytes. `kFrameHeaderSize` is 4.
+`srpc::internal_protocol` provides `encode_response_size`,
+`response_payload_size`, and `response_has_extended_header` for that bit layout.
+The codec writes `to_ne_bytes()` and reads `from_ne_bytes()`. Its current
+supported targets are little-endian; this format cannot connect peers with
+different endianness.
 
-Native endianness is a real constraint, not an accident of the writing: the encode
-side does `encoded.to_ne_bytes()` and the decode side `i32::from_ne_bytes(..)`.
-A little-endian client and a big-endian server cannot talk to each other. Every
-piece of SRPC assumes a homogeneous fleet.
-
-`rpc/internal_protocol.rs` is the whole bit layout, and it is three functions long:
+Here is a complete header round trip using the checked codec API.
 
 ```rust
-pub const kResponseHeaderExtFlag: u32 = 0x80000000;
-pub const kResponseSizeMask: u32 = 0x7fffffff;
+use srpc::frame_codec::{
+    frame_codec_peek_header, frame_codec_write_header, FrameDecodeStatus, FrameHeader,
+};
 
-pub fn response_has_extended_header(encoded_size: i32) -> bool {
-    ((encoded_size as u32) & kResponseHeaderExtFlag) != 0
-}
-
-pub fn response_payload_size(encoded_size: i32) -> i32 {
-    ((encoded_size as u32) & kResponseSizeMask) as i32
-}
-
-pub fn encode_response_size(payload_size: i32, extended_header: bool) -> i32 {
-    let base: u32 = (payload_size as u32) & kResponseSizeMask;
-    let out: u32 = if extended_header { base | kResponseHeaderExtFlag } else { base };
-    out as i32
+fn main() {
+    let mut bytes = [0u8; 4];
+    assert!(frame_codec_write_header(&mut bytes, 12, false));
+    let mut header = FrameHeader {
+        payload_size: 0,
+        extended_header_flag: false,
+    };
+    assert_eq!(
+        frame_codec_peek_header(&bytes, &mut header),
+        FrameDecodeStatus::Complete,
+    );
+    assert_eq!(header.payload_size, 12);
+    assert_eq!(header.total_frame_size(), 16);
 }
 ```
 
-Each of these carries a `#[cfg(verus)]`-gated contract pinning its result to
-exactly that bit expression, and the two theorems built on them — that a decoded
-size is always in `[0, kResponseSizeMask]`, and that encode/decode round-trips
-losslessly for any non-negative size and either flag — are machine-checked in
-`verify/src/internal_protocol_proofs.rs`. See `docs/verification.md`.
+The bit helpers and frame codec have Verus contracts. The size bound follows
+from checked range guards. The byte-level round-trip proof additionally trusts
+small native-endian conversion helpers under the supported little-endian target
+assumption. See [the verification notes](verification.md) for that boundary.
 
 #### The extended-header flag is vestigial
 
-The flag bit exists in the format and both sides handle it correctly, but **nothing
-in the live path ever sets it**. `tcp_channel.rs`'s send path hardcodes
-`let extended_header_flag = false;` for every frame it writes, request and reply
-alike. On the read side `frame_codec_peek_header` faithfully decodes the bit into
-`FrameHeader::extended_header_flag`, and then the TCP read loop throws it away —
-it forwards only `{payload, size}` to the frame callback. No code above the codec
-ever sees it.
-
-So do not read the flag as a negotiation mechanism. The reply body described below
-is always the long form, and the bit is not what tells you so — nothing consults it.
-It is a hook a future format change could use, decoded and discarded today.
+TCP sends every request and reply with the flag set to false. The reader decodes
+it into `FrameHeader::extended_header_flag`, then forwards only payload and size
+to the RPC callback. Nothing above the codec consults it. It does not negotiate
+a short or long reply format: the full reply header below is always present.
 
 #### Two encoders, one format
 
-`frame_codec.rs` exports a proper encode side — `frame_codec_write_header` and
-`frame_codec_encode_into`, both of which validate the size and both of which route
-through `encode_response_size`. The live TCP transport calls **neither**. It
-open-codes the same four bytes inline in `tcpconn_send_frame`:
-
-```rust
-let encoded_size = if extended_header_flag {
-    (frame.size as u32 | 0x8000_0000u32) as i32
-} else {
-    frame.size as i32
-};
-let header = encoded_size.to_ne_bytes();
-```
-
-The codec's encode functions are reached only from the Rust test suite. That means
-a change to the header layout has to be made in two places, and only one of them is
-covered by `tests/frame_codec_rust.rs`. If you touch the header, touch
-`tcp_channel.rs` too.
+`frame_codec_write_header` and `frame_codec_encode_into` validate the size and
+use `encode_response_size`. The live TCP send function builds the same header
+inline instead of calling these helpers. A wire-format change must update both
+`rpc/frame_codec.rs` and `rpc/tcp_channel.rs`, with codec tests and real TCP tests.
+Passing only a codec round-trip test does not check the live sender.
 
 ### kMaxFramePayloadSize, and why it exists
 
-```rust
-pub const kMaxFramePayloadSize: i32 = 64 * 1024 * 1024;   // 64 MiB
-```
+`kMaxFramePayloadSize` is 64 MiB, inclusive. A negative length or a payload
+larger than that is rejected by the encode helpers; the decoder also rejects
+lengths above the bound. The bound leaves room for the four-byte header within
+`i32`, and `FrameHeader::total_frame_size` uses saturating addition.
 
-This is a **stream-integrity bound, not a resource policy**. It is not there to cap
-memory; it is there so that a desynchronised stream fails loudly.
+This bound limits how much a corrupted length can make the reader expect.
+Without it, a desynchronized stream could appear to be an enormous incomplete
+frame and leave the connection waiting indefinitely. The bound cannot detect
+all corruption, because an incorrect length can still fall inside the permitted
+range. It is also not a complete memory policy: queued frames and concurrent
+connections can consume much more memory than one frame.
 
-The 4-byte header is the only framing signal on the wire. If a connection ever
-desynchronises — a short write, a reconnect that resumes mid-frame, a bug upstream —
-the decoder reads payload bytes as a header and gets a garbage length. Without a
-bound it *accepts* that length and waits for bytes that will never arrive:
-`next_frame()` returns `NeedMoreBytes` forever, `consume_frame()` never advances the
-cursor, the buffer is never compacted, and the connection wedges silently. No error,
-no log, no close, no reconnect. The bound converts that into
-`Malformed` → `on_error` → close → reconnect, which is a failure a caller can see.
-
-64 MiB is far above any real SRPC message and rejects 31 of every 32 values in the
-31-bit size space, so a desync is caught on the first bad header with high
-probability. It is the only knob; raise it if a legitimate message ever needs to be
-larger. Two invariants constrain it:
-
-- It must stay `<= i32::MAX - kFrameHeaderSize`, so `FrameHeader::total_frame_size()`
-  cannot overflow. That method uses `saturating_add`, not wrapping: casting a wrapped
-  negative `i32` to `usize` sign-extends, and an 18-quintillion-byte "total" would make
-  the `rem.len() < total` guard true forever — the exact wedge the bound exists to
-  prevent.
-- The TCP transport applies the same ceiling on send (`TCP_MAX_FRAME_PAYLOAD_SIZE`
-  is an alias for it) and refuses an oversized frame with `ChannelError::Internal`.
-  On the client that surfaces as `EIO` (5) from `request`; on the server,
-  `sconn_dispatch_response_frame_via_channel` discards the send result, so an
-  oversized *reply* is dropped silently and the caller only learns about it when the
-  future times out.
+TCP uses the same send limit and returns `ChannelError::Internal` for an
+oversized frame. A rejected client request surfaces as `EIO`. The server reply
+send path currently discards the transport's send result, so an oversized reply
+can be dropped without a server-side error response; the client then times out.
+Applications should bound result sizes before constructing a reply.
 
 ### FrameDecodeStatus and the stream reader
 
+| Status | Meaning |
+|--------|---------|
+| `NeedMoreBytes` | Not enough bytes for a header or complete frame |
+| `Complete` | A valid header, or a complete frame for `next_frame` |
+| `Malformed` | The decoded length is outside the supported range |
+
+`frame_codec_peek_header` only checks the header. It can return `Complete` even
+when the body has not arrived. `FrameStreamReader::next_frame` additionally checks
+that the entire payload is buffered.
+
+`FrameStreamReader` owns an accumulating byte buffer and cursor. `append` copies
+incoming bytes, `next_frame(&mut view)` peeks without consuming,
+`consume_frame()` advances past that frame, and `reset()` clears the reader.
+`buffered_bytes()` and `empty()` inspect unread content. The buffer is compacted
+once the read cursor passes 64 KiB.
+
+The public append operation takes a raw pointer and is unsafe. The source must
+remain readable and must not overlap the reader's buffer. A `FrameView` also
+holds a raw payload pointer, valid only until the reader is mutated. Copy or
+process it before appending, consuming, resetting, or dropping the reader.
+The following complete example documents each raw-pointer boundary.
+
 ```rust
-pub enum FrameDecodeStatus {
-    NeedMoreBytes = 0,
-    Complete = 1,
-    Malformed = 2,
+use srpc::frame_codec::{
+    frame_codec_write_header, FrameDecodeStatus, FrameHeader, FrameStreamReader, FrameView,
+};
+
+fn main() {
+    let mut frame = vec![0u8; 4];
+    assert!(frame_codec_write_header(&mut frame, 3, false));
+    frame.extend_from_slice(b"abc");
+    let mut reader = FrameStreamReader::new();
+    // SAFETY: frame owns these bytes and is separate from the reader's storage.
+    unsafe { reader.append(frame.as_ptr(), frame.len()) };
+    let mut view = FrameView {
+        header: FrameHeader { payload_size: 0, extended_header_flag: false },
+        payload: std::ptr::null(),
+        payload_size: 0,
+    };
+    assert_eq!(reader.next_frame(&mut view), FrameDecodeStatus::Complete);
+    // SAFETY: next_frame returned a complete view; reader is still unchanged.
+    let body = unsafe { std::slice::from_raw_parts(view.payload, view.payload_size) };
+    assert_eq!(body, b"abc");
+    reader.consume_frame();
+    assert!(reader.empty());
 }
 ```
 
-`frame_codec_peek_header` returns `NeedMoreBytes` for fewer than 4 buffered bytes,
-`Malformed` when the decoded size exceeds `kMaxFramePayloadSize`, and `Complete`
-otherwise. (It also guards `payload_size < 0`, but that arm is defence in depth:
-`response_payload_size` masks the sign bit off, and that non-negativity is now a
-proven theorem rather than a comment.) `frame_decode_status_to_string` gives you the
-variant name for logging.
-
-`FrameStreamReader` is the accumulating decoder each `TcpConnection` owns:
-
-- `append(data, size)` — copy freshly `recv`'d bytes onto the tail.
-- `next_frame(&mut FrameView)` — peek without consuming. `Complete` fills the view
-  with a borrowed pointer into the reader's own buffer; the payload is valid only
-  until the next mutation.
-- `consume_frame()` — advance past the frame just returned, then compact the buffer
-  once the read cursor passes 64 KiB.
-- `reset()`, `buffered_bytes()`, `empty()`.
-
-The read loop in `tcp_channel.rs` drives these in a cycle: `next_frame`, fire
-`on_frame`, `consume_frame`, repeat until `NeedMoreBytes`. A `Malformed` breaks the
-loop, fires `on_error` with `"malformed frame on inbound stream"`, resets the fd and
-the inbound buffer, and delivers `on_closed` — which is what triggers the client's
-reconnect path.
+TCP repeatedly obtains a frame, invokes `on_frame`, and consumes it until more
+bytes are needed. A malformed frame triggers `on_error`, resets inbound state,
+and closes the channel. That failure is visible to the client lifecycle code;
+it does not itself promise that automatic reconnect is enabled or driven.
 
 ### Request body
 
-```
-  +----------------+----------------+---------------------------+
-  | xid            | rpc_id         | arg1 | arg2 | ... | argN   |
-  | v64, 1-9 bytes | i32, 4 bytes   | (serialized arguments)     |
-  +----------------+----------------+---------------------------+
+```text
+[xid: v64, 1 to 9 bytes][rpc_id: i32, 4 bytes][serialized arguments...]
 ```
 
-`xid` is a `v64` — the historical *sparse integer* varint from `base/basetypes.rs`.
-Its first byte selects the total length (1 to 9 bytes) and carries the high bits;
-small values cost one byte. `rpc_id` is **not** a varint: `Serialize for i32` writes
-the four raw object bytes, so it is a fixed 4-byte native-endian field.
+`xid` is the sparse integer wrapper `srpc::basetypes::v64`. `rpc_id` is a fixed
+four-byte native-endian integer. `Client::request(rpc_id, &attr, write_fn)` writes
+both headers and invokes `write_fn` with a `BinaryWriteArchive` to append the
+arguments. The closure is ordinary Rust code using `Serialize::serialize`.
+The channel receives the finished body and adds any transport framing.
 
-The encode site is short enough to read in full (`rpc/client.rs`):
-
-```rust
-let mut body_sink: BufferSink = BufferSink { bytes: Vec::<u8>::new() };
-let mut ar_store = BinaryWriteArchive { sink_: client_sink_proxy(&mut body_sink) };
-let ar: &mut BinaryWriteArchive = &mut ar_store;
-crate::serializable::Serialize_::serialize(&crate::basetypes::v64::new((*fu).xid_), ar);
-crate::serializable::Serialize_::serialize(&rpc_id, ar);
-write_fn(ar);
-```
-
-`write_fn` is the lambda the generated proxy passes to `Client::request`; it appends
-the arguments. Nothing else is added. The finished `Vec<u8>` goes to `send_frame`,
-which prepends the 4-byte header.
-
-xids come from a per-connection `Counter` starting at 0 and incremented by 1. They
-are not globally unique and are not reused across connections.
+Xids come from a counter on the client connection. They identify pending work
+within that connection, not across all clients or server lifetimes. Do not
+use an xid alone as a globally unique request identity.
 
 #### Where rpc_id values come from
 
-`rpcgen` assigns each method a random id in `[0x10000000, 0x70000000]` and emits it
-as an enumerator inside the generated service class. On regeneration it *re-parses
-the existing generated header* and reuses every id it finds there. That is why the
-generated `.h` must be kept under version control and must not be deleted before
-regenerating: lose it and every id changes, silently breaking the wire for anything
-already built.
+A Rust service chooses stable `i32` IDs and registers each one with `reg_rpc`
+or `reg_fast_rpc`. The client must use the same ID and serialize the same argument
+types in the same order. The server maps an ID to a service index, with a separate
+set recording fast dispatch. An unknown ID receives `ENOENT` and a warning that
+is logged once per previously unseen unknown ID.
 
-The server keeps a `HashMap<i32, usize>` from rpc_id to service index, plus a
-`HashSet<i32>` of ids registered as "fast". An id with no entry gets a reply with
-`ENOENT` and a one-shot warning log (the id is remembered so the log does not
-repeat).
+When interoperating with an IDL-generated peer, use its generated IDs. The
+existing `rpcgen` workflow preserves IDs by reading the previous generated header;
+deleting that file before regeneration can assign new IDs and break existing
+peers. The companion book describes generator output and compatibility rules.
 
 #### The internal heartbeat id
 
-```rust
-pub const kInternalHeartbeatRpcId: i32 = i32::MIN;   // -2147483648
-```
+`kInternalHeartbeatRpcId` is `i32::MIN`. Reserve it for SRPC and do not register
+an application method with that value. A heartbeat request contains only xid
+and rpc_id. The server recognizes it before ordinary service lookup and replies
+with error code zero and no payload. A test hook can suppress those replies.
 
-It sits far outside the generator's range, so it can never collide with a real
-method. A heartbeat frame is a request body with nothing after the header: a `v64`
-xid and that rpc_id. The server recognises it before the dispatch-table lookup and
-answers with `error_code = 0` and an empty payload — unless the connection's
-`drop_heartbeat_replies` flag is set, which is a test hook for simulating a silent
-peer.
-
-Two caveats on the client side. First, the heartbeat *reply* is indistinguishable
-from any other reply, and the client does not try to distinguish it: the decode path
-calls `heartbeat_manager_.on_pong_received()` for **every** inbound reply. Second,
-and more importantly, nothing sends heartbeats in practice. The only caller of
-`enqueue_heartbeat_probe` is `ClientConnection::check_pending_write_update`, which is
-a plain inherent method with no callers anywhere in the tree: `ClientConnection` does
-not implement `PollableBase`, so the reactor can never drive it. The only registered
-pollables are the `TcpConnection` and the `TcpListener`. The protocol is
-complete and the timer is never ticked. Do not plan liveness detection around it.
+The response decoder treats every inbound reply as evidence of a pong. However,
+the current `ClientConnection::check_pending_write_update` method that would
+schedule a heartbeat probe is not wired into the poll worker. The registered
+pollables are TCP transport objects, not that RPC wrapper. The wire format and
+server response exist, but the production path does not periodically send these
+probes. Use the reliability chapter's current status before relying on liveness
+detection.
 
 ### Reply body
 
-```
-  +----------------+----------------+--------------------+------------------+
-  | xid            | error_code     | server_instance_id | ret1 | ... | retN |
-  | v64, 1-9 bytes | v32, 1-5 bytes | v64, 1-9 bytes     | (serialized)     |
-  +----------------+----------------+--------------------+------------------+
+```text
+[xid: v64][error_code: v32][server_instance_id: v64][serialized return values...]
 ```
 
-All three header fields are always present. `sconn_reply` is the *only* reply
-encoder in the codebase — the typed wrappers, the `defer` path's `DeferredReply`,
-the `fiber` and `async` paths, and the two error replies from the dispatcher all
-funnel through it — and it writes the full triple unconditionally:
+All three header fields are unconditional. `ServerConnection::reply` reaches
+`sconn_reply`, which serializes the triple and then invokes the optional
+`ServerReplyFn` payload writer. A writer is
+`Some(Box::new(move |archive| { /* serialize payload */ }))`; pass `None` when
+there is no payload. The client always reads the three headers before exposing
+the remaining reply bytes.
 
-```rust
-crate::serializable::Serialize_::serialize(&v64::new(req.xid), ar);
-crate::serializable::Serialize_::serialize(&v32::new(error_code), ar);
-crate::serializable::Serialize_::serialize(
-    &v64::new(sconn.ctx_.server_instance_id as i64),
-    ar,
-);
-if !write_fn.is_empty() {
-    let mut write = write_fn;
-    write(ar);
-}
-```
+Check `Future::get_error_code()` before decoding a result. A successful response
+has code zero. The built-in dispatcher sends empty error replies, and service
+implementations should define whether any application error carries payload.
+There is no flag-controlled short reply format.
 
-The client mirrors it unconditionally, deserializing all three before handing the
-remaining bytes to the caller. There is no short form and no branch on the header
-flag. `error_code` is whatever the handler returned: a typed handler returning
-`Err(e)` replies with `error_code = e` and **no payload**, so a client must check
-the error code before attempting to decode return values — which is exactly what the
-generated `resolve()` does.
+Each `Server` creates a nonzero 63-bit instance ID from monotonic time, a random
+value, and the process ID. It fits in the signed `v64` wire field. The client
+caches the first observed ID; a later change logs a restart and invokes its
+registered restart callback. The first reply only establishes the baseline.
 
-`server_instance_id` is generated once per `Server`, from the monotonic clock XORed
-with a random `u64` and the pid shifted left 48, masked to 63 bits (it crosses the
-wire as a signed `i64`) and forced non-zero. It exists for restart detection: the
-client caches the first id it sees and, when a later reply carries a different one,
-logs `"Server restart detected"` and fires the `on_server_restart` callback. A
-zero cached id means "not yet known", so the first reply never triggers it.
+#### The v64 encoding: the retired length-8 form
 
-#### The v64 encoding: a former length-8 defect, now fixed
+The historical `0xFE` marker described an eight-byte encoding but the writer
+selected the wrong seven payload bytes for values around the `2^48` to `2^55`
+range. Values could lose their low byte while framing remained aligned.
 
-The sparse-integer format historically had a defect at exactly one length. The
-`0xFE` marker claimed an eight-byte total (marker + seven payload) but `dump64`
-emitted all eight payload bytes and reported eight, so the persisted frame kept
-the always-zero high byte and dropped the significant low byte: any `|v|` in
-roughly `[2^48, 2^55)` lost its low byte (`36_028_797_018_963_967` decoded as
-`36_028_797_018_963_712`). Framing stayed in sync — both sides agreed on eight
-bytes — but the value did not round-trip.
-
-This is now fixed: the broken `0xFE` rung is retired on the write side
-(`val_size` folds that band into the nine-byte `0xFF` encoding, which every peer
-already decodes correctly), so those values now round-trip. `dump64` never emits
-`0xFE`; `load64` still *reads* it so historical data decodes as it always did.
-The change is effectively compatibility-safe: a new sender's `0xFF` frame is
-decodable by any old receiver, and old `0xFE` data reads unchanged — only the
-encoding of band values moves from eight (lossy) to nine (correct) bytes.
-`tests/basetypes_rust.rs`, `wire_roundtrip_proptest_rust.rs` and
-`serializable_rust.rs` pin the corrected round trip.
-
-The practical reach was always small: an xid would need 2^48 requests on one
-connection to enter the band; a `server_instance_id` landed there ~0.4% of the
-time but was deterministically mangled, so restart detection kept working. The
-only real exposure was a user-declared `v64` field carrying a band value, which
-the fix now handles correctly.
+Current `dump64` writes those values with the nine-byte `0xFF` form, which older
+readers already understand. It never emits `0xFE`. `load64` still accepts the
+historical encoding, preserving how old bytes decode; it cannot recover a byte
+that an old writer discarded. New data round-trips correctly without requiring
+an old peer to learn a new encoding. Tests in `basetypes_rust.rs`,
+`serializable_rust.rs`, and `wire_roundtrip_proptest_rust.rs` cover the corrected
+behavior. This matters for user `v64` fields as well as protocol IDs.
 
 ### Request/response flow
 
-```
-Client                                                          Server
+An ordinary Rust call follows this sequence.
 
-generated proxy: Rpc<M>Request -> Client::request(rpc_id, attr, write_fn)
-  |
-  ClientConnection::request -> clientconn_request_via_channel
-    circuit-breaker gate  -> EBUSY if open
-    expire stale queued requests
-    if not connected: park in the offline queue, or fail ENOTCONN
-    Future::create(xid) -> pending_fu_ map
-    serialize  v64 xid | i32 rpc_id | args   into a BufferSink
-  |
-  ChannelConnectionProxy::send_frame(body)
-    TcpConnection prepends the 4-byte header, buffers, arms POLLOUT
-  |                                                                |
-  ================== bytes ==================>                     |
-                                                                   |
-                            server TcpConnection::handle_read      |
-                              FrameStreamReader::append            |
-                              next_frame -> Complete               |
-                              on_frame(payload, size)              |
-                            sconn_decode_request_and_dispatch      |
-                              copy body into Request               |
-                              read v64 xid, then i32 rpc_id        |
-                              rpc_id == heartbeat? reply 0, done   |
-                              rpc_to_service lookup -> ENOENT?     |
-                              fast id  -> dispatch inline          |
-                              otherwise -> spawn a stackful fiber  |
-                            <Svc>Service::__dispatch__(rpc_id, req, weak_sconn)
-                              generated wrapper decodes args,
-                              calls the handler, then sconn_reply  |
-                                                                   |
-  <================= bytes ===================                     |
-  |
-  client TcpConnection::handle_read -> on_frame
-  ClientConnection::decode_response_and_notify
-    read v64 xid, v32 error_code, v64 server_instance_id
-    check_server_instance -> maybe fire on_server_restart
-    async slot (xid % 16384) occupied? -> invoke that callback, return
-    else look up xid in pending_fu_  -> set error, copy payload, notify_ready
-    else drop the reply
-  |
-  Future::wait() returns; the generated resolve() decodes the payload
-```
+1. `Client::request` checks connection and admission state, allocates a pending
+   future, and serializes xid, rpc_id, and arguments.
+2. The channel sends the body. TCP adds a length header and flushes or queues
+   output; an in-memory channel invokes its peer directly.
+3. The server receives a complete body, reads its headers, and selects the service.
+   Fast methods dispatch inline; ordinary methods start a fiber.
+4. `Service::__dispatch__` reads the arguments and calls application code. A
+   response writes xid, error code, instance ID, and optional return values.
+5. The client verifies the active connection binding, decodes the response header,
+   updates reply metrics and restart state, and selects the pending completion.
+6. A waiting RPC future becomes ready. Application code checks the error and
+   deserializes the payload.
 
-Three details in that trace deserve to be called out, because they are easy to get
-wrong from the outside.
+Fast dispatch runs on the thread delivering the frame. That is the poll thread
+for TCP and the sending thread for the synchronous in-memory transport. Never
+assume a fast handler can block without delaying other work on that thread.
 
-**The frame header is added and removed by the transport, not by the RPC layer.**
-`client.rs` and `server.rs` only ever see bodies. This is why the in-memory transport
-below can be frameless and still work.
-
-**Fast RPCs run on the poll thread.** `reg_fast_rpc` (which the generator emits for
-`fast`, `prefix`, and `async` methods) puts the id in `fast_rpc_ids`, and those
-handlers are called inline from the frame callback. Everything else gets a 1 MiB
-stackful fiber so the handler can block on a nested call. A `fast` handler that
-blocks stalls the entire poll thread.
-
-**The async slot is checked before the future map, and it is keyed only by
-`xid % 16384`.** `request_async` reserves `pending_cb_slots_[xid % 16384]` (refusing
-with `EBUSY` if it is taken), but the decode path takes whatever callback occupies
-the slot the *reply's* xid hashes to, without comparing xids. The future path does
-verify `fu->xid_ == reply xid`; the async path does not. If you mix `request_async`
-and `request` on one connection, a reply can be delivered to an unrelated async
-callback. A reply matching neither a slot nor the map is dropped silently — the
-normal outcome after a timeout, and it leaves no trace.
+There is a current limitation when mixing callback requests and future requests.
+`request_async` reserves one of 16384 callback slots using `xid % 16384`. The
+response decoder checks that slot before the pending-future map and takes an
+occupied callback without comparing its full xid. A colliding response can
+therefore reach the wrong callback, including when `request` and `request_async`
+share a connection. The future-map path does compare its xid. Avoid mixing these
+paths or allowing slot collisions to stand in for full request identity. A reply
+matching neither a slot nor a pending future is dropped, as commonly happens
+after timeout.
 
 ### Error codes
 
-Only two error codes are ever produced *by the protocol itself*; everything else on
-the wire is a value your handler returned.
+The reply code is an integer chosen by dispatch or application code.
 
-| Code | Name | Written by | Meaning |
-|------|------|-----------|---------|
-| 0 | — | `sconn_reply` | Success. Payload follows. |
-| 2 | `ENOENT` | dispatcher | No handler registered for this `rpc_id`. Empty payload. |
-| 22 | `EINVAL` | dispatcher | Request body had an xid but fewer than 4 bytes left for `rpc_id`. Empty payload. |
-| any | — | your handler | Whatever `Err(e)` your handler returned. Empty payload. |
+| Code | Name | Built-in use |
+|------|------|--------------|
+| 0 | Success | Normal response |
+| 2 | `ENOENT` | No registered handler for rpc_id |
+| 22 | `EINVAL` | Request has an xid but too few bytes for rpc_id |
+| Other | Application-defined | Whatever code the service supplies to its reply |
 
-A request body with *no* xid at all — a zero-length frame — is logged and dropped
-without a reply, because there is no xid to reply against.
+Other familiar errors commonly arise locally before a request or future succeeds.
 
-These are the client-local failures, which never appear on the wire. They are
-returned by `request` / `request_async` or latched into the future:
+| Code | Name | Typical client cause |
+|------|------|----------------------|
+| 5 | `EIO` | Transport send failure |
+| 11 | `EAGAIN` | Offline queue rejected or evicted a request |
+| 16 | `EBUSY` | Admission, circuit-breaker, or callback-slot refusal |
+| 107 | `ENOTCONN` | No usable connection |
+| 110 | `ETIMEDOUT` | A future's local wait deadline or a queued request's TTL expired |
 
-| Code | Name | Raised when |
-|------|------|-------------|
-| 5 | `EIO` | `send_frame` refused the frame (channel closed, over the outbound high-water mark, or larger than 64 MiB). |
-| 11 | `EAGAIN` | The offline queue rejected or evicted the request (`kRequestQueueRejectedError`). |
-| 16 | `EBUSY` | Circuit breaker open, or the async slot was already occupied. |
-| 107 | `ENOTCONN` | Not connected and no offline queue configured; also fanned out to every pending future when the channel closes. |
-| 110 | `ETIMEDOUT` | `Future::wait()` gave up — it is hard-capped at one second, see chapter 8 — or a queued request outlived its TTL (`kRequestQueueExpiredError`). |
+A zero-length request has no xid to reply to and is logged and dropped.
+`Future::wait()` currently has a one-second maximum wait, discussed in the client
+chapter. Connection closure also completes pending futures with `ENOTCONN`.
 
-`EAGAIN` in particular is a client-side code, not a server one. SRPC's server has no
-queue policy and no admission control — it dispatches every frame it decodes. The
-only queue that can reject you is the client's own offline buffer.
-
-`rpc/errors.rs` also defines a structured `RpcError` enum — `NOT_CONNECTED = 100`,
-`UNKNOWN_RPC_ID = 201`, `RESPONSE_TIMEOUT = 402`, and so on, banded by category with
-`get_error_category` / `is_retryable_error` helpers. It is a client-side
-classification layer that `clientconn_map_system_error` maps errno-shaped codes into.
-None of those values ever travel on the wire.
+An application may explicitly send the same integer codes on the wire, so the
+number alone does not prove where an error originated. `ChannelError` is a
+separate transport enum; the client maps its failures to RPC-level errors.
+`srpc::errors::RpcError` adds categorized client errors, with
+`get_error_category` and `is_retryable_error` helpers. Codes such as
+`NOT_CONNECTED = 100` and `RESPONSE_TIMEOUT = 402` belong to that classification;
+the built-in reply encoder does not convert errno-shaped reply codes into it.
 
 ### The in-memory transport, for tests
 
-`rpc/inmemory_channel.rs` is a second implementation of the same
-`ChannelConnectionBase` / `ChannelListenerBase` / `ChannelFactoryBase` contracts,
-built for deterministic tests. An `InMemorySwitchboard` maps address strings (any
-string you like — `"inmemory://server-1"` works) to listeners via
-`register_listener` / `unregister_listener` / `find_listener`. `InMemoryFactory::connect`
-looks up the listener, builds a channel pair over one shared mutex-protected state
-object, fires the listener's `on_accept` synchronously, and hands back the client
-half; with no listener registered it returns `ChannelError::ConnectionRefused`.
-`send_frame` copies the bytes and calls the *peer's* `on_frame` synchronously;
-`close()` fires the *peer's* `on_closed`, mirroring TCP's "remote saw FIN".
-Fault injection is available through free functions —
-`inmemory_channel_inject_drop_next_sends`, `inmemory_channel_inject_send_error`,
-`inmemory_channel_clear_fault_injection` — with drops taking priority over errors,
-and a closed channel beating both.
+`srpc::inmemory_channel` implements the channel interfaces with a shared
+`InMemorySwitchboard`. An address is an exact string lookup key, not a parsed
+network URI. Both endpoints must use factories backed by the same switchboard
+in one process. Install them before `Server::start` and `Client::connect`, which
+would otherwise choose TCP factories.
 
-The property to keep in mind when using it: **it is frameless**. There is no 4-byte
-header and no `FrameStreamReader` anywhere in that file; each `send_frame` delivers
-exactly one `on_frame` with exactly those bytes. That makes it a good foundation for
-reconnect and partition tests, and completely unable to reproduce a framing bug.
-Coverage of `frame_codec` has to come from the Rust tests
-(`tests/frame_codec_rust.rs`, `tests/frame_codec_desync_rust.rs`), not from an
-end-to-end run over this transport.
+This complete example connects a client to an empty server and verifies the
+protocol's unknown-method reply. A real service would register before `start`.
 
-To use it you must call `set_channel_factory` on the `Server` and the `Client`
-*before* `start` / `connect`; otherwise both auto-install a TCP factory and the
-in-memory one never gets a chance. The module is also not re-exported through the
-umbrella header, so name it explicitly:
+```rust
+use srpc::client::{Client, FutureAttr};
+use srpc::inmemory_channel::{make_inmemory_factory_proxy, InMemoryFactory, InMemorySwitchboard};
+use srpc::reactor::PollThread;
+use srpc::server::{Server, SERVER_ERR_NO_ENTRY};
+use std::ffi::CString;
+use std::sync::Arc;
 
-```cpp srpc-no-compile
-// srpc.hpp does not import these two; a consumer that names them says so.
-import srpc.inmemory_channel;
-import srpc.internal_protocol;
+fn main() {
+    let network = Arc::new(InMemorySwitchboard::new());
+    let address = CString::new("inmemory://protocol-example").unwrap();
+    let mut server = Server::new(Some(PollThread::create()));
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(
+        InMemoryFactory::new(network.clone()),
+    ))));
+    // SAFETY: address is NUL-terminated and remains alive throughout this call.
+    assert_eq!(unsafe { server.start(address.as_ptr()) }, 0);
+    let client = Client::create(PollThread::create());
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(
+        InMemoryFactory::new(network),
+    ))));
+    assert_eq!(client.connect(address.as_ptr(), true), 0);
+    let future = client.request(0x1234, &FutureAttr::default(), |_| {}).unwrap();
+    assert!(future.ready());
+    assert_eq!(future.get_error_code(), SERVER_ERR_NO_ENTRY);
+    drop(server);
+    drop(client);
+}
 ```
 
-`srpc.frame_codec` is the exception among the protocol modules: `srpc.hpp` pulls it
-in textually via `#include "rpc/frame_codec.hpp"`, so `kFrameHeaderSize`,
-`kMaxFramePayloadSize`, `FrameHeader`, and `FrameDecodeStatus` are already visible to
-anyone who includes the umbrella.
+The transport copies each body and invokes the peer's `on_frame` synchronously.
+Closure notifies the peer through `on_closed`. It exercises channel callbacks,
+RPC serialization, and dispatch, but it does not exercise TCP fragmentation,
+short writes, epoll readiness, or `FrameStreamReader`.
+
+The concrete channel exposes fault-injection helpers for tests:
+`inmemory_channel_inject_drop_next_sends`,
+`inmemory_channel_inject_duplicate_next_sends`, and
+`inmemory_channel_inject_send_error`. A dropped send reports success without
+delivery; duplication delivers a selected frame twice; a send error returns the
+selected `ChannelError`. Closed-channel checks take precedence, then drop and
+send-error injection take precedence over duplication.
+`inmemory_channel_clear_fault_injection` resets the injected behavior.
+
+See `tests/rpc_roundtrip_inmemory_rust.rs` for a registered Rust service and
+serialized arguments, and the TCP runtime tests for behavior that needs real
+sockets. The synchronous transport is useful for deterministic RPC tests, but
+its scheduling is not a substitute for testing the poll worker.
 
 ---
 
-## 8. RPC Client
+## 8. RPC client
 
-`Client` is the whole public client API: one object, one connection, one poll
-thread behind it. `ClientConnection` is the machinery underneath — framing, the
-pending-reply table, the circuit breaker, the metrics counters. You never
-construct one directly; you reach it through `Client::connection()` when you
-want something `Client` does not forward.
+The native client API lives in `srpc::client`. It offers three request forms:
 
-Everything named here lives in `rpc/client.rs` — `srpc::client` in Rust,
-`srpc.client` in C++ (which `srpc.hpp` already imports; `RequestOptions` and
-`LoadBalancingStrategy` were trimmed out of the umbrella and need
-`import srpc.request_options;` and `import srpc.load_balancer;` of their own).
+| Method | Result | Completion |
+|---|---|---|
+| `request` | `Result<Arc<Future>, i32>` | Inspect or wait on the returned future |
+| `request_with_options` | `Result<Arc<Future>, i32>` | A coordinator applies request timeout and retry options |
+| `request_async` | `Result<(), i32>` | An optional boxed callback receives the reply |
 
-The request and retry paths execute canonical Rust in Cargo and equivalent generated
-C++ in the C++ lane. Examples below use the language indicated by their code fences.
+An accepted request can still fail later. The outer `Result` reports submission failure; a future's error code or the async callback reports the eventual outcome. Request and reply bodies use the serialization traits in Chapter 10.
 
 ### Creating a client and connecting
 
-```rust
+A client needs a `PollThread` to run channel work and deferred close jobs. This function creates a TCP client and returns both owners so the caller can shut them down explicitly:
+
+```rust,no_run
+use srpc::client::Client;
+use srpc::reactor::PollThread;
 use std::ffi::CString;
+use std::sync::Arc;
 
-let poll = PollThread::create();      // Arc<PollThread>
-let cl = Client::create(poll);        // Arc<Client>
-
-let addr = CString::new("127.0.0.1:8848").unwrap();
-if cl.connect(addr.as_ptr(), true) != 0 {
-    // connect failed
+fn connect_tcp(address: &str) -> Result<(Arc<Client>, Arc<PollThread>), i32> {
+    let address = CString::new(address).map_err(|_| 22)?;
+    let poll = PollThread::create();
+    let client = Client::create(poll.clone());
+    // connect reads this NUL-terminated string during the call.
+    let error = client.connect(address.as_ptr().cast(), true);
+    if error != 0 {
+        drop(client);
+        poll.shutdown();
+        return Err(error);
+    }
+    Ok((client, poll))
 }
 
-// ... issue requests ...
-
-cl.close();
+fn main() {
+    let (client, poll) = connect_tcp("127.0.0.1:8848").expect("connect");
+    // Issue requests here.
+    client.close();
+    drop(client);
+    poll.shutdown();
+}
 ```
 
-Two details trip up every first call site. `connect` takes a raw NUL-terminated
-pointer (`*const i8` — the historical C++ signature, `const int8_t*` there, where
-a `reinterpret_cast` from `const char*` is mandatory), so in Rust you go through
-`CString` and keep it alive across the call. And it takes a second argument — a
-`bool` marking this end as the client side of the connection. Pass `true`.
+`connect` currently takes a raw C string pointer even in Rust. Keep a valid NUL-terminated string alive throughout the call. The public method is not marked `unsafe`, but that does not remove the pointer's validity requirement. The `true` argument selects the client role. Connection failures are errno-shaped integers, commonly `111` for refused connection, `22` for an invalid address, and `107` for other factory connection failures.
 
-`connect` returns 0 on success and an errno-shaped `int32_t` otherwise: 111
-`ECONNREFUSED` when the peer refuses, 22 `EINVAL` for an address the channel
-layer will not parse, 107 `ENOTCONN` for anything else the factory reports.
-There is no separate "install a transport" step — if you have not called
-`set_channel_factory` yourself, `connect` installs a TCP factory before it
-dials.
+The default factory creates TCP channels. Chapter 6 shows how to install an in-memory factory or another channel implementation. `set_channel_factory(Some(factory))` stages a factory for the next connect; `None` leaves the current selection alone. Connecting consumes that staged selection. A later explicit connect uses the default factory unless another was staged.
 
-Each `connect` call builds a fresh `ClientConnection` and installs it only if
-the dial succeeds, so a failed retry leaves whatever connection you already had
-in place. Dropping a connection aborts any reconnect in flight and fails every
-future still waiting on it.
+`connect` builds a replacement connection and publishes it only after a successful dial. A failed replacement leaves the previous connection installed. `close` marks the current binding as closing and queues a close job that retains its owner until execution. The client retains its connection handle. Dropping `Client` also closes it.
 
-`Client` is handed out as an `Arc<Client>` and its drop calls
-`close()`, so an explicit `close()` is a courtesy rather than a requirement. It
-is a useful courtesy: closing the client before you shut down the poll thread
-keeps teardown ordered. (The close itself is a poll-thread job whose captured
-`Arc` keeps the connection alive until the poll thread runs it — that ordering
-is what makes teardown safe against in-flight dispatch.)
-
-The accessors worth knowing are `connected()`, `connection_state()` (a
-`ConnectionState`; see chapter 11), `server_instance_id()`, and `connection()`,
-which returns `Option<Arc<ClientConnection>>`. Skip `host()` —
-the field behind it is never assigned, so it always returns an empty string.
+Keep the `Client` value on its owning thread. Its `Cell` and `RefCell` fields make it unsuitable for shared native Rust access across threads; putting it in an `Arc` does not change that. `ClientConnection` has synchronized shared state, and `client.connection()` returns an `Option<Arc<ClientConnection>>` after releasing the client's internal borrow. These are different ownership contracts.
 
 ### Issuing a request
 
-There is exactly one request entry point, and it takes three arguments:
+Serialize the arguments in the write closure, check the reply error, then decode the returned body. This helper expects a service whose request and response each contain one `i64`:
 
-```rust
-use srpc::client::{deserialize_from, FutureAttr};
+```rust,no_run
+use srpc::client::{deserialize_from, Client, FutureAttr};
 use srpc::serializable::Serialize;
 
-let fu_result = client.request(RPC_METHOD_ID, &FutureAttr::default(), |ar| {
-    Serialize::serialize(&arg1, ar);
-    Serialize::serialize(&arg2, ar);
-});
-
-if let Ok(fu) = fu_result {
-    fu.wait();
-    if fu.get_error_code() == 0 {
-        let mut result = 0i32;
-        deserialize_from(fu.get_reply(), &mut result);
+fn call_i64(client: &Client, rpc_id: i32, value: i64) -> Result<i64, i32> {
+    let future = client.request(rpc_id, &FutureAttr::default(), |archive| {
+        value.serialize(archive);
+    })?;
+    let error = future.get_error_code();
+    if error != 0 {
+        return Err(error);
     }
+    let mut answer = 0_i64;
+    deserialize_from(future.get_reply(), &mut answer);
+    Ok(answer)
 }
 ```
 
-The three-argument `request(rpc_id, attr, write_fn)` is the only form. The
-overload set was deliberately collapsed to it — the C++ code generator emits
-this shape even for methods with no arguments, passing an empty closure —
-because Rust has no method overloading. (The C++ spelling is the same call
-with a lambda: `client->request(RPC_METHOD_ID, FutureAttr(), [&](BinaryWriteArchive& m) { ... })`.)
+`Future` here is SRPC's reply object, not an implementation of `std::future::Future`. It has no `.await` operation. The methods that wait use a standard condition variable and block the calling OS thread. Do not call them on a poll worker that must receive the reply, or assume that putting the call inside a stackful fiber makes it cooperative.
 
-`FutureResult` is `Result<Arc<Future>, i32>` (`rusty::Result<rusty::Arc<Future>, srpc::i32>`
-in C++), so the call can fail before a single byte goes out. The error side is again errno-shaped:
-107 `ENOTCONN` if the client was never connected or the channel is already
-closed, 16 `EBUSY` if the circuit breaker is open, 5 `EIO` if the channel
-refuses the frame, and 11 `EAGAIN` if the request was offered to the
-disconnected-request queue and the queue rejected it.
-
-Your `write_fn` writes *only the arguments*. The connection has already written
-the request header into the same archive by the time your lambda runs: a `v64`
-transaction id drawn from the connection's counter, then the `int32_t` rpc id.
-Chapter 7 has the byte layout. The xid is what the reply is matched against —
-the future is filed in a per-connection map under it, and
-`decode_response_and_notify` looks it up when the reply lands. If you decide
-you no longer care about a request, `client->handle_free(xid)` drops the map
-entry so a late reply is discarded instead of parked forever.
-
-Serialization goes through the `Serialize` trait over a `BinaryWriteArchive`
-(the C++ spelling is `srpc::Serialize_::serialize`). There is no `Marshal` and
-no `operator<<`; chapter 10 has the details.
+`get_reply()` returns a mutex guard over the future's owned reply buffer. `deserialize_from` consumes that guard and advances the buffer's cursor. For a response with several fields, call it once per field in wire order, taking a fresh guard each time. Do not keep a reply guard across another RPC, callback, or suspension. Copy decoded values into your own storage before retaining them elsewhere.
 
 ### The one-second wall
 
-This is the single most surprising thing about the client, so it is worth
-stating flatly: **`Future::wait()` waits one second and then gives up
-permanently.**
+`wait()` waits for at most one second. `get_error_code()` and `get_reply()` also use that default wait when completion is still pending. This is a duration measured from the blocking call, not an absolute deadline recorded when the request was created.
 
-`Future`'s internal deadline is a private field fixed at 1,000,000
-microseconds when the future is constructed. Nothing in the public API changes
-it. When that second elapses without a reply, the future latches: it sets
-`timed_out = true`, sets its error code to 110 `ETIMEDOUT`, and records a
-timeout type of `RESPONSE_TIMEOUT`. The latch is one-way: when the reply
-finally does arrive, `notify_ready` refuses to mark a timed-out future ready,
-so `ready()` stays false forever.
+A timed-out wait latches error `110` and `TimeoutType::RESPONSE_TIMEOUT`. It does not itself remove the request from the connection's pending table. A later reply can still populate the reply buffer and overwrite its error code, while the timed-out future remains unready. Treat the first timeout as the result of your operation; do not rely on repeated inspection turning that future into a normal successful completion.
 
-All three blocking accessors funnel through that same deadline. `wait()`
-obviously does; `get_error_code()` runs the identical timed wait before reading
-the code; and `get_reply()` calls `wait()` first. The generated typed future is
-no escape either — its `wait()`, `get_error_code()` and `resolve()` all
-delegate to the same `Future`.
+To choose the duration of a blocking wait, set options on the future and call `wait_with_options()`:
 
-Nothing else about the future is protected, though. A timeout removes nothing
-from the pending-reply map, so `decode_response_and_notify` still finds the
-future, overwrites its error code with the server's and fills its reply buffer
-before it reaches `notify_ready` — and once `timed_out` is set, every blocking
-accessor returns immediately instead of waiting. A caller that re-reads
-`get_error_code()` after the timeout therefore sees the server's 0, and
-`get_reply()` hands over the payload, with `ready()` still false. Call
-`client->handle_free(xid)` when you give up, so a late reply is discarded
-instead; that is exactly what the retry coordinator does after each timed-out
-attempt.
+```rust,no_run
+use srpc::client::{Client, FutureAttr};
+use srpc::request_options::RequestOptions;
 
-There is exactly one way out, and it is `wait_with_options()` on a future whose
-`RequestOptions::timeout_ms` you have set to something non-zero. That is what
-the next section is for.
+fn wait_up_to_five_seconds(client: &Client, rpc_id: i32) -> Result<(), i32> {
+    let future = client.request(rpc_id, &FutureAttr::default(), |_| {})?;
+    let mut wait_options = RequestOptions::new();
+    wait_options.timeout_ms = 5_000;
+    future.set_options(&wait_options);
+    if !future.wait_with_options() {
+        return Err(future.get_error_code());
+    }
+    let error = future.get_error_code();
+    if error == 0 { Ok(()) } else { Err(error) }
+}
+```
 
-A practical consequence: a server handler that takes longer than a second to
-answer will look like a network failure to a client using `request` +
-`wait()`, no matter how healthy the connection is.
+A zero `timeout_ms` on the future falls back to the one-second wait; it does not make that wait infinite. `ready()` is a nonblocking query. The lower-level `timed_wait`, `timed_out`, and transaction-ID accessor are private in native Rust. There is no general public future-cancellation method.
 
 ### Timeouts and retries
 
-`request_with_options(rpc_id, options, write_fn)` swaps the `FutureAttr` for a
-`RequestOptions` and gives you a real timeout budget plus optional retries.
-(C++-lane surface today: `request_with_options`, `wait_with_options`,
-`set_options` and friends are not yet `pub` in the Rust module, so the snippets
-in this section are C++.)
+`request_with_options` serializes the arguments once, retains those bytes, and starts a coordinator that submits attempts. Its options are public Rust fields:
 
-```cpp srpc-compile-client
-auto opts = RequestOptions::defaults();
-opts.timeout_ms = 500;       // per-attempt budget
-opts.max_retries = 3;
-opts.idempotent  = true;     // without this, retries are silently disabled
+| Field | Meaning | `RequestOptions::new()` |
+|---|---|---|
+| `timeout_ms` | Response wait for each attempt | 1,000 ms |
+| `total_timeout_ms` | Overall coordinator budget, zero means no total limit | 0 |
+| `max_retries` | Retries after the first attempt | 0 |
+| `base_delay_ms` | Initial retry delay | 50 ms |
+| `max_delay_ms` | Retry backoff limit before jitter | 5,000 ms |
+| `jitter_factor` | Random variation in the delay | 0.1 |
+| `idempotent` | Permission to repeat the operation | false |
 
-auto fu_result = client->request_with_options(RPC_METHOD_ID, opts,
-    [&](BinaryWriteArchive& m) {
-        srpc::Serialize_::serialize(arg1, m);
-    });
+The coordinator disables retries when `idempotent` is false. `with_retry`, `idempotent_retry`, `fast`, and `patient` set it to true. Use those presets only when repeating the operation is safe. The separate idempotency utilities are not automatically wired into requests, so this flag does not provide server-side deduplication.
 
-if (fu_result.is_ok()) {
-    auto fu = fu_result.unwrap();
+This example gives each attempt 250 ms and the coordinator a two-second total budget. It also gives the caller enough time to wait for that coordinator:
 
-    // The coordinator future is created with timeout_ms = 0, and
-    // wait_with_options() then falls back to the same hard 1s cap.
-    // Give the waiter a budget that covers the whole retry chain.
-    auto wait_opts = opts;
-    wait_opts.timeout_ms = 5000;
-    fu->set_options(wait_opts);
+```rust,no_run
+use srpc::client::{deserialize_from, Client};
+use srpc::request_options::RequestOptions;
+use srpc::serializable::Serialize;
 
-    if (fu->wait_with_options()) {
-        auto attempts = fu->get_retry_count();
-        (void)attempts;
+fn retry_read(client: &Client, rpc_id: i32, key: i64) -> Result<i64, i32> {
+    let mut options = RequestOptions::with_retry(2, 250);
+    options.total_timeout_ms = 2_000;
+    let future = client.request_with_options(rpc_id, &options, |archive| {
+        key.serialize(archive);
+    })?;
+
+    // The coordinator has already copied its attempt options.
+    let mut caller_wait = RequestOptions::new();
+    caller_wait.timeout_ms = 2_500;
+    future.set_options(&caller_wait);
+    if !future.wait_with_options() {
+        return Err(future.get_error_code());
     }
+    let error = future.get_error_code();
+    if error != 0 {
+        return Err(error);
+    }
+    let mut answer = 0_i64;
+    deserialize_from(future.get_reply(), &mut answer);
+    Ok(answer)
 }
 ```
 
-Two gates guard retries and you have to open both. `max_retries` on its own
-does nothing: the first thing `request_with_options` does is copy your options
-and, if `idempotent` is false, force `max_retries` to zero. The presets
-`with_retry(max_retries, timeout_ms)`, `idempotent_retry(max_retries)`,
-`fast()` and `patient()` set `idempotent` for you; `defaults()`, `new_()` and
-`no_timeout()` do not.
+The returned coordinator future initially has a zero timeout, so its default wait still falls back to one second. Changing its options changes the caller's wait; it does not revise the worker's copied attempt policy.
 
-`RequestOptions` is a plain struct with public fields — `timeout_ms`,
-`total_timeout_ms`, `max_retries`, `base_delay_ms`, `max_delay_ms`,
-`jitter_factor`, `idempotent`. `defaults()` gives `timeout_ms = 1000`, no
-total budget, no retries, a 50 ms base delay, a 5000 ms maximum delay, and 0.1
-jitter. `total_timeout_ms = 0` means "no overall budget"; a non-zero value
-clamps each attempt's timeout to whatever is left and ends the chain with
-`TOTAL_TIMEOUT` when it runs out.
-
-The mechanics are worth understanding, because the `set_options` dance above
-looks like superstition otherwise. `request_with_options` serializes your
-arguments once, into a byte buffer that every attempt replays verbatim, then
-returns a *coordinator* future immediately and spawns a detached thread to do
-the work. Each attempt is an ordinary `request` on the connection, waited on
-with the per-attempt `timeout_ms`; on failure the thread sleeps for an
-exponential backoff with jitter and tries again. When an attempt finally
-succeeds, its reply bytes are copied into the coordinator future and the
-coordinator is notified.
-
-The coordinator future is deliberately created with `timeout_ms = 0` so that
-the internal attempts own timeout behaviour — which means that if *you* call
-`wait_with_options()` on it without setting a budget first, the zero sends you
-straight down the `wait()` path and back into the one-second cap. Setting the
-options afterwards is safe: the retry thread captured its own copy of the
-options before it was spawned, so your `set_options` only changes what the
-waiting side does.
-
-After the wait, `get_retry_count()` tells you how many retries were consumed
-and `get_timeout_type()` distinguishes `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`,
-`RESPONSE_TIMEOUT` and `TOTAL_TIMEOUT` from `NONE`.
-
-One limitation: the `Client`-level `request_with_options` builds an empty
-`FutureAttr` internally, so you cannot attach a completion callback to a
-retrying request the way you can to a plain one.
-
-This request-level idempotency flag is unrelated to `rpc/idempotency.rs`, which
-is a standalone deduplication utility not wired into the request path.
+Retries use exponential backoff with jitter. The total budget limits both attempt waits and delays, and exhaustion records `TimeoutType::TOTAL_TIMEOUT`. `get_retry_count()` and `get_timeout_type()` expose the final bookkeeping. An application error can be retried too; the coordinator does not consult the `RpcError` helper's retryability whitelist. Choose retry policies based on the operation, not merely the error's name.
 
 ### Being notified instead of waiting
 
-Passing a populated `FutureAttr` gives you a callback instead of a wait. The
-callback receives the `Arc<Future>` itself, and it fires from
-`notify_ready` — that is, on whichever thread delivered the reply, which for
-TCP is the poll thread. Do not block in it.
-
-```cpp srpc-no-compile
-FutureAttr attr{FutureCallback::from_callable(
-    [](rusty::Arc<Future> fu) {
-        if (fu->get_error_code() == 0) {
-            i32 result = 0;
-            srpc::deserialize_from(fu->get_reply(), result);
-        }
-    })};
-
-auto fu_result = client->request(RPC_METHOD_ID, attr,
-    [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(arg1, m); });
-```
-
-`Future::add_completion_callback` registers a second kind of callback — a
-plain `FnMut()` that runs before the `FutureAttr` one — but it returns `false`
-and registers nothing if the future is already ready or already timed out, so
-it races with the reply unless you install it from inside the request path.
+External native Rust code cannot populate `FutureAttr`'s callback field. That field, its callback-taking constructor, and `Future::add_completion_callback` are private. Use `FutureAttr::default()` for future-based requests, or `request_async` for callback completion. The C++ companion documents the generated C++ callback interface separately.
 
 ### Fire and forget: `request_async`
 
-When you never intend to wait, `request_async` skips the `Future` and the
-pending-future map entirely and hands the reply straight to a callback:
+The async reply callback is `Option<Box<dyn FnMut(i32, *const u8, usize) + Send>>`. The integer is the reply error; the pointer and length describe borrowed payload bytes valid only during the callback. Copy them before sending the result to another thread:
 
-```rust
-use srpc::client::AsyncReplyCallback;
+```rust,no_run
+use srpc::client::Client;
+use srpc::serializable::Serialize;
+use std::sync::mpsc::Sender;
 
-let on_reply: AsyncReplyCallback = Some(Box::new(
-    |err: i32, payload: *const u8, size: usize| {
-        if err != 0 { return; }
-        // decode `size` bytes at `payload` here — they are only valid
-        // for the duration of this call
-    },
-));
-
-let sent = client.request_async(RPC_METHOD_ID, |ar| {
-    Serialize::serialize(&arg1, ar);
-}, on_reply);
-
-if sent.is_err() {
-    // 107 ENOTCONN, 16 EBUSY, 5 EIO
+fn request_owned_reply(
+    client: &Client,
+    rpc_id: i32,
+    argument: i64,
+    completed: Sender<Result<Vec<u8>, i32>>,
+) -> Result<(), i32> {
+    client.request_async(
+        rpc_id,
+        |archive| argument.serialize(archive),
+        Some(Box::new(move |error, bytes, length| {
+            let reply = if error != 0 {
+                Err(error)
+            } else if length == 0 {
+                Ok(Vec::new())
+            } else {
+                // The channel keeps this payload readable during the callback.
+                Ok(unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec())
+            };
+            let _ = completed.send(reply);
+        })),
+    )
 }
 ```
 
-The callback slots are a fixed table of 16384 entries indexed by `xid % 16384`.
-If the slot for a new request is still occupied, the call fails with 16 `EBUSY`
-rather than blocking — so this path assumes you keep fewer than 16384 requests
-in flight per connection. There is no timeout on this path at all: if the reply
-never comes, the callback is simply never invoked and the slot stays taken
-until the connection is torn down. There are no retries either; `RequestOptions`
-does not apply here.
+The callback may run inline for an in-memory channel or on a transport worker. Keep it short, and retain only captures allowed by its `Send` bound. It cannot safely capture an `Arc<Client>` for cross-thread use. An owned message sent back to the client's owner is one way to request more work.
 
-The payload pointer is borrowed. Copy anything you want to keep before
-returning.
+This path has no request-options coordinator, timeout timer, or disconnected-request buffering. It uses a fixed 16,384-entry callback array indexed by transaction ID modulo that size. An occupied slot rejects submission with `16`; a disconnected connection rejects it with `107`; send failure can return `5`. Transport teardown drains outstanding callbacks with a connection error.
+
+The slot stores the callback without a second full transaction-ID check. A sufficiently delayed old reply can collide with a reused slot. Use the future-based path when that distinction matters. Calling the method is also not a guarantee that the peer ran the operation; an accepted request can disappear with the connection.
 
 ### Reading metrics
 
-`Client::metrics()` and `ClientConnection::metrics()` read the same shared counters.
-The client keeps their storage alive through close and reconnect, so a reference obtained
-from a live client remains valid through those operations. Import
-`srpc.connection_metrics` when naming `ConnectionMetrics` directly. Chapter 11 lists
-which counters the runtime updates and which still need explicit instrumentation.
+`client.metrics()` returns shared connection metrics that survive connection replacement. For example:
 
-Note also that `Client::pending_request_count()` counts *parked* requests in
-the disconnected-request queue, not requests in flight. In-flight futures are
-counted by `ClientConnection::pending_future_count()`.
+```rust,no_run
+use srpc::client::Client;
 
-### ClientPool
-
-`Client` is one connection. `ClientPool` keeps a set of connections per
-address and picks one per call:
-
-```rust
-use srpc::client::{ClientPool, PoolConfig};
-use srpc::load_balancer::LoadBalancingStrategy;
-
-let mut config = PoolConfig::defaults();
-config.load_balancing = LoadBalancingStrategy::ROUND_ROBIN;
-config.max_connections = 8;
-
-let pool = ClientPool::new(Some(poll), config);
-
-if let Some(client) = pool.get_client(&"127.0.0.1:8848".to_string()) {
-    // use it
+fn print_request_counts(client: &Client) {
+    let metrics = client.metrics();
+    println!(
+        "sent={}, completed={}, failed={}",
+        metrics.requests_sent(),
+        metrics.requests_completed(),
+        metrics.requests_failed(),
+    );
 }
 ```
 
+`metrics.in_flight_requests()` reports current tracked work and
+`metrics.reconnect_count()` counts successful reconnects.
 
+Chapter 11 separates counters the request path updates from fields that require explicit instrumentation. `client.pending_request_count()` counts requests parked in the disconnected queue; `ClientConnection::pending_future_count()` counts pending reply futures.
 
-The constructor is `ClientPool::new(Option<Arc<PollThread>>, PoolConfig)`
-(`ClientPool::new_` in C++) — both arguments are required, and passing `None`
-makes the pool create a poll thread of its own. Either way the destructor closes every
-pooled client and then calls `shutdown()` on whichever poll thread it holds —
-including one you passed in, so never share a poll thread between a
-`ClientPool` and anything that has to outlive it. There is no
-default-constructed `ClientPool`. It is a value, not an
-`Arc`: call methods on it with `.`, not `->`. The constructor asserts
-`min_connections > 0` and `max_connections >= min_connections`.
+### `ClientPool`
 
-`get_client` returns `rusty::Option<rusty::Arc<Client>>` and does a fair amount
-of work behind that: on a cache miss it opens `min_connections` connections; on
-a hit it runs the load balancer, then walks the pool from that index looking
-for a connected-and-healthy client, attempting a reconnect on any client in
-`FAILED` or `DISCONNECTED` state as it goes. If nothing survives, it closes
-everything, rebuilds `min_connections` fresh connections, and returns a random
-one — or returns `None` if even that fails. `None` is the normal signal that
-the address is unreachable; check it.
+A pool is a native Rust value that owns clients and a poll-thread handle:
 
-`PoolConfig` is a plain struct with `min_connections`, `max_connections`,
-`idle_timeout_ms`, `health_check_enabled`, `unhealthy_threshold_percent`,
-`min_requests_for_health` and `load_balancing`, plus the presets `defaults()`,
-`aggressive()`, `conservative()` and `no_health_check()`. `defaults()` is 1
-minimum / 4 maximum connections, a five-minute idle timeout, health checks on,
-a 50% success-rate floor, and `RANDOM` balancing. `set_pool_config` swaps the
-whole struct at any time.
+```rust,no_run
+use srpc::client::{ClientPool, PoolConfig};
 
-`RANDOM` and `ROUND_ROBIN` select by their named policies. `LEAST_CONNECTIONS`
-compares live `in_flight_requests()` counters. `LEAST_LATENCY` reads latency metrics,
-but ordinary completion does not record latency samples, so it needs explicit samples
-to distinguish connections by latency.
+fn main() {
+    let pool = ClientPool::new(None, PoolConfig::new());
+    if let Some(client) = pool.get_client("127.0.0.1:8848") {
+        // Use this client on the current thread.
+        client.close();
+    }
+    // Dropping the pool closes its clients and shuts down its poll thread.
+}
+```
 
-Health checks first test connectivity. Once `min_requests_for_health` requests have
-been sent, they compare the live success rate against `unhealthy_threshold_percent`.
-`remove_unhealthy_clients` and `remove_all_unhealthy` preserve `min_connections`.
-The idle helpers `close_idle_clients(addr, now_ms)` and `close_all_idle(now_ms)` use
-the connection's activity clock and take the current time in milliseconds from you.
+Passing `None` creates a poll thread. Passing `Some(poll)` reuses that handle, but the pool still shuts it down when dropped. Do not pass a worker that unrelated owners need after the pool dies.
+
+The configuration requires a positive minimum connection count and a maximum at least as large. Defaults are a minimum of one, a maximum of four, a five-minute idle timeout, and health checking enabled. After at least ten requests, the default health check requires a 50% success rate. The initial selection policy is `LoadBalancingStrategy::RANDOM`; import it from `srpc::load_balancer` to select another policy. On an address miss the pool opens its minimum connection set; this is not automatic load-driven growth to the maximum.
+
+Random and round-robin selection use the live pool. Least-connections selection uses tracked in-flight work. Latency-based selection needs latency samples; ordinary completions do not supply them. Health checks may reconnect or replace failed clients. `set_pool_config` replaces the configuration. `remove_unhealthy_clients` and `remove_all_unhealthy` preserve the configured minimum. The idle helpers `close_idle_clients(address, now_ms)` and `close_all_idle(now_ms)` use the connection activity clock and take the current time in milliseconds from the caller.
 
 ### TCP keepalive
 
-`Client::set_keepalive` stores the configuration and applies it to a live TCP channel.
-A configuration set before `connect` is applied when the channel is bound. The
-`ChannelConnectionBase::set_keepalive` capability reports whether a transport supports
-it; non-TCP channels return unsupported.
+`KeepaliveConfig` configures kernel TCP keepalive, independently of the SRPC heartbeat protocol:
 
-```rust
-let keepalive = KeepaliveConfig::aggressive(); // idle 10s, interval 2s, 3 probes
-cl.set_keepalive(&keepalive);                  // apply now or stage before connect
+```rust,no_run
+use srpc::client::{Client, KeepaliveConfig};
 
-let stored = cl.keepalive_config();
+fn configure_keepalive(client: &Client) {
+    client.set_keepalive(&KeepaliveConfig::aggressive());
+}
 ```
 
-The presets are `new_()` (enabled; 60 s idle, 10 s interval, 5 probes),
-`aggressive()` (10 / 2 / 3), `relaxed()` (identical to `new_()`) and
-`disabled()`. The fields are `enabled`, `idle_sec`, `interval_sec` and `count`.
-There is no `KeepaliveConfig::defaults()`.
+`new()` and `relaxed()` enable keepalive with 60 seconds idle, 10 seconds between probes, and five probes. `aggressive()` uses 10 seconds, two seconds, and three probes. `disabled()` turns it off. A newly created client stages the enabled configuration from `new()`.
 
-On Linux, enabling keepalive sets `SO_KEEPALIVE`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`,
-and `TCP_KEEPCNT`. Disabling it clears `SO_KEEPALIVE` and leaves the tuning values
-unchanged. This is separate from the RPC heartbeat protocol described in Chapter 11.
+The setter applies to an existing TCP channel and is also remembered for a later connection. A non-TCP channel may not support socket keepalive; the client setter returns no per-socket status.
+
+The native TCP channel owns its descriptor. Code constructing `TcpConnection` directly must transfer an fd with `IntoRawFd`, not pass `AsRawFd` while another owner will also close it. The higher-level client factory handles that transfer for normal use.
 
 ---
 
-## 9. RPC Server
+## 9. RPC server
 
-A `Server` owns three things: the service objects you register, a table mapping RPC
-ids to them, and a listener. Everything below that — accepting sockets, framing,
-delivering payloads — belongs to the channel layer (`rpc/tcp_channel.rs`,
-`rpc/inmemory_channel.rs`). `rpc/server.rs` picks up where a decoded request frame
-arrives and stops where a reply frame is handed back to the channel.
+A native service implements `srpc::server::Service`, registers numeric RPC IDs, decodes each request, and replies through a weak connection handle. The server owns the service after registration.
 
-The whole module is written for a single dispatch thread — the poll thread you hand
-to `Server::new`. That is not a performance note; it is the contract that makes the
-service table sound, and the last section of this chapter spells out what it costs
-you.
+### Service implementation
 
-### Service Implementation
+This complete service has one RPC, an `i64` input and an `i64` output. It uses ordinary fiber dispatch; changing `reg_rpc` to `reg_fast_rpc` selects inline dispatch.
 
-In Rust, a service implements the `Service` trait directly — `__reg_to__` and
-`__dispatch__`, exactly the shape shown in Chapter 1 and in the raw-service
-section below; there is no Rust code generator yet, so that dispatch-level
-surface *is* the Rust service API.
-
-In the C++ lane, the normal way is to inherit from the class the generator
-produced for your `.rpc` file and override the typed handlers. For a service
-declared `abstract` in the IDL, every handler is pure, so the compiler will not
-let you forget one:
-
-```cpp srpc-no-compile
-#include "demo.h"
-
-using namespace srpc;
-using namespace demo;
-
-class MyDemoService : public DemoService {
-public:
-    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
-        RpcSumResponse resp{};
-        resp.result = req.a + req.b + req.c;
-        return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
-    }
-
-    void slow_echo(const RpcSlowEchoRequest& req, RpcSlowEchoResponse& resp,
-                   srpc::DeferredReply defer) override {
-        resp.echoed = req.msg;
-        defer.reply();
-    }
+```rust,no_run
+use srpc::serializable::{
+    make_source_proxy_buffer, BinaryReadArchive, BinaryWriteArchive,
+    Deserialize, Serialize,
 };
-```
+use srpc::server::{Request, Server, Service, WeakServerConnection};
 
-Return `::Ok(resp)` and the generated wrapper serializes the response and replies
-with error code 0; return `::Err(code)` and it replies with your code and an empty
-body. You never touch an archive on this path. Chapter 12 covers the IDL and the
-per-method attributes — the default, `fast`/`prefix`, `defer`, `fiber`, `async` and
-`raw` — that decide *how* the server runs each handler; this chapter covers what the
-server does around them.
+const DOUBLE_RPC: i32 = 0x00E0_0042;
 
-One trap is easy to hit and fails late: if the service is **not** declared
-`abstract`, do not subclass it. Its virtuals are then declared but never defined, so
-the class has no key function and its vtable is never emitted — the link fails even
-if you override everything. For a non-`abstract` service, define the generated
-virtuals out of line in a `.cc`, the way `tests/benchmark_service.cc` does for all
-twelve methods of `BenchmarkService`.
+struct DoubleService;
 
-Register the implementation with `reg_service_typed`:
-
-```cpp srpc-no-compile
-auto server = Server::new_(rusty::Some(poll_thread.clone()));
-server.reg_service_typed(rusty::make_box<MyDemoService>());
-```
-
-`reg_service_typed<T>(rusty::Box<T>)` is the entry point for generated services
-because **a generated service class has no base class**. It wraps your box in a
-`ServiceBoxShim<T>` — a small adapter that does inherit `srpc::Service` and forwards
-`__reg_to__` / `__dispatch__` to the object inside — so `T` only has to *have* those
-two members, not inherit them.
-
-`reg_service(rusty::Box<Service>)` is the other door, and it is for hand-written
-services that really do inherit `srpc::Service`. Both call `__reg_to__` immediately
-and then park the service in the pending list until `start()`.
-
-### The Service Interface
-
-Under the typed layer, a service is just two methods: `__reg_to__` claims RPC ids and
-`__dispatch__` routes one request. The generated C++ class writes both for you.
-Implementing the `Service` trait yourself is how you get at the undecoded request —
-it is the whole Rust service API today, and the shape a `raw` IDL method hands a C++
-handler anyway:
-
-```rust
-const RPC_DO_WORK: i32 = 0x1001;
-
-struct MyRawService;
-
-impl Service for MyRawService {
-    fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32 {
-        server.reg_rpc(RPC_DO_WORK, svc_index)
+impl Service for DoubleService {
+    fn __reg_to__(&mut self, server: &mut Server, index: usize) -> i32 {
+        server.reg_rpc(DOUBLE_RPC, index)
     }
 
-    fn __dispatch__(&mut self, rpc_id: i32, mut req: Box<Request>, weak_sconn: WeakServerConnection) {
-        if rpc_id != RPC_DO_WORK {
-            return;
-        }
-        // The read cursor is already past the xid and the rpc_id — the server
-        // consumed those through an archive over this same `req.src`.
-        let mut arg = 0i32;
+    fn __dispatch__(
+        &self,
+        rpc_id: i32,
+        mut request: Box<Request>,
+        connection: WeakServerConnection,
+    ) {
+        assert_eq!(rpc_id, DOUBLE_RPC);
+        let mut value = 0_i64;
         {
-            let mut ar = BinaryReadArchive {
+            let mut archive = BinaryReadArchive {
+                // The boxed request keeps its cursor alive and unmoved.
                 source_: unsafe {
-                    srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+                    make_source_proxy_buffer(&raw mut request.src)
                 },
             };
-            Deserialize::deserialize(&mut arg, &mut ar);
+            value.deserialize(&mut archive);
         }
-        let result = compute(arg);
-
-        if let Some(sconn) = weak_sconn.upgrade() {
-            let writer: ServerReplyFn = Box::new(move |out: &mut BinaryWriteArchive| {
-                Serialize::serialize(&result, out);
-            });
-            sconn.reply(&req, 0, writer);
+        if let Some(connection) = connection.upgrade() {
+            connection.reply(
+                &request,
+                0,
+                Some(Box::new(move |archive: &mut BinaryWriteArchive| {
+                    (value * 2).serialize(archive);
+                })),
+            );
         }
-        // `req` is a Box — dropping it releases the request and its
-        // pending-request guard.
     }
 }
 ```
 
-The same class in the C++ lane inherits `srpc::Service` and overrides the two
-virtuals, with `srpc::Deserialize_::deserialize` / `srpc::Serialize_::serialize`
-as the archive calls; Chapter 20 shows it in full.
+The request cursor already points after the transaction ID and RPC ID. Drop the borrowed read archive before using the request elsewhere. The request owns the frame-body bytes, so it can remain alive while a handler is suspended.
 
-The connection handle is *weak* on purpose: by the time a handler finishes, the peer
-may be gone. `upgrade()` returns an `Option`; if it is empty the reply is simply
-dropped, which is the same thing the generated wrappers do.
+A reply writer is `Some(Box::new(...))`. Use `None` for a reply with no body. The server's writer alias is `Option<Box<dyn FnMut(&mut BinaryWriteArchive)>>`; passing a bare box does not match that signature.
 
-`__reg_to__` gets a `svc_index` and must hand it to `reg_rpc(rpc_id, svc_index)` for
-every id it wants, or `reg_fast_rpc` for ids that should dispatch inline. `reg_rpc`
-returns `EEXIST` (17) if that id is already claimed, and the generated `__reg_to__`
-reacts by jumping to an error label that calls `svr.unreg(id)` for *all* of its ids
-and returns the error.
+### The service interface
 
-Two consequences worth knowing, both verifiable in `rpc/server.rs` and in the
-generator:
-
-- `reg_service` and `reg_service_typed` **discard** `__reg_to__`'s return value. A
-  failed registration is silent; the service is still stored, just unreachable.
-- `unreg` removes an id from the table regardless of which service owns it. So if two
-  services collide on one id, the loser's cleanup unregisters the *winner's* mapping
-  for that id too, and neither handler is reachable afterwards.
-
-The generator assigns each method a random id in `0x10000000`–`0x70000000` and keeps
-it stable by reading the previous header, so collisions are unlikely — but they fail
-quietly, so if a method mysteriously answers `ENOENT`, look here first.
-
-### Server Lifecycle
+The trait has two methods:
 
 ```rust
-let poll_thread = PollThread::create();
-let mut server = Server::new(Some(poll_thread.clone()));
+use srpc::server::{Request, Server, WeakServerConnection};
 
-server.reg_service(Box::new(MyService));
-
-// Start listening. TCP is installed automatically.
-let addr = CString::new("0.0.0.0:8100").unwrap();
-if unsafe { server.start(addr.as_ptr()) } != 0 {
-    return;
+pub trait Service: Send + Sync {
+    fn __reg_to__(&mut self, server: &mut Server, index: usize) -> i32;
+    fn __dispatch__(
+        &self,
+        rpc_id: i32,
+        request: Box<Request>,
+        connection: WeakServerConnection,
+    );
 }
-
-// Blocks until someone calls graceful_shutdown() or do_shutdown().
-server.wait_for_shutdown();
 ```
 
-(The C++ spelling is `Server::new_(rusty::Some(poll_thread.clone()))` and
-`server.start(reinterpret_cast<const int8_t*>("0.0.0.0:8100"))`.)
+Application code imports and implements `srpc::server::Service` as above.
 
-`start()` takes a raw NUL-terminated address pointer and returns 0 or -1.
-It does four things, in this order: it drains the pending registrations into an
-immutable `RpcServiceContext`, auto-installs a `TcpFactory` on your poll thread if you
-have not bound a channel factory yourself, makes a listener and wires its `on_accept`
-/ `on_error` callbacks, and binds. Bind to port `0` and read the real port back with
-`get_bound_port()`.
+Registration borrows the service mutably before dispatch begins. Dispatch takes `&self`, and the service must satisfy `Send + Sync`. Use mutexes or atomics for shared mutable application state. Release a mutex guard before a fiber-aware wait or a reentrant call.
 
-Three things follow from that order:
+`reg_rpc(id, index)` returns `17` for a duplicate ID; `reg_fast_rpc` also marks a successfully registered ID for inline dispatch. `unreg(id)` removes an ID. Plan any multi-ID rollback so it removes only IDs this registration actually acquired.
 
-- **Register everything before `start()`.** The pending tables are emptied by
-  `start()`; anything registered afterwards sits in a list nobody reads.
-- **Call `start()` once.** A second call rebuilds the context from whatever is pending
-  now — which is normally nothing — and replaces the live table.
-- **A failed `start()` takes your services with it.** Both failure paths (no listener,
-  or a bind error) drop the freshly built context, and the services went into it. If
-  you are retrying on another port, re-register first.
+`Server::reg_service(Box<dyn Service>)` and `reg_service_typed(Box<T>)` take ownership. Both native forms require a real `Service` implementation. The server's registration wrapper discards the service's return code and still stores the service. If startup must fail on registration collision, check the results in your registration implementation rather than assuming `reg_service` returns an error.
 
-To use the in-memory transport instead of TCP, call `set_channel_factory()` *before*
-`start()`; the auto-install only fires when nothing is bound.
+### Server lifecycle
 
-`addr()` reads the bound address back out of the context and `unwrap()`s it, so it is
-only *callable* after a successful `start()`: before that — or after a `start()` that
-failed, which drops the context again — it panics rather than returning an empty
-string.
-`service_count()` works either side of the line, reporting the pending count before
-`start()` and the live count after.
+`Server::new(Some(poll))` uses the supplied worker; `None` creates one. Register services and choose a channel factory before the single `start` call. Registrations added after start remain in the pending tables, and a second start replaces the context from those tables. This listener-only example uses an ephemeral TCP port:
 
-Teardown order is: close the clients, destroy the `Server`, shut down the poll thread.
-Destroying the server is what closes connections that were already accepted — it
-schedules the listener close as a job on the poll thread so it stays ordered against
-in-flight work, then closes each accepted connection eagerly so peers see EOF.
-`graceful_shutdown()` does not do that part.
+```rust,no_run
+use srpc::reactor::PollThread;
+use srpc::server::Server;
+use std::ffi::CString;
 
-### Graceful Shutdown
+fn main() {
+    let poll = PollThread::create();
+    let mut server = Server::new(Some(poll.clone()));
+    // Register application services here, before start.
+    let address = CString::new("127.0.0.1:0").unwrap();
+    // The NUL-terminated address is live throughout start.
+    assert_eq!(unsafe { server.start(address.as_ptr().cast()) }, 0);
+    println!("listening on {}", server.get_bound_port());
 
-The server carries a phase that only moves forward:
-
-```
-RUNNING -> STOP_ACCEPTING -> DRAINING -> CLOSING -> STOPPED
+    // The application controls how long it serves.
+    server.graceful_shutdown(5_000);
+    drop(server);
+    poll.shutdown();
+}
 ```
 
-`graceful_shutdown(drain_timeout_ms)` walks the whole sequence:
+`start` returns zero on success and `-1` on failure. `get_bound_port()` reports the port selected for a `:0` TCP listener. `addr()` requires a live service context, so do not call it before start or after a failed start.
 
-1. **STOP_ACCEPTING** — `stop_accepting()` closes the listener. It is a no-op unless
-   the phase is still `RUNNING`, so calling it yourself first is harmless.
-2. **DRAINING** — `drain(timeout_ms)` polls the pending-request counter every
-   millisecond until it reaches zero or the timeout expires. It returns whether the
-   drain completed, and logs a warning with the surviving count if it timed out.
-   `graceful_shutdown` ignores that result and continues either way.
-3. **CLOSING** — every hook registered with `add_shutdown_hook` runs, in registration
-   order, while the hooks mutex is held. A hook that throws is caught and logged, and
-   the remaining hooks still run.
-4. `do_shutdown()` flips the shutdown flag and broadcasts, releasing everyone parked
-   in `wait_for_shutdown()`.
-5. **STOPPED**.
+Starting moves the registration tables and owned services into an `Arc<RpcServiceContext>`. A failed start can discard that context. Register services again before retrying, or construct a new server.
 
-```rust
-server.add_shutdown_hook(/* flush state, close files, ... */);
+The `Server` lifecycle value contains thread-local mutable state and is not a shared `Sync` handle. Keep lifecycle operations on its owner. The immutable dispatch context and synchronized `ServerConnection` handles support shared dispatch. A thread-safe connection does not make a containing `Server` safe to share.
 
-// Stop accepting, wait up to 30s for in-flight requests, run hooks, wake waiters.
-server.graceful_shutdown(30000);
-```
+### Graceful shutdown
 
-`phase()` reads the current phase and `shutdown_phase_to_string()` names it for a log
-line. `do_shutdown()` on its own only wakes `wait_for_shutdown()` — it stops nothing
-— which is exactly what you want from a signal handler that then lets `main` run the
-real shutdown. The default drain timeout constant is `kDefaultDrainTimeoutMs`
-(30000); C++ has no default argument here, so pass the value.
+The phases are `RUNNING`, `STOP_ACCEPTING`, `DRAINING`, `CLOSING`, and `STOPPED`. `graceful_shutdown(timeout_ms)` stops the listener, waits for pending requests up to the budget, runs shutdown hooks, and signals shutdown completion.
 
-What the drain actually counts is worth understanding. Every request that gets far
-enough to have an xid attaches a `PendingRequestGuard` to itself, which increments a
-shared atomic; the guard decrements it when the request object is destroyed. For an
-ordinary handler that is when the dispatcher returns. For a `defer` handler the
-request lives inside the `DeferredReply`, so the count stays up until that handle is
-replied through and destroyed — which is what makes draining meaningful for deferred
-work. `increment_pending()` / `decrement_pending()` / `pending_request_count()` are
-exposed if you need to park something else on the same counter.
+A request counts as pending from transaction-ID parsing until its owned `Request` is dropped. Sending a reply does not release that count if a deferred owner still holds the request. Drop completed deferred replies promptly.
 
-### The Dispatch Path
+`drain(timeout_ms)` returns whether the counter reached zero and polls at roughly one-millisecond intervals. `graceful_shutdown` continues after the budget even when drain fails. If your policy must distinguish a fully drained server, call `stop_accepting()` and `drain()` explicitly and inspect the result.
 
-When the channel layer hands over one request frame (the 4-byte size header is
-already stripped), the server does the following, all on the poll thread:
+Shutdown hooks are boxed mutable callbacks. They run in registration order, with panic catching around each hook, but while the hook-list mutex is held. Do not register another hook from a hook. Process aborts and aborting verification failures cannot be caught.
 
-1. If the connection is already `CLOSED`, drop the frame.
-2. Copy the payload into the `Request` — the channel contract only guarantees those
-   bytes for the duration of the callback, and everything after this point may yield.
-3. An empty body has no xid to reply against: log and drop.
-4. Read `v64 xid`, then attach the pending-request guard.
-5. Fewer than 4 bytes left means there is no `i32 rpc_id`: reply `EINVAL` (22) with an
-   empty body.
-6. Read the `rpc_id`. If it is `kInternalHeartbeatRpcId` (`i32::MIN`), reply
-   immediately with error 0 and an empty body — before any service lookup — unless
-   `set_drop_heartbeat_replies(true)` was set, which is a fault-injection knob for
-   tests. (The heartbeat protocol is complete on both sides, but nothing currently
-   ticks the client-side timer, so in practice these frames rarely arrive.)
-7. Look the id up. A miss replies `ENOENT` (2) and logs a warning — once per id for
-   the life of the process, so a client hammering a wrong id does not flood the log.
-8. Hit: if the id was registered with `reg_fast_rpc`, borrow the service and call
-   `__dispatch__` inline. Otherwise spawn a stackful fiber and call it there. The
-   fiber starts running immediately and returns to the poll thread when the handler
-   finishes or blocks; the fiber's copy of the context `Arc` keeps the services alive
-   even if the connection dies mid-flight.
+`do_shutdown()` wakes `wait_for_shutdown()`; it is a notification mechanism, not a substitute for stopping the listener and draining. These methods use a synchronized wait pair internally, but do not override the native ownership restrictions on `Server`. A controller on another thread can send a shutdown message to the server's owner.
 
-Replies are written by `sconn_reply`: `v64 xid`, `v32 error_code`, `v64
-server_instance_id`, then whatever your writer appends. The server always writes that
-extended form (chapter 7 has the wire details). The instance id is generated once per
-`Server` from time, PID and 64 random bits, masked non-negative because it crosses the
-wire signed; clients use it to notice that a server restarted.
+The phase reaching `STOPPED` is not the point where all accepted channel owners are necessarily destroyed. Dropping the server closes its connections and queues remaining close work. Keep the poll worker alive through client and server teardown, then shut it down. The manual pending-counter helpers require balanced increments and decrements; ordinary requests already carry the guard.
 
-Send errors are deliberately not surfaced from `reply()` — the return value of
-`send_frame` is discarded. You learn about a dead connection through the channel's
-`on_closed` / `on_error` callbacks, which close the `ServerConnection`, not from the
-reply call.
+### The dispatch path
+
+A received frame is copied into an owned `Request`. Empty input is discarded. The server reads the `v64` transaction ID, attaches a pending-request guard, and reads the four-byte RPC ID. A missing ID produces error `22`. An unregistered ID produces error `2`, with a warning emitted once for that ID.
+
+The heartbeat RPC uses the reserved minimum `i32` ID and receives a header-only reply unless heartbeat dropping is enabled for a test. Application IDs should avoid it.
+
+A fast RPC calls the service inline on the delivering thread. An ordinary RPC enters a local stackful fiber and runs immediately until it completes or reaches a fiber-aware wait. The context owner keeps the service table alive across suspension.
+
+Fast handlers must not suspend. Ordinary handlers still block their OS thread if they call `std::thread::sleep`, blocking I/O, or the RPC future's condition-variable wait. Fiber dispatch does not adapt those operations.
 
 ### Replying
 
-`ServerConnection::reply(&Request, i32 error_code, ServerReplyFn)` is the whole
-reply API. The writer is a boxed `FnMut(&mut BinaryWriteArchive)` (in C++, a
-`rusty::Function<void(BinaryWriteArchive&)>`; pass a default-constructed
-`srpc::ServerReplyFn{}` there for a header-only reply, which is what the
-generated code does on the error path).
+The reply header is `v64 xid | v32 error | v64 server_instance_id`, followed by bytes emitted by the writer. The instance ID combines time, process identity, and randomness; it is a restart hint, not an authenticated identity.
 
-`DeferredReply` is the handle for answering later. It owns the request, a weak
-connection handle, the writer that closes over your response struct, and a cleanup
-callback. `reply()` and `reply_error(code)` each fire at most once — the second call
-logs and returns — and simply destroying the handle without replying is safe: the
-caller just never hears back, and the cleanup callback still runs from the destructor.
-If the connection died in the meantime, both paths log and drop the reply.
+Upgrading `WeakServerConnection` may fail after teardown. Dropping an unsent reply in that case is expected. A successful upgrade keeps the connection object alive for the call; it does not prove the transport can still send. `reply` returns unit and does not propagate the channel's send error to the service.
 
-`run_async()` on either type is not a thread pool. `ServerConnection::run_async`
-invokes the callback inline on the calling thread and returns `EINVAL` (22) if you
-hand it an empty one; `DeferredReply::run_async` invokes it inline and always returns
-0. To actually move work off the dispatch path, keep the `DeferredReply` and reply
-from wherever the work completes.
+For deferred work, `DeferredReply` owns the request, weak connection, writer, and cleanup callback:
 
-### Dispatch Context and the Single-Thread Contract
+```rust,no_run
+use srpc::serializable::{BinaryWriteArchive, Serialize};
+use srpc::server::{DeferredReply, Request, WeakServerConnection};
 
-`RpcServiceContext` is the immutable object `start()` builds and shares by `Arc` with
-every accepted connection. Its definition in `rpc/server.rs` is the honest summary of
-the server's concurrency model:
-
-```rust
-pub struct RpcServiceContext {
-    pub rpc_to_service: HashMap<i32, usize>,       // rpc id -> index into `services`
-    pub fast_rpc_ids: HashSet<i32>,                // ids that dispatch inline
-    pub services: Vec<RefCell<ServiceProxy>>,      // ServiceProxy = Box<dyn Service>
-    pub addr: String,
-    pub pending_requests: Arc<AtomicI32>,          // what drain() watches
-    pub drop_heartbeat_replies: Arc<AtomicBool>,
-    pub server_instance_id: u64,
+fn prepare_reply(
+    request: Box<Request>,
+    connection: WeakServerConnection,
+    answer: i64,
+) -> DeferredReply {
+    DeferredReply::new(
+        request,
+        connection,
+        Box::new(move |archive: &mut BinaryWriteArchive| {
+            answer.serialize(archive);
+        }),
+        Box::new(|| {
+            // Release application resources here.
+        }),
+    )
 }
 ```
 
-Every field is const after construction except the interior of those `RefCell`s, which
-is how a `const` context can still call a non-const `__dispatch__`. `RefCell` is a
-single-threaded cell, and both `RpcServiceContext` and `ServerConnection` are `Send +
-Sync` only by an `unsafe impl` in the module whose stated justification is the
-single-dispatch-thread contract — not locking. `ServerConnection`'s own mutable state
-(`status_`, `channel_mode_`) is `Cell`, written from the dispatch thread and read
-elsewhere as a monotone latch. So:
+The constructor takes plain boxed callbacks; it stores the optional state internally. `reply()` sends success once, and `reply_error(code)` sends a header-only error once. Later calls log and do nothing. Dropping the deferred reply invokes cleanup even if neither send method was called.
 
-**Do not dispatch into one server from two threads.** One `Server`, one `PollThread`,
-one thread running handlers. Two servers can share a poll thread — their service
-tables are separate — but one server must not be driven by two.
+`DeferredReply` is not `Send`: its stored callbacks have no `Send` bounds. Keep it on the owning execution thread. To compute on another OS thread, send owned input there and return the result to a local reply owner. Do not move the deferred reply into `std::thread::spawn`.
 
-There is a second, subtler consequence of `Vec<RefCell<..>>`. The borrow is taken
-before `__dispatch__` and released only when it returns, so it spans the *entire*
-handler — including a fiber suspension. If a default (fiber) handler blocks on a
-nested RPC, an event, or a sleep, its service stays mutably borrowed while it is
-parked, and a second request routed to the same service in that window cannot take
-the borrow — a conflicting `borrow_mut()` fails outright rather than waiting its
-turn (rusty-cpp's `RefCell` throws; the Rust build panics). Two ways out, in order of
-preference:
+The methods named `run_async` on `ServerConnection` and `DeferredReply` execute their callback immediately. They do not create a thread or schedule a fiber. The connection form accepts an optional callback and returns `22` for an empty one; the deferred form takes a plain box.
 
-- Use `defer` for anything that has to wait. The dispatcher calls your handler, you
-  stash the `DeferredReply`, and the handler returns — releasing the borrow — long
-  before the answer exists.
-- Split independent work across separate service objects, which get separate
-  `RefCell`s and separate indices.
+### Dispatch context and the single-thread contract
 
-And `fast` handlers have the mirror-image constraint: they run inline on the poll
-thread with no fiber to yield from, so anything that blocks there stalls every
-connection on that thread.
+The context stores `Vec<Box<dyn Service>>`, with shared dispatch through `&dyn Service`. It does not keep a mutable `RefCell` borrow around a handler. Synchronous reentry and suspended handlers therefore do not conflict with a hidden mutable dispatch borrow.
+
+Thread confinement still applies to the reactor's local fibers, non-`Send` callbacks, deferred replies, and the lifecycle owner. At the other boundary, `Service: Send + Sync` and synchronized connection state enforce real native Rust sharing requirements. Keep those boundaries separate when designing application state.
+
+The maintained Rust tests exercise inline in-memory dispatch, TCP round trips, shared service dispatch, and close/reconnect callback ownership. They are useful examples when adding a service with different lifetime requirements.
 
 ---
 
 ## 10. Serialization
 
-There is no `Marshal` class in SRPC. Serialization is three small layers, and the
-canonical source for all of them is `misc/serializable.rs` (module
-`srpc.serializable`, which `srpc.hpp` pulls in for you):
+SRPC serialization has three parts. A sink or source moves bytes. A `BinaryWriteArchive` or `BinaryReadArchive` holds that byte interface. The native `Serialize` and `Deserialize` traits choose how a value is encoded.
 
-1. a **sink** or **source** — where the bytes go, or come from;
-2. an **archive** — `BinaryWriteArchive` / `BinaryReadArchive`, which owns the wire
-   format and nothing else;
-3. the **dispatchers** — the `Serialize` / `Deserialize` traits in Rust, and the
-   `srpc::Serialize_::serialize` / `srpc::Deserialize_::deserialize` open-set
-   dispatch in C++ — which pick the encoding for a value's type. The two lanes
-   diverge more here than anywhere else in the library, and this chapter says
-   exactly where.
-
-Splitting sink from archive is what lets the same encoder write into a memory
-buffer, a file descriptor, or anything else you can express as a sink, without the
-wire format knowing which. (If an old comment or a third-party header mentions
-`Marshal`, `Marshallable` or `MarshallDeputy`: none of those types exist here.)
+The same traits work with memory buffers, descriptors, and application-defined byte interfaces. The canonical implementations live in `misc/serializable.rs` and are available as `srpc::serializable`.
 
 ### Sinks, sources and archives
 
-Four concrete sinks and sources ship:
+| Type | Storage |
+|---|---|
+| `BufferSink` | Owns a public `Vec<u8>` named `bytes` and appends to it |
+| `BufferSource` | Holds a borrowed byte pointer, length, and cursor |
+| `FdSink` | Writes to a descriptor owned by the caller |
+| `FdSource` | Reads from a descriptor owned by the caller |
 
-| Type | What it is |
-|------|-----------|
-| `BufferSink` | Appends to `bytes`, a `Vec<u8>` it owns |
-| `BufferSource` | Reads from a borrowed `(const uint8_t*, size_t)` range; `pos()`, `remaining()`, `eof()` |
-| `FdSink` | Writes to a raw fd it does **not** own |
-| `FdSource` | Reads from a raw fd it does **not** own |
-
-An archive does not take a sink directly; it takes a type-erased *proxy* built by
-one of four named free functions — there is no bare `make_source_proxy`. The
-functions take raw pointers (they are `unsafe fn` in Rust; the borrow rules below
-are the caller's obligation in both lanes):
-
-```rust
-let p1: SinkProxy = unsafe { make_sink_proxy_buffer(&raw mut buffer_sink) };
-let p2: SourceProxy = unsafe { make_source_proxy_buffer(&raw mut buffer_source) };
-let p3: SinkProxy = unsafe { make_sink_proxy_fd(&raw mut fd_sink) };
-let p4: SourceProxy = unsafe { make_source_proxy_fd(&raw mut fd_source) };
-```
-
-Every one of these **borrows**. The proxy holds a pointer to your sink or source;
-it does not copy it and does not extend its life. The sink must outlive the archive
-built from it, and must not be moved while that archive exists. `FdSink` and
-`FdSource` additionally do not own their descriptor — you open and close it.
-
-Both archives are single-field aggregates holding their proxy, so you construct one
-by naming the proxy:
+An archive owns a `Box<dyn SinkBase>` or `Box<dyn SourceBase>`. You can give it a concrete owned implementation with `Box::new`:
 
 ```rust
 use srpc::serializable::{
-    make_sink_proxy_buffer, make_source_proxy_buffer, BinaryReadArchive,
-    BinaryWriteArchive, BufferSink, BufferSource, Deserialize, Serialize,
+    BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource,
+    Deserialize, Serialize,
+};
+
+let mut writer = BinaryWriteArchive {
+    sink_: Box::new(BufferSink { bytes: Vec::new() }),
+};
+42_i32.serialize(&mut writer);
+
+let bytes = 42_i32.to_ne_bytes();
+let mut reader = BinaryReadArchive {
+    source_: Box::new(BufferSource::new(bytes.as_ptr(), bytes.len())),
+};
+let mut value = 0_i32;
+value.deserialize(&mut reader);
+assert_eq!(value, 42);
+drop(reader);
+```
+
+The writer owns its buffer, but the erased sink interface has no operation to recover that buffer. The reader owns the `BufferSource` cursor; it still borrows `bytes`. Keep the bytes readable and unchanged until the reader is dropped.
+
+For an encode/decode round trip, a scoped borrowed proxy lets you recover the buffer and inspect the source cursor afterward:
+
+```rust
+use srpc::serializable::{
+    make_sink_proxy_buffer, make_source_proxy_buffer,
+    BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource,
+    Deserialize, Serialize,
 };
 
 let mut sink = BufferSink { bytes: Vec::new() };
 {
-    let mut ar = BinaryWriteArchive {
+    let mut archive = BinaryWriteArchive {
+        // The sink stays alive, unmoved, and exclusively borrowed.
         sink_: unsafe { make_sink_proxy_buffer(&raw mut sink) },
     };
-    Serialize::serialize(&42_i32, &mut ar);
-} // archive dies here; `sink` still owns the bytes
-
-let mut src = BufferSource::new(sink.bytes.as_ptr(), sink.bytes.len());
-let mut rd = BinaryReadArchive {
-    source_: unsafe { make_source_proxy_buffer(&raw mut src) },
-};
-let mut answer_back = 0i32;
-Deserialize::deserialize(&mut answer_back, &mut rd);
-// src.pos() is now the number of bytes consumed; src.eof() says whether any remain.
-```
-
-(The C++ spelling constructs the archive from the proxy expression —
-`BinaryWriteArchive ar(make_sink_proxy_buffer(&sink));` — and calls the
-dispatchers: `Serialize_::serialize(answer, ar);`.)
-
-This is exactly the shape the generated C++ code uses: every reply decoder
-`rpcgen` emits is a `BinaryReadArchive` built by `make_source_proxy_buffer` over
-the `BufferSource` that the client or server already parked the frame body in —
-and the shape the in-repo Rust round-trip test uses on the request path.
-
-The fd variants are for snapshots and log replay, where you want bytes to land in a
-file without an intermediate buffer:
-
-```cpp srpc-no-compile
-int fd = ::open("/tmp/snap.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-{
-    srpc::FdSink sink = srpc::FdSink::new_(fd);
-    srpc::BinaryWriteArchive ar(srpc::make_sink_proxy_fd(&sink));
-    srpc::Serialize_::serialize(entry, ar);
+    42_i32.serialize(&mut archive);
 }
-::close(fd);
+let mut source = BufferSource::new(sink.bytes.as_ptr(), sink.bytes.len());
+let mut answer = 0_i32;
+{
+    let mut archive = BinaryReadArchive {
+        // The cursor and backing bytes outlive this archive.
+        source_: unsafe { make_source_proxy_buffer(&raw mut source) },
+    };
+    answer.deserialize(&mut archive);
+}
+assert_eq!(answer, 42);
+assert!(source.eof());
 ```
 
-Be aware of what that costs. Neither fd type buffers: every leaf write becomes a
-`write(2)` and every leaf read a `read(2)` (`misc/srpc_io.c`, EINTR-retry ladders),
-so serializing a thousand-element vector of `i32` is a thousand-and-one syscalls.
-For anything but small, occasional payloads, serialize into a `BufferSink` and
-write the buffer out yourself.
+The four borrowed constructors are `make_sink_proxy_buffer`, `make_source_proxy_buffer`, `make_sink_proxy_fd`, and `make_source_proxy_fd`. Their raw pointers must stay live, unmoved, and exclusively borrowed for every use of the proxy. Do not inspect or mutate the original sink or cursor through another reference until the archive is dropped. A source's backing byte range has its own lifetime requirement.
+
+Descriptor adapters do not buffer and do not close the descriptor. Keep a `File` owner alive and lend its raw fd:
+
+```rust,no_run
+use srpc::serializable::{BinaryWriteArchive, FdSink, Serialize};
+use std::fs::File;
+use std::io;
+use std::os::fd::AsRawFd;
+
+fn save_counter(path: &str, counter: i64) -> io::Result<()> {
+    let file = File::create(path)?;
+    let mut archive = BinaryWriteArchive {
+        sink_: Box::new(FdSink::new(file.as_raw_fd())),
+    };
+    counter.serialize(&mut archive);
+    drop(archive);
+    // Dropping file closes the descriptor.
+    Ok(())
+}
+```
+
+Every leaf value becomes a separate `read` or `write` call, with interruption retries. A vector of a thousand fixed-width integers costs a length write and a thousand element writes. For larger payloads, encode to a `BufferSink` and write the resulting buffer with your file API.
 
 ### Failure model
 
-Nothing in this layer returns an error. `BinaryReadArchive::read_exact(p, n)`
-returns a `bool`, but every built-in decoder wraps it in `verify()` — the
-fixed-width integer and `double` leaves go through `read_or_abort`, while the `v32`,
-`v64` and `std::string` leaves call `verify(read_exact(...))` themselves (the varint
-ones twice: one byte, then the tail length that byte selects). Either way a truncated
-or desynchronised stream prints a stack trace and panics. `FdSink` aborts on any
-write error that is not `EINTR`, `SerializableRegistry::create` panics on an
-unregistered kind, and `AnyMessage::load` panics on an unregistered type name.
+Built-in decoding returns unit and checks exact reads with verification. A truncated value, unknown dynamic payload tag, or invalid UTF-8 string panics rather than returning a decode error. The descriptor sink also treats an unrecoverable write error as a verification failure. Applications that need recoverable parsing must introduce their own checked decoder or validate before invoking these built-ins.
 
-Decoders also trust the length prefix: `std::vector` and `rusty::Vec` `reserve` the
-decoded count before reading a single element, and `std::string` resizes to the
-decoded length, so a corrupt prefix is an enormous allocation attempt. The only
-upstream guard is the framing layer's 64 MiB `kMaxFramePayloadSize` cap. Decode
-frames from peers you trust.
+Decoded lengths are trusted. Containers can reserve for an advertised count before discovering that the bytes are missing. The framing layer's 64 MiB payload limit does not prevent a small frame from advertising an enormous allocation. Do not treat the frame cap as a safe decoder for untrusted lengths.
+
+The source interfaces use raw byte pointers. A successful compilation does not establish their lifetime or aliasing requirements; the caller must uphold the contracts described above.
 
 ### Supported types
 
-| Type | Wire form |
-|------|-----------|
-| `i8`, `i16`, `i32`, `i64` | 1 / 2 / 4 / 8 raw bytes, host byte order |
-| `u8`, `u16`, `u32`, `u64` | 1 / 2 / 4 / 8 raw bytes, host byte order |
-| `double` | 8 raw bytes, host representation |
-| `v32` | SparseInt varint, 1–5 bytes |
-| `v64` | SparseInt varint, 1–9 bytes |
-| `std::string` | `v64` length, then the bytes |
-| `rusty::String` | identical to `std::string`: `v64` length, then the bytes |
-| `std::string_view` | same bytes — **write side only** |
-| `std::pair<A, B>` | `A` then `B`, no prefix |
-| `std::vector`, `std::list`, `std::set`, `std::unordered_set`, `rusty::Vec`, `rusty::BTreeSet`, `rusty::HashSet` | `v64` count, then each element |
-| `std::map`, `std::unordered_map`, `rusty::BTreeMap`, `rusty::HashMap` | `v64` count, then key, value, key, value… |
+| Native Rust type | Wire form |
+|---|---|
+| `i8`, `i16`, `i32`, `i64` | 1, 2, 4, or 8 raw native-endian bytes |
+| `u8`, `u16`, `u32`, `u64` | 1, 2, 4, or 8 raw native-endian bytes |
+| `f64` | Eight bytes in the host representation |
+| `v32`, `v64` | Signed SparseInt encoding |
+| `String` | `v64` byte length, then UTF-8 bytes |
+| `(A, B)` | First value, then second, with no prefix |
+| `Vec<T>` | `v64` element count, then the elements |
+| `BTreeSet<T>`, `HashSet<T>` | Count, then elements in iteration order |
+| `BTreeMap<K, V>`, `HashMap<K, V>` | Count, then alternating keys and values |
 
-One exception to that table: the `rusty::HashSet` / `rusty::HashMap` **encoders** must
-stay uninstantiated. Any hashbrown enumeration — `iter()`, `begin()`, `drain()` — routes
-through the `rusty::iter(table)` dispatcher in `slice.hpp`, whose return-type name
-crashes clang-22's Itanium mangler (SIGSEGV in `mangleSourceName`), so serializing one
-is a compiler crash rather than a runtime fault. Nothing in the tree does it. The
-decoders are insert-only and are safe — they are what the `RustyHashSetPrimitives` /
-`RustyHashMapPrimitives` tests exercise. Reach for `rusty::BTreeSet` /
-`rusty::BTreeMap` for anything you actually encode.
+Use `Vec<u8>` for arbitrary bytes. Its length-and-bytes encoding matches a string's layout, but `String` rejects invalid UTF-8.
 
-There is no `float`, no `bool`, and no pointer support. The fixed-width integers
-and `double` are written by copying the object's own bytes — no byte-order
-normalisation — which is the same native-endian assumption the frame header makes
-(Chapter 7). A heterogeneous-endian fleet does not work.
+Container decoding clears the destination before reading elements. Element types and map keys and values need `Default + Deserialize`, since a decoder constructs each value before filling it. Ordered keys also need `Ord`; hash keys need `Eq + Hash`. Native map decoding uses `insert`, so the last duplicate key wins.
 
-Two decode-side rules follow from the implementations. Element and key/value types
-must be default-constructible, because the decoder default-constructs one and then
-fills it. And every container is `clear()`ed before decoding, so decoding into a
-non-empty container replaces its contents rather than appending. `std::string_view`
-has no decoder at all, for the obvious reason.
+Hash collections have working native serialization and round-trip tests. Their iteration order does not provide a stable encoded byte sequence. Use an ordered collection if the bytes will be hashed or compared.
 
-Unordered containers serialize in iteration order, so the exact byte sequence for a
-`std::unordered_map` is not reproducible across runs. It still decodes correctly;
-just do not hash or diff the encoded bytes and expect stability.
+There are no built-in native implementations for `bool`, `f32`, `usize`, `isize`, borrowed strings, slices, arrays, `Option`, or `LinkedList`. Custom collection adapters can use `serialize_counted` and `deserialize_counted`; the maintained LinkedList test demonstrates that route.
 
 ### Shared serialization behavior
 
-Primitive and container serialization, archives, dynamic payload holders, registry
-factories, and envelope decoding all have canonical Rust implementations. Wire sites
-call `crate::serializable` dispatchers with real serialization trait bounds. Cargo
-executes those implementations, including nested containers and factory recovery.
-The generated C++ dispatchers retain the C++ trait/ADL boundary where required.
+Rust tests execute the same canonical primitive, container, archive, registry, and payload-holder code used to generate the C++ library. The wire forms and recovered values must agree where the same value types are supported.
 
-Round-trip tests require recovered values and payloads in both lanes. A panic-only
-container dispatcher or a holder that always reports the wrong type is a failed
-implementation, not an accepted difference between the languages.
+C++ has additional STL and ADL adapters described in the companion. Those adapters do not add native Rust trait implementations. In particular, a C++ type's stream operator or a marker specialization is not a native Rust serialization mechanism.
 
 ### `v32` and `v64`
 
-`v32` and `v64` are wrapper structs from `base/basetypes.rs`, not arithmetic types.
-You read and write the value with `.get()` and `.set()`, and IDL fields declared
-`v32`/`v64` come out as `srpc::v32` / `srpc::v64`.
+These wrappers are in `srpc::basetypes`. Construct them with `v32::new(value)` or `v64::new(value)`; use `get()` and `set()` to access the number. They are wire wrappers rather than arithmetic types.
 
-Both encode with `SparseInt`, a signed varint whose *first byte* announces the
-total length via a unary prefix of high bits (`0xxxxxxx` is one byte, `10xxxxxx`
-two, `110xxxxx` three, and so on) and carries the value's high bits, sign-extended
-on decode. Bytes after the first are the remaining value bytes, most significant
-first. Small magnitudes are cheap:
+SparseInt puts a length prefix in the high bits of the first byte and the value's remaining bytes after it, most significant first. Decoding sign-extends the value.
 
-| Value fits in | Bytes |
-|---------------|-------|
-| −64 … 63 | 1 |
-| ±2^13 | 2 |
-| ±2^20 | 3 |
-| ±2^27 | 4 |
-| ±2^34 | 5 — a `v32` never needs more than this |
-| ±2^41 | 6 |
-| ±2^48 | 7 |
-| anything larger | 9 |
+| Signed range | Bytes |
+|---|---|
+| `-2^6` through `2^6 - 1` | 1 |
+| `-2^13` through `2^13 - 1` | 2 |
+| `-2^20` through `2^20 - 1` | 3 |
+| `-2^27` through `2^27 - 1` | 4 |
+| `-2^34` through `2^34 - 1` | 5 |
+| `-2^41` through `2^41 - 1` | 6 |
+| `-2^48` through `2^48 - 1` | 7 |
+| Remaining `i64` values | 9 |
 
-Use a varint when values are usually small and occasionally large. Use fixed `i32`
-/ `i64` when they are uniformly distributed — a random 64-bit value costs 9 bytes
-as a `v64` and 8 as an `i64`.
+A `v32` needs at most five bytes. Small magnitudes benefit from the encoding; uniformly distributed 64-bit values usually cost nine bytes instead of the eight used by an `i64`.
 
-One historical caveat, now fixed (the former length-8 defect): the `0xFE`
-eight-byte rung used to drop the low byte of any value in roughly `[2^48, 2^55)`
-(`36_028_797_018_963_967` decoded as `36_028_797_018_963_712`). The rung is
-retired on the write side — those values now use the nine-byte `0xFF` encoding
-and round-trip — while the decoder still reads `0xFE` for historical data.
-Chapter 7 has the full account; `tests/basetypes_rust.rs`,
-`wire_roundtrip_proptest_rust.rs` and `serializable_rust.rs` pin the corrected
-behavior.
-`v32` is unaffected at every length. Chapter 7 covers what this does, and does not
-do, to the protocol's own `v64` fields.
+The historical eight-byte `0xFE` rung lost low bits on write. Writers now skip it and use the nine-byte `0xFF` encoding for that range. Decoders retain `0xFE` support for old data. Chapter 7 describes the compatibility limits; the fix cannot recover bits already omitted from stored bytes.
 
 ### Your own types
 
-In Rust, implement the traits — each field forwards to its own impl:
+Implement `Serialize` and `Deserialize` in the same field order. This complete example defines a three-coordinate value:
 
 ```rust
+use srpc::serializable::{
+    BinaryReadArchive, BinaryWriteArchive, Deserialize, Serialize,
+};
+
+#[derive(Default)]
 struct Point3 {
     x: f64,
     y: f64,
@@ -3387,3360 +2283,1126 @@ struct Point3 {
 }
 
 impl Serialize for Point3 {
-    fn serialize(&self, ar: &mut BinaryWriteArchive) {
-        Serialize::serialize(&self.x, ar);
-        Serialize::serialize(&self.y, ar);
-        Serialize::serialize(&self.z, ar);
+    fn serialize(&self, archive: &mut BinaryWriteArchive) {
+        self.x.serialize(archive);
+        self.y.serialize(archive);
+        self.z.serialize(archive);
     }
 }
 
 impl Deserialize for Point3 {
-    fn deserialize(&mut self, ar: &mut BinaryReadArchive) {
-        Deserialize::deserialize(&mut self.x, ar);
-        Deserialize::deserialize(&mut self.y, ar);
-        Deserialize::deserialize(&mut self.z, ar);
+    fn deserialize(&mut self, archive: &mut BinaryReadArchive) {
+        self.x.deserialize(archive);
+        self.y.deserialize(archive);
+        self.z.deserialize(archive);
     }
 }
 ```
 
-In C++, a type becomes serializable by having a `serialize` / `deserialize`
-free-function pair in **its own namespace** — the open-set ADL mechanism the
-rest of this section describes. Nothing is inherited and nothing is registered:
-
-```cpp srpc-no-compile
-namespace benchmark {
-
-struct point3 {
-    double x;
-    double y;
-    double z;
-};
-
-inline void serialize(const point3& o, srpc::BinaryWriteArchive& ar) {
-    srpc::Serialize_::serialize(o.x, ar);
-    srpc::Serialize_::serialize(o.y, ar);
-    srpc::Serialize_::serialize(o.z, ar);
-}
-
-inline void deserialize(point3& o, srpc::BinaryReadArchive& ar) {
-    srpc::Deserialize_::deserialize(o.x, ar);
-    srpc::Deserialize_::deserialize(o.y, ar);
-    srpc::Deserialize_::deserialize(o.z, ar);
-}
-
-}  // namespace benchmark
-```
-
-That is not an illustration: it is the in-tree generated header
-`tests/benchmark_service.h`, and it is what `rpcgen` emits for every `struct` in a
-`.rpc` file (`emit_struct` in `pylib/simplerpcgen/lang_cpp.py`). The generator also
-drops a one-line `operator<<` / `operator>>` forwarder next to each function. Those
-operators exist **only** for generated structs — there is no generic `ar << 42` for
-primitives — so call the dispatchers directly.
-
-The dispatch is deliberately open-set. `Serialize_::serialize` poisons ordinary
-lookup — `misc/serializable_support.hpp` declares, and never defines, a
-`void serialize();` in the detail namespace — and then makes a dependent unqualified
-call. Only an overload reachable by argument-dependent lookup, from your type's
-namespace or the archive's, can satisfy it. Practical consequences: put the pair in
-the same namespace as the type (or write them as hidden friends, which is what
-`rpcgen` does for the request/response structs it nests inside a service class),
-and expect a compile error at the point of use, not a link error, if you forget.
-
-If you need this for a type the IDL cannot express, write the pair by hand in your
-`.rpc` file's header section (the text above the first `%%` line, Chapter 12) and
-then use the type by name in your method signatures. That section is emitted *outside*
-the generated namespace, at global scope, so declare the type there too — a pair
-written at global scope for a type the IDL declares inside `namespace demo` is not
-reachable by ADL.
+`Deserialize` itself does not require `Default`. The example derives it so a container decoder can create a `Point3`. Add an explicit version field and checked branching when your application must read several schema versions.
 
 ### Polymorphic payloads
 
-Everything above is static: both sides know the type. When the receiver must learn
-the type from the bytes, you need a payload that can be constructed by tag, and
-that is what `SerializableProxy` is — `rusty::Arc<SerializableBase>`, an owning
-handle to a type-erased payload with `save`, `load`, `kind` and a `TypeId`.
+A `SerializableProxy` is an `Arc<dyn SerializableBase>`. The base trait is sealed. Applications implement `SerializablePayload`, whose methods are `save(&self, ...)`, `load(&mut self, ...)`, and `kind(&self) -> i32`.
 
-A type qualifies by being default-constructible and providing three members:
+There are two tags available. `AnyMessage` writes a registered string name. `SerializableEnvelope<PayloadSet>` writes a numeric kind. Both expose `save` and `load`, plus module free functions; neither currently implements the native `Serialize` or `Deserialize` trait. Call their methods explicitly when they are fields of your own serialized type.
 
-```cpp srpc-no-compile
-struct GraphPayload {
-    static constexpr srpc::i32 kKind = 60;
+The following standalone example defines a payload and round-trips both forms:
 
-    srpc::i32 node_count{0};
-    std::string label;
-
-    void save(srpc::BinaryWriteArchive& ar) const {
-        srpc::Serialize_::serialize(node_count, ar);
-        srpc::Serialize_::serialize(label, ar);
-    }
-    void load(srpc::BinaryReadArchive& ar) {
-        srpc::Deserialize_::deserialize(node_count, ar);
-        srpc::Deserialize_::deserialize(label, ar);
-    }
-    srpc::i32 kind() const { return kKind; }
+```rust
+use srpc::any_message::{reg_any_message_as, AnyMessage};
+use srpc::serializable::{
+    make_sink_proxy_buffer, make_source_proxy_buffer,
+    BinaryReadArchive, BinaryWriteArchive, BufferSink, BufferSource,
+    Deserialize, SerializablePayload, SerializableRegistry, Serialize,
 };
-```
+use srpc::serializable_envelope::{PayloadMember, SerializableEnvelope};
+use std::sync::Arc;
 
-`kind()` must exist because the holder that wraps your type implements the whole
-`SerializableBase` interface, but whether its value reaches the wire depends on
-which envelope carries the payload — the name-tagged one below ignores it. No base
-class is involved; the holder does the type erasure, and it remembers
-`TypeId::of<T>()` so unpacking is checked rather than a blind cast.
+fn encode(write: impl FnOnce(&mut BinaryWriteArchive)) -> Vec<u8> {
+    let mut sink = BufferSink { bytes: Vec::new() };
+    {
+        let mut archive = BinaryWriteArchive {
+            // The sink is live, unmoved, and exclusively borrowed.
+            sink_: unsafe { make_sink_proxy_buffer(&raw mut sink) },
+        };
+        write(&mut archive);
+    }
+    sink.bytes
+}
 
-The kind-keyed registry lives in the same module:
+fn decode<T>(bytes: &[u8], read: impl FnOnce(&mut BinaryReadArchive) -> T) -> T {
+    let mut source = BufferSource::new(bytes.as_ptr(), bytes.len());
+    let value = {
+        let mut archive = BinaryReadArchive {
+            // The source and its immutable bytes outlive the archive.
+            source_: unsafe { make_source_proxy_buffer(&raw mut source) },
+        };
+        read(&mut archive)
+    };
+    assert!(source.eof());
+    value
+}
 
-```cpp srpc-no-compile
-namespace srpc {
-struct SerializableRegistry {
-    template <typename T> static i32 reg(i32 kind);  // returns 0, for static init
-    static SerializableProxy create(i32 kind);       // panics if kind is unregistered
-    static bool is_registered(i32 kind);
-    static void clear_for_testing();                 // tests only; not thread-safe
-};
+#[derive(Clone, Default)]
+struct Counter {
+    value: i32,
+}
+
+impl SerializablePayload for Counter {
+    fn save(&self, archive: &mut BinaryWriteArchive) {
+        self.value.serialize(archive);
+    }
+    fn load(&mut self, archive: &mut BinaryReadArchive) {
+        self.value.deserialize(archive);
+    }
+    fn kind(&self) -> i32 {
+        61
+    }
+}
+
+struct Commands;
+impl PayloadMember<Commands> for Counter {
+    const KIND: i32 = 61;
+}
+
+fn main() {
+    // Register once during application initialization.
+    reg_any_message_as::<Counter>("example.Counter".to_owned());
+    SerializableRegistry::reg::<Counter>(61);
+
+    let message = AnyMessage::pack(Arc::new(Counter { value: 42 }));
+    let bytes = encode(|archive| message.save(archive));
+    let restored = decode(&bytes, |archive| {
+        let mut message = AnyMessage::default();
+        message.load(archive);
+        message
+    });
+    assert_eq!(restored.unpack::<Counter>().unwrap().value, 42);
+
+    let envelope =
+        SerializableEnvelope::<Commands>::pack(&Counter { value: 7 });
+    let bytes = encode(|archive| envelope.save(archive));
+    let restored = decode(&bytes, |archive| {
+        let mut envelope = SerializableEnvelope::<Commands>::default();
+        envelope.load(archive);
+        envelope
+    });
+    assert_eq!(restored.unpack_shared::<Counter>().unwrap().value, 7);
 }
 ```
 
-`reg` takes the kind explicitly — there is no overload that infers one — and
-returns 0 so you can register at static-initialisation time:
+Both registry factories require `Default`, `SerializablePayload`, and `'static`. Numeric registration takes the kind explicitly and returns zero. Re-registering a numeric kind replaces its factory. Creating an unregistered kind panics.
 
-```cpp srpc-no-compile
-static int reg_graph_payload =
-    srpc::SerializableRegistry::reg<GraphPayload>(GraphPayload::kKind);
-```
+#### `AnyMessage`: open set, tagged by name
 
-The module also ships a helper base, `Serializable<KIND>`, whose `kind()` and
-`static_kind()` return the `KIND` you instantiate it with; inheriting it saves
-writing the accessor by hand. Kind `0` is reserved for "unset" and the helper
-rejects it.
+The wire form is `v64 name_length | name_bytes | payload_bytes`. No numeric kind is written. The payload still needs `kind()` to satisfy its trait, but that value does not identify an `AnyMessage`.
 
-#### `AnyMessage` — open set, tagged by name
+Registering the same name twice panics. The first name registered for a Rust type becomes its canonical name. Registering an alias does not replace that mapping. `pack(Arc<T>)` requires prior registration; `pack_as(name, Arc<T>)` accepts a supplied name without checking it.
 
-`AnyMessage` (`misc/any_message.rs`, module `srpc.any_message`, **not** in the
-`srpc.hpp` umbrella — `import srpc.any_message;`) carries a payload tagged by a
-registered string name, so a peer can add types without a central kind allocation.
+`is_a::<T>()` checks the canonical name. `unpack::<T>()` additionally checks the holder's actual type and returns `Option<Arc<T>>`. A decoded alias can contain the right Rust type while failing both canonical-name checks. Conversely, an unchecked supplied name can make `is_a` true while `unpack` rejects the actual type. Use the checked unpacking result rather than treating the name as a cast.
 
-```cpp srpc-no-compile
-import srpc.any_message;
+Packing retains the supplied `Arc`; it does not copy the payload. That sharing does not permit ordinary mutable access in Rust. Application payloads with interior mutability must define their own synchronization and serialization consistency.
 
-// Anywhere, at static-initialisation time.
-static int reg_graph_payload =
-    srpc::reg_any_message_as<GraphPayload>("demo.GraphPayload");
+#### `SerializableEnvelope`: typed membership, tagged by kind
 
-// Sender: pack a typed value and put it on an `srpc::AnyMessage` field.
-GraphPayload p;
-p.node_count = 42;
-p.label = "x";
-srpc::AnyMessage msg = srpc::AnyMessage::pack<GraphPayload>(
-    rusty::Arc<GraphPayload>::make(p));
+The wire form is `v32 kind | payload_bytes`. `PayloadMember<Set>` gives typed pack and unpack operations their membership bound. `pack(&value)` copies a `Clone` value; `pack_aliased(Arc<T>)` shares one. `has_value()`, `kind()`, and `is_a::<T>()` inspect the envelope.
 
-// Receiver: dispatch on the carried type.
-if (msg.is_a<GraphPayload>()) {
-    auto opt = msg.unpack<GraphPayload>();   // rusty::Option<rusty::Arc<GraphPayload>>
-    auto sp = std::move(opt).unwrap();
-}
-```
+Use `unpack_shared::<T>() -> Option<Arc<T>>` when the recovered value must stay alive. `unpack::<T>()` returns a raw pointer; `unpack_mut::<T>()` is unsafe and requires exclusive access for the pointer's entire use. Saving an empty envelope panics.
 
-The wire layout is `[v64 length][type name bytes][payload bytes]` — the name *is*
-the discriminator, and no numeric kind is written, which is why the payload's
-`kind()` value is irrelevant here. `AnyMessage` itself has the ADL
-`serialize`/`deserialize` pair, so a struct field of type `srpc::AnyMessage`
-encodes like any other field.
+The type set is not a wire-validation allowlist. `load` resolves the numeric kind through the global registry without checking membership in `PayloadSet`. The member's `KIND` constant is not consulted at runtime either. Keep the declared constant, the payload's `kind()`, and its numeric registration consistent.
 
-Registration details worth knowing: `reg_any_message_as<T>` requires `T` to be
-default-constructible, and registering the same *name* twice panics. The first
-name registered for a type is the one `pack` uses; registering the same type under
-a second name leaves that mapping alone. `pack` panics if the type was never
-registered — use `pack_as(name, sp)` to supply the name yourself. Packing stores
-your `Arc` rather than copying the value, so later mutations through your handle
-are visible to whatever is eventually encoded; `unpack` hands back a clone of that
-same `Arc`.
-
-#### `SerializableEnvelope` — closed set, tagged by kind
-
-`SerializableEnvelope<PayloadSet>` (`misc/serializable_envelope.rs`, module
-`srpc.serializable_envelope`, also outside the umbrella) is the compact
-counterpart: `[v32 kind][payload bytes]`, one to five bytes of tag instead of a
-length-prefixed name, at the cost of every participant agreeing on the kind
-numbering up front.
-
-Membership is a compile-time property. You declare a tag type for the set and
-specialise the `PayloadMember` marker for each member, in `namespace srpc`:
-
-```cpp srpc-no-compile
-import srpc.serializable_envelope;
-
-struct MyCommands {};   // a tag type; the set itself has no members at runtime
-
-namespace srpc {
-template <>
-struct PayloadMember<MyCommands, GraphPayload> {
-    static constexpr bool value = true;
-    static constexpr int32_t KIND = GraphPayload::kKind;
-};
-}  // namespace srpc
-
-using MyEnvelope = srpc::SerializableEnvelope<MyCommands>;
-```
-
-Only members can be packed or unpacked; anything else fails to compile. The API is
-`pack<T>(value)` (copies), `pack_aliased<T>(arc)` (shares), `unpack<T>()` (raw
-`const T*`, null on type mismatch), `unpack_shared<T>()` (`Option<Arc<T>>`),
-`is_a<T>()`, `has_value()`, `kind()`, and `save`/`load`. `save` panics on an empty
-envelope.
-
-One sharp edge: the kind `save` writes comes from the payload's own `kind()`
-member, and `load` looks the decoded kind up in `SerializableRegistry` — neither
-reads `PayloadMember::KIND`. Three things must agree: the marker's `KIND`, what
-`T::kind()` returns, and the kind `T` was registered under. Nothing checks that for
-you.
-
-No payload set ships in this repository. The envelope is a mechanism; the set is
-yours to declare.
+Decoding needs a fresh outer proxy and fresh inner payload with no extra strong or weak owners. Retaining either sort of owner from a registry factory prevents the mutable access needed by `load` and is rejected before mutation. Ordinary default-constructed factories satisfy this rule.
 
 ### What this format is not
 
-The encoding is positional and untagged. There are no field numbers, no optional
-fields, no length-delimited records to skip over, and no version marker anywhere in
-a payload. A decoder reads the fields your struct declares, in declaration order,
-and takes whatever bytes are next. Adding, removing or reordering a field is a
-wire-format break, and a mismatched pair of peers will not report a type error —
-it will decode nonsense, or run off the end of the frame and panic. Roll both sides
-together, or carry your own version field as the first member and branch on it.
+The format is positional. It has no automatic field numbers, optional fields, schema version, or length-delimited records that an old reader can skip. Changing field order or adding a field without a versioning scheme changes the wire contract.
+
+Fixed-width values use native byte order, so a fleet with mixed endianness cannot exchange them correctly. A mismatched schema can decode nonsense or panic at the end of a frame. Roll compatible peers together, or encode and check an application version before interpreting the remaining fields.
 
 ---
 
-## 11. Reliability Features
+## 11. Reliability features
 
-Everything in this chapter lives on the client side. A `ClientConnection` embeds the
-reliability machinery by value — a `ConnectionStateMachine`, a `ReconnectPolicy`, a
-`CircuitBreaker`, a `HeartbeatManager`, a `RequestQueue` and a `ConnectionMetrics` are
-all fields of that one struct — and `Client` is a thin front for whichever connection
-it currently holds.
+A `ClientConnection` owns the connection state machine, reconnect policy, circuit breaker, heartbeat manager, request queue, and metrics. The native Rust runtime executes automatic reconnect and request retry coordinators as well as the synchronous state transitions. These are not C++-only capabilities.
 
-A lane note for the whole chapter: the machinery is canonical Rust and runs
-identically in both lanes (the circuit-breaker gate, stale-request expiry and the
-offline queue sit on every request path, Rust or C++), and the configuration
-setters are `pub` in both — `tests/client_surface_rust.rs` exercises them from
-Rust. The C++ snippets below translate mechanically (`cl->set_x(cfg)` is
-`cl.set_x(&cfg)`); what does NOT yet run under rustc is anything that needs a
-background thread: auto-reconnect and the retry coordinator (chapter 8's note). The canonical sources are `rpc/connection_state.rs`,
-`rpc/reconnect_policy.rs`, `rpc/circuit_breaker.rs`, `rpc/heartbeat.rs`,
-`rpc/request_queue.rs`, `rpc/connection_metrics.rs`, `rpc/errors.rs` and the parts of
-`rpc/client.rs` that wire them together.
-
-Four of them are **not** in the `srpc.hpp` umbrella, and neither is
-`srpc.load_balancer`. If you name their types you have to import them yourself:
-
-```cpp srpc-no-compile
-#include "srpc.hpp"
-
-import srpc.reconnect_policy;     // ReconnectPolicy, ReconnectCalculator
-import srpc.circuit_breaker;      // CircuitBreakerConfig, CircuitBreaker, CircuitState
-import srpc.heartbeat;            // HeartbeatConfig, HeartbeatManager
-import srpc.connection_metrics;   // ConnectionMetrics
-import srpc.load_balancer;        // LoadBalancingStrategy
-```
-
-`srpc.connection_state`, `srpc.errors` and `srpc.request_queue` *are* in the umbrella,
-and so is `srpc.client`, which is where `BufferingConfig`, `DisconnectBehavior`,
-`KeepaliveConfig` and `PoolConfig` actually live.
+Reliability settings do not make a request safe to repeat, make a callback thread-safe, or turn a blocking wait into an async one. Those decisions still belong to the request and its owner.
 
 ### Shipping status
 
-Some of this is finished and load-bearing; some of it is a complete data structure with
-nothing driving it. The distinction matters more than the feature list, so here it is
-up front.
-
-| Capability | Status | Notes |
-| --- | --- | --- |
-| Connection state machine | **Works** | `ConnectionStateMachine` validates every transition; `force_state` bypasses the check and is what error paths use. |
-| Auto-reconnect with backoff and jitter | **Works** | `ReconnectPolicy` + `ReconnectCalculator`. Fires from `handle_error` and from the channel-close fan-out, on a detached thread. On by default. |
-| Lifecycle callbacks | **Works** | `add_on_connected` / `add_on_disconnected` / `add_on_error` / `add_on_reconnecting` / `add_on_reconnected`, dispatched by `CallbackManager` with each invocation wrapped in `catch_unwind`. |
-| Circuit breaker | **Works**, off by default | Gates every request through `allow_request_with_circuit_metrics`. `Client`'s staged default is `CircuitBreakerConfig::disabled()`. |
-| Server-restart detection | **Works** | Every reply carries a `server_instance_id`; a change fires the callback. But `set_on_server_restart` only reaches a live connection — see below. |
-| Per-connection counters | **Works** on `ClientConnection` | `requests_sent` / `_completed` / `_failed`, in-flight, byte counts, reconnects, circuit transitions. |
-| Latency metrics | **Not wired** | Ordinary completion leaves latency samples unset. Explicit `record_request_completed_with_latency` instrumentation updates the average, minimum, and maximum. |
-| `Client::metrics()` | **Works** | Shares live counters with its connection and retains their storage through close and reconnect. |
-| Request buffering while disconnected | **Works** | Encodes requests once, replays them FIFO after reconnect, and resolves expiry, overflow, and teardown errors. |
-| Heartbeat | **Partial** | The protocol is complete end to end and the server answers probes, but nothing ticks the client-side send timer, so no probe is ever emitted. |
-| TCP keepalive | **Works** | Applies Linux keepalive socket options through the TCP channel capability. Other transports report unsupported. |
-| Pool health checks, `LEAST_CONNECTIONS`, `LEAST_LATENCY` | **Partial** | Health and in-flight selection use live metrics. Latency selection still needs explicit latency samples. |
+| Capability | Current behavior |
+|---|---|
+| State transitions | Validated by the synchronized state machine; forced transitions bypass validation |
+| Automatic reconnect | Active on a detached thread, with backoff and jitter; enabled by default |
+| Request retries | Active through `request_with_options`; require `idempotent` permission |
+| Lifecycle callbacks | Active, with panic catching around each invocation |
+| Circuit breaker | Active when enabled; disabled on a new client |
+| Server-restart detection | Active after installing its callback on a live connection |
+| Request, byte, reconnect, queue, and circuit counters | Updated by the connection paths |
+| Latency metrics | Need explicit latency instrumentation |
+| Disconnected request queue | Active for future-based requests when buffering is enabled |
+| Protocol heartbeat | Server replies and receive accounting work; no automatic client timer drives probes |
+| TCP keepalive | Native socket options are applied through the TCP channel |
+| Pool health and selection | Health and in-flight metrics are live; latency selection needs samples |
 
 ### What is staged and what is not
 
-`Client` keeps four pending configs and pushes them onto the connection inside
-`connect`: keepalive, heartbeat, circuit breaker and reconnect policy. Setting them
-*before* `connect` is the reliable order. Each of those four setters also forwards to a
-live connection when there is one, so setting them afterwards takes effect immediately
-as well — and that connection object survives auto-reconnect, so nothing is lost there.
-What the staged copies decide is how the *next* `Client::connect` builds its connection.
+The client remembers keepalive, heartbeat, circuit-breaker, and reconnect configurations for the next `connect`. Their setters also update a live connection. A reconnect of that connection retains its settings.
 
-Two things are **not** staged. `Client::set_buffering_config` and
-`Client::set_on_server_restart` both look at the current connection and silently do
-nothing when there isn't one, so they have to be called *after* `connect`.
+Buffering configuration and the server-restart callback are different: their client setters affect only the current connection. Calling them before a connection exists does nothing.
 
-The staged defaults are deliberately quiet, and they are not the same as the `defaults()`
-presets:
+| Setting | New client's staged value | Enabled preset |
+|---|---|---|
+| Reconnect | `conservative()`, five retries, 1 s initial delay, 30 s cap, multiplier 2, jitter | `new()` is the same |
+| Heartbeat | `disabled()` | `defaults()`: 10 s interval, 5 s timeout, three misses |
+| Circuit breaker | `disabled()` | `defaults()`: five failures to open, three successes to close, 30 s open interval |
+| TCP keepalive | `new()`, enabled | 60 s idle, 10 s interval, five probes |
 
-| Config | `Client`'s staged default | What `defaults()` gives you |
-| --- | --- | --- |
-| `ReconnectPolicy` | `conservative()` — auto-reconnect **on**, 5 retries, 1s → 30s, ×2, jitter | `new_()` is the same thing |
-| `HeartbeatConfig` | `disabled()` | **enabled**: 10s interval, 5s timeout, 3 missed |
-| `CircuitBreakerConfig` | `disabled()` | **enabled**: 5 failures to open, 3 successes to close, 30s |
-| `KeepaliveConfig` | `new_()` — enabled, 60s idle / 10s interval / 5 probes (but inert) | there is no `defaults()`; the presets are `new_()`, `aggressive()`, `relaxed()`, `disabled()` |
+This ordering makes the distinction explicit:
 
-So heartbeats and the breaker are off until you ask for them, and asking for them with
-`defaults()` turns them on:
+```rust,no_run
+use srpc::circuit_breaker::CircuitBreakerConfig;
+use srpc::client::{BufferingConfig, Client, KeepaliveConfig};
+use srpc::heartbeat::HeartbeatConfig;
+use srpc::reconnect_policy::ReconnectPolicy;
+use std::ffi::CString;
 
-```cpp srpc-compile-client
-client->set_reconnect_policy(ReconnectPolicy::conservative());
-client->set_heartbeat(HeartbeatConfig::defaults());
-client->set_circuit_breaker(CircuitBreakerConfig::defaults());
-
-client->connect(reinterpret_cast<const int8_t*>("127.0.0.1:8080"), true);
-
-// Not staged — set_buffering_config and set_on_server_restart reach the
-// connection directly, so they must come after connect() or they are
-// silently dropped.
-client->set_buffering_config(BufferingConfig::defaults());
+fn configure_and_connect(client: &Client, address: &str) -> Result<(), i32> {
+    client.set_reconnect_policy(&ReconnectPolicy::conservative());
+    client.set_keepalive(&KeepaliveConfig::aggressive());
+    client.set_circuit_breaker(&CircuitBreakerConfig::defaults());
+    // This stores settings; automatic heartbeat scheduling is still absent.
+    client.set_heartbeat(&HeartbeatConfig::defaults());
+    let address = CString::new(address).map_err(|_| 22)?;
+    let error = client.connect(address.as_ptr().cast(), true);
+    if error != 0 {
+        return Err(error);
+    }
+    client.set_buffering_config(&BufferingConfig::defaults());
+    Ok(())
+}
 ```
 
 ### Connection state machine
 
-Six states, and `ConnectionStateMachine::is_valid_transition` is the whole rulebook:
+The legal transitions are:
 
+```text
+NEW           -> CONNECTING
+CONNECTING    -> CONNECTED | FAILED | DISCONNECTED
+CONNECTED     -> DISCONNECTING | FAILED
+DISCONNECTING -> DISCONNECTED | FAILED
+DISCONNECTED  -> CONNECTING
+FAILED        -> CONNECTING
 ```
-  NEW           -> CONNECTING
-  CONNECTING    -> CONNECTED | FAILED | DISCONNECTED
-  CONNECTED     -> DISCONNECTING | FAILED
-  DISCONNECTING -> DISCONNECTED | FAILED
-  DISCONNECTED  -> CONNECTING
-  FAILED        -> CONNECTING
-```
 
-Stated as rules: `NEW` may only become `CONNECTING`. `CONNECTING` may become
-`CONNECTED`, `FAILED` or `DISCONNECTED`. `CONNECTED` may only become `DISCONNECTING`
-or `FAILED`. `DISCONNECTING` may become `DISCONNECTED` or `FAILED`. Both terminal
-states, `DISCONNECTED` and `FAILED`, may only go back to `CONNECTING`. Nothing ever
-returns to `NEW`.
+`transition_to` returns false for an invalid transition. `force_state` bypasses the check, as connection failure paths sometimes require. Both notify the state callback after changing state.
 
-`transition_to` refuses an invalid move and returns `false`. `force_state` skips the
-check, and that is what the failure paths use — `handle_error` and the channel-close
-fan-out force `FAILED` from wherever they were. Both notify the state-change callback.
+The current implementation uses shared synchronized storage and a transition mutex. It releases the transition mutex before invoking the callback. Do not carry forward the old description of this state as an unsynchronized `Cell`.
 
-The state lives in a `rusty::Cell<ConnectionState>`. That is single-threaded interior
-mutability, not a synchronization primitive; the module's contract is that a
-connection's `Cell` fields are written from its own poll thread.
+Connection replacement also carries a generation. Receive and close paths verify that they still belong to the active binding before mutating it. Transport calls receive cloned owners after connection locks are released, so an inline callback can reenter without invalidating the object being called.
 
 ### Automatic reconnection
 
-```cpp srpc-compile
-auto policy = ReconnectPolicy::new_();
-policy.auto_reconnect = true;       // false disables reconnection entirely
-policy.max_retries = 10;            // 0 means retry forever
+Customize the policy with public fields:
+
+```rust
+use srpc::reconnect_policy::{ReconnectCalculator, ReconnectPolicy};
+
+let mut policy = ReconnectPolicy::conservative();
+policy.max_retries = 10;
 policy.initial_delay_ms = 100;
-policy.max_delay_ms = 30000;
+policy.max_delay_ms = 30_000;
 policy.backoff_multiplier = 2.0;
-policy.jitter_enabled = true;
+policy.jitter_enabled = false;
+
+let calculator = ReconnectCalculator::new(&policy);
+assert_eq!(calculator.next_delay_ms(), 100);
+assert_eq!(calculator.next_delay_ms(), 200);
 ```
 
-Four presets: `new_()` and `conservative()` are identical (5 retries, 1000 ms initial,
-30000 ms cap, ×2, jitter on); `aggressive()` retries forever with a 100 ms initial delay,
-a 5 s cap and ×1.5; `no_retry()` clears `auto_reconnect`.
+`new()` and `conservative()` use five retries, a 1,000 ms initial delay, a 30,000 ms cap, multiplier 2, and jitter. `aggressive()` uses unlimited retries, a 100 ms initial delay, a 5,000 ms cap, and multiplier 1.5. Zero `max_retries` means unlimited in this reconnect policy. `no_retry()` disables reconnect entirely.
 
-`ReconnectCalculator` computes the schedule. `next_delay_ms` multiplies the initial
-delay by `backoff_multiplier` once per prior attempt, clamps at `max_delay_ms`, and —
-if jitter is on — scales the result by a uniform factor in `[0.5, 1.5)`. Note that
-jitter can therefore push a delay *above* `max_delay_ms`; the clamp happens first.
-`peek_delay_ms` gives you the un-jittered value without consuming an attempt.
+The calculator clamps before applying jitter in the range `[0.5, 1.5)`, so the actual delay can exceed `max_delay_ms`. `peek_delay_ms()` returns the unjittered next value without consuming an attempt.
 
-Reconnection is triggered for you. When a transport error or a channel close arrives and
-the close was not user-initiated, the connection forces `FAILED`, invalidates every
-pending future, fires `on_disconnected`, and — if `auto_reconnect` is set and it has a
-remembered address — spawns a detached thread that runs the retry loop. The first
-attempt is immediate; subsequent attempts follow the backoff schedule. You can also
-drive it by hand with `Client::reconnect(callback)` or `Client::try_reconnect_if_needed()`,
-which reconnects only from `FAILED` or `DISCONNECTED`.
+Transport failure or an unexpected close invalidates pending requests, announces the disconnect, and starts the reconnect loop if policy and remembered address permit it. The first attempt is immediate; later attempts use the delay schedule. A user-initiated close suppresses automatic reconnect.
 
-In-flight requests do not survive. Every entry in the pending-future map and every
-async callback slot is resolved with `ENOTCONN` (107) before the reconnect starts.
+`Client::reconnect` accepts `Option<Box<dyn FnMut(bool) + Send>>`; `try_reconnect_if_needed` only reconnects from failed or disconnected state. Concurrent or reentrant attempts can return busy, and a callback that replaces the binding can cancel the older attempt.
+
+Already in-flight requests do not survive transport failure. Pending futures and async callback slots receive `107` before reconnect begins. Requests held separately in the offline queue can be replayed after reconnect.
 
 ### Circuit breaker
 
-The usual CLOSED / OPEN / HALF_OPEN pattern, checked on every request before anything
-is serialized.
+```rust,no_run
+use srpc::circuit_breaker::CircuitBreakerConfig;
+use srpc::client::Client;
 
-```cpp srpc-compile
-auto cb = CircuitBreakerConfig::defaults();  // enabled: 5 / 3 / 30000
-cb.failure_threshold = 5;     // consecutive failures before opening
-cb.success_threshold = 2;     // successes in HALF_OPEN before closing
-cb.timeout_ms = 5000;         // how long OPEN lasts before a probe is allowed
+fn configure_breaker(client: &Client) {
+    let mut breaker = CircuitBreakerConfig::defaults();
+    breaker.failure_threshold = 5;
+    breaker.success_threshold = 2;
+    breaker.timeout_ms = 5_000;
+    client.set_circuit_breaker(&breaker);
+}
 ```
 
-Presets: `new_()` / `defaults()` (5, 3, 30 s), `sensitive()` (3, 5, 60 s), `relaxed()`
-(10, 2, 15 s), `disabled()`.
+In `CLOSED`, consecutive failures count toward the threshold and a success resets the count. `OPEN` rejects requests until its timeout expires. The next allowed request moves it to `HALF_OPEN` and occupies a single probe slot. Successful probes accumulate toward the success threshold; a failure reopens the circuit.
 
-In `CLOSED` the breaker counts *consecutive* failures — any success resets the counter
-to zero — and opens at `failure_threshold`. In `OPEN` every request is rejected until
-`timeout_ms` has elapsed since the last failure, at which point the next
-`allow_request` flips the state to `HALF_OPEN` and lets exactly one probe through.
-A success in `HALF_OPEN` counts toward `success_threshold`; reaching it closes the
-breaker. A single failure in `HALF_OPEN` sends it straight back to `OPEN` and restarts
-the timeout.
+The enabled presets are `defaults()` with 5 failures, 3 successes, and 30 seconds; `sensitive()` with 3, 5, and 60 seconds; and `relaxed()` with 10, 2, and 15 seconds. `disabled()` removes the gate.
 
-Exactly eight error codes trip it: `ENOTCONN` (107), `ECONNREFUSED` (111), `ECONNRESET`
-(104), `ECONNABORTED` (103), `ETIMEDOUT` (110), `EHOSTUNREACH` (113), `ENETUNREACH` (101)
-and `EPIPE` (32). `should_trip_circuit_for_error` tests the integer, not where it came
-from, and `record_circuit_result` runs it over the error code of *every* reply — so an
-application error code returned by a handler counts against the breaker exactly like a
-transport failure whenever its numeric value lands in that set. A handler returning
-`Err(110)` to mean "your deadline, not mine" is indistinguishable from a real
-`ETIMEDOUT`. Any other non-zero code is recorded as a *failure of the request* —
-`requests_failed` goes up — and never touches the breaker. So pick application error
-codes outside 32, 101, 103, 104, 107, 110, 111 and 113; chapter 17 works the consequence
-through.
+Only numeric errors `32`, `101`, `103`, `104`, `107`, `110`, `111`, and `113` trip the breaker. The check includes handler-supplied reply errors. An application returning one of those integers affects the breaker just like a transport failure. Reserve another range for application errors when that behavior is unwanted.
 
-A rejected request comes back as `Err(16)` — `EBUSY` — which the error-callback path
-maps to `RpcError::CIRCUIT_OPEN`. Every rejection bumps `circuit_open_rejections`, and
-each state change bumps the matching `circuit_*_transitions` counter.
-
-`Client::circuit_breaker_state()` reports the live state, and returns `CLOSED` when
-there is no connection.
+Other nonzero reply errors increment failed-request metrics without tripping the circuit. A circuit rejection returns `16`, classified as `RpcError::CIRCUIT_OPEN`. Rejections and transitions update their counters. `client.circuit_breaker_state()` returns `CLOSED` if there is no live connection.
 
 ### Request buffering while disconnected
 
-When the connection is down, a request can be parked instead of failing immediately:
+Configure buffering after connecting:
 
-```cpp srpc-no-compile
-BufferingConfig buffering = BufferingConfig::defaults();
-buffering.behavior = DisconnectBehavior::QUEUE;   // or FAIL_FAST
-buffering.max_pending = 1000;
-buffering.default_ttl_ms = 30000;
-buffering.overflow = OverflowStrategy::DROP_OLDEST;  // or DROP_NEWEST, FAIL_FAST
-client->set_buffering_config(buffering);          // AFTER connect
+```rust,no_run
+use srpc::client::{BufferingConfig, Client, DisconnectBehavior};
+use srpc::request_queue::OverflowStrategy;
+
+fn enable_offline_queue(client: &Client) {
+    let mut buffering = BufferingConfig::defaults();
+    buffering.behavior = DisconnectBehavior::QUEUE;
+    buffering.max_pending = 1_000;
+    buffering.default_ttl_ms = 30_000;
+    buffering.overflow = OverflowStrategy::DROP_OLDEST;
+    client.set_buffering_config(&buffering);
+}
 ```
 
-`BufferingConfig` is the `Client`-facing wrapper; it converts to the
-`RequestQueueConfig` that `RequestQueue` actually stores (`max_size`, `default_ttl_ms`,
-`overflow_strategy`, `enabled`). Setting a new config on a live connection first drains
-whatever is queued with `ECONNABORTED` (103).
+Replacing this configuration drains existing queued requests with `103`. A queued writer runs once to produce an owned body containing the original transaction ID, RPC ID, and arguments. Reconnect replays those bytes FIFO and retains the original future.
 
-Queued requests replay after a successful reconnect. The writer runs when the request
-is queued, producing an owned RPC body containing its xid, method id, and arguments.
-Replay sends those bytes in FIFO order without invoking the writer again. The original
-future receives the reply.
+| Event | Outcome |
+|---|---|
+| TTL expires | Error `110`; checked on new requests and replay, without a separate expiry timer |
+| Connection teardown | Queued requests complete with `107` |
+| Configuration replacement | Queued requests complete with `103` |
+| `DROP_OLDEST` overflow | Oldest request completes with `11` |
+| `DROP_NEWEST` or `FAIL_FAST` overflow | Incoming request is rejected with `11` |
+| Zero capacity | Every incoming queued request is rejected |
 
-A parked request can also finish with an error:
+These drops update queue metrics. Callbacks execute after releasing the queue mutex. Replay transfers a future into pending-reply ownership before sending, including when the channel replies inline.
 
-* **TTL expiry.** The request resolves with `ETIMEDOUT` (110 on Linux). Expiry is checked
-  at new requests and during reconnect replay; it is not a separate timer.
-* **Queue drain.** Closing or dropping the connection resolves queued requests with
-  `ENOTCONN` (107). Replacing the buffering configuration uses `ECONNABORTED` (103).
-* **Overflow.** `DROP_OLDEST` evicts the oldest entry with `EAGAIN` (11). `DROP_NEWEST`
-  and `FAIL_FAST` reject the incoming request with `EAGAIN`; `request()` returns
-  `Err(11)`. A queue with zero capacity rejects every incoming request.
+The future's blocking-wait budget and the queue TTL are separate. A default one-second wait can time out well before a queued request expires. Choose an explicit wait budget if the caller intends to wait through an outage.
 
-The default `Future::wait()` still uses a one-second deadline. A queued request with a
-longer TTL can outlive that wait; choose an explicit waiting budget when waiting through
-an outage. Replay does not extend the caller's deadline.
-
-These failures increment `queue_dropped_requests`. Queue callbacks run after releasing
-the queue mutex, so they can submit or clear requests without deadlocking that mutex.
-A future is transferred from queued ownership to pending-reply ownership before sending,
-including when an in-memory channel replies inline.
-
-With `DisconnectBehavior::FAIL_FAST`, or with `enabled` false, a request made while
-disconnected returns `Err(107)` immediately. `request_async` never buffers: it fails
-with `Err(107)` when the connection is down, regardless of buffering configuration.
+With buffering disabled or `DisconnectBehavior::FAIL_FAST`, a disconnected request fails with `107`. `request_async` never uses the offline queue.
 
 ### Heartbeat / keep-alive
 
-```cpp srpc-compile
-auto hb = HeartbeatConfig::defaults();  // enabled: 10s interval, 5s timeout, 3 missed
-hb.interval_ms = 5000;
-hb.timeout_ms = 2000;
-hb.max_missed = 2;
+Heartbeat configuration describes an application-level probe:
+
+```rust
+use srpc::heartbeat::HeartbeatConfig;
+
+let mut heartbeat = HeartbeatConfig::defaults();
+heartbeat.interval_ms = 5_000;
+heartbeat.timeout_ms = 2_000;
+heartbeat.max_missed = 2;
+assert!(heartbeat.enabled);
 ```
 
-Presets: `new_()` / `defaults()` (10 s / 5 s / 3), `aggressive()` (5 s / 2 s / 2),
-`relaxed()` (30 s / 15 s / 5), `disabled()`.
+Defaults are 10 seconds between probes, a 5-second response timeout, and three consecutive misses. The aggressive preset is 5 seconds, 2 seconds, and two misses; relaxed is 30 seconds, 15 seconds, and five misses.
 
-The protocol itself is finished. A probe is a normal request body — `v64 xid` followed
-by `i32 rpc_id` where the id is `kInternalHeartbeatRpcId` (`i32::MIN`) — and the server
-recognizes it in its dispatch path and replies with error code 0 and an empty payload.
-`HeartbeatManager` tracks `pending_pong`, counts misses, and fires its timeout callback
-once `max_missed` consecutive probes go unanswered. The receive side is live:
-`on_pong_received` is called for *every* inbound reply, not just probes, so ordinary
-traffic keeps the manager healthy.
+The server recognizes the reserved heartbeat RPC and returns success with an empty body. Every inbound reply calls `on_pong_received`, so ordinary response traffic also counts as activity.
 
-What is missing is the tick. The logic that decides to send a probe lives in
-`ClientConnection::check_pending_write_update`, and the reactor never calls it — the
-pollable it has registered is the TCP connection's own shim, whose
-`check_pending_write_update` just swaps a dirty flag. Nothing else calls
-`should_send_heartbeat`. So with the current wiring the client emits no probes and
-never observes a heartbeat timeout. Configure it if you like; do not depend on it to
-detect a silent peer.
+Automatic client scheduling remains missing. Probe logic exists in `ClientConnection::check_pending_write_update`, but the registered TCP pollable uses its own dirty-flag update and does not call that method. Enabling heartbeat settings alone emits no periodic probes and provides no silent-peer timeout. Unit tests of `HeartbeatManager` validate its state machine, not an automatic timer connection.
 
-`set_keepalive` configures OS-level TCP keepalive through the channel capability.
-It applies socket options on TCP transports independently of heartbeat scheduling.
+Kernel TCP keepalive is independent and does apply socket options through the channel capability. On Linux these are `SO_KEEPALIVE`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, and `TCP_KEEPCNT`. Disabling keepalive clears `SO_KEEPALIVE` without resetting the tuning values.
 
 ### Connection metrics
 
-`Client::metrics()` reads the same shared storage as `ClientConnection::metrics()`.
-That storage remains owned by the client across close and reconnect. You can also
-read it through `Client::connection()`, which returns an `Option`:
+`client.metrics()` and its live connection share the same counter storage, retained across close and reconnect. Counters use relaxed atomics, so reading several fields is not a transactional snapshot.
 
-```cpp srpc-compile-client
-auto conn_opt = client->connection();
-if (conn_opt.is_some()) {
-    auto conn = conn_opt.unwrap();
-    const ConnectionMetrics& m = conn->metrics();
+Request sent, completed, failed, in-flight, bytes, reconnects, queue drops, and circuit transitions have live updates. Two groups need care:
 
-    auto sent          = m.requests_sent();
-    auto completed     = m.requests_completed();
-    auto failed        = m.requests_failed();
-    auto in_flight     = m.in_flight_requests();
-    auto bytes_out     = m.bytes_sent();
-    auto bytes_in      = m.bytes_received();
-    auto reconnects    = m.reconnect_count();
-    auto success_pct   = m.success_rate_percent();
-    auto queue_drops   = m.queue_dropped_requests();
-    auto circuit_rejects = m.circuit_open_rejections();
-    auto circuit_open  = m.circuit_open_transitions();
-}
-```
+- Ordinary completion records no latency sample. `record_request_completed_with_latency` is the explicit instrumentation entry point for average, minimum, and maximum latency.
+- `requests_timed_out` and `retry_attempts` are recorded by the request-options coordinator. A plain future's wait timeout does not update them.
 
-Every field is a relaxed `AtomicU64`. Two caveats on the numbers themselves:
-
-* Ordinary completion leaves `avg_latency_us`, `min_latency_us`, and `max_latency_us`
-  unset because it uses `record_request_completed`. Explicit calls to
-  `record_request_completed_with_latency` provide samples for those fields.
-* `requests_timed_out` and `retry_attempts` are only recorded by the
-  `request_with_options` retry coordinator. A plain `request` that times out does not
-  touch either.
-
-`ClientPool` health checks and `LEAST_CONNECTIONS` read these live counters.
-`LEAST_LATENCY` can distinguish only connections with latency samples; ordinary
-request completion still does not record those samples.
+Pool health checks and least-connections selection use live counters. Least-latency selection cannot distinguish connections without latency samples.
 
 ### Connection callbacks
 
-Callbacks are registered on the `Client` and held by a `CallbackManager` that the
-connection shares. They accumulate — `add_*` appends rather than replaces — and each
-invocation is wrapped so a throwing callback cannot take down the dispatch.
+Registration appends callbacks; it does not replace earlier ones. The native bounds are `Box<dyn Fn(...) + Send + Sync>`. For example:
 
-```cpp srpc-compile-client
-client.add_on_connected([]() { /* connect succeeded */ });
-client.add_on_disconnected([]() { /* channel closed or transport error */ });
-client.add_on_error([](RpcError err, std::string_view msg) { /* ... */ });
-client.add_on_reconnecting([]() { /* a reconnect attempt is starting */ });
-client.add_on_reconnected([](bool success) { /* attempt finished */ });
+```rust,no_run
+use srpc::client::Client;
+use srpc::errors::RpcError;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+fn observe_connection(client: &Client, disconnected: Arc<AtomicBool>) {
+    client.add_on_connected(Box::new(|| println!("connected")));
+    client.add_on_disconnected(Box::new(move || {
+        disconnected.store(true, Ordering::Release);
+    }));
+    client.add_on_error(Box::new(|error: RpcError, message: &str| {
+        eprintln!("connection error {}: {message}", error as i32);
+    }));
+    client.add_on_reconnecting(Box::new(|| println!("reconnecting")));
+    client.add_on_reconnected(Box::new(|success| {
+        println!("reconnect finished: {success}");
+    }));
+}
 ```
 
-`on_connected` fires from the successful connect path. `on_error` and `on_disconnected`
-fire from `handle_error` and from the channel-close fan-out, and both are suppressed
-there when the close was user-initiated. That makes `on_error` genuinely silent on a
-close you asked for; `on_disconnected` is not. `ClientConnection::close()` has its own
-unconditional fan-out at the tail: it invokes the disconnected callback whenever it
-entered from `CONNECTED` or `DISCONNECTING`, and `DISCONNECTING` is exactly the state
-`Client::close()` leaves behind — it calls `mark_closing()` (`CONNECTED` →
-`DISCONNECTING`) and then runs `conn.close()` on the poll thread. `Client`'s destructor
-calls `close()` too, so dropping a connected client also fires `on_disconnected`. If you
-use it to trigger failover, gate it on your own shutdown flag. `on_reconnecting` and
-`on_reconnected` bracket the reconnect loop, and `on_reconnected(false)` is what you get
-when the retries are exhausted or cancelled. `clear_connection_callbacks()` drops them
-all and waits for in-flight dispatches to finish.
+The manager catches unwinding panics from individual callbacks and invokes snapshots outside the registration mutex. Callback-owned state still needs the synchronization required by its Rust bounds.
+
+A successful connect invokes `on_connected`. Transport errors and unexpected closes invoke error/disconnect callbacks. User close suppresses the error fan-out and automatic reconnect, but closing a previously connected connection still invokes `on_disconnected`. Dropping a connected client can therefore trigger it too. Use an application shutdown flag before starting failover from that callback.
+
+Reconnect callbacks announce the loop and its outcome; false covers exhaustion or cancellation. `clear_connection_callbacks()` removes registrations and waits for callbacks already in flight. Do not call it from one of those callbacks, since it would wait for itself.
 
 ### Server-restart detection
 
-Every reply carries a `v64 server_instance_id`, generated once per `Server` from the
-clock, a random draw and the pid. The client records the first one it sees and compares
-on every subsequent reply; a change means the peer process was replaced.
+The client compares the server instance ID on successive replies. A changed ID invokes the restart callback; the first observed ID does not.
 
-```cpp srpc-no-compile
-// After connect() — this setter no-ops when there is no connection.
-client->set_on_server_restart([](uint64_t old_id, uint64_t new_id) {
-    // invalidate caches, re-register leases, re-open sessions...
-});
+```rust,no_run
+use srpc::client::Client;
+
+fn observe_restarts(client: &Client) {
+    // Call after connect; the setter needs a live connection.
+    client.set_on_server_restart(Some(Box::new(|old_id, new_id| {
+        println!("server instance changed: {old_id} -> {new_id}");
+    })));
+}
 ```
 
-`Client::server_instance_id()` returns the last id seen, or 0 when there is no
-connection. The callback does not fire on the first reply, only on a change.
+`client.server_instance_id()` returns the last observed value or zero without a connection. The ID is a restart hint derived from time, process identity, and randomness. It is not a peer authentication mechanism. An application can invalidate caches or renew sessions when it changes.
 
 ### Error types
 
-`RpcError` in `srpc.errors` is the *classification* vocabulary used by the error
-callback and by the helper predicates. It is not what a handler returns — handlers
-return `rusty::Result<Resp, srpc::i32>` with a plain integer — and the client's own
-request functions return integer errno values too. `clientconn_map_system_error`
-translates between them.
+Request submission and replies use integer error codes. `RpcError` is a separate classification enum used by connection callbacks and helper predicates. `clientconn_map_system_error` translates selected integer errors into that vocabulary.
 
-The enum is banded by hundreds, and `get_error_category` is nothing more than a range
-check on the numeric value:
-
-| Band | Category | Values |
-| --- | --- | --- |
+| Numeric band | Category | Representative variants |
+|---|---|---|
 | 0 | `NONE` | `OK` |
-| 100–199 | `CONNECTION` | `NOT_CONNECTED`, `CONNECTION_REFUSED`, `CONNECTION_RESET`, `NETWORK_UNREACHABLE`, `HOST_UNREACHABLE`, `CONNECTION_CLOSED`, `CIRCUIT_OPEN` |
-| 200–299 | `PROTOCOL` | `INVALID_MESSAGE`, `UNKNOWN_RPC_ID`, `MARSHALLING_ERROR`, `VERSION_MISMATCH`, `CHECKSUM_ERROR` |
-| 300–399 | `APPLICATION` | `RPC_FAILED`, `SERVICE_UNAVAILABLE`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`, `NOT_FOUND`, `ALREADY_EXISTS` |
-| 400–499 | `TIMEOUT` | `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`, `RESPONSE_TIMEOUT`, `IDLE_TIMEOUT`, `HEARTBEAT_TIMEOUT` |
-| 500+ | `INTERNAL` | `UNKNOWN_ERROR`, `OUT_OF_MEMORY`, `INVALID_STATE`, `INTERNAL_ERROR` |
+| 100–199 | `CONNECTION` | `NOT_CONNECTED`, `CONNECTION_RESET`, `CIRCUIT_OPEN` |
+| 200–299 | `PROTOCOL` | `INVALID_MESSAGE`, `UNKNOWN_RPC_ID`, `MARSHALLING_ERROR` |
+| 300–399 | `APPLICATION` | `RPC_FAILED`, `SERVICE_UNAVAILABLE`, `INVALID_ARGUMENT` |
+| 400–499 | `TIMEOUT` | `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`, `RESPONSE_TIMEOUT` |
+| 500 and above | `INTERNAL` | `UNKNOWN_ERROR`, `OUT_OF_MEMORY`, `INTERNAL_ERROR` |
 
-Note that `CIRCUIT_OPEN` is banded as a *connection* error, not an internal one.
+The module also provides `rpc_error_to_string`, `rpc_error_category_to_string`, `get_error_category`, `is_connection_error`, `is_timeout_error`, and `is_retryable_error`. The last helper recognizes connection reset, network unreachable, host unreachable, connect/request/response timeouts, and service unavailable. The request coordinator does not consult it; its policy follows `RequestOptions` and the idempotency flag.
 
-The helpers alongside it are `rpc_error_to_string`, `rpc_error_category_to_string`,
-`get_error_category`, `is_connection_error`, `is_timeout_error` and
-`is_retryable_error` — the last of which whitelists exactly `CONNECTION_RESET`,
-`NETWORK_UNREACHABLE`, `HOST_UNREACHABLE`, `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`,
-`RESPONSE_TIMEOUT` and `SERVICE_UNAVAILABLE`.
-It is a classification helper only: nothing in the request path consults it, and retry
-behaviour is driven by `RequestOptions` (`max_retries` *and* `idempotent`) instead.
+`TimeoutType` in `srpc::request_options` separately describes `NONE`, `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`, `RESPONSE_TIMEOUT`, and `TOTAL_TIMEOUT`. A future exposes its recorded value through `get_timeout_type()`.
 
-There is no RPC-specific exception class. SRPC reports failures as values.
-
-`TimeoutType` — `NONE`, `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`, `RESPONSE_TIMEOUT`,
-`TOTAL_TIMEOUT` — is a separate enum in `srpc.request_options`, and it is what
-`Future::get_timeout_type()` reports after a `request_with_options` call gives up.
+Ordinary RPC failures are values. Malformed serialization, failed internal verification, and application panics have the different failure behavior described in Chapter 10.
 
 ---
 
-## 12. Service Definition and Code Generation (C++ lane)
+## 12. Threading and synchronization
 
-This chapter belongs to Part II: the `.rpc` generator emits C++ (and a Python stub),
-and its typed classes wrap the dispatch-level `Service` trait that Chapter 9 shows a
-Rust service implementing directly — there is no Rust code generator yet.
+Each `PollThread` runs one OS worker thread. Its reactor schedules fibers and Rust
+futures on that thread. Starting more fibers adds concurrent work, but it does not
+add CPU cores or make a blocking system call cooperative.
 
-You do not write the C++ lane's wire code by hand. You describe a service in a small
-`.rpc` file, run a Python generator over it, and get back a single C++ header
-containing a typed server base class and a typed client proxy. This chapter is about that file, that
-generator, and exactly what comes out the other end.
+### Own the worker and its handles
 
-The fullest worked example in the tree is `tests/benchmark_service.rpc` together with
-its committed output `tests/benchmark_service.h` and the out-of-line handler definitions
-in `tests/benchmark_service.cc`. Nothing in the CMake build compiles any of the three —
-codegen is not wired into the build at all — but they are the reference for what the
-generator actually emits, and everything below was read out of them and out of
-`pylib/simplerpcgen/`.
+`PollThread::create()` returns `std::sync::Arc<PollThread>`. Several clients and
+servers can share that worker. Creating another `PollThread` creates another OS
+thread.
 
-### The service definition language
+```rust,no_run
+use srpc::client::Client;
+use srpc::reactor::PollThread;
+use srpc::server::Server;
 
-A `.rpc` file is an optional namespace declaration, then any number of struct and
-service declarations in any order:
+let poll = PollThread::create();
+let client = Client::create(poll.clone());
+let server = Server::new(Some(poll.clone()));
 
-```
-namespace demo
-
-struct point3 {
-    double x;
-    double y;
-    double z;
-};
-
-abstract service Demo {
-    sayhi(string hi);
-    sum(i32 a, i32 b, i32 c | i32 result);
-    fast dot_prod(point3 p1, point3 p2 | double v);
-    defer slow_echo(string msg | string echoed);
-};
+// Connect clients and start services before using them.
+client.close();
+drop(client);
+drop(server);
+poll.shutdown();
 ```
 
-The namespace may be qualified (`namespace demo::inner`), and it wraps the generated
-structs and service classes — but only those; the `%%` sections described below sit
-outside it. Structs become plain C++ structs with serialize/deserialize functions
-attached; you can nest them and use them as parameter types anywhere.
+The handle posts commands through an mpsc channel. Methods such as `add_proxy`,
+`remove_fd`, `request_close`, `update_mode` and `add` enqueue work for the worker.
+Returning from one of those calls does not mean the worker has applied it. Tests
+that need an ordering guarantee should observe the resulting state or arrange a
+completion signal.
 
-Inside a service, each line is one method: an optional dispatch attribute, the method
-name, and a parenthesized signature whose input and output parameter lists are separated
-by `|`. The `|` is optional, so a method may have inputs only (`sayhi`), outputs only
-(`nop( | i32 status)`), or neither. Parameter *names* are optional too — `fast nop(string)`
-is legal, and the generator invents a name for you (see below).
+`shutdown()` sends the shutdown command and joins the worker. Repeated calls do
+nothing. A call from the worker itself skips the join, so shutdown has been
+requested but the worker may still be running when that call returns.
 
-Four rules about types are worth knowing before you write anything:
+### Shared ownership does not imply thread safety
 
-**Integers must carry an explicit size.** The type keywords are `i8`, `i16`, `i32`,
-`i64`, and the varint-encoded `v32` and `v64`; they become `srpc::i8` … `srpc::v64` in
-the generated header. Writing `bool`, `int`, `unsigned` or `long` is a hard parse error
-whose message tells you to use a sized type instead. This is deliberate — the wire format
-has no room for an implementation-defined `int`. Note that `v32`/`v64` come out as the
-`srpc::v32` / `srpc::v64` wrapper structs rather than arithmetic types, so you read and
-write them with `.get()` and `.set()`.
+Rust's `Arc<T>` controls the lifetime of `T`. Sending an `Arc<T>` across a thread
+also requires `T: Send + Sync`. The distinction matters because
+`Client::create()` returns `Arc<Client>`, while `Client` is not `Sync`.
 
-**Eight names get a `std::` prefix for free.** `pair`, `string`, `map`, `list`, `set`,
-`vector`, `unordered_map` and `unordered_set` are rewritten to `std::pair`,
-`std::string`, and so on. Templates nest, so `map<i32, vector<string>>` becomes
-`std::map<srpc::i32, std::vector<std::string>>`.
+| Value | Ownership and access |
+| --- | --- |
+| `Arc<PollThread>` | Share across threads to submit worker commands. |
+| `Arc<Client>` | Keep the client handle on its application thread. Its connection slot and staged settings use `RefCell` and `Cell`. |
+| `Server` | Keep lifecycle operations on its owning thread. The handle is not `Sync`. |
+| `Arc<ClientConnection>`, `Arc<ServerConnection>` | Shared connection owners synchronize transport slots and mutable connection state. |
+| `Arc<srpc::client::Future>` | Shared completion state uses mutexes and a condition variable. Its wait blocks an OS thread. |
+| `Rc<Reactor>`, `Rc<Fiber>` | Owner-thread values, using `std::rc::Rc`. |
+| Reactor events | Owner-thread values even where their factories return `Arc`. They contain unsynchronized fiber and event state. |
+| `WeakServerConnection` | `std::sync::Weak<ServerConnection>`. Upgrade it before replying and handle `None` after teardown. |
 
-**Every other name passes through untouched.** That is how `point3` above works, and how
-you reach your own types — including qualified ones like `::mylib::Blob`. Floating-point
-types are in this bucket: `double` and `float` are not keywords, they are just symbols
-the generator copies verbatim — but only `double` actually serializes. There is no
-`float` encoder or decoder in `misc/serializable.rs`, so a `float` field parses fine and
-then emits a header with no overload for the generated `serialize` call to bind to. Use
-`double`. Only an identifier that is *exactly* a reserved word collides; the scanner
-takes the longest match, so `integer` and `asyncfoo` parse as ordinary symbols even
-though `int` and `async` are keywords.
+For several application threads, construct a client on each thread. They may
+share a poll worker, or use separate workers if measurements justify the extra
+threads. Do not add an unsafe `Send` or `Sync` implementation to move a reactor,
+event or client handle around a compiler error.
 
-**Method and parameter names in `__NAME__` form are rejected.** The generator reserves
-that shape for the glue it emits (`__reg_to__`, `__dispatch__`, the per-method wrappers),
-and raises rather than let you collide with it.
+### Fibers share one thread
 
-Two lexical quirks round it out. Semicolons are ignored entirely, so use them or don't.
-Comments run from `//` to end of line — but they must not be empty: a line containing
-exactly `//` matches no token and is a syntax error. Expect no polish from the error
-reporting: yapps prints a genuinely useful `line:col: Trying to find one of ...`
-diagnostic and then dies inside its own error printer with an unrelated `TypeError`.
-Read the first line and ignore the traceback.
+`Reactor::get_reactor()` returns the calling thread's `Rc<Reactor>`. Rust
+`thread_local!` storage keeps different threads' reactors separate.
+`get_disk_reactor()` obtains a second reactor on the same thread; it does not
+start an I/O worker.
 
-### Splicing raw C++ into the header
+A fiber keeps its OS thread until it explicitly suspends. The cooperative
+operations include `srpc::fiber::this_fiber::r#yield()`, nonzero fiber sleeps,
+event waits and `FiberChannel::recv_frame()` when no frame is available.
+`std::thread::sleep`, ordinary blocking I/O, a contended `std::sync::Mutex`, and
+`srpc::client::Future::wait()` block the thread even inside a fiber.
 
-If the generated header needs an `#include`, a `using namespace`, or a forward
-declaration, you supply it with `%%` section markers. The rule is easy to get wrong, so
-state it precisely: the generator counts lines that consist of *exactly* `%%`.
+Use `Rc<Cell<T>>` or `Rc<RefCell<T>>` for application state that stays within one
+reactor. Finish mutations and drop borrow guards before suspending. A second
+fiber can run during the suspension and borrow the same value.
 
-With **two** such lines you get three regions — everything above the first marker is
-copied near the top of the generated header, everything between the two markers is
-parsed as IDL, and everything below the second marker is copied to the bottom of the
-header. That is the layout `tests/benchmark_service.rpc` uses.
+```rust
+use std::cell::RefCell;
+use std::rc::Rc;
+use srpc::reactor::{create_sp_int_event, Fiber, Reactor};
 
-With **one** marker there is no header section: the text above it is parsed as IDL and
-the text below it becomes the footer. With none, the whole file is IDL.
+let state = Rc::new(RefCell::new(Vec::<i32>::new()));
+let event = create_sp_int_event(1);
+let fiber_state = state.clone();
+let fiber_event = event.clone();
+let fiber = Fiber::create_run(move || {
+    {
+        let mut values = fiber_state.borrow_mut();
+        values.push(1);
+    }
+    fiber_event.wait();
+    fiber_state.borrow_mut().push(2);
+});
 
-Both spliced regions land *outside* the generated namespace — the header text goes above
-the opening brace and the footer below the closing one, as `tests/benchmark_service.h`
-shows. So code you splice in is at global scope (or wherever your own `namespace` block
-puts it), not in `demo`. That matters most for hand-written `serialize`/`deserialize`
-pairs: a pair at global scope for a type declared inside `namespace demo` is invisible
-to the ADL dispatch of Chapter 10. Either declare the type in the header section too, so
-both sit at global scope, or wrap the pair in your own `namespace demo { ... }`.
-
-```
-// this lands at the top of the generated header
-#include <math.h>
-%%
-
-namespace demo
-service Demo { ... };
-
-%%
-// this lands at the bottom of the generated header
+assert_eq!(&*state.borrow(), &[1]);
+event.set(1);
+Reactor::get_reactor().run_loop(false, true);
+assert!(fiber.finished());
+assert_eq!(&*state.borrow(), &[1, 2]);
 ```
 
-### Choosing how each method is dispatched
+An `Arc<Mutex<T>>` can share application data across threads, but its guard must
+also end before a fiber suspension or an `.await`. In particular, holding the
+mutex while yielding and then trying to lock it from another fiber on that
+thread can stop the scheduler that would release the first guard.
 
-The keyword in front of a method name decides how the server runs your handler and,
-consequently, what signature the generated virtual has.
+### Services use shared dispatch
 
-| Attribute | Generated handler signature | How it runs |
-| --- | --- | --- |
-| *(none)* | `rusty::Result<Resp, srpc::i32> m(const Req&)` | in a fiber the server spawns per request — may block or make nested calls |
-| `fast` / `prefix` | same | inline on the poll thread, no fiber |
-| `defer` | `void m(const Req&, Resp& resp, srpc::DeferredReply defer)` | in a fiber; you reply whenever you like |
-| `fiber` | `rusty::Result<Resp, srpc::i32> m(const Req&)` | in a fiber inside the request fiber (see the caveat below) |
-| `async` | `rusty::Task<rusty::Result<Resp, srpc::i32>> m(const Req&)` | entered inline on the poll thread, then resumed as a stackless coroutine |
-| `raw` | `void m(rusty::Box<srpc::Request>, srpc::WeakServerConnection)` | in a fiber; you decode and reply yourself |
+The native Rust trait is `Service: Send + Sync`. Registration uses `&mut self`,
+and `__dispatch__` uses `&self`. `Server::start()` publishes an
+`Arc<RpcServiceContext>` containing immutable routing tables and
+`Vec<Box<dyn Service>>`. Dispatch does not hold a `RefCell` borrow over an entire
+handler.
 
-The mechanism behind the table has two halves. The generated `__reg_to__` registers each
-method id with the server through either `reg_fast_rpc` (for `fast`, `prefix` and
-`async`) or `reg_rpc` (for everything else). Then the server's connection dispatch, in
-`rpc/server.rs`, checks whether the incoming id is in the fast set: if it is, the handler
-is invoked inline on the poll thread; if it is not, the server spawns a fiber and runs
-the dispatch there so the handler is free to yield.
+Keep request-local changes in local variables. Use atomics or short mutex
+sections for shared service state. A fiber handler can suspend while another
+request enters the same service, so a service-wide exclusive borrow would be
+the wrong ownership model even on one poll thread.
 
-`fast` and `prefix` are literally the same attribute — the grammar maps the `fast`
-keyword onto `prefix`. A `fast` handler is the cheapest option, but there is no fiber
-under it to yield from, so it must not block: if it does, every connection on that poll
-thread stalls. The same warning applies to an `async` handler up to its first suspension
-point, because those register through the fast path too.
+With the TCP transport, `reg_fast_rpc` dispatches inline on the poll worker;
+`reg_rpc` dispatches through a fiber on that same worker. A stackless task also
+runs there, including the synchronous work in every poll. The in-memory
+transport delivers frames synchronously on the sending thread, so tests using
+it must not assume that callbacks always run on a poll worker.
 
-A `defer` handler receives a `srpc::DeferredReply` by value along with a reference (not a
-pointer) to a response struct the generator allocated for it. Fill in the response and
-call `defer.reply()`, or `defer.reply_error(code)`, whenever the answer is ready — from a
-callback, another thread, a later event. Both fire at most once, and dropping the handle
-without replying is safe; the caller simply never hears back.
+### Cross-thread completion and shutdown
 
-An `async` handler is a C++20 coroutine returning `rusty::Task<...>`; finish it with
-`co_return`. The generated wrapper calls it, then hands the task to
-`srpc::reactor_spawn_stackless_task_with_result` on the current reactor with a completion
-callback that upgrades the weak connection handle and sends the reply.
+A standard Rust `Waker` for a reactor task may cross threads. Waking submits a
+ticket through a synchronized queue. The owning reactor drains that queue and
+polls the task; the waker does not transfer the reactor or execute the future on
+the waking thread. Reactor teardown closes wake admission, and later wakes do
+nothing.
 
-The `fiber` attribute is the one to avoid. It registers on the slow path — so the server
-has *already* put you in a fiber — and then the generated wrapper spawns a second fiber
-inside it. Worse, that wrapper names `Fiber::create_run` unqualified, so the generated
-header only compiles if you have spliced a `using namespace srpc;` into your `%%` header
-section. The plain default already gives you a fiber; prefer it.
+Use an ordinary channel to ask the server's owner to stop. `Server::do_shutdown`
+and `wait_for_shutdown` contain a mutex/condition-variable handshake, but they
+do not make the entire Rust `Server` shareable. Lifecycle methods such as
+`stop_accepting` and `graceful_shutdown` require the owning mutable handle.
 
-`abstract` is a *service-level* keyword: `abstract service Demo { ... }` makes every
-generated handler pure virtual, which is what you want whenever you plan to subclass the
-generated class, because then the compiler will not let you forget a method. If you want
-just one method pure, leave the service concrete and put a trailing `= 0` on that method
-instead:
+```rust,no_run
+use std::sync::{mpsc::Receiver, Arc};
+use srpc::reactor::PollThread;
+use srpc::server::Server;
 
-```
-service Demo {
-    sum(i32 a, i32 b | i32 result) = 0;   // pure
-    sayhi(string hi);                     // declared, you define it out of line
-};
+fn stop_on_command(mut server: Server, commands: Receiver<()>, poll: Arc<PollThread>) {
+    // Call this on the server's owner thread, outside the poll worker.
+    let _ = commands.recv();
+    server.graceful_shutdown(1_000);
+    drop(server);
+    poll.shutdown();
+}
 ```
 
-Be aware of the trap on the other side of that choice: for a non-`abstract` service, the
-generated virtuals are declared but never defined, so the class has no key function and
-its vtable is never emitted. Subclassing it fails at link time even when you override
-everything. Define the virtuals out of line in a `.cc` instead — which is exactly what
-`tests/benchmark_service.cc` does for the non-abstract `BenchmarkService`.
+Close any clients that use the worker before its final shutdown. Signal
+handlers must not invoke mutex-taking SRPC shutdown methods.
 
-### Running the generator
+### Choose a Rust synchronization type
 
-There is no `bin/rpcgen` in this repo. That driver script lived in the upstream checkout
-this code was extracted from; both in-tree rpcgen tests still shell out to it and both are
-therefore dead. Drive the generator by importing it with `pylib/` on the Python path:
+For your own code, prefer `std::sync::Mutex`, atomics and channels. SRPC also
+exposes `srpc::threading::SpinLock`, with bare `lock()` and `unlock()` methods
+and no guard. Its contended path sleeps the OS thread for 50 microseconds per
+attempt. It is unsuitable for waiting on another fiber and easy to leave
+locked if control exits early. The pthread wrappers exist for native callers
+with valid pthread storage; use Rust synchronization for native Rust services.
+
+The maintained tests exercise these boundaries in
+[reactor_multithread_rust.rs](../tests/reactor_multithread_rust.rs),
+[rpc_runtime_rust.rs](../tests/rpc_runtime_rust.rs),
+[server_concurrency_rust.rs](../tests/server_concurrency_rust.rs) and
+[stackless_wake_pollthread_rust.rs](../tests/stackless_wake_pollthread_rust.rs).
+
+---
+
+## 13. Performance tuning
+
+Measure a release build on the deployment workload. The current checked-in
+Rust benchmark measures leaf codecs. It does not measure a TCP service, server
+dispatch, retries or scheduler throughput.
+
+### Run the Rust microbenchmark
+
+From the repository root:
 
 ```sh
-PYTHONPATH=/path/to/srpc/pylib python3 -c \
-  "from simplerpcgen.rpcgen import rpcgen; rpcgen('demo.rpc', ['cpp'])"
+cargo run --release --manifest-path bench/Cargo.toml
+# Equivalent helper for the current tree:
+scripts/run_microbench.sh
 ```
 
-That writes `demo.h` next to `demo.rpc`. Pass `['cpp', 'python']` to also emit `demo.py`,
-a stub for the external `simplerpc` Python package. `rpcgen` takes a third keyword
-argument, `archive`, which defaults to `True`; it controls whether the `serialize` /
-`deserialize` functions and their `BinaryWriteArchive` / `BinaryReadArchive` operators are
-emitted next to each struct. Leave it on. The generated dispatch wrappers call those
-functions unconditionally, and every header committed here was generated with it on.
-
-Generation is not part of the build. Run it by hand and commit the output, the way
-`tests/benchmark_service.h` is committed here.
-
-One fix-up you will need every time: the generated header opens with
-`#include "srpc/srpc.hpp"`, which assumes SRPC sits in a directory named `srpc` on your
-include path. For a header generated into a subdirectory of the repo itself, that line
-has to become something like `#include "../srpc.hpp"`. The generator rewrites it on every
-run, so re-apply the edit after each regeneration. (The committed
-`tests/benchmark_service.h` still carries the unedited form — nothing in the build
-compiles it, so nothing catches it there.)
-
-### RPC method ids, and how to not break the wire
-
-Each method gets an id from `random.randint(0x10000000, 0x70000000)`. Random ids are only
-tolerable because the generator stabilizes them: before writing the header, it *reads the
-header it is about to overwrite*, scrapes the `enum` of ids back out of it, and reuses any
-id whose `Service.METHOD` key it recognizes. New methods get fresh ids drawn to avoid
-collisions with the ones already in use.
-
-Three consequences follow, and each of them is a way to silently break wire
-compatibility:
-
-**Never regenerate into a clean directory.** If the old header is gone, there is nothing
-to scrape, and every id changes. Nothing fails loudly; the server simply answers
-error 2 (`ENOENT`, the server's no-such-handler code) to every call from a peer built
-against the old header.
-
-**Renaming a method reassigns its id.** The scrape is keyed on the uppercased method name,
-so a rename looks exactly like a new method. Plan for it the way you would plan any
-wire-breaking change.
-
-**Never regenerate `pylib/simplerpcgen/rpcgen.py` from `rpcgen.g`.** `rpcgen.py` is the
-live generator and has been hand-edited since it was produced by yapps. `rpcgen.g` is a
-stale grammar whose epilogue predates all of this: it has no `load_existing_rpc_codes`, no
-`existing_codes` argument, and no `archive` flag. Regenerating would quietly drop the id
-stabilization described above. (There is no yapps compiler vendored here anyway —
-`pylib/yapps/` is runtime-only — so this is a hazard you have to opt into.)
-
-### What the generated header contains
-
-For each service you get two classes: `<Svc>Service` and `<Svc>Proxy`. Everything else is
-a *member* of `<Svc>Service`.
-
-Per method, the generator synthesizes one request struct and one response struct from the
-input and output lists. The name is `Rpc` + the method name split on `_` with each part
-capitalized + `Request`/`Response`. So `dot_prod` gives `RpcDotProdRequest` and
-`RpcDotProdResponse`, and `slow_echo` gives `RpcSlowEchoRequest` / `RpcSlowEchoResponse`.
-Fields take their names from the IDL parameter names; unnamed parameters fall back to
-`in_0`, `in_1`, … and `out_0`, `out_1`, … by position. A method with no outputs still gets
-a response struct — an empty one.
-
-Alongside the structs, `<Svc>Service` carries an `enum` of the method ids (uppercased
-method names: `SUM`, `DOT_PROD`), the `__reg_to__` registration function, the
-`__dispatch__` switch, one private `__<method>__wrapper__` per non-`raw` method that does
-the decoding and replying, and the typed virtual for you to override.
-
-For `sum` above, inside `class DemoService`, that is:
-
-```cpp srpc-no-compile
-struct RpcSumRequest {
-    srpc::i32 a;
-    srpc::i32 b;
-    srpc::i32 c;
-};
-struct RpcSumResponse {
-    srpc::i32 result;
-};
-
-enum {
-    SAYHI = 0x1234abcd,   // the real values are random draws in
-    SUM   = 0x5678ef01,   // [0x10000000, 0x70000000], stable across regenerations
-    // ...
-};
-
-// typed service signatures
-virtual rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) = 0;
-```
-
-The structs are nested, so from outside the class they are spelled
-`DemoService::RpcSumRequest` — a bare `demo::RpcSumRequest` does not exist. `DemoProxy`
-re-exports each of them with a `using`, which is why client code says
-`DemoProxy::RpcSumRequest`.
-
-The generated service class has **no base class**. It does not inherit
-`srpc::Service`; that interface is satisfied by a type-erasure shim the server wraps you
-in. Register with `reg_service_typed`, not `reg_service`:
-
-```cpp srpc-no-compile
-svr.reg_service_typed(rusty::make_box<MyDemoService>());
-```
-
-### Implementing the server side
-
-Inherit from the generated class and override the typed virtuals. Return `::Ok(resp)` with
-the response filled in, or `::Err(code)` with an error code of your choosing; the
-generated wrapper does all the (de)serialization and sends the reply.
-
-```cpp srpc-no-compile
-class MyDemoService : public DemoService {
-public:
-    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
-        RpcSumResponse resp{};
-        resp.result = req.a + req.b + req.c;
-        return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
-    }
-
-    rusty::Result<RpcDotProdResponse, srpc::i32> dot_prod(const RpcDotProdRequest& req) override {
-        RpcDotProdResponse resp{};
-        resp.v = req.p1.x * req.p2.x + req.p1.y * req.p2.y + req.p1.z * req.p2.z;
-        return rusty::Result<RpcDotProdResponse, srpc::i32>::Ok(resp);
-    }
-
-    void slow_echo(const RpcSlowEchoRequest& req, RpcSlowEchoResponse& resp,
-                   srpc::DeferredReply defer) override {
-        resp.echoed = req.msg;
-        defer.reply();     // or defer.reply_error(EAGAIN)
-    }
-};
-```
-
-An `async` method is written as a coroutine on the same class:
-
-```cpp srpc-no-compile
-rusty::Task<rusty::Result<BenchmarkService::RpcAsyncNopResponse, srpc::i32>>
-BenchmarkService::async_nop(const RpcAsyncNopRequest& req) {
-    (void)req;
-    co_return rusty::Result<RpcAsyncNopResponse, srpc::i32>::Ok(RpcAsyncNopResponse{});
-}
-```
-
-### The generated client proxy
-
-`<Svc>Proxy` wraps a `srpc::Client*` and gives every non-`raw` method three things: a
-blocking call, an `async_` call, and a per-method future wrapper class named
-`<method>TypedFuture` — note that this one uses the raw IDL method name, not the
-capitalized form, so `dot_prod` yields `dot_prodTypedFuture`.
-
-```cpp srpc-no-compile
-DemoProxy demo(const_cast<srpc::Client*>(cl.get()));
-
-DemoProxy::RpcSumRequest req;
-req.a = 1; req.b = 2; req.c = 3;
-
-// Blocking: async_sum(...).unwrap().resolve(), collapsed into one call.
-auto result = demo.sum(req);
-if (result.is_ok()) {
-    printf("1 + 2 + 3 = %d\n", result.unwrap().result);
-}
-
-// Non-blocking: get the typed future back immediately.
-auto fu = demo.async_sum(req);   // rusty::Result<sumTypedFuture, srpc::i32>
-if (fu.is_ok()) {
-    auto typed = fu.unwrap();
-    // ... issue more calls, do other work ...
-    auto resolved = typed.resolve();
-    if (resolved.is_ok()) {
-        printf("result = %d\n", resolved.unwrap().result);
-    }
-}
-```
-
-`async_<method>` takes an optional second argument, a `srpc::FutureAttr`, which is where a
-completion callback goes if you would rather be notified than poll. The typed future
-exposes `ready()`, `wait()`, `get_error_code()`, `raw_future()` and `resolve()`; `resolve()`
-checks the error code first and returns `Err(code)` without decoding if it is nonzero.
-
-Two things the proxy does *not* have, despite what you might expect from the shape of the
-API: there is no `await_<method>` method and the typed future is not awaitable — the
-generator emits no `co_await` support on the client side at all. `rusty::Task` appears only
-in the *server* handler signature for `async` methods.
-
-Be aware that the blocking form inherits the client's one-second future cap: `resolve()`,
-`wait()` and `get_error_code()` all funnel through it, so a slow server yields `Err(110)`
-(`ETIMEDOUT`) even if the reply arrives later. For a longer budget you have to leave the
-proxy and call `Client::request_with_options` with the method id from the service enum —
-see the chapter on timeouts and retries.
-
-### Raw methods keep the old shape
-
-A `raw` method is the escape hatch. The request and response structs are still
-synthesized for it — the generator makes them for every method — but nothing uses them:
-the handler gets the undecoded `srpc::Request` and a weak connection handle, and does its
-own reading and replying.
-
-The proxy side of a `raw` method is the one place in the generated code where the old
-pointer-out-parameter style survives. Inputs are passed by const reference, outputs are
-passed as pointers, and the sync form returns a bare `srpc::i32` error code rather than a
-`rusty::Result`:
-
-```cpp srpc-no-compile
-// For the IDL line:  raw fetch(i64 key | string val);
-srpc::FutureResult async_fetch(const srpc::i64& key,
-                               const srpc::FutureAttr& attr = srpc::FutureAttr());
-srpc::i32 fetch(const srpc::i64& key, std::string* val);
-```
-
-Everywhere else — every non-`raw` handler, every non-`raw` proxy call — the interface is
-one request struct in, one response struct out, and no pointers.
-
----
-
-## 13. Threading and Synchronization
-
-SRPC has no thread pool, no work-stealing scheduler, and nothing that silently moves your
-work onto another core. Concurrency comes from two mechanisms that are easy to keep apart
-once you know which is which: **fibers**, which multiplex inside one thread and never run
-in parallel, and the **poll thread**, which is exactly one OS thread per `PollThread`
-object. Almost everything in this chapter follows from that split.
-
-### One PollThread is one OS thread
-
-`PollThread::create()` spawns a single worker thread and hands back an
-`Arc<PollThread>`. There is no thread count to configure. The handle is an `Arc`, so
-several clients and servers can share one thread, or each can have its own:
-
-```rust
-let poll = PollThread::create();            // Arc<PollThread>
-let mut svr = Server::new(Some(poll.clone()));
-let cl = Client::create(poll.clone());      // Arc<Client>
-
-// ... run ...
-
-poll.shutdown(); // sends the Shutdown command, then joins the worker
-```
-
-The handle is the *only* thing that crosses a thread boundary. Nothing reaches into the
-worker's epoll set directly: `add_proxy`, `remove` / `remove_fd`, `request_close`,
-`update_mode` and `add` (for a job) each push a `PollCommand` onto an mpsc channel and
-return immediately. The worker drains that queue between epoll waits and applies the
-commands on its own thread. That is why the reactor suites sleep after registering a
-pollable — the call has posted a message, not performed a registration:
-
-```rust
-poll.add_proxy(make_pollable_proxy_from_typed_arc(p.clone()));
-std::thread::sleep(std::time::Duration::from_millis(50)); // let the worker drain
-poll.remove_fd(p.fd());
-```
-
-The one method that is synchronous is `shutdown()`. It latches an atomic so a second call
-is a no-op, sends `Shutdown`, and then joins — except when it is called *from* the poll
-thread itself, which it detects by comparing thread ids and skips the join rather than
-deadlocking. `pollworker_is_on_poll_thread()` answers the same question for your own code.
-
-### Fibers are cooperative, and that is the whole contract
-
-Fibers belonging to one reactor never run simultaneously. A fiber keeps the thread until it
-reaches a suspension point, and the suspension points are all explicit:
-
-- `this_fiber::yield()`
-- `this_fiber::sleep_us()` / `sleep_ms()` / `sleep_s()` / `sleep_until_us()`
-- any event's `wait()` or `wait_timeout()`
-- a blocking RPC call issued from inside the fiber, which is an event wait underneath
-
-Between two of those, a fiber runs to completion. So data shared only by fibers of one
-reactor needs no lock at all — what it needs is the discipline of never leaving a broken
-invariant across a yield.
-
-The sharpest form of that rule involves interior mutability. The reactor's own code is
-written to release every `RefCell` borrow guard before it suspends, and says so where it
-would otherwise be tempting to hold one: the event-wait path pushes onto each queue as its
-own statement so the guard dies at the semicolon, before the yield, and `continue_fiber`
-drops its borrow before resuming a fiber precisely because the resumed fiber may call
-`create_run()` and re-borrow. If you hold a borrow across a yield in your own handler, the
-second borrower panics.
-
-### The reactor is per-thread
-
-`Reactor::get_reactor()` returns the calling thread's `rusty::Rc<Reactor>`, creating it on
-first use; `Reactor::get_disk_reactor()` returns a second, independent reactor on the same
-thread — the historical disk-I/O slot.
-Note the handle type: `Rc`, not `Arc` — a non-atomic refcount, which is itself a statement
-that the object is not to be shared.
-
-The reactor does not merely document that. `run_loop`, every stackless-task entry point,
-the event wait path, and even the destructor compare `rusty::thread::current_id()` against
-the `thread_id_` the reactor stamped at construction, and a mismatch trips a `verify` that
-prints a stack trace and does not return.
-
-```rust
-let reactor = Reactor::get_reactor();
-reactor.run_loop(false, true); // (infinite, do_check_timeout)
-```
-
-The slots behind `get_reactor()` are `thread_local!` LocalKeys, public in both lanes —
-which is how the C++ fiber suite gives each test a fresh scheduler:
-
-```cpp srpc-no-compile
-srpc::sp_running_fiber_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
-srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
-```
-
-Per-thread behavior is real in both lanes and pinned by tests in both:
-`tests/reactor_multithread_rust.rs` runs two reactors on two threads of one process
-under rustc, and the C++ runtime battery covers races and teardown natively.
-
-### Events belong to the thread that created them
-
-Every event records an `owner_thread_` at construction. `wait()` verifies that the calling
-thread owns the reactor *and* that a fiber is running — you cannot wait on an event outside
-fiber context. `test()` is the one method written to tolerate a foreign caller, and it
-deliberately does less there: the liveness check that upgrades the event's `Weak<Fiber>` runs only when the
-caller is the owner, because upgrading mutates a non-atomic `Rc` strong count and would
-corrupt it from another thread.
-
-Treat `Reactor`, `Fiber`, every event type, and every `Rc` as thread-bound. There is no
-supported way to hand one to another thread.
-
-### The single-dispatch-thread contract
-
-`RpcServiceContext`, `ServerConnection`, `ClientConnection`, `TcpConnection` and
-`TcpListener` all carry hand-written `unsafe impl Send` / `unsafe impl Sync`. Those are
-assertions, not proofs, and they exist for a concrete reason: the channel layer's callbacks
-are `Box<dyn Fn(...) + Send + Sync>` and the reactor's `OneTimeJob` callable is
-`Box<dyn FnMut() + Send + Sync>`, so anything captured into them must be `Send` — while the
-captured objects are full of `Cell` and `RefCell` state.
-
-The SAFETY notes in `rpc/server.rs` and `rpc/client.rs` state what makes that sound, and it
-is the contract you are relying on whether you read them or not: **every `Cell`/`RefCell`
-field is written only from the connection's own poll thread**, and other threads either read
-them as monotone latches or go through the mutex-guarded slots. Every `__dispatch__` runs on
-that one thread.
-
-What that means in practice:
-
-- A `fast` / `prefix` handler runs inline on the poll thread. Blocking there stalls every
-  connection on that thread. The same applies to an `async` handler up to its first
-  suspension point, and to any channel callback you install.
-- A default handler runs in a fiber — on the same thread. It may block and make nested
-  calls, but it never runs in parallel with another handler on that server.
-- The way to use more cores is more poll threads, not more threads per poll thread.
-
-### What actually crosses threads on a client
-
-A plain blocking call already involves two threads. Your thread serializes the arguments and
-registers the pending call; the poll thread reads the reply off the socket and completes it.
-The state they share is small and deliberate:
-
-| Shared state | Guard |
-| --- | --- |
-| `pending_fu_` — xid to `Arc<Future>` | a mutex |
-| `pending_cb_slots_` — 16384 async-callback slots, indexed `xid % 16384` | a mutex |
-| the xid counter | `AtomicI64` (`fetch_add`) |
-| `ConnectionMetrics` — 18 counters | `AtomicU64` each |
-| a TCP connection's outbound buffer and callback slots | mutexes |
-
-Shared connection state and reliability managers use atomics or mutex-protected snapshots.
-Circuit-breaker admission and reply transitions synchronize on the same canonical state;
-half-open probe admission is serialized. Callbacks run after releasing the transition
-locks. This prevents races between application request threads and the poll worker.
-
-`Future` itself is a mutex plus a condition variable, so `Future::wait()` is an OS-level
-wait, not a fiber suspension: it blocks the calling thread outright. If that thread is the
-poll thread that would have delivered the reply, nothing can complete the call. It is also
-hard-capped at one second and then latches `ETIMEDOUT`; see chapter 8 for what that means
-for long calls.
-
-Do not drive one `Client` from two application threads. `Client::request` takes a `RefCell`
-borrow of the connection slot, and that borrow counter is not atomic. Give each application
-thread its own `PollThread` and its own `Client` — that is the shape the benchmark client in
-`tests/rpcbench.cc` uses (one `PollThread::create()` and one `Client::create()` per client
-thread), though note CMake does not build that file.
-
-### Server shutdown is the one sanctioned cross-thread handshake
-
-`do_shutdown()` locks the server's shutdown state, sets the flag, and broadcasts a condition
-variable; `wait_for_shutdown()` blocks on the same pair. So a signal handler or a control
-thread can stop a server whose main thread is parked:
-
-```rust
-// control thread / signal handler
-svr.do_shutdown();
-
-// main thread
-svr.wait_for_shutdown();
-```
-
-`stop_accepting()`, `drain(ms)` and `graceful_shutdown(ms)` are *not* in that category: they
-move a plain `Cell` phase field. Call them from the thread that owns the `Server`.
-
-### Stackless tasks: the one designed cross-thread wake
-
-The reactor also drives stackless task pollers behind `async fn` handlers, and those
-can be woken from another thread. Canonical Rust uses `std::task::Waker` backed by an
-`Arc<StacklessWakeTarget>` implementing `std::task::Wake`. The target owns an `Arc`
-ticket and an `Arc` ingress containing an `accepting` flag and a mutex-guarded pending
-queue. Waking publishes the ticket to that queue; the owning reactor drains it inside
-`run_loop`. The `Reactor` pointer never crosses threads.
-
-Teardown flips `accepting` to false, which makes a late foreign wake a defined no-op — and,
-because a silently dropped wake is exactly the shape of a client hang, every teardown path
-that can strand a waiter also counts the cancellation and logs it at ERROR.
-
-### The primitives that exist
-
-**`SpinLock`** (`base/threading.rs`, exported through the `srpc.hpp` umbrella) is the only
-lock SRPC defines itself. `lock()` tries one acquire CAS; on failure it spins up to a
-thousand `pause` iterations while the lock still looks held, then falls back to a CAS loop
-that sleeps 50 µs between attempts. `unlock()` is a release store. It is one byte,
-`Send + Sync`, not recursive, and it has **no guard type** — you pair the calls yourself, or
-wrap it in an RAII type of your own.
-
-```rust
-let lock = SpinLock::new();
-lock.lock();
-// very short critical section: no yields, no syscalls, no allocation
-lock.unlock();
-```
-
-There is no `SpinMutex<T>`: no guard-returning lock of any kind ships in the tree.
-
-**The pthread wrappers** are thin, checked shims over caller-owned storage:
-`Pthread_mutex_init` / `lock` / `unlock` / `destroy`, `Pthread_cond_init` / `destroy` /
-`signal` / `broadcast` / `wait`, and `Pthread_spin_init` / `lock` / `unlock` / `destroy`.
-They take real `pthread_mutex_t*`, `pthread_cond_t*`, `pthread_spinlock_t*`, and they
-`verify` the return code rather than giving it back — a failure aborts, so there is nothing
-to check.
-
-```cpp srpc-no-compile
-pthread_mutex_t m;
-pthread_cond_t c;
-Pthread_mutex_init(&m, nullptr);
-Pthread_cond_init(&c, nullptr);
-
-Pthread_mutex_lock(&m);
-while (!ready) {
-    Pthread_cond_wait(&c, &m);
-}
-Pthread_mutex_unlock(&m);
-```
-
-`cpu_pause()` is exported alongside them for hand-written spin loops.
-
-The mutexes, condition variables and mpsc channels the canonical sources use internally
-belong to the rusty runtime, not to SRPC's public surface. For your own code the C++
-standard library is the straightforward choice, and it is what the built reactor and fiber
-suites actually use (`std::atomic`, `std::this_thread::sleep_for`).
-
-### When to use what
-
-| Situation | Use |
-| --- | --- |
-| Two fibers on one reactor | nothing — they never run in parallel; just don't yield mid-invariant |
-| State shared by a fiber and the poll thread running it | nothing — same thread |
-| A flag or counter read from another thread | `std::atomic<T>` |
-| A very short critical section across threads | `SpinLock` (no guard type; pair by hand) |
-| A longer critical section across threads | `std::mutex` with a standard lock guard |
-| Sharing an SRPC handle across threads | `rusty::Arc<T>` — `PollThread`, `Client` and connections are all handed out this way |
-| Sharing within one thread | `rusty::Rc<T>` — what `Reactor::get_reactor()` returns; never send it |
-| Breaking an ownership cycle | `rusty::Weak` — `WeakServerConnection` is the one that appears in handler signatures |
-
-### Rules
-
-1. **Never move a `Reactor`, `Fiber`, event, or any `Rc` to another thread.** The reactor
-   re-checks its owning thread at its main entry points, and `verify` does not return.
-2. **Never block on the poll thread.** That covers `fast` / `prefix` handlers, `async`
-   handlers before their first suspension, and every channel callback.
-3. **Never hold a `RefCell` borrow across a fiber yield.** Scope the guard so it dies before
-   the suspension point.
-4. **Talk to a poll thread by sending it work.** `PollThread::add` takes a job; the pollable
-   and mode methods post commands. Nothing touches the epoll set from outside.
-5. **One `Client` per application thread**, each on its own `PollThread`.
-6. **`do_shutdown()` is the cross-thread stop button.** `graceful_shutdown()` is not.
-
----
-
-## 14. Memory Safety (RustyCpp, C++ lane)
-
-SRPC's memory-safety story is not a set of C++ comments that a tool reads back. It is the
-build. All 37 production modules are **canonical Rust** files living at their historical
-C++ paths under `base/`, `misc/`, `reactor/` and `rpc/`; rustc type-checks, borrow-checks
-and auto-trait-checks those files; and the C++23 named modules that make up `libsrpc.a` are
-generated by the pinned rusty-cpp transpiler from the same bytes rustc just checked.
-
-That is the whole mechanism, and it is worth being precise about what it does and does not
-buy you.
-
-### Where the checking actually happens
-
-Two consumers read the same source files. rustc reaches them through `src/lib.rs`, a
-*generated* crate index of `#[path = "../rpc/frame_codec.rs"] pub mod frame_codec;` lines.
-rusty-cpp reaches them through one whole-crate invocation over the same manifest:
+[bench/Cargo.toml](../bench/Cargo.toml) defines a separate workspace with
+`opt-level = 3`, LTO, one code-generation unit and debug information. It depends
+on the actual `srpc` crate. The benchmark measures
+`frame_codec_write_header` and the sparse integer encode/decode functions by
+encoded length. `cargo test --workspace --all-targets` excludes this package.
+
+The source still defines four clock/sleep replacement symbols inherited from
+an older standalone setup. None of the measured codec operations needs those
+symbols. Treat its output as codec timing only, never as evidence about the
+native runtime, timers or fibers.
+
+The helper also has a comparison mode:
 
 ```sh
-rusty-cpp-transpiler --crate Cargo.toml --output-dir <build>/goal0-crate-cpp \
-    --cxx-namespace srpc --flat-import-namespace srpc \
-    --module-preamble module-preambles.toml --type-map rust-type-map.toml \
-    --cpp-module-index cpp-module-index.toml
+scripts/run_microbench.sh --compare <commit-a> <commit-b>
 ```
 
-The Rust checks are not advisory. `srpc_goal0_source_gate` runs
-`RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets` and
-`cargo clippy --locked --workspace --all-targets -- -D warnings`, and the CMake `srpc`
-library target *depends on that gate*. A borrow error, a failed auto-trait bound, or a new
-clippy warning breaks the C++ build before a single `.cppm` is compiled.
+It creates detached worktrees, builds each revision and alternates runs. Its
+copy command has a limitation: when a revision already contains `bench/`, it
+can create `bench/bench/` and leave the old benchmark active. Inspect the
+benchmark files actually built on each side before claiming that a comparison
+used identical code. Keep the compiler, optimization settings, machine load
+and benchmark source consistent; report the spread across runs with the
+difference.
 
-The consequence to keep in mind while reading the rest of this chapter: a change to a `.rs`
-file is simultaneously a Rust change and a C++ ABI change.
+The C++ companion describes the maintained `rpcbench` target and preserves the
+2026-08-29 and 2026-08-31 throughput tables. Those historical Rust TCP results
+used an external driver absent from this checkout. They predate runtime and
+ownership repairs and are not current performance claims.
 
-### `unsafe` is denied, then budgeted
+### Build the application for measurement
 
-The crate manifest denies it outright:
+Run Cargo from your application package:
 
-```toml
-[lints.rust]
-unsafe_code = "deny"
+```sh
+cargo build --release
 ```
 
-Eight files re-open it at file scope, and they are exactly the ones that live on the
-syscall and C++-module boundary: `reactor/reactor.rs`, `reactor/fiber.rs`,
-`rpc/client.rs`, `rpc/server.rs`, `rpc/tcp_channel.rs`, `rpc/inmemory_channel.rs`,
-`rpc/fiber_channel.rs`, and `misc/any_message.rs`. Everywhere else, each `unsafe` item
-carries its own narrow `#[allow(unsafe_code)]` — 125 of them across twenty files.
+Cargo takes profile settings from the workspace root. Put application profile
+changes in that manifest, measure them, and record them with results. SRPC's
+[build.rs](../build.rs) separately compiles its C and assembly kernels with
+`-O2`, debug information and `-DREUSE_FIBER`; a Rust release profile does not
+change those native flags.
 
-The split is measurable: of 333 `unsafe { … }` blocks in the canonical sources, 197 sit in
-those eight file-scope-allowed modules and the remaining 136 sit under one of those 125
-explicit per-item allows. That is the point of the arrangement. `grep -rn 'allow(unsafe_code)'` over
-`base/ misc/ reactor/ rpc/` is a complete inventory of the deliberate exceptions, and
-adding one is a visible act in review rather than a silent keyword.
+The native runtime requires Linux on x86_64 or aarch64, a C compiler and an
+archiver. Cargo reads `CC` and `AR` for those tools. It does not need generated
+C++ modules for a Rust build.
 
-The house convention is that an `unsafe fn` gets a `# Safety` doc section stating its
-precondition (55 of them today) and an `unsafe` block gets a `// SAFETY:` comment saying
-why it holds (138 today).
+### Dispatch determines scheduler cost
 
-### Unsafe boundaries and canonical calls
+Register a short, nonblocking handler with `Server::reg_fast_rpc` to avoid a
+fiber dispatch. Use `Server::reg_rpc` when the handler needs stackful
+suspension through SRPC's fiber APIs. A new fiber reserves a default 1 MiB
+stack and a guard page. The checked-in Cargo build enables fiber reuse so
+finished stacks can serve later handlers.
 
-Calls between SRPC modules use canonical Rust imports. Crossing a generated C++ module
-boundary does not itself require an unsafe Rust call. Unsafe contracts remain at raw
-payload pointers, native FFI, context switching, and other operations whose memory or
-ownership requirements Rust cannot express. The adapter inventory and native manifest
-record those boundaries; they do not permit alternate SRPC runtime behavior.
+Ordinary blocking I/O still blocks the worker under either registration.
+Offload that work through an application-managed worker and arrange completion
+through a synchronized channel or a standard Rust waker. The stackless reactor
+API removes the dedicated stack, but each future poll still has to return
+promptly. `.await` yields only when the awaited future returns `Pending`.
 
-### The assertions rustc cannot check for you
+### Pick the client path for the workload
 
-Three categories of statement in these sources are outside what the compiler proves, and
-they are where real bugs would live.
-
-**Thread-safety contracts.** Services and channel interfaces require `Send + Sync`.
-Shared RPC connection fields, future state, and reliability managers now use actual
-synchronization. Remaining unsafe implementations at native ownership boundaries need
-specific invariants. A `Cell` field is not safe merely because its updates are monotonic.
-Reactor fibers and events remain owner-thread values and must not cross threads.
-
-**`#[cfg_attr(any(), …)]` emitter directives.** `any()` is always false, so these attributes
-are invisible to `cargo build`, `cargo test` and clippy while being the only way to state a
-C++ contract Rust has no syntax for: `thread_local` (all nine in `reactor/reactor.rs`),
-`cpp_noexcept`, `cpp_no_fieldwise_ctor`, `cpp_no_auto_traits`, `cpp_abi`. Deleting one is
-silent in the Rust lane and changes the emitted module.
-
-**Generated ownership still needs validation.** C++ guards and shared handles must preserve
-Rust lifetimes and mutation contracts. Compilation checks generic and imported ownership
-metadata; runtime tests cover inline replies, concurrent close, suspended receivers, and
-retained wakes. An allowance for a required spelling is not permission to substitute a
-constant result or weaken an ownership rule.
-
-### The ownership types you actually hold
-
-From a consumer's side the safety model shows up as types, not annotations. You never write
-a raw `new` or `delete` against this API.
-
-| Type | Role |
+| Method | Main cost and behavior |
 | --- | --- |
-| `rusty::Box<T>` | unique ownership — `reg_service_typed(rusty::make_box<T>())`, and a `raw` handler's `rusty::Box<Request>` |
-| `rusty::Arc<T>` | shared ownership across threads — `PollThread::create()`, `Client::create()`, server connections |
-| `rusty::Rc<T>` | shared ownership within one thread — `Reactor::get_reactor()`, `Fiber` handles |
-| `rusty::Weak` / `WeakServerConnection` | a non-owning handle that expires cleanly |
-| `rusty::Option<T>` | nullability, made explicit — `Server::new_` takes one; `Client::connection()` returns one |
-| `rusty::Result<T, E>` | fallibility, made explicit — a plain, `fast` or `prefix` handler returns `rusty::Result<Resp, srpc::i32>`; an `async` one returns `rusty::Task<rusty::Result<Resp, srpc::i32>>`, while `defer` and `raw` return `void` and reply out of band |
+| `request(rpc_id, &FutureAttr::default(), writer)` | Allocates an `Arc<Future>`, tracks it in a mutex-protected map, and serializes a request buffer. The reply removes the map entry. |
+| `request_async(rpc_id, writer, callback)` | Uses a preallocated table of 16,384 callback slots and a request buffer. It has no future object and no reply timeout. |
+| `request_with_options(rpc_id, &options, writer)` | Serializes replay bytes and starts a detached OS thread per call to coordinate attempts and waits. |
 
-Nullability is the one that changes how code reads. `Client::connection()` hands back an
-`Option`, so there is no way to skip the check:
+`request_async` still expects a reply. Keep its callback short, and copy reply
+bytes before retaining them beyond the callback. A colliding slot returns
+`Err(16)`. Slots remain occupied until a reply, failed dispatch or disconnect
+drain; there is no timeout setting to tune. The reply lookup uses the slot
+index without checking the full xid. Chapter 14 explains the consequences.
 
-```cpp srpc-no-compile
-auto conn = cl->connection();
-if (conn.is_some()) {
-    printf("%lu\n", conn.unwrap()->metrics().requests_sent());
-}
-```
+Use retries for operations that need their delivery policy. A detached thread
+per request can dominate a high-rate workload. If only the wait needs to be
+longer, set options on an ordinary request future and use `wait_with_options`;
+the retry coordinator is unnecessary for that case.
 
-### Interior mutability, and how the choice is made
+### Worker count and transport limits
 
-The canonical sources pick between three carriers by exactly one question: who writes it.
+One `PollThread` has one worker. More clients sharing it add connections, not
+worker parallelism. To use more cores, distribute independent clients and
+servers across multiple poll threads and measure the result. There is no
+worker-count field inside `PollThread`.
 
-```rust
-pub struct CircuitBreaker {
-    pub config_field: Cell<CircuitBreakerConfig>,   // Copy state, unsynchronised
-    pub state_field: Cell<CircuitState>,
-    pub failure_count_field: Cell<u32>,
-    // ...
-}
+The 64 MiB frame bound detects impossible or corrupted lengths. Raising it
+does not improve throughput. The TCP outbound buffer has a 4 MiB default
+high-water mark; when the current buffer has reached it, sending another
+frame fails. The client maps that refusal to `EIO`, code 5.
+`TcpConnection::set_outbound_high_water` needs a mutable concrete connection
+and is not part of the channel trait used by the ordinary client API. The
+receive scratch buffer is 64 KiB. These values are transport implementation
+details, not interchangeable request-size settings.
 
-pub struct RequestQueue {
-    pub config_: Cell<RequestQueueConfig>,          // Copy state
-    pub queue_: Mutex<VecDeque<QueuedRequest>>,     // touched from more than one thread
-}
-
-pub struct ConnectionMetrics {
-    pub requests_sent_field: AtomicU64,             // written and read across threads
-    pub requests_completed_field: AtomicU64,
-    // ... 18 counters, all atomic
-}
-```
-
-`Cell<T>` for trivially copyable state owned by one thread. `RefCell<T>` for containers and
-non-`Copy` values owned by one thread — with the yield discipline from chapter 13, because a
-borrow held across a suspension point is a panic waiting to happen. A mutex when two threads
-genuinely touch the same structure. Atomics when the whole payload is a counter.
-
-There is no `SpinMutex<T>` in this list, or anywhere else.
-
-### Weak references break the cycles
-
-Three places would otherwise hold an owning reference they must not, and each is fixed the
-same way.
-
-An event that a fiber is waiting on stores `RefCell<rusty::rc::Weak<Fiber>>`, downgraded
-from the running fiber at wait time — the reactor holds the strong `Rc<Fiber>` in its
-registry, so the event never keeps a finished fiber alive. A `ClientConnection` is built
-with `Arc::new_cyclic` so that its own `weak_self_` can be captured into the callbacks it
-installs on its channel. And `WeakServerConnection` is weak on purpose: it is what a `raw`
-handler receives, and what `DeferredReply` holds internally, so a reply attempted after the
-connection is gone fails an upgrade instead of writing into freed memory.
-
-### What the borrow-check target does today: nothing
-
-`CMakeLists.txt` still defines `ENABLE_BORROW_CHECKING` (default `OFF`) and, when it is on,
-a `borrow_check_srpc` target that fans out over `SRPC_BORROW_SRC`. That variable is set from
-`SRPC_INLINE_MODULE_SRC`, and `SRPC_INLINE_MODULE_SRC` is now empty — every module carrier
-became canonical Rust. So configuring with `-DENABLE_BORROW_CHECKING=ON` reaches the
-`elseif` branch and produces a target whose entire body is:
-
-```
-No SRPC files configured for borrow checking
-```
-
-Do not reach for it expecting analysis. The borrow checking that happens is rustc's, on
-every build, whether you ask for it or not. The switch is a vestige of the era when hand-
-written C++ carriers still needed a separate checker pass.
-
-### No remaining inline Rust DSL
-
-Production implementation is canonical `.rs` plus the reviewed native kernels. The old
-epoll DSL carrier has been removed. The source gate rejects new handwritten C++ behavior
-under the canonical directories and rejects newly introduced inline DSL carriers.
-`scripts/native-kernel-sources.txt` is the shared Cargo/CMake source manifest.
-
-### What backs up the static story at runtime
-
-Static checking of the Rust says nothing about the emitted C++ actually running, so three
-other lanes carry that weight. Initialize the submodules with
-`git submodule update --init --recursive`, then inspect `ctest -N -L srpc` before accepting
-an overall green result. The configured test inventory must include the runtime suites.
-
-**Sanitizers** are a whole-configuration switch, so use a separate build directory:
-
-```bash srpc-no-compile
-cmake -S . -B build-asan -G Ninja -DSRPC_SANITIZER=address   # none|address|thread|undefined
-```
-
-**The C++ battery** under `ctest -L runtime_battery` exercises thread-local storage,
-fiber teardown, poll workers, transports, and restored client behavior. Cargo runs the
-canonical reactor with the same native kernels. The paired runtime driver compares
-independently specified observations from Rust and generated C++ executables.
-
-**Verus** proves functional contracts on two modules today — `misc/stat.rs` and
-`rpc/internal_protocol.rs` — against the real sources in place, not an extracted copy:
-
-```bash srpc-no-compile
-VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh
-```
-
-`docs/verification.md` is the standing reference for that lane, including the rule that any
-new spec must be shown to go red on a perturbed body before it is believed.
+Pool selection using least connections reads in-flight counts. Least latency
+needs recorded latency samples, and ordinary request completion does not add
+them. Heartbeat configuration also needs care: the protocol exists, but the
+client has no scheduled heartbeat tick. Inspect counters and the implemented
+policy before attributing a performance result to one of these settings.
 
 ---
 
-## 15. Performance Tuning
+## 14. Pitfalls and best practices
 
-There is no benchmark *target*. `cmake --build build --target rpcbench` fails, because
-`CMakeLists.txt` never declares one. But the load generator's source survives at
-`tests/rpcbench.cc`, and it does build and run — you just have to compile it yourself.
+The most expensive mistakes usually involve a wait that blocks the poll
+worker, an option applied at the wrong time, or ownership that outlives the
+bytes it references.
 
-Two obstacles, both mechanical. It pulls `tests/benchmark_service.h`, whose
-`#include "srpc/srpc.hpp"` is written for the monorepo layout this repository was
-extracted from; point an include directory at a directory containing a symlink `srpc`
-back to the repository root and it resolves. And it consumes SRPC's C++ modules, so it
-needs a module map: `scripts/emit_module_map.py --modules-json
-build/CMakeFiles/srpc.dir/CXXModules.json --build-dir build --output bench.modmap`
-produces one. Compile `tests/benchmark_service.cc` and `tests/rpcbench.cc` with
-`-std=gnu++23 -stdlib=libc++ -march=native @bench.modmap`, then link them against
-`libsrpc.a` and the rusty-cpp archives inside `-Wl,--start-group`.
+### The RPC future blocks an OS thread
 
-`rpcbench` is a client/server pair: `-s <addr>` serves, `-c <addr>` drives load. `-m`
-picks the dispatch mode, `-n` the duration in seconds, `-t` client threads, `-o`
-outstanding requests, `-b` payload bytes, `-w` server worker threads.
+`srpc::client::Future` is not a standard Rust `Future` and cannot be awaited.
+It also differs from `srpc::future::FiberFuture`, which uses reactor events.
+Its `wait`, `get_error_code` and `get_reply` methods use a condition variable.
+Calling one on the poll worker prevents that worker from receiving the reply
+until the wait finishes.
 
-### Measured throughput
+The ordinary wait budget is one second per blocking wait. It does not start
+when the request is created. A future can remain pending longer than a second
+before anybody waits on it, and an already ready future returns immediately.
+After a wait times out, the future records error 110 and a timed-out state.
+Waiting again does not restore it.
 
-Loopback, both ends on one host. `nop` RPC, 10-byte payload, 10-second runs, three
-trials per mode, mean of the client-reported `avg qps`:
+For a longer wait on an ordinary request, use the public options API before
+calling any default blocking getter:
 
-| Mode | Mean qps | Spread |
-|---|---:|---|
-| `fast` | 1,188,955 | ±1.9% |
-| `async` | 995,920 | ±4.8% |
-| `defer` | 753,513 | ±0.7% |
-| `fiber` (default) | 737,705 | ±3.6% |
+```rust,no_run
+use srpc::client::{Client, FutureAttr};
+use srpc::request_options::RequestOptions;
 
-Measured 2026-08-29 at commit `24e9246`, on an AMD EPYC 7702P (64 cores / 128 threads,
-Linux 6.8.0), Clang 22.1.8, `-O2 -march=native`, load average ~1.3. Invocation:
-`rpcbench -s 127.0.0.1:18848 -m <mode> -e 2 -w 16` against
-`rpcbench -c 127.0.0.1:18848 -m <mode> -n 10 -b 10 -e 2 -o 1000 -w 16 -t 8`.
-
-The ordering is the one the code predicts. `fast` dispatches inline on the poll thread
-and wins by ~60% over the fiber default. `async` gives most of that back without a
-stack, since its coroutine only suspends if the handler actually awaits. `defer` and the
-plain fiber path both pay for a stackful spawn per request and land together.
-
-Treat these as a shape, not a spec: one box, loopback, one payload size, a handler that
-does nothing. Your own driver against your own workload is still the only number that
-matters — but the harness above is real, and these are its numbers.
-
-### The Rust lane, measured
-
-These measurements describe the recorded 2026-08-31 revisions, before the facade and
-runtime ownership repairs. They have not been rerun for the current implementation
-and do not establish its performance or behavioral parity.
-
-Since the rustc lane became executable end to end — first over the in-memory channel,
-then over real TCP with native epoll support — the same question can
-be asked of it directly. All numbers below are the same host as the table above
-(AMD EPYC 7702P), rustc 1.97.1, `-C opt-level=3 -C target-cpu=native`, thin LTO, `i64`
-echo through the real wire format (`v64 xid | i32 rpc_id | payload` out, the four-field
-reply header back), three trials each. The driver is `rust-inmemory-bench`, kept beside
-the rpcbench results outside the repository.
-
-| Metric | Mean | Spread |
-|---|---:|---|
-| TCP loopback, pipelined (1 driver thread, o=1000) | 286,935 op/s | ±3.0% |
-| TCP loopback, pipelined (o=100) | 233,242 op/s | ±1.8% |
-| TCP loopback, sequential (one in flight) | 1.12 ms/op | ±1.2% |
-| in-memory round trip (synchronous) | 818,500 op/s | ±0.6% |
-| wire serialization alone (both directions) | 62 ns/op | ±2.2% |
-
-The comparable C++ number is not the eight-thread 1,188,955 qps in the table above but a
-single-client-thread run of the same rpcbench (`-m fast -o 1000 -t 1`), measured in the
-same minute on the same box: **344,231 qps ±0.7%**. Same topology, same wire, same
-dispatch mode:
-
-> **one driver thread, 1,000 outstanding — Rust 286,935 op/s vs C++ 344,231 qps: the
-> rustc lane runs at 83% of the shipped C++.**
-
-Since the two lanes compile the same wire protocol from the same sources, the cleanest
-experiment crosses them: the **same rpcbench C++ client binary** against each server, and
-the Rust driver against each server, every cell carrying identical traffic — `fast_nop`
-(id `0x4b921bd9`), a 10-byte string argument, an empty reply, 1,000 outstanding per client
-thread. The Rust server's handler is faithful to the generated C++ wrapper: it unmarshals
-the string (v64 prefix + bytes, kept on the stack as libc++ SSO would) before replying.
-Same box, same session, three trials per cell:
-
-| aggregate op/s | → C++ server (`-e 2 -w 16`) | → **Rust server** (one poll thread) |
-|---|---:|---:|
-| **C++ client** (`rpcbench`), t=1 | 371,760 | 478,764 |
-| **C++ client** (`rpcbench`), t=8 | 1,233,742 | **2,223,421** |
-| Rust client, 1 thread | 252,126 | 329,601 |
-| Rust client, 8 threads | 1,111,099 | 1,952,013 |
-
-Three readings, each isolated by the matrix:
-
-- **Swap only the server** (same C++ client, t=8): the Rust server carries **180%** of the
-  C++ server's throughput. The lazy explanations do not survive measurement: sweeping the
-  C++ server from `-e 1 -w 1` to `-e 8 -w 16` moves nothing (837K vs 830K — the apparatus
-  is free and poller parallelism does not help), and `perf` shows the same canonical
-  functions dominating both profiles in the same order (`sconn_decode_request_and_dispatch`,
-  `send_frame`, `sconn_reply`, the SparseInt codecs). What differs is the layer *under*
-  the canonical code: the C++ lane runs the rusty runtime **ports** — its profile shows
-  the hashbrown port probing with a type-erased `std::function` equality predicate,
-  `pthread_mutex_lock/unlock` as 5% of samples where rustc's inlined futex path is
-  invisible, out-of-line `Arc` refcount helpers, and ~1.7× more allocator time per
-  request — while rustc compiles the real Rust std and hashbrown with full
-  monomorphization. Same architecture, same hot path; each request simply costs about
-  half as much compiled by rustc. (Both servers, incidentally, spend 20–30% of their
-  time in malloc and Vec growth — and acting on that is a working demonstration of the
-  one-source-two-lanes premise: seeding the five hot serialization sinks with a single
-  64-byte allocation, one canonical change, moved *both* lanes at t=8 — the C++ server
-  +6.5%, the Rust cells +4–8% — and taught in passing that a module-scope const is ABI
-  surface, ratcheted like any other symbol. What remains is the discrete per-request
-  allocation floor: one sink, one `Box<Request>`, one body Vec.)
-- **Swap only the client** (same C++ server, t=8): the Rust driver reaches 90% of
-  rpcbench — it waits `Arc<Future>`s where rpcbench uses `request_async`, which exists
-  (per its own comment) precisely to skip the future-map cost.
-- **Pure lane vs pure lane** (t=8): Rust 1,952,013 against C++ 1,233,742 — 158% — on
-  identical hardware, identical bytes on the wire.
-
-Measured 2026-08-31 at commit `aa73202`, load average 1.4–2.2 (the C++ table's runs were
-at ~1.3). Two shapes worth a sentence each. The sequential TCP figure *is* the ~1 ms poll
-tick, not a rustc artifact: `tcpconn_send_frame` always queues and wakes the poll thread
-through the command channel, and the C++ worker drains that channel on the same 1 ms
-cadence — throughput comes from pipelining in both lanes. And serialization is noise
-(62 ns against a 3.5 µs pipelined budget); the gap to C++ lives in the poll loop and
-request-path bookkeeping, not in copying. The multi-thread numbers above use one
-client per thread, which is also what rpcbench does. The current Rust `Client` is
-explicitly non-`Sync`; its shared `ClientConnection` and `Future` owners use
-synchronized state, and both Rust and generated C++ tests check those contracts.
-
-The `fiber`, `defer` and `async` modes, which an earlier revision of this section claimed
-were blocked on the reactor's TLS model, turn out to run — and win — under rustc. The
-claim was wrong for this topology: the nine `thread_local`-marked reactor statics are
-process globals under rustc, which is only a hazard with *multiple* threads touching
-them, and every dispatch runs on the server's single poll thread. With the fiber engine
-linked (the same `srpc_fiber.c` + context-switch assembly the C++ lane uses, built with
-`-DREUSE_FIBER` — without the pool, per-request 1 MiB stack mmaps cap fiber mode at
-~72K/s), `reg_rpc` dispatch spawns a real fiber per request through the canonical
-reactor code, and `DeferredReply` works as-is. Same client, same minutes, t=8, o=1000:
-
-| Mode | C++ server | **Rust server** | ratio |
-|---|---:|---:|---:|
-| `fast` | 1,410,825 | 2,381,806 | 169% |
-| `fiber` | 816,758 | 1,123,166 | 138% |
-| `defer` | 806,244 | 1,062,478 | 132% |
-| `async` | 1,076,875 | 2,331,930 | 217%* |
-
-*The async row above was measured with the Rust server serving `async_nop` inline, so
-it overstated the lane difference. That shortcut is gone: `async fn` is now a
-first-class canonical spelling — the pinned transpiler lowers `async fn f(..) -> T` to
-a C++ coroutine returning `rusty::Task<T>` (`.await` → `co_await`, `return` →
-`co_return`), and under rustc the same source is an ordinary Rust future, bridged by
-the standard Task adapter's `Task::from_future` into the same
-`reactor_spawn_stackless_task_with_result` call the generated C++ async wrappers make.
-The first canonical pair (`srpc::misc::async_double`, `async_double_twice`) is
-exercised by both lanes' test batteries — and its chained `co_await` immediately
-exposed a latent runtime bug (the Task awaiter never started the lazy inner coroutine;
-a re-poll completed with a default-constructed result), fixed with symmetric transfer
-in the rusty-cpp pin bump. Re-measured with the Rust server running the real task
-machine per request, the async row reads 1,197,856 vs 1,076,875 — ~111%, a fair
-comparison at last. The current canonical `PollThreadWorker` pumps stackless tasks in
-both lanes. `tests/stackless_wake_*_rust.rs` cover a future that wakes during its first
-poll, foreign wake admission, and owner-thread completion without a separate tick hook.
-The TLS blocker itself is gone: the reactor's nine per-thread statics migrated to Rust's
-`thread_local!`, which the transpiler now lowers to per-thread
-`rusty::LocalKey` storage — `tests/reactor_multithread_rust.rs` runs two independent
-reactors on two threads of one process, previously a deterministic crash. The
-follow-up audit found the C fiber engine already multi-poller-safe (its one global is
-`_Thread_local`; pooling is per-reactor), and the bench's `serve2` smoke runs two
-servers — two poll threads, two reactors, live fibers — in one process at near-linear
-aggregate throughput (fiber mode: 831K + 847K qps concurrently, zero faults). What
-remains is a feature, not a safety gap: one `Server` spreading its connections across
-N poll threads the way C++ rpcbench's `-t N` does.
-
-The rest of this chapter is the map of where the cost sits, read off the code: which
-dispatch decision spawns a stack, which client entry point allocates what, which limits
-are real knobs and which only look like knobs.
-
-### Server side: `fast` versus a fiber
-
-Every inbound request reaches `sconn_decode_request_and_dispatch` in `rpc/server.rs`, which
-makes exactly one branch that matters for throughput:
-
-```
-if (ctx_.fast_rpc_ids.contains(rpc_id))  -> dispatch inline on the poll thread
-else                                     -> spawn a stackful fiber, dispatch there
+fn call_with_budget(client: &Client, rpc_id: i32) -> Result<(), i32> {
+    let future = client.request(rpc_id, &FutureAttr::default(), |_| {})?;
+    let mut options = RequestOptions::defaults();
+    options.timeout_ms = 5_000;
+    future.set_options(&options);
+    if !future.wait_with_options() {
+        return Err(110);
+    }
+    match future.get_error_code() {
+        0 => Ok(()),
+        error => Err(error),
+    }
+}
 ```
 
-The fiber is not free. `srpc_fiber_init` in `reactor/srpc_fiber.c` `mmap`s
-`kDefaultStackBytes + one page` — 1 MiB plus a page — `MAP_PRIVATE | MAP_ANONYMOUS`, then
-`mprotect`s the first page `PROT_NONE` as a guard. That is one mmap and one mprotect per
-dispatched request unless the fiber is recycled.
+A zero `timeout_ms` makes `wait_with_options()` fall back to the one-second
+wait. It does not mean an unlimited wait. The `timed_wait` method is private
+in Rust. Changing a wait budget does not cancel work already running on the
+server.
 
-Recycling is the reason the default path is tolerable at all. `Reactor::recycle` pushes a
-finished fiber onto `available_fibers_` with its stack intact, and
-`reactor_get_or_create_fiber_impl` pops one and re-stamps it with a fresh id and a new
-closure. Both are gated on `reusing_fiber()`, which is not a Rust constant: it is the plain-C
-seam `srpc_reactor_reusing_fiber()`, and it returns non-zero only when `REUSE_FIBER` (or
-`REUSE_CORO`) was defined when `reactor/srpc_fiber.c` was compiled. The in-tree build passes
-`-DREUSE_FIBER` through `BENCH_CXXFLAGS`, so recycling is on. If you ever build the C seam
-without it, the reactor logs `reusing fiber not enabled!` at WARN the first time a thread
-touches its reactor, and from then on every request pays the mmap.
+`request_with_options` adds a separate complication. Its returned coordinator
+future starts with `timeout_ms = 0`; the input options configure attempts.
+Set a nonzero budget on the returned future as well if the caller needs to
+wait longer than one second for the whole retry sequence. See the client
+chapter and [client_retry_rust.rs](../tests/client_retry_rust.rs).
 
-Marking a method `fast` in the `.rpc` file removes the fiber entirely:
+### A fiber does not make blocking code cooperative
 
-```
-abstract service Demo {
-    fast ping();                     // inline on the poll thread
-    lookup(string key | string val); // fiber
-};
-```
+`reg_fast_rpc` handlers run inline on the TCP poll thread.
+`reg_rpc` handlers run in fibers on that same thread. Fiber sleep and event
+wait can suspend a fiber; `std::thread::sleep`, a blocking database client,
+and an RPC future's `wait` cannot. Changing registration alone does not fix
+those calls. Arrange asynchronous completion or offload blocking work.
 
-The price is that a `fast` handler has no stack of its own to yield from. It runs on the poll
-thread, so if it blocks — a mutex, a disk read, a nested RPC — every connection served by
-that poll thread stalls behind it. The same caution applies to an `async` handler up to its
-first suspension point, because those are registered through the fast path too.
+The same rule applies to stackless Rust futures. Every poll, including work
+before the first `.await`, must return promptly. Completion callbacks also
+run synchronously on the thread delivering completion, so move expensive
+processing out of the callback.
 
-The rule of thumb that follows from the code: `fast` for handlers that only read memory and
-return; the default for anything that can block. `defer` does not change this branch — a
-`defer` handler still runs in a fiber, it just holds the reply open.
+### Configure buffering after connecting
 
-### Client side: three entry points, three costs
+Keepalive, heartbeat, circuit breaker and reconnect policy have staged client
+settings. Set a custom channel factory before connecting to select a
+transport. `set_buffering_config` has no staged copy and silently does
+nothing when no connection exists.
 
-`Client` exposes three ways to issue a request, and they differ in what they allocate.
+```rust,no_run
+use std::ffi::CString;
+use srpc::client::{BufferingConfig, Client};
 
-**`request(rpc_id, attr, write_fn)`** — the path the generated proxy uses. In
-`clientconn_request_via_channel` it allocates an `Arc<Future>`, takes the `pending_fu_`
-mutex and inserts the future into a `HashMap<i64, Arc<Future>>` keyed by xid, builds a fresh
-`Vec<u8>` body buffer, serializes `v64 xid | i32 rpc_id | args` into it, and hands the bytes
-to the channel. The reply path re-takes that same mutex to find and erase the entry. So the
-steady-state cost is one control-block allocation, one buffer allocation, and two acquisitions
-of a per-connection lock that every reply also contends for.
-
-**`request_async(rpc_id, write_fn, on_reply)`** — the same body buffer, but no future and no
-map. The callback goes into a table that was allocated once at connection setup:
-`make_prefilled_cb_slots()` builds a `Vec<Option<AsyncReplyCallback>>` of `kAsyncSlotCount`
-= 16384 entries, and the request parks its callback at index `xid % 16384`. That is the
-cheapest path in the client, and it is what to reach for when you never intend to wait.
-
-Its limits — a direct-mapped table, `Err(16)` (`EBUSY`) on a collision, no timeout, and a
-delivery path that does not re-check the xid — are in chapters 7 and 8, and none of them is
-a tuning parameter. A parked slot is reclaimed by a reply, by a failed send on the same
-call, or by `invalidate_pending_futures`, which on disconnect, `close()` or destruction
-drains every occupied slot and fires each callback once with `107` (`ENOTCONN`) and a null
-reply view.
-
-What does matter for tuning is where that callback runs. Its signature is
-`(i32 error_code, const u8* bytes, usize size)`, and it is invoked
-from `clientconn_decode_response_and_notify`, which runs inside the connection's receive-loop
-fiber on the client's poll thread. Blocking in it blocks every reply on that connection.
-
-**`request_with_options(rpc_id, options, write_fn)`** — the retry coordinator, and by far
-the most expensive of the three. `clientconn_request_with_options` serializes the arguments
-once into a replay buffer, creates a coordinator future, and then does this:
-
-```
-rusty::thread::spawn(move || { ...retry loop... }).detach();
+fn connect_without_buffering(client: &Client) -> Result<(), i32> {
+    let address = CString::new("127.0.0.1:8848").unwrap();
+    let error = client.connect(address.as_ptr(), true);
+    if error != 0 {
+        return Err(error);
+    }
+    client.set_buffering_config(&BufferingConfig::disabled());
+    Ok(())
+}
 ```
 
-One detached OS thread per call. That thread issues an attempt through the plain `request`
-path, blocks on the attempt future's condvar, computes a backoff, sleeps, and repeats. It is
-the right tool for a handful of calls that must survive a flaky link; it is the wrong tool
-for a hot loop.
+The defaults otherwise enable an offline queue of up to 1,000 requests with
+a 30-second TTL. A successful request submission can mean the request was
+queued while disconnected. It does not establish server delivery.
 
-Retries are opt-in twice over. `effective_options.max_retries` is forced to `0` whenever
-`idempotent` is false, so setting `max_retries` alone silently disables retrying.
+### Retrying asserts application behavior
 
-### The one-second wait
+Retries require both `max_retries > 0` and `idempotent = true`. The coordinator
+sets the effective retry count to zero when `idempotent` is false. Every
+attempt replays the same encoded argument bytes. If the server completed an
+earlier attempt but its reply was lost, the operation can execute again.
+Only enable retries when the service can tolerate that repetition.
 
-`Future::wait()` is hard-capped at one second and latches `ETIMEDOUT`; the only way past it
-is `wait_with_options()` on a future whose `RequestOptions::timeout_ms` you have set to a
-non-zero value, which `request_with_options` does not do for you — it writes `timeout_ms = 0`
-into the coordinator future on purpose. Chapter 8 has the mechanism and the `set_options`
-sequence. It appears here only as a warning: it is a correctness ceiling, not a tuning knob,
-and no build flag, thread count or dispatch mode moves it.
+The circuit breaker recognizes transport error integers, including 32, 101,
+103, 104, 107, 110, 111 and 113. A service returning one of those as an
+application error feeds the same failure accounting. Choose application codes
+outside that set. An ordinary future's local wait timeout does not itself
+record a circuit-breaker failure; a reply or retry coordinator can update
+other accounting later.
 
-### Frame size is not a throughput knob
+### Events need an owner and a running reactor
 
-`kMaxFramePayloadSize` in `rpc/frame_codec.rs` is 64 MiB, and it is a stream-integrity bound
-rather than a resource policy. Chapter 7 explains what that bound catches — a desynchronised
-stream that would otherwise wedge the connection silently, with no error, no log and no
-reconnect — along with the two constraints on changing it.
+Create an event on its reactor's thread, wait from a fiber on that thread,
+and create a fresh event for each wait cycle. The ordinary event stores one
+waiting fiber; it is not a broadcast channel. A completed event returns
+immediately on reuse. A wait that actually suspends requires a running fiber;
+an already ready event can return without suspension.
 
-Raising it does not make anything faster. It only widens the window in which a corrupt header
-is believed.
+`Fiber::create_run` runs the closure immediately until its first suspension.
+The poll worker drives subsequent reactor work for TCP services. A standalone
+fiber program must call `Reactor::run_loop(false, true)` to resume ready
+fibers and check timers. `run_loop(true, ...)` busy-loops indefinitely; it is
+not a blocking run-until-shutdown API.
 
-Two related TCP-layer numbers, both in `rpc/tcp_channel.rs`:
+Fiber sleep helpers take the unit in their name. Event `wait_timeout` takes
+microseconds. A zero `this_fiber::sleep_us(0)` returns without yielding. A
+nonzero fiber sleep outside a fiber cannot suspend and fails an assertion.
+Use `this_fiber::r#yield()` for an explicit cooperative yield inside a fiber.
 
-- `kTcpConnectionOutboundHighWaterDefault` is 4 MiB. `send_frame` refuses to append to an
-  outbound buffer that is already at or past it, returning `ChannelError::WouldBlock` — which
-  the client turns into `Err(5)` (`EIO`), not a distinguishable backpressure signal. There is
-  a `TcpConnection::set_outbound_high_water(bytes)`, but it is not on the
-  `ChannelConnectionBase` trait, so it is unreachable through the `ChannelConnectionProxy`
-  the runtime hands you. In practice the 4 MiB is fixed.
-- The receive path reads into a 64 KiB stack scratch buffer (`kRecvScratchBytes`).
+### Keep request and reply storage alive
 
-`TcpFactory::set_connect_timeout_ms(i32)` — default 5000 — *is* reachable, if you build the
-factory yourself and `set_channel_factory` it before connecting.
+`Service::__dispatch__` receives an owned `Box<Request>` and a weak connection
+handle. Configure services before registering them and use synchronized
+state through the shared `&self` dispatch receiver. Do not retain an archive
+or raw byte view after its request, reply guard or callback storage ends.
+Upgrade weak connections and accept that teardown can make them expire.
 
-### Build flags
+`Future::get_reply()` returns a mutex guard. Release it after decoding; holding
+it while requesting another reply guard from the same future can deadlock.
+`FutureAttr`'s callback fields and constructor are private in Rust, as is
+`Future::add_completion_callback`. The public callback entry point is
+`Client::request_async`.
 
-`-march=native` appears three times in `CMakeLists.txt` and is not an optimization setting.
-Clang refuses to load a BMI whose target-feature set differs from the importing translation
-unit's, and every vendored `rusty-cpp` port target is compiled `-O3 -DNDEBUG -march=native`.
-Drop the flag from the `srpc` side and you get roughly 133 errors of the form
+### Callback requests have no expiry timer
 
-```
-error: precompiled file '.../vec_port.vec.pcm' was compiled with the target feature
-       '+64bit' but the current translation unit is not
-```
+`request_async` uses a fixed table indexed by `xid % 16384`. An occupied slot
+causes immediate `Err(16)`. An unanswered request can retain its slot until
+the connection closes. Callback reply lookup does not check the complete
+xid, so a reply with a different xid but the same slot index can consume a
+callback. This includes mixing callback and ordinary requests whose xids
+collide modulo the table size. Use the ordinary future path when you need
+wait budgets, and do not interpret a callback's invocation as proof that the
+slot table checked the request identity.
 
-none of them real source errors. The accepted consequence is that a build tree — and the BMIs
-in it — is not portable to a host with a different CPU.
+### Keep the native boundary explicit
 
-The `srpc` library itself is compiled with `SRPC_CXXFLAGS`, which is `BENCH_CXXFLAGS`
-verbatim:
-
-```
--w -Wreturn-type -MD -MP -DRUSTYCPP_DISABLE_ARC_LOG -DREUSE_FIBER
--O2 -g -fno-omit-frame-pointer -march=native
-```
-
-That is a deliberately profileable build, not a maximally optimized one: `-O2`, debug info,
-and frame pointers kept so `perf` can walk stacks. The vendored ports beside it are `-O3
--DNDEBUG`. If you want `-O3 -DNDEBUG` for a production measurement you have to edit
-`BENCH_CXXFLAGS` — and be aware that the two flag sets already cause CMake 4.4 to synthesise
-two different `std` module variants, which is exactly why the test battery is handed an
-explicit module map instead of being scanned.
-
-### Poll threads
-
-`PollThread::create()` spawns one OS thread running one `PollThreadWorker::poll_loop`. Every
-pollable registered on it, every fiber spawned by its dispatches, and every reply decoded on
-its connections run on that single thread. A `Server` built as `Server::new_(rusty::Some(poll))`
-does all of its work there; passing `rusty::None` makes it create a poll thread of its own.
-`Client::create(poll)` takes one unconditionally.
-
-Scaling out therefore means creating more `PollThread`s and distributing servers and clients
-across them — there is no worker-pool setting inside a single poll thread to turn up.
-
-### Runtime settings and their limits
-
-| Surface | What actually happens |
-| --- | --- |
-| `Client::metrics()` | Reads the connection's shared counters; the client keeps the storage alive across close and reconnect. |
-| `PoolConfig::load_balancing = LEAST_CONNECTIONS` | Selects using live in-flight request counts. |
-| `PoolConfig::load_balancing = LEAST_LATENCY` | Needs explicitly recorded latency samples; ordinary completion does not provide them. |
-| `PoolConfig` health checking | Tests connectivity and compares the live success rate once the minimum request count is reached. |
-| Offline request buffering | Encodes once, replays FIFO after reconnect, and resolves TTL, overflow, or teardown errors. |
-| `Client::set_keepalive` | Applies Linux TCP keepalive options; non-TCP transports report unsupported. |
-| Heartbeat | The protocol is complete on both ends, but nothing ticks the client-side timer, so probes are not sent on a schedule. |
-
-`RANDOM` remains the default balancing strategy; `ROUND_ROBIN` cycles through candidates.
-
-### What is worth measuring
-
-Given the above, the changes most likely to move a real number are, in rough order:
-
-1. Moving trivial handlers to `fast`, removing a fiber dispatch per call.
-2. Switching fire-and-forget call sites from `request` to `request_async`, removing an `Arc`
-   allocation and two `pending_fu_` lock acquisitions per call.
-3. Keeping `request_with_options` off the hot path, so you are not spawning an OS thread per
-   request.
-4. Adding poll threads and spreading clients and servers across them.
-5. Rebuilding with `-O3 -DNDEBUG` if you have decided you no longer need the frame pointers.
-
-Each of those is a hypothesis. This repository gives you no numbers to check them against —
-build the harness, and measure on the machine you care about.
+Cargo compiles real C and assembly kernels. The supported targets are Linux
+x86_64 and aarch64. This is not a pure Rust, portable socket implementation.
+An `unsafe` address or frame operation still needs the lifetime and pointer
+conditions in its source documentation, even when the rest of a service is
+safe Rust. Generated C++ ownership and ABI checks belong to the companion
+book; they do not replace these Rust contracts.
 
 ---
 
-## 16. API Reference (C++ lane)
+## 15. Troubleshooting
 
-This chapter is the **C++ lane's** reference: the public surface of the generated
-`srpc.*` modules, in declaration form only. It belongs to Part II with Chapters 12,
-14, 19 and 20. For the Rust lane there is deliberately no twin of this chapter — the
-canonical sources under `base/ misc/ reactor/ rpc/` *are* the Rust reference
-(`cargo doc` renders them), the Rust spelling of every name drops the C++ manglings
-(`Server::new`, not `new_`; std `Arc`/`Option`/`Vec`, not the `rusty::` ports), and
-the `pub` subset reachable from Rust today is narrower than the C++ export list, as
-the lane notes in Chapters 8, 9 and 11 record per surface.
+Start with the return value and the thread that made the call. Then inspect
+the log and reproduce the failure with the maintained Rust test closest to
+the affected component.
 
-Everything here is the public C++ surface generated from the canonical Rust in
-`base/ misc/ reactor/ rpc/`, in declaration form only. When this chapter and a `.rs` file
-disagree, the `.rs` file wins — it is the only source there is. Where a signature needs
-explaining, the explanation lives in the chapter that owns it — 5 for events, 7 for the wire
-format, 8 for the client, 9 for the server, 11 for the reliability configs and their
-defaults, 12 for the code generator, 18 for the error codes — and is not repeated here.
-Every block below is tagged `srpc-no-compile`: these are signatures to read, not fragments
-the snippet harness builds.
+### Read the log
 
-Names are C++ spellings. Rust `Self::new` becomes `new_` in C++ where `new` is reserved,
-which is why you write `Server::new_(...)`. Ownership types come from `rusty`:
-`rusty::Arc<T>`, `rusty::Rc<T>`, `rusty::Box<T>`, `rusty::Option<T>` (`rusty::Some(x)`,
-`rusty::None`), `rusty::Result<T, E>`, `rusty::Function<Sig>`. A `Box<dyn Trait>` is
-`rusty::Box<Trait>`, and a Rust `Vec<T>` is `rusty::Vec<T>`, not `std::vector<T>`.
-
-Integers in the runtime signatures below are the fixed-width C types — `int32_t`,
-`uint64_t`, `int8_t`, `size_t`. The `srpc::` integer aliases (`srpc::i8`, `srpc::i16`,
-`srpc::i32`, `srpc::i64`, and only those four) exist for the *generated* IDL code, which is
-why handler signatures out of `pylib` are spelled `srpc::i32` while `Client::connect` is
-spelled `int8_t`. They are the same types.
-
-`srpc.hpp` pulls in most of what follows. Eight modules carry an explicit
-"trimmed from consumer umbrella" comment in `srpc.hpp` and must be imported by name if you
-need their types: `srpc.circuit_breaker`, `srpc.connection_metrics`, `srpc.epoll_wrapper`,
-`srpc.heartbeat`, `srpc.internal_protocol`, `srpc.load_balancer`, `srpc.reconnect_policy`,
-`srpc.request_options`. That commented-out list is hand-maintained and nothing checks it.
-Four more modules were never in the umbrella at all and also need naming:
-`srpc.inmemory_channel` (where `make_inmemory_factory_proxy` below lives; the header
-`rpc/inmemory_channel.hpp` does nothing but import it), `srpc.any_message`,
-`srpc.serializable_envelope` and `srpc.callback_wrapper`.
-
-### Client
-
-`Client` is always held through an `Arc`, and it is a thin front for a `ClientConnection`
-that only exists after a successful `connect`.
-
-```cpp srpc-no-compile
-class Client {
-    static rusty::Arc<Client> create(rusty::Arc<PollThread> poll_thread);
-
-    // Connection lifecycle. `addr` is "host:port"; the bool selects client mode.
-    int32_t connect(const int8_t* addr, bool client);
-    void close();
-    int32_t reconnect(OnReconnectCompleteCallbackFn on_complete);
-    bool try_reconnect_if_needed();
-    void pause();
-    void resume();
-
-    // Issuing requests. write_fn is any callable taking BinaryWriteArchive&.
-    template<class F>
-    rusty::Result<rusty::Arc<Future>, int32_t>
-        request(int32_t rpc_id, const FutureAttr& attr, F write_fn);
-
-    template<class F>
-    rusty::Result<rusty::Arc<Future>, int32_t>
-        request_with_options(int32_t rpc_id, const RequestOptions& options, F write_fn);
-
-    template<class F>
-    /* Result carrying no value on success */
-        request_async(int32_t rpc_id, F write_fn, AsyncReplyCallback on_reply);
-
-    // State.
-    bool connected() const;
-    bool has_connection() const;
-    ConnectionState connection_state() const;
-    bool is_reconnecting() const;
-    bool validate_connection() const;
-    rusty::String host() const;
-    uint64_t server_instance_id() const;
-    bool is_idle(uint64_t idle_ms, uint64_t current_time_ms) const;
-
-    // The live connection, if any.
-    rusty::Option<rusty::Arc<ClientConnection>> connection() const;
-
-    // Pending-request bookkeeping.
-    size_t pending_request_count() const;
-    void clear_pending_requests(int32_t error_code);
-    void handle_free(int64_t xid);
-
-    // Configuration. Only the first four are staged and applied at connect();
-    // set_buffering_config forwards to the connection, so call it AFTER connect().
-    void set_keepalive(const KeepaliveConfig& config);
-    void set_heartbeat(const HeartbeatConfig& config);
-    void set_circuit_breaker(const CircuitBreakerConfig& config);
-    void set_reconnect_policy(const ReconnectPolicy& policy);
-    void set_buffering_config(const BufferingConfig& config);
-    void set_channel_factory(ChannelFactoryProxy factory);
-
-    KeepaliveConfig keepalive_config() const;
-    HeartbeatConfig heartbeat_config() const;
-    CircuitBreakerConfig circuit_breaker_config() const;
-    CircuitState circuit_breaker_state() const;
-
-    // Connection-event callbacks.
-    void add_on_connected(OnConnectedCallbackFn cb);
-    void add_on_disconnected(OnConnectedCallbackFn cb);
-    void add_on_reconnecting(OnConnectedCallbackFn cb);
-    void add_on_reconnected(OnReconnectedCallbackFn cb);
-    void add_on_error(OnErrorCallbackFn cb);
-    void clear_connection_callbacks();
-    void set_on_server_restart(OnServerRestartCallbackFn cb);
-
-    // Shared live counters, retained by the Client through close and reconnect.
-    const ConnectionMetrics& metrics() const;
-};
-```
-
-Three signature details bite at the call site. `request` takes exactly three arguments —
-there is no overload set, so a method with no input parameters still passes an empty lambda,
-which is what the generator emits. `connect` and `Server::start` take `const int8_t*`, so
-call sites write `reinterpret_cast<const int8_t*>(addr)`. `metrics()` returns a reference
-to shared live counters. Chapter 8 works through the client API.
-
-### ClientConnection
-
-Reached with `client->connection()`, which returns an `Option`. This is where the live
-state is.
-
-```cpp srpc-no-compile
-class ClientConnection {
-    const ConnectionMetrics& metrics() const; // the real counters
-
-    bool connected() const;
-    ConnectionState connection_state() const;
-    bool is_closed() const;
-    bool is_reconnecting() const;
-    rusty::String host() const;
-    uint64_t server_instance_id() const;
-
-    size_t pending_future_count() const;  // outstanding Futures
-    size_t pending_request_count() const; // offline queue depth
-
-    uint64_t last_activity_time() const;
-    void update_last_activity(uint64_t current_time_ms);
-    bool is_idle(uint64_t idle_ms, uint64_t current_time_ms) const;
-
-    ReconnectPolicy reconnect_policy() const;
-    BufferingConfig buffering_config() const;
-    CircuitState circuit_breaker_state() const;
-};
-```
-
-`replay_pending_requests()` sends unexpired queued bodies through the active channel
-and returns the number sent. Successful reconnect invokes it automatically. Keepalive
-configuration is applied through the channel's capability rather than a client-owned fd.
-
-### Future
-
-```cpp srpc-no-compile
-class Future {
-    static rusty::Arc<Future> create(int64_t xid, FutureAttr attr); // attr by value
-
-    bool ready() const;
-    void wait() const;              // uses the default one-second timeout
-    void timed_wait(double sec) const;
-    bool wait_with_options() const; // uses this future's RequestOptions
-    bool timed_out() const;
-
-    int32_t get_error_code() const;               // also waits
-    rusty::MutexGuard<ReplyBuffer> get_reply() const; // also waits
-    int64_t get_xid() const;
-
-    RequestOptions get_options() const;
-    void set_options(const RequestOptions& opts) const;
-    TimeoutType get_timeout_type() const;
-    uint16_t get_retry_count() const;
-    bool should_retry() const;
-
-    bool add_completion_callback(rusty::Function<void()> callback) const;
-
-    static void safe_release(rusty::Arc<Future> fu); // consumes and releases one Arc owner
-};
-```
-
-`Future::new` fixes the internal `timeout_` at 1,000,000 microseconds and nothing changes
-it, so `wait()` and `get_error_code()` are capped at one second and latch error code `110`
-on expiry. `wait_with_options()` is the only way past the cap, and only when the future's
-`RequestOptions::timeout_ms` is non-zero. Chapter 8's "The one-second wall" explains the
-consequences and the escape.
-
-`get_reply()` hands back a `MutexGuard<ReplyBuffer>`. Keep the guard alive for the
-whole decode and release it before callbacks or waits that need the same reply lock.
-
-`FutureAttr` carries one field, a completion callback, and default-constructs to empty. The
-generated proxy passes a default-constructed one.
-
-### ClientPool
-
-```cpp srpc-no-compile
-class ClientPool {
-    static ClientPool new_(rusty::Option<rusty::Arc<PollThread>> poll_thread,
-                           PoolConfig config);
-
-    rusty::Option<rusty::Arc<Client>> get_client(std::string_view addr);
-
-    void set_pool_config(PoolConfig config);
-    PoolConfig pool_config() const;
-
-    size_t total_client_count() const;
-    size_t address_count() const;
-    size_t get_healthy_client_count(std::string_view addr) const;
-
-    size_t remove_unhealthy_clients(std::string_view addr);
-    size_t remove_all_unhealthy();
-    size_t close_idle_clients(std::string_view addr, uint64_t current_time_ms);
-    size_t close_all_idle(uint64_t current_time_ms);
-
-    bool is_client_healthy(const rusty::Arc<Client>& client) const;
-};
-```
-
-The factory asserts `min_connections > 0` and `max_connections >= min_connections`, and
-creates its own `PollThread` when handed `rusty::None`. Destroying the pool closes every
-cached client and shuts that poll thread down. Health checking and `LEAST_CONNECTIONS`
-use live counters from `Client::metrics()`. `LEAST_LATENCY` still needs explicit latency
-samples; chapters 11 and 15 give the details.
-
-### Server
-
-`Server` is used by value, not through an `Arc`.
-
-```cpp srpc-no-compile
-class Server {
-    static Server new_(rusty::Option<rusty::Arc<PollThread>> poll_thread);
-
-    // Registration. reg_service_typed is the one you want for a generated service.
-    template<class T> void reg_service_typed(rusty::Box<T> svc);
-    void reg_service(rusty::Box<Service> svc);
-    void reg_service_proxy(ServiceProxy proxy);
-    int32_t reg_rpc(int32_t rpc_id, size_t svc_index);
-    int32_t reg_fast_rpc(int32_t rpc_id, size_t svc_index);
-    void unreg(int32_t rpc_id);
-
-    // Transport. Call set_channel_factory before start() to override TCP.
-    void set_channel_factory(ChannelFactoryProxy factory);
-    bool is_channel_factory_bound() const;
-
-    int32_t start(const int8_t* bind_addr); // 0 on success, -1 on failure
-    int32_t get_bound_port() const;         // -1 if unparseable
-    rusty::String addr() const;             // only after start()
-
-    // Shutdown. kDefaultDrainTimeoutMs is 30000.
-    void stop_accepting();
-    bool drain(uint64_t timeout_ms);
-    void graceful_shutdown(uint64_t drain_timeout_ms);
-    void do_shutdown();
-    void wait_for_shutdown();
-    void add_shutdown_hook(ShutdownHook hook);
-    ShutdownPhase phase() const;
-
-    // Bookkeeping.
-    int32_t pending_request_count() const;
-    size_t service_count() const;
-    uint64_t instance_id() const;
-    void set_drop_heartbeat_replies(bool drop_replies);
-    bool drop_heartbeat_replies() const;
-
-    template<class F> void for_each_service(F callback) const; // only after start()
-};
-```
-
-Generated service classes have **no base class**. Register one with
-`reg_service_typed(rusty::make_box<MyService>())`; the adapter that wraps it is
-`ServiceBoxShim<T>`. `reg_service` takes a `Box<dyn Service>` and is not what you want for a
-generated class. There is no `add_service` and no `stop()`.
-
-`start()` freezes the pending registrations into an immutable `RpcServiceContext`,
-auto-installs a `TcpFactory` if none is bound, creates and wires the listener, and binds.
-Registrations after `start()` do not take effect.
-
-Shutdown progresses `RUNNING -> STOP_ACCEPTING -> DRAINING -> CLOSING -> STOPPED`
-(`ShutdownPhase`, with `shutdown_phase_to_string`); `graceful_shutdown` runs the whole
-sequence. Chapter 9's "Graceful Shutdown" covers the teardown order — in particular that
-destroying the `Server`, not any method on it, is what closes already-accepted connections.
-
-### Service and dispatch
-
-```cpp srpc-no-compile
-// The interface generated services satisfy.
-class Service {
-    virtual int32_t __reg_to__(Server& server, size_t svc_index) = 0;
-    virtual void __dispatch__(int32_t rpc_id, rusty::Box<Request> req,
-                                   WeakServerConnection sconn) = 0;
-};
-
-// One in-flight request. `src` is the cursor over the argument bytes.
-struct Request {
-    rusty::Vec<uint8_t> body;
-    BufferSource src;
-    int64_t xid;
-};
-```
-
-Handlers you write are not `Service` methods directly — the generated `<Svc>Service` class
-declares them. Their shape depends on the dispatch attribute in the `.rpc` file; the
-grammar accepts six (`prefix`, `fast`, `raw`, `fiber`, `defer`, `async`) plus the unattributed
-default. Chapter 12 explains what each one costs.
-
-| Attribute | Generated handler signature |
-| --- | --- |
-| *(none)* | `rusty::Result<Rpc<M>Response, srpc::i32> m(const Rpc<M>Request&)` |
-| `fast` / `prefix` | same, but registered with `reg_fast_rpc` and dispatched inline on the poll thread |
-| `defer` | `void m(const Rpc<M>Request&, Rpc<M>Response& resp, srpc::DeferredReply defer)` |
-| `fiber` | same as *(none)*, but the wrapper calls it inside a `Fiber::create_run` — avoid it, see chapter 12 |
-| `async` | `rusty::Task<rusty::Result<Rpc<M>Response, srpc::i32>> m(const Rpc<M>Request&)` |
-| `raw` | `void m(rusty::Box<srpc::Request>, srpc::WeakServerConnection)` |
-
-The `Rpc<M>Request` / `Rpc<M>Response` structs are **members** of `<Svc>Service` and are
-re-exported into `<Svc>Proxy` with `using`. Pointer out-parameters survive only on a `raw`
-method's proxy.
-
-### DeferredReply
-
-```cpp srpc-no-compile
-class DeferredReply {
-    void reply();                   // send the filled-in response
-    void reply_error(int32_t code); // send a header-only error reply
-};
-```
-
-Both `reply()` and `reply_error()` fire at most once — a second call logs a warning and is
-ignored — and dropping the handle without replying is safe. There is also a `run_async`
-taking a callable, but it offloads nothing: the body invokes the callable on the calling
-thread and returns 0. Chapter 9's "Replying" has the rest.
-
-### Reactor
-
-Thread-local in the generated C++ (the `#[cfg_attr(any(), thread_local)]` markers that say
-so are inert under rustc, which is why `reactor/reactor.rs` is not meaningfully testable
-from Rust).
-
-```cpp srpc-no-compile
-class Reactor {
-    static rusty::Rc<Reactor> get_reactor();
-    static rusty::Rc<Reactor> get_disk_reactor();
-
-    rusty::Rc<Fiber> create_run_fiber(rusty::Function<void()> func);
-    void continue_fiber(const rusty::Rc<Fiber>& fiber);
-    void register_fiber(const rusty::Rc<Fiber>& fiber);
-    void recycle(rusty::Rc<Fiber>& fiber);
-
-    void run_loop(bool infinite, bool do_check_timeout);
-    void prune_finished_events();
-    void display_waiting_ev();
-
-    size_t register_stackless_poller(rusty::Function<bool(rusty::Context&)> poller);
-    void enqueue_stackless_task(size_t idx);
-    bool process_stackless_tasks();
-};
-```
-
-`run_loop` takes two booleans, not one. It asserts that it is running on the thread the
-reactor was created on. `create_run_fiber` runs the fiber immediately and drives the loop
-internally, so a fiber that never blocks has already finished by the time the call returns.
-
-### Fiber and this_fiber
-
-```cpp srpc-no-compile
-class Fiber {
-    template<class F> static rusty::Rc<Fiber> create_run(F func);
-    static rusty::Option<rusty::Rc<Fiber>> current_fiber();
-    static void sleep(uint64_t microseconds);
-
-    void run() const;
-    void yield_() const;
-    void continue_() const;
-    bool finished() const;
-};
-
-namespace this_fiber {
-    uint64_t get_id();                         // 0 outside fiber context
-    rusty::Option<rusty::Rc<Fiber>> current();
-    bool in_fiber_context();
-    void yield();                              // no-op outside a fiber
-    void sleep_us(uint64_t microseconds);
-    void sleep_ms(uint64_t milliseconds);
-    void sleep_s(uint64_t seconds);
-    void sleep_until_us(uint64_t abs_time_us); // past deadlines return at once
-}
-```
-
-Fibers are stackful: `kDefaultStackBytes` is 1 MiB, `mmap`'d with one extra page
-`mprotect`ed `PROT_NONE` as a guard, and switched by
-`reactor/fiber_context_{x86_64,aarch64}.S`. The field order of `srpc_fiber_ctx` in
-`reactor/srpc_fiber.h` *is* the ABI contract with that assembly.
-
-### Events
-
-There is no `Event` base class in the C++ surface and no `create_sp_event<T>` template.
-Events are concrete types built by **named free functions**, and the methods are lowercase.
-
-```cpp srpc-no-compile
-rusty::Arc<IntEvent> create_sp_int_event(int32_t target);
-rusty::Arc<TimeoutEvent> create_sp_timeout_event(uint64_t wait_us);
-rusty::Arc<NeverEvent> create_sp_never_event();
-rusty::Arc<WaitAny> create_sp_waitany(rusty::Arc<EventPollable> a,
-                                      rusty::Arc<EventPollable> b);
-rusty::Arc<WaitAll> create_sp_waitall();
-rusty::Arc<WaitAll> create_sp_waitall_from(const rusty::Vec<rusty::Arc<EventPollable>>& evs);
-template<class T> rusty::Arc<BoxEvent<T>> create_sp_box_event();
-
-// The N-of-M primitive lives in global namespace ::janus, not in srpc.
-namespace janus {
-    rusty::Arc<QuorumEvent> create_sp_quorum_event(int32_t n_total, int32_t quorum);
-}
-```
-
-The common surface, from the `EventPollable` interface plus each type's own methods:
-
-```cpp srpc-no-compile
-bool test();
-bool is_ready();
-uint64_t wakeup_time();
-bool prunable();
-void set_prunable(bool v);
-
-// Status is reachable two ways: the EventPollable methods, and the public field
-// they read through. Chapter 5 uses the field.
-EventStatus status();                 // == status_.get()
-void set_status(EventStatus s);       // == status_.set(s)
-rusty::Cell<EventStatus> status_;     // public field on every concrete event
-
-void wait(); // IntEvent, BoxEvent, WaitAny, WaitAll, TimeoutEvent, QuorumEvent
-void wait_timeout(uint64_t timeout_us);
-
-int32_t IntEvent::get();
-int32_t IntEvent::set(int32_t n);
-template<class T> T BoxEvent<T>::get();
-template<class T> void BoxEvent<T>::set(const T& c);
-template<class T> void BoxEvent<T>::clear();
-void WaitAll::add_event(rusty::Arc<EventPollable> ev);
-
-void janus::QuorumEvent::vote_yes();
-void janus::QuorumEvent::vote_no();
-bool janus::QuorumEvent::yes();
-bool janus::QuorumEvent::no();
-void janus::QuorumEvent::add_xid(uint16_t site, int64_t xid);
-void janus::QuorumEvent::remove_xid(uint16_t site);
-void janus::QuorumEvent::finalize(uint64_t timeout, QuorumFinalizeFn f);
-```
-
-There is no `WaitN` or `NEvent`; `QuorumEvent` is the N-of-M primitive. The `::janus`
-placement is a hard ABI contract — `srpc::QuorumEvent` and `srpc::janus::QuorumEvent` mangle
-differently and are not substitutes.
-
-`FiberPromise<T>` / `FiberFuture<T>` in `srpc.future` wrap a `BoxEvent<T>`:
-`make_promise<T>()` returns the pair, `make_ready_future<T>(value)` returns a satisfied one,
-and `FiberFuture<T>::wait_for(timeout_us)` treats a zero timeout as "wait forever".
-
-### PollThread
-
-```cpp srpc-no-compile
-class PollThread {
-    static rusty::Arc<PollThread> create(); // spawns exactly one OS thread
-
-    void add_proxy(PollableProxy poll);
-    void remove(Pollable& poll);
-    void remove_fd(int32_t fd);
-    void request_close(int32_t fd);
-    void update_mode(int32_t fd, int32_t new_mode);
-    void add(rusty::Arc<Job> job);
-    void shutdown(); // idempotent; skips self-join
-};
-```
-
-`PollableProxy` is `rusty::Box<PollableBase>` from `srpc.pollable_proxy`; the `Pollable`
-that `remove` takes comes from `srpc.epoll_wrapper`, one of the modules trimmed out of the
-umbrella.
-
-Every method except `create` and `shutdown` posts a command down an mpsc channel to the
-worker thread, so they are fire-and-forget: if the worker has already exited, the command is
-dropped silently — except `update_mode`, which logs at `ERROR`
-("PollThread::update_mode: send failed! Channel disconnected?") when the send fails.
-`get_remove_count()` reads an atomic count of accepted `remove_fd` commands. It includes
-unregistered descriptors and excludes commands rejected after shutdown.
-
-### Channel layer
-
-`rpc/channel.rs` is the transport facade. TCP (`srpc.tcp_channel`) and in-memory
-(`srpc.inmemory_channel`) implement it; `FiberChannel` is not an implementation but an
-adapter that turns callback delivery into a fiber-blocking `recv_frame()`.
-
-```cpp srpc-no-compile
-enum class ChannelError {
-    None = 0, WouldBlock, ConnectionRefused, ConnectionReset, Timeout,
-    AddressInUse, AddressInvalid, PermissionDenied, TooManyOpenFiles, Internal,
-};
-const char* channel_error_to_string(ChannelError error);
-
-struct ChannelFrame { const uint8_t* payload; size_t size; };
-
-class ChannelConnectionBase {
-    virtual ChannelError send_frame(const ChannelFrame& frame) = 0;
-    virtual void flush() = 0;
-    virtual void close() = 0;
-    virtual bool is_closed() const = 0;
-    virtual rusty::String peer_address() const = 0;
-    virtual void set_on_frame(OnFrameCallback cb) = 0;
-    virtual void set_on_closed(OnClosedCallback cb) = 0;
-    virtual void set_on_error(OnErrorCallback cb) = 0;
-};
-
-class ChannelListenerBase {
-    virtual ChannelError listen(std::string_view address) = 0;
-    virtual void close() = 0;
-    virtual bool is_closed() const = 0;
-    virtual rusty::String local_address() const = 0;
-    virtual void set_on_accept(OnAcceptCallback cb) = 0;
-    virtual void set_on_error(OnErrorCallback cb) = 0;
-};
-
-struct ConnectResult {
-    rusty::Option<ChannelConnectionProxy> connection;
-    ChannelError error;
-};
-
-class ChannelFactoryBase {
-    virtual ConnectResult connect(std::string_view address) = 0;
-    virtual rusty::Option<ChannelListenerProxy> make_listener() = 0;
-    virtual rusty::String backend_name() const = 0;
-};
-```
-
-The handle typedefs are `ChannelConnectionProxy`, `ChannelListenerProxy` and
-`ChannelFactoryProxy`, all `rusty::Box<dyn ...>`. To install a non-default transport, build
-the factory and hand it over *before* `connect` / `start`:
-`make_tcp_factory_proxy(arc_of_tcp_factory)` and `make_inmemory_factory_proxy(...)` — the
-latter needs `import srpc.inmemory_channel;`, which the umbrella does not supply.
-`TcpFactory::set_connect_timeout_ms(i32)` defaults to 5000.
-
-### Framing and wire format
-
-```cpp srpc-no-compile
-// srpc.frame_codec
-constexpr size_t kFrameHeaderSize = 4;
-constexpr int32_t kMaxFramePayloadSize = 64 * 1024 * 1024;
-
-enum class FrameDecodeStatus { NeedMoreBytes = 0, Complete = 1, Malformed = 2 };
-
-// srpc.internal_protocol (not in the srpc.hpp umbrella)
-constexpr int32_t kInternalHeartbeatRpcId = INT32_MIN;
-constexpr uint32_t kResponseHeaderExtFlag = 0x80000000;
-constexpr uint32_t kResponseSizeMask = 0x7fffffff;
-
-bool response_has_extended_header(int32_t encoded_size);
-int32_t response_payload_size(int32_t encoded_size);
-int32_t encode_response_size(int32_t payload_size, bool extended_header);
-```
-
-The header is 4 bytes, **native-endian**: bit 31 is the extended-header flag, bits 0–30 the
-payload size. A request body is `v64 xid` (a 1–9 byte varint) then `i32 rpc_id` (fixed four
-bytes) then the arguments. A reply body is `v64 xid`, `v32 error_code`,
-`v64 server_instance_id`, then the payload. Chapter 7 walks the format byte by byte,
-including why the extended flag is vestigial.
-
-### Serialization
-
-There is no `Marshal` class. Serialization goes through two free-function dispatchers over
-an archive:
-
-```cpp srpc-no-compile
-// The two dispatchers the generated code calls.
-template<class T> void srpc::Serialize_::serialize(const T& value, BinaryWriteArchive& ar);
-template<class T> void srpc::Deserialize_::deserialize(T& value, BinaryReadArchive& ar);
-
-// Archives hold a type-erased proxy over a sink or source.
-struct BinaryWriteArchive { SinkProxy sink_; };
-struct BinaryReadArchive { SourceProxy source_; };
-
-// Concrete backings.
-struct BufferSink { rusty::Vec<uint8_t> bytes; };
-struct BufferSource {
-    BufferSource(const uint8_t* data, size_t len);
-    size_t pos() const;
-    size_t remaining() const;
-    bool eof() const;
-};
-
-// Proxy factories.
-SinkProxy make_sink_proxy_buffer(BufferSink* sink);
-SourceProxy make_source_proxy_buffer(BufferSource* source);
-SinkProxy make_sink_proxy_fd(FdSink* sink);
-SourceProxy make_source_proxy_fd(FdSource* source);
-```
-
-There is no bare `make_source_proxy`. Building a read archive over a reply looks like the
-generated code's own decode:
-
-```cpp srpc-no-compile
-auto guard = fu->get_reply();
-srpc::BinaryReadArchive ar(srpc::make_source_proxy_buffer(&guard->src));
-srpc::Deserialize_::deserialize(resp.field, ar);
-```
-
-`Serialize_::serialize` resolves through an ADL bridge, so a user type joins the protocol by
-declaring `serialize` / `deserialize` overloads findable from its own namespace — which is
-what the generator emits for every struct in a `.rpc` file. Chapter 10 covers the rest.
-
-### Configuration structs and their defaults
-
-All eight are plain aggregates with static factory functions. Where a `defaults()` exists it
-is an alias for `new_()`; `KeepaliveConfig` and `ReconnectPolicy` have no `defaults()` at
-all, so spell those `KeepaliveConfig::new_()` and `ReconnectPolicy::new_()`. What a fresh
-`Client` actually stages is not each struct's own default — chapter 11's "What is staged and
-what is not" has that table.
-
-```cpp srpc-no-compile
-struct RequestOptions {        // srpc.request_options — not in the umbrella
-    uint64_t timeout_ms;       // 1000
-    uint64_t total_timeout_ms; // 0 = unlimited
-    uint16_t max_retries;      // 0
-    uint16_t base_delay_ms;    // 50
-    uint16_t max_delay_ms;     // 5000
-    float jitter_factor;       // 0.1
-    bool idempotent;           // false
-
-    static RequestOptions defaults();
-    static RequestOptions with_retry(uint16_t max_retries, uint64_t timeout_ms);
-    static RequestOptions idempotent_retry(uint16_t max_retries);
-    static RequestOptions no_timeout(); // timeout_ms = 0
-    static RequestOptions fast();       // 100ms, 2 retries, idempotent
-    static RequestOptions patient();    // 10s / 60s total, 5 retries, idempotent
-
-    bool can_retry(uint16_t current_retry_count) const;
-    uint64_t calculate_delay_ms(uint16_t attempt) const;
-    bool is_total_timeout_exceeded(uint64_t elapsed_ms) const;
-    uint64_t remaining_time_ms(uint64_t elapsed_ms) const;
-};
-```
-
-`can_retry` is `idempotent && current_retry_count < max_retries` — both halves are required,
-and `request_with_options` forces `max_retries = 0` on a non-idempotent request. `defaults()`
-leaves `idempotent` false; the four presets other than `no_timeout()` set it true.
-
-```cpp srpc-no-compile
-struct PoolConfig {                       // defaults()   aggressive()  conservative()
-    int32_t min_connections;              // 1            2             1
-    int32_t max_connections;              // 4            8             2
-    uint64_t idle_timeout_ms;             // 300000       60000         600000
-    bool health_check_enabled;            // true (also no_health_check())
-    uint64_t unhealthy_threshold_percent; // 50 / 70 / 30
-    uint64_t min_requests_for_health;     // 10 / 5 / 20
-    LoadBalancingStrategy load_balancing; // RANDOM
-};
-
-struct BufferingConfig {         // defaults()
-    DisconnectBehavior behavior; // QUEUE   (or FAIL_FAST)
-    size_t max_pending;          // 1000
-    uint32_t default_ttl_ms;     // 30000
-    OverflowStrategy overflow;   // DROP_OLDEST
-    bool enabled;                // true    (disabled() flips both)
-};
-
-struct KeepaliveConfig {  // new_()      aggressive()  relaxed()
-    bool enabled;         // true        true          true
-    int32_t idle_sec;     // 60          10            60
-    int32_t interval_sec; // 10          2             10
-    int32_t count;        // 5           3             5
-};                        // also disabled(); no defaults()
-
-struct HeartbeatConfig {  // defaults()
-    bool enabled;         // true
-    uint32_t interval_ms; // 10000
-    uint32_t timeout_ms;  // 5000
-    uint32_t max_missed;  // 3
-};
-
-struct CircuitBreakerConfig {   // defaults()
-    uint32_t failure_threshold; // 5
-    uint32_t success_threshold; // 3
-    uint32_t timeout_ms;        // 30000
-    bool enabled;               // true
-};
-
-struct ReconnectPolicy {       // new_(); conservative() is the same values.
-    bool auto_reconnect;       // true    aggressive(): true / 0 / 100 / 5000 / 1.5 / true
-    uint32_t max_retries;      // 5       no_retry():   false / 0 / 0 / 0 / 1.0 / false
-    uint32_t initial_delay_ms; // 1000
-    uint32_t max_delay_ms;     // 30000
-    double backoff_multiplier; // 2.0
-    bool jitter_enabled;       // true
-};                             // no defaults()
-
-struct RequestQueueConfig {             // defaults()
-    size_t max_size;                    // 1000
-    uint32_t default_ttl_ms;            // 30000
-    OverflowStrategy overflow_strategy; // DROP_OLDEST
-    bool enabled;                       // true
-};
-```
-
-### Enumerations
-
-The blocks below give the value names and their numeric assignments, which is what you need
-to read a log line or a stored code. They are not a transcription of the emitted
-declaration — at use sites the values are spelled `Type::VALUE`.
-
-```cpp srpc-no-compile
-enum class ConnectionState { NEW=0, CONNECTING, CONNECTED, DISCONNECTING, DISCONNECTED, FAILED };
-enum class CircuitState { CLOSED=0, OPEN, HALF_OPEN };
-enum class ShutdownPhase { RUNNING, STOP_ACCEPTING, DRAINING, CLOSING, STOPPED };
-enum class EventStatus { INIT=0, WAIT, READY, DONE, TIMEOUT, DEBUG };
-enum class TimeoutType { NONE=0, CONNECT_TIMEOUT, REQUEST_TIMEOUT, RESPONSE_TIMEOUT, TOTAL_TIMEOUT };
-enum class OverflowStrategy { DROP_OLDEST=0, DROP_NEWEST, FAIL_FAST };
-enum class DisconnectBehavior { QUEUE, FAIL_FAST };
-enum class LoadBalancingStrategy { RANDOM=0, ROUND_ROBIN, LEAST_CONNECTIONS, LEAST_LATENCY };
-enum class ServerConnStatus { CONNECTED, CLOSED };
-```
-
-Most have a `*_to_string` free function: `connection_state_to_string`,
-`circuit_state_to_string`, `shutdown_phase_to_string`, `timeout_type_to_string`,
-`overflow_strategy_to_string`, `load_balancing_strategy_to_string`,
-`channel_error_to_string`, `frame_decode_status_to_string`. Three of the nine above have
-none — `EventStatus`, `DisconnectBehavior` and `ServerConnStatus` — so there is no
-`event_status_to_string` to call.
-
-### Error codes
-
-Two unrelated numbering schemes live side by side. What `Future::get_error_code()` and the
-generated proxies return are plain `errno` values, exported from `rpc/client.rs` as the
-`CLIENT_ERR_*` constants below; server-side codes are module-private there, so only the
-number reaches you. Chapters 7 and 18 explain what each code means in context and what to do
-about it.
-
-| Value | Constant | |
-| --- | --- | --- |
-| 0 | — | success |
-| 2 | *(server-side `ENOENT`)* | no handler registered for that rpc id |
-| 5 | `CLIENT_ERR_IO` | send failed at the channel layer |
-| 11 | `CLIENT_ERR_AGAIN` / `CLIENT_ERR_WOULD_BLOCK` / `CLIENT_REQUEST_QUEUE_REJECTED_ERROR` | the last is the offline queue refusing an incoming request or evicting an older one; it is 11 on Linux and 35 only on macOS (`#[cfg(target_os = "macos")]`) |
-| 16 | `CLIENT_ERR_BUSY` | circuit breaker open, or async slot occupied |
-| 17 | *(server-side `EEXIST`)* | returned by `reg_rpc` for a duplicate id |
-| 22 | `CLIENT_ERR_INVALID_ARGUMENT` | also what the server replies for a truncated request frame |
-| 32 | `CLIENT_ERR_BROKEN_PIPE` | |
-| 101 | `CLIENT_ERR_NETWORK_UNREACHABLE` | |
-| 103 | `CLIENT_ERR_CONNECTION_ABORTED` | |
-| 104 | `CLIENT_ERR_CONNECTION_RESET` | |
-| 107 | `CLIENT_ERR_NOT_CONNECTED` | no connection, or the channel is closed |
-| 110 | `CLIENT_ERR_TIMED_OUT` | the one-second future cap, or a request timeout |
-| 111 | `CLIENT_ERR_CONNECTION_REFUSED` | |
-| 113 | `CLIENT_ERR_HOST_UNREACHABLE` | |
-| 125 | `CLIENT_ERR_CANCELED` | |
-
-**`RpcError`** in `srpc.errors` is a separate, categorized enumeration used by the
-connection-error callback (`add_on_error`) and by `clientconn_map_system_error`. It does not
-appear in a future's error code.
-
-```cpp srpc-no-compile
-enum class RpcError {
-    OK = 0,
-    // 100–199 connection
-    NOT_CONNECTED = 100, CONNECTION_REFUSED, CONNECTION_RESET,
-    NETWORK_UNREACHABLE, HOST_UNREACHABLE, CONNECTION_CLOSED, CIRCUIT_OPEN,
-    // 200–299 protocol
-    INVALID_MESSAGE = 200, UNKNOWN_RPC_ID, MARSHALLING_ERROR,
-    VERSION_MISMATCH, CHECKSUM_ERROR,
-    // 300–399 application
-    RPC_FAILED = 300, SERVICE_UNAVAILABLE, PERMISSION_DENIED,
-    INVALID_ARGUMENT, NOT_FOUND, ALREADY_EXISTS,
-    // 400–499 timeout
-    CONNECT_TIMEOUT = 400, REQUEST_TIMEOUT, RESPONSE_TIMEOUT,
-    IDLE_TIMEOUT, HEARTBEAT_TIMEOUT,
-    // 500+ internal
-    UNKNOWN_ERROR = 500, OUT_OF_MEMORY, INVALID_STATE, INTERNAL_ERROR,
-};
-
-enum class RpcErrorCategory { NONE=0, CONNECTION, PROTOCOL, APPLICATION, TIMEOUT, INTERNAL };
-
-const char* rpc_error_to_string(RpcError err);
-const char* rpc_error_category_to_string(RpcErrorCategory cat);
-RpcErrorCategory get_error_category(RpcError err);
-bool is_connection_error(RpcError err); // 100–199
-bool is_timeout_error(RpcError err);    // 400–499
-bool is_retryable_error(RpcError err);
-```
-
-`is_retryable_error` is an explicit list, not a range: `CONNECTION_RESET`,
-`NETWORK_UNREACHABLE`, `HOST_UNREACHABLE`, `CONNECT_TIMEOUT`, `REQUEST_TIMEOUT`,
-`RESPONSE_TIMEOUT` and `SERVICE_UNAVAILABLE`. Nothing in the request path consults it — it
-is there for callers to use.
-
----
-
-## 17. Pitfalls and Best Practices
-
-Almost none of the traps in this chapter are compile errors. They are in
-three places: the client's timeout model, which is far stricter than it looks;
-the server's dispatch modes, two of which put your code on the poll thread; and
-the reactor's event rules, which are enforced by assertions that kill the
-process rather than by the type system.
-
-### The blocking call gives up after one second
-
-`Future` is constructed with `timeout_` fixed at 1,000,000 microseconds, and
-nothing in the library ever changes that field. Every blocking entry point —
-`wait()`, `get_error_code()`, `get_reply()` — routes through the same timed wait,
-so one second is the deadline for the generated proxy's synchronous call, for
-`resolve()` on a typed future, and for a bare `wait()`.
-
-Worse, the deadline latches. When it fires, the future sets `timed_out` and
-stores error 110 (`ETIMEDOUT`); when the real reply arrives afterwards, the
-notify path refuses to mark a timed-out future ready, so the payload is decoded,
-counted in the connection's metrics, and thrown away. A server that answers in
-1.2 seconds looks exactly like a server that never answers.
-
-```cpp srpc-no-compile
-// The 1s cap applies here — `resolve()` calls get_error_code().
-auto result = demo.sum(req);
-if (result.is_err() && result.unwrap_err() == 110) {
-    // Could be a dead server. Could be a healthy server that took 1.05s.
-}
-```
-
-The escape is `request_with_options`, and it needs one non-obvious extra step:
-the coordinator future that `request_with_options` hands back is created with
-`timeout_ms = 0` (the internal attempts own the per-attempt timeout), and
-`wait_with_options()` treats a zero budget as "fall back to `wait()`" — which is
-the 1s cap again. Give the coordinator its own budget first:
-
-```cpp srpc-no-compile
-auto opts = RequestOptions::defaults();
-opts.timeout_ms = 500;
-
-auto fu = cl->request_with_options(DemoService::SUM, opts,
-    [&](BinaryWriteArchive& m) { srpc::Serialize_::serialize(a, m); });
-
-auto f = fu.unwrap();
-auto wait_opts = opts;
-wait_opts.timeout_ms = 5000;   // must cover the whole attempt chain
-f->set_options(wait_opts);     // takes a const RequestOptions&, not a pointer
-f->wait_with_options();
-```
-
-### `fast` handlers run on the poll thread, and so does the head of an `async` one
-
-`fast` and `prefix` (they are the same attribute) register through
-`reg_fast_rpc`, and the dispatcher calls them inline from the frame callback —
-on the poll thread, with no fiber underneath. There is nothing to yield to.
-Blocking there does not stall one request; it stalls the epoll loop, so every
-connection that thread owns stops reading, stops writing replies, and stops
-noticing that its peers went away.
-
-`async` registers through `reg_fast_rpc` too. The spawn helper polls the task
-once, inline, before it registers a poller — so everything in the coroutine up
-to the first suspension point also runs on the poll thread. Only what comes
-after a suspension is resumed by the reactor.
-
-```cpp srpc-no-compile
-// BAD — `fast` handler that blocks the poll thread.
-rusty::Result<RpcLookupResponse, i32> lookup(const RpcLookupRequest& req) override {
-    auto row = db_.blocking_query(req.key);        // stalls every connection
-    return rusty::Result<RpcLookupResponse, i32>::Ok(make_resp(row));
-}
-
-// GOOD — drop the `fast` keyword in the .rpc file. The default dispatch
-// spawns a fiber per request, which may block, sleep, or make nested calls.
-```
-
-Use `fast` for handlers that are pure computation over the decoded request and
-return immediately. Everything else belongs on the default (fiber) path, or on
-`defer` if the answer arrives from somewhere else later.
-
-### Configure the client before `connect` — except buffering
-
-Four settings are staged on the `Client` and pushed into the connection object
-that `connect` builds: keepalive, heartbeat, circuit breaker, and reconnect
-policy. So is `set_channel_factory` — install the in-memory transport before
-`connect` or you get TCP, which `connect` auto-installs when nothing is bound.
-Calling the four after `connect` reaches the live connection as well, and that
-connection object survives auto-reconnect, so nothing is lost there; what the
-staged copies decide is how the *next* `Client::connect` builds its connection.
-
-`set_buffering_config` is the exception in the other direction. It has no staging
-slot: it forwards to the connection if one exists and silently does nothing if
-one does not. Called before `connect`, it is a no-op, and the disconnect queue
-keeps its defaults — which are *enabled*, queueing up to 1000 requests with a
-30-second TTL. So this is the setting to get right in both directions: turning
-buffering off with `BufferingConfig::disabled()` before `connect` leaves it on.
-
-```cpp srpc-no-compile
-auto cl = Client::create(poll);
-
-cl->set_reconnect_policy(ReconnectPolicy::conservative());
-cl->set_heartbeat(HeartbeatConfig::defaults());
-cl->set_circuit_breaker(CircuitBreakerConfig::defaults());
-
-cl->connect(reinterpret_cast<const int8_t*>(addr), true);
-
-cl->set_buffering_config(BufferingConfig::defaults());   // AFTER, or it is lost
-```
-
-### Retries are opt-in twice
-
-`RequestOptions::can_retry` is `idempotent && retry_count < max_retries`. Setting
-`max_retries` alone does nothing — and it does not merely fail to retry: the
-request path clamps `max_retries` to zero when `idempotent` is false, so there is
-no diagnostic either. `defaults()` leaves `idempotent` false; `with_retry`,
-`idempotent_retry`, `fast` and `patient` all set it true.
-
-```cpp srpc-no-compile
-auto opts = RequestOptions::defaults();
-opts.max_retries = 3;
-opts.idempotent  = true;    // without this line, max_retries is silently zeroed
-```
-
-The retry chain runs on a detached thread of its own, and the serialized argument
-bytes are replayed verbatim on every attempt — so an attempt that the server did
-process but whose reply was lost will be processed again. That is what
-`idempotent` is asserting.
-
-### Do not subclass a non-`abstract` generated service
-
-For an `abstract` service (or a method with a trailing `= 0` in the IDL) the
-generator emits pure virtuals and subclassing works normally. Without `abstract`
-it emits `virtual R m(const Req&);` — declared, never defined, anywhere. The
-class therefore has no key function, its vtable is never emitted, and a subclass
-fails at *link* time with undefined references even though every method is
-overridden.
-
-Two ways out: mark the service `abstract` in the `.rpc` file, or keep it
-non-abstract and define the generated virtuals out of line in a `.cc`, the way
-`tests/benchmark_service.cc` does. Do not try to fix it by adding overrides.
-
-### Events belong to one thread, one fiber, and one wait
-
-`wait()` on any event opens with two thread assertions: a reactor must exist on
-this thread, and it must be *this* reactor's thread. A third assertion — that a
-fiber is running — fires only on the path that actually suspends, so `wait()` on
-an event that is already ready, or on one that has already completed, returns
-without ever checking. All three are `verify` calls — they print a stack trace
-and terminate the process, they do not return an error.
-
-A waiting event stores exactly one weak fiber handle, and the source says so:
-*"for now only one fiber can wait on an event."* A second waiter overwrites the
-first, and the first is never resumed.
-
-An event is also single-use. Once it has completed, its status is `DONE`, and
-`wait()` on a `DONE` event returns immediately without blocking — the code path
-is literally commented "second use of the event". Create a fresh event per
-round.
-
-Setting an event from another thread is a data race, not merely bad style. The
-value, the status and the wait bookkeeping are plain `Cell`s, and `set()` runs
-the readiness test inline, which touches a non-atomic `Rc` refcount — the source
-guards exactly that step with an owner-thread check and spells out the
-consequence of skipping it, a corrupted count. And even when nothing is
-corrupted, no wakeup crosses the thread boundary: the waiting fiber resumes only
-the next time that reactor's own loop runs, which under a poll thread is within a
-millisecond and in a hand-driven reactor is never.
+The process-wide logger defaults to DEBUG. Set its maximum enabled severity
+in code:
 
 ```rust
-let reactor = Reactor::get_reactor();
-let ev = create_sp_int_event(1); // ready when value >= 1
-
-let ev_in = ev.clone();
-reactor.create_run_fiber(Some(Box::new(move || {
-    ev_in.wait(); // or ev_in.wait_timeout(500 * 1000)
-    // ...
-})));
-
-ev.set(1);                     // same thread as the reactor
-reactor.run_loop(false, true); // drains ready work, then returns
+use srpc::logging::Log;
+Log::set_level(Log::INFO);
 ```
 
-The event factories are named free functions — `create_sp_int_event`,
-`create_sp_timeout_event`, `create_sp_never_event`, `create_sp_waitany`,
-`create_sp_waitall`, `create_sp_waitall_from`, `create_sp_box_event<T>` and — in
-global `::janus`, not `srpc` — `janus::create_sp_quorum_event` — not a
-`Reactor::create_sp_event<T>` template, and the methods are lowercase (`wait`,
-`wait_timeout`, `set`, `test`). Timeouts are in
-microseconds, and `wait_timeout` only fires if the loop that is draining events
-was asked to check timeouts (`run_loop(..., true)`).
+Levels are FATAL 0, ERROR 1, WARN 2, INFO 3 and DEBUG 4. The logger writes
+to stdout and flushes each line. It does not read a log-level environment
+variable. A typical line looks like this:
 
-### Know who is running the loop
-
-In an RPC program you never call `run_loop` yourself: the poll worker calls
-`run_loop(false, true)` on every epoll iteration, and starting a fiber drains
-events once on the way out. Standalone fiber code is different.
-`Fiber::create_run` *runs the body immediately*, on the calling thread, up to its
-first suspension point. What needs a loop is the resumption. A fiber that is never resumed is a fiber whose event
-nobody drained.
-
-`run_loop(true, ...)` is not the answer for a program that wants to stop. The
-`infinite` flag is latched at entry and nothing ever clears it, so that call
-never returns, and it is a busy spin rather than a blocking wait.
-
-```rust
-// The body runs now, up to the first wait; the rest needs a drain.
-let ev_in = ev.clone();
-reactor.create_run_fiber(Some(Box::new(move || {
-    ev_in.wait();
-    finish();
-})));
-ev.set(1);
-reactor.run_loop(false, true); // finish() runs here
-```
-
-### Sleep and lock the fiber way
-
-`this_fiber::sleep_ms` / `sleep_us` / `sleep_s` suspend the fiber by waiting on a
-timeout event; `Time::sleep` and `std::this_thread::sleep_for` stop the whole
-thread and every fiber on it. Two sharp edges: `this_fiber::sleep_us(0)` returns
-immediately without yielding (use `this_fiber::yield()` to give up the CPU), and
-a non-zero sleep called outside a fiber hits the "can't wait outside a fiber"
-assertion and aborts the process.
-
-srpc's own lock is `SpinLock`, and it ships no RAII guard to go with it: the
-interface is bare `lock()` / `unlock()`. Its slow path sleeps the *thread* for 50
-microseconds per round, so a fiber that contends for one blocks every other fiber
-on that thread. Keep the critical section to a few instructions, never hold it
-across a yield, a sleep, or an RPC call, and wrap it in your own scope guard if
-you want exception safety.
-
-### Application error codes can trip the circuit breaker
-
-The breaker counts a reply's error code as a transport failure when it is one of
-107, 111, 104, 103, 110, 113, 101 or 32. Those are just integers on the wire, so
-a handler that returns `Err(110)` to mean "your deadline, not mine" contributes
-to opening the client's breaker — after five of them the client rejects
-everything locally with 16 (`EBUSY`) for 30 seconds. Choose application error
-codes outside that set.
-
-The inverse is worth knowing too: a *client-side* wait timeout is never recorded,
-because the timeout latches on the future without going through the breaker. A
-server that is alive but slower than the wait cap will never open the breaker, no
-matter how many calls time out.
-
-### `request_async` has no timeout and a fixed slot table
-
-The callback form parks its callback in a table of 16,384 slots indexed by
-`xid % 16384`. If the slot is taken the call fails immediately with 16
-(`EBUSY`). A slot is released by the matching reply, by a dispatch error, or by a
-disconnect drain — nothing else, and there is no timer. A request the server
-never answers holds its slot for the life of the connection, and the delivery
-path does not re-check the xid, so a very late reply can be handed to whichever
-callback occupies its slot by then. Use the future-based path when you need a
-deadline.
-
-### Checklist
-
-Do:
-
-- Give any call that may exceed a second an explicit budget via
-  `request_with_options` plus `set_options` on the returned future.
-- Keep `fast`, `prefix` and the pre-suspension part of `async` handlers
-  non-blocking; put anything else on the default fiber path.
-- Stage client configuration before `connect`, and `set_buffering_config` after.
-- Set `idempotent` whenever you set `max_retries`.
-- Create a fresh event per wait, and wait on it from the fiber that owns it.
-- Use `this_fiber::sleep_*` and `this_fiber::yield()` inside fibers.
-- Register services with `reg_service_typed(rusty::make_box<T>())`; the generated
-  class has no base to inherit from.
-- Hand ownership across the API in `rusty::Box` / `rusty::Arc` — that is what
-  `reg_service_typed`, `Client::create` and the channel factories take and
-  return.
-
-Don't:
-
-- Don't touch an event from a thread other than its reactor's, and don't expect
-  a set from elsewhere to wake anyone.
-- Don't put two waiters on one event, and don't reuse one after it completes.
-- Don't call `run_loop(true, ...)` unless you intend never to return.
-- Don't call `std::this_thread::sleep_for` or `Time::sleep` inside a fiber.
-- Don't hold a `SpinLock` across a suspension point.
-- Don't subclass a generated service that is not `abstract`.
-- Don't treat zero latency fields as measured latency. Ordinary request completion
-  updates counts but does not record latency samples.
-
----
-
-## 18. Troubleshooting
-
-SRPC has exactly two ways of telling you that something went wrong: a log line
-on stdout, and a `verify` failure that prints a stack trace and kills the
-process. Neither is quiet by default, and neither is configurable from the
-environment. Start by reading them.
-
-### Reading the log
-
-The logger is a process-wide level plus a synchronous sink. `LOG_LEVEL_S`
-starts at `Log::DEBUG` (4), which means *everything* is enabled out of the box;
-the only knob is `Log::set_level`, and there is no environment variable that
-touches it.
-
-```rust
-Log::set_level(Log::ERROR); // FATAL 0, ERROR 1, WARN 2, INFO 3, DEBUG 4
-```
-
-Lines go to `std::cout`, one flush each, shaped like
-
-```
+```text
 W [<unknown>:0] 2026-08-29 14:03:11.482 | srpc::ServerConnection: no handler for rpc_id = 271861483
 ```
 
-The `<unknown>:0` is not a bug: library code calls `log_line(level, 0, nullptr,
-...)` and only fills in a file and line when a caller supplies one. Every line
-you see with that prefix came from inside srpc.
+`<unknown>:0` means the caller supplied no source location. Many library calls
+do this. Native Rust calls use `srpc::logging::log_line` with a preformatted
+`&str`; that function is unsafe because a non-null filename pointer must
+reference a valid NUL-terminated string for the duration of the call.
 
-The variadic `Log_debug` / `Log_info` / `Log_warn` / `Log_error` / `Log_fatal`
-wrappers are **not** part of the library — a parameter pack cannot cross the
-Rust-to-C++ boundary, so they live on the consumer side in `tests/srpc_log.h`.
-Copy that header into your own tree, or call `log_line` directly with
-`std::format`.
+### Interpret error codes at the operation that returned them
 
-### What the error codes mean
+| Code | Meaning and likely origin |
+| --- | --- |
+| 2, `ENOENT` | The server has no registered handler for the rpc id. |
+| 5, `EIO` | The outbound channel refused a frame, including a full outbound buffer or an oversized frame. |
+| 11, `EAGAIN` | Offline buffering refused or evicted a request. With drop-oldest policy, this error can reach an earlier request. |
+| 16, `EBUSY` | Circuit-breaker admission failed, a callback slot is occupied, or a reconnect already owns the operation. |
+| 22, `EINVAL` | Invalid address or state, selected connect failures, or a malformed request too short to contain an rpc id. |
+| 32, 101, 103, 104, 111, 113 | Transport errors such as broken pipe, unreachable network/host, aborted/reset connection or connection refusal. |
+| 107, `ENOTCONN` | No usable connection or a disconnect invalidated pending work. |
+| 110, `ETIMEDOUT` | A future wait, retry budget or queued request TTL expired. |
+| 125, `ECANCELED` | A reconnect attempt was aborted. |
 
-Every failure surfaces as an errno-shaped `srpc::i32`. These are the ones the
-library actually produces:
+These are integers shared with application replies. Error 110 alone does not
+identify which timer expired. Inspect `Future::get_timeout_type`, configured
+request budgets and buffering TTL where applicable.
 
-| Code | Name | Where it comes from |
-|---|---|---|
-| 2 | `ENOENT` | The server has no handler registered for that rpc id. It replies with this code and logs a warning once per unknown id. |
-| 5 | `EIO` | The channel refused the outbound frame — the peer is gone, the frame is over the 64 MiB bound, or the connection's 4 MiB outbound buffer is full. The pending future is removed before the error returns. |
-| 11 | `EAGAIN` | A disconnect-buffered request was evicted or refused: the queue is full — under the default `DROP_OLDEST` this code goes to the *oldest* entry, not the new one — or the queue itself is disabled. |
-| 16 | `EBUSY` | The circuit breaker is open — or, on `request_async`, the callback slot for this xid is already occupied. |
-| 22 | `EINVAL` | The address does not parse, the host/network is unreachable, `connect` was called from a state that forbids it, or the server got a request frame too short to hold an rpc id. |
-| 32, 101, 103, 104, 111, 113 | `EPIPE`, `ENETUNREACH`, `ECONNABORTED`, `ECONNRESET`, `ECONNREFUSED`, `EHOSTUNREACH` | Transport failures, reported as-is. |
-| 107 | `ENOTCONN` | There is no live connection: `connect` never succeeded, the client was closed, the channel is dead, or a disconnect invalidated the in-flight futures. |
-| 110 | `ETIMEDOUT` | The one-second future cap fired — or a buffered request outlived its TTL. |
-| 125 | `ECANCELED` | `reconnect()` was aborted. |
+### Diagnose client symptoms
 
-Note that 110 has two very different meanings and no way to tell them apart from
-the code alone. See "the blocking call gives up after one second" in chapter 17.
+| Symptom | Check |
+| --- | --- |
+| A wait returns after about a second | A default blocking getter or a zero-budget `wait_with_options` used the ordinary wait cap. Set a nonzero budget before waiting. |
+| The first request returns 107 | Check the result and ERROR log from `connect`; a failed initial connect leaves `connection()` as `None`. |
+| Calls return 16 repeatedly | Inspect circuit-breaker configuration/state and callback occupancy; reconnect can also report a busy operation. |
+| Submission succeeds while disconnected | The offline queue may have accepted the bytes. Check reconnect results, TTL and queue-drop counters. |
+| Configured heartbeats never appear | The client does not run a scheduled heartbeat tick. |
+| Latency metrics remain zero | Ordinary completion records counters but does not record latency samples. |
+| A callback or service stalls unrelated calls | Check for OS blocking on their shared worker. Fiber registration does not change blocking I/O behavior. |
 
-### Client symptoms
+### Diagnose server symptoms
 
-| Symptom | Cause | What to do |
-|---|---|---|
-| A timed wait returns 110 | Its supplied deadline expired before completion | Check the timeout passed to `timed_wait` or the request options used by `wait_with_options` |
-| The very first call returns 107 | `connect` failed, so the `Client` stored no connection at all | Read the `ERROR` log line — it names the address and the reason |
-| Calls start returning 16 and keep doing so | The breaker opened after 5 transport failures and stays open for 30s | `client->connection()`, then `circuit_breaker_state()`; it needs 3 successes after half-opening to close |
-| A call made while the link is down returns `Ok`, then times out | The request was queued and its TTL or explicit wait deadline expired | Check the reconnect result and buffering TTL, or disable buffering after connect to fail immediately |
-| Queued requests fail during reconnect | Their TTL expired, the queue overflowed, or teardown drained them | Inspect the future error and `queue_dropped_requests`; size the TTL and queue for the outage budget |
-| The connection dies and nothing reconnects | Auto-reconnect only fires when a reconnect address was recorded and the policy allows it | Check for `auto-reconnect triggered after connection failure` at `INFO` |
-| Heartbeats are configured but never sent | Nothing ticks the client-side heartbeat timer; the protocol is complete but unwired | Do not rely on heartbeats to detect a dead peer |
-| Latency metrics read zero despite traffic | Ordinary completion records counters but not latency samples | Add latency instrumentation before using these fields for selection |
-| Pool selection never differentiates | In-flight counts may be equal, or latency samples may be absent | Inspect live counts and record latency samples, or use `ROUND_ROBIN` or `RANDOM` |
+| Symptom | Check |
+| --- | --- |
+| `no handler for rpc_id = N`, client receives 2 | Confirm that client and server use the same integer id and that registration happened before `start`. |
+| Only some methods are missing | Check `__reg_to__`, the service index passed to registration, and the return value of `reg_rpc` or `reg_fast_rpc`. |
+| `empty channel-mode request frame, dropping` | The frame has no xid to reply to. Inspect the sender and framing. |
+| `DeferredReply::reply() called multiple times, ignoring` | The reply handle already completed through `reply` or `reply_error`. |
+| Every connection on one worker stops progressing | Find the handler, callback or future poll blocking that worker. |
+| One connection closes with a malformed-frame error | Inspect its wire bytes and header length. |
 
-### Server symptoms
+### A late reply may have no waiter
 
-| Symptom | Cause | What to do |
-|---|---|---|
-| `no handler for rpc_id = N` at `WARN`, client sees 2 | Client and server disagree about method ids | Regenerate *on top of* the old header — ids are random and stabilized only by scraping the previous one |
-| Same warning, but only for some methods | The service was never registered, or was registered after `start()` | `reg_service_typed(rusty::make_box<T>())` before `start()`; registrations are frozen into an immutable context by `start` |
-| `empty channel-mode request frame, dropping` | A frame arrived with no body, so there is no xid to reply against | Look upstream — this is a framing problem, not an application one |
-| `DeferredReply::reply() called multiple times, ignoring` | A `defer` handle replied twice | Both `reply()` and `reply_error()` fire at most once, in total |
-| The whole server stops responding under load | A `fast`, `prefix`, or pre-suspension `async` handler blocked the poll thread | Move the work to the default (fiber) dispatch |
-| One connection stops, the rest are fine | The peer's stream desynchronized and the frame bound closed it | See below |
+The client examines the callback slot first, then the pending-future map. A
+reply matching neither is discarded without a log. Received-byte accounting
+still advances. A retry coordinator removes abandoned attempts from the map,
+so a later server reply can legitimately have no waiter.
 
-### A reply that matches nothing is dropped in silence
+An ordinary future wait timeout alone does not remove its map entry. A late
+matching reply can still update reply storage, error code, metrics and breaker
+state, but `notify_ready` does not mark a timed-out future ready. Do not treat
+that future as a dependable late-result mechanism. A timeout also does not
+prove that the server failed to execute the request.
 
-The client resolves an inbound reply in two steps: the async callback slot at
-`xid % 16384` first, then the pending-future map. If neither has an entry the
-payload is simply discarded. There is no log line and no error. The only trace
-is that the connection's `bytes_received` counter moved, because inbound
-accounting happens before the lookup.
+The callback table has no full-xid check. When debugging a surprising callback
+result, include the wire xid and slot index in application instrumentation.
+Chapter 14 describes the collision limitation.
 
-A future that merely timed out is a different case, and a noisier one: nothing
-removes it from the pending map, so the late reply still matches. It is decoded
-into the future, counted as a completion or a failure, and fed to the circuit
-breaker — and only then dropped, because `notify_ready` refuses to mark a
-timed-out future ready (chapter 17). The reply that truly matches nothing is one
-whose future was already released: `request_with_options` calls `handle_free` on
-every attempt it gives up on, and each of those attempts can still be answered
-later.
+### Check framing and connection setup
 
-So "the server says it replied and the client never saw it" is usually not a lost
-packet; it is a reply that arrived after the client stopped caring.
+The frame header uses native byte order, with a 31-bit payload size and an
+extended-header flag. Peers must agree on byte order. The decoder rejects a
+payload length above 64 MiB, closes the malformed stream, and runs disconnect
+handling. In-flight futures then fail with 107; reconnect depends on the
+configured policy. An oversized outbound frame fails locally with 5.
 
-The slot path has a second sharp edge: it takes whatever callback occupies the
-slot without re-checking the xid (the future path does check). A reply that
-arrives after 16,384 further async requests can therefore be handed to the wrong
-callback.
+TCP addresses are numeric IPv4 socket addresses such as `127.0.0.1:8848`.
+`localhost:8848` and IPv6 addresses are not accepted by this parser.
+`Client::connect` returns zero on success. Typical failures are 22 for
+invalid/unusable addresses, 111 for connection refusal, and 107 for other
+mapped failures. Read its ERROR log for the underlying channel reason.
 
-### A desynchronized stream is caught by the frame bound
+`Server::start` returns -1 on a bind failure and logs the channel error.
+`AddressInUse` means the address could not be bound; check existing listeners
+and socket reuse conditions. For tests, request an ephemeral port:
 
-The frame header is 4 bytes, **native-endian**: bit 31 is the extended-header
-flag, bits 0-30 are the payload size. Two consequences.
+```rust,no_run
+use std::ffi::CString;
+use srpc::server::Server;
 
-First, peers must agree on byte order. There is no network-order conversion
-anywhere in the framing path, so a big-endian peer is not merely slow or
-mismatched — its first header is nonsense.
-
-Second, `kMaxFramePayloadSize` (64 MiB) exists to make nonsense *visible*.
-Without it, a desynchronized stream reads payload bytes as a header, gets a
-garbage length, and waits forever for bytes that never come: no error, no log, no
-close, no reconnect. With it, the decoder returns `Malformed`, the transport
-raises `malformed frame on inbound stream`, closes the connection, and the client
-side runs its normal disconnect fan-out — in-flight futures fail with 107 and
-auto-reconnect starts. A connection that dies with that message is telling you
-the stream was corrupt, not that the peer went away.
-
-The bound is also the only real message-size limit, and the send path checks the
-same constant, so an oversized message never reaches the wire: the request fails
-locally with 5 (`EIO`).
-
-### Connect and bind failures
-
-`Client::connect` returns 0 or an error code, and logs the reason at `ERROR`
-before returning:
-
-```
-E [<unknown>:0] ... | srpc::ClientConnection: factory connect failed: ConnectionRefused (addr=127.0.0.1:8848)
+fn start_on_free_port(server: &mut Server) -> i32 {
+    let address = CString::new("127.0.0.1:0").unwrap();
+    // SAFETY: address remains a valid NUL-terminated string throughout start.
+    assert_eq!(unsafe { server.start(address.as_ptr()) }, 0);
+    server.get_bound_port()
+}
 ```
 
-- **22 (`EINVAL`)** — the address did not parse, or the route was refused at a
-  level that maps to "address invalid": host unreachable, network unreachable,
-  address not available. Addresses are parsed as an IPv4 socket address, i.e.
-  literally `a.b.c.d:port`. `localhost:8848` does not resolve here, and neither
-  does an IPv6 address.
-- **111 (`ECONNREFUSED`)** — nothing is listening.
-- **107 (`ENOTCONN`)** — everything else, including a timed-out connect.
+Register services before calling this function. `get_bound_port()` returns -1
+when the listener is unavailable.
 
-When `connect` fails, the `Client` keeps no connection object at all, so
-`connection()` returns `None` and every later request fails with 107 until a
-`connect` succeeds.
+### An assertion reports an ownership error
 
-On the server side, `start()` returns -1 and logs
+`verify_at` prints a native stack trace and panics with a file and line.
+Rust callers usually report their canonical `.rs` location. Some helpers,
+including the client's local verifier, provide a fixed path and line zero.
+Worker and native execution boundaries can abort on a panic; an assertion is
+not an RPC error that can be sent back to the caller.
 
-```
-E [<unknown>:0] ... | srpc::Server::start: channel listener failed to bind 127.0.0.1:8848: AddressInUse
-```
+Common reactor failures include suspending an event without a running fiber,
+accessing a reactor from the wrong thread, or resuming state whose fiber has
+finished. Check thread ownership before investigating the socket. A blocking
+wait in the wrong context cannot be repaired by increasing its timeout.
 
-`AddressInUse` after a previous run is the usual TIME_WAIT story. For tests, bind
-to port `0` and ask the server which port it got:
+### Shutdown does not complete
 
-```rust
-let addr = CString::new("127.0.0.1:0").unwrap();
-unsafe { svr.start(addr.as_ptr()) };
-let port = svr.get_bound_port(); // -1 if the listener is not up
-```
+`graceful_shutdown` stops accepts, drains pending requests, runs hooks and
+signals shutdown. The drain sleeps the calling OS thread in one-millisecond
+steps until the counter reaches zero or the budget expires. Run it on the
+server's owner thread outside a request handler. A handler's own request
+contributes to the counter, and blocking its worker prevents other requests
+on that worker from completing.
 
-### The process aborted with "verify failed"
+Shutdown hooks run while the hook-list mutex is held. A hook that registers
+another hook deadlocks. Keep shutdown methods out of signal handlers and ask
+the owner thread to act through an appropriate signal integration or channel.
 
-`verify` is srpc's assertion. On failure it prints a full stack trace to stderr,
-then panics with `verify failed at <file>, line <n>`. For the reactor, `base/`
-and `misc/` assertions the file is the *generated* module, since that is where
-the call site lives. `rpc/client.rs` is the exception: it routes its four
-assertions through a local `client_verify` that hard-codes the canonical Rust
-path, so those always read `verify failed at rpc/client.rs, line 0`. The process
-does not continue.
+At DEBUG, `PollThread::shutdown` logs command submission, acquiring the join
+handle and joining. The last line helps locate a worker that never exits.
+Close clients, drop the server so accepted connections close, then shut down
+their poll worker.
 
-The reactor's assertions are the ones you are most likely to hit:
+### Use the Cargo checks
 
-- waiting on an event outside a fiber (`this_fiber::sleep_*` counts — it waits on
-  a timeout event);
-- waiting on an event, running the loop, spawning a stackless task, or destroying
-  a reactor from a thread that is not that reactor's thread;
-- waiting on an event from a fiber the scheduler has already finished or
-  recycled.
-
-They all say the same thing in different words: reactor state was touched from a
-context that does not own it — the wrong thread, or no fiber at all. There is no
-mode that downgrades these to errors; the assertion is the diagnostic.
-
-### Shutdown hangs
-
-`graceful_shutdown(ms)` is four steps: `stop_accepting()`, `drain(ms)`, run the
-shutdown hooks, `do_shutdown()` (which releases everyone blocked in
-`wait_for_shutdown()`). The middle two are where it hangs.
-
-`drain` busy-waits on the in-flight request counter, sleeping a millisecond per
-round, until it reaches zero or the timeout expires. That counter includes the
-request you are serving — so a handler that calls `graceful_shutdown` on itself
-always burns the entire drain timeout before continuing. Shut down from a signal
-handler or another thread, not from inside a handler.
-
-The hooks run while the hook list's mutex is held, which is deliberate and
-documented. A hook that tries to register another hook deadlocks.
-
-`PollThread::shutdown()` is idempotent and logs its way through every step at
-`DEBUG` — `Sending CmdShutdown`, `Acquiring join_handle lock...`,
-`Calling thread.join()...`, `Complete`. If a process hangs at exit, the last of
-those lines tells you exactly where. Called from the poll thread itself it skips
-the join rather than deadlocking, which means the worker outlives the call.
-
-The teardown order that works: close the clients, destroy the `Server` (that is
-what closes already-accepted connections), then shut down the poll thread.
-
-### Tools that exist in this repository
-
-The build is CMake and Ninja; there is no makefile and no debug/release
-environment switch:
+From the repository root:
 
 ```sh
-# Rust lane, including the shared native C and assembly kernels.
+cargo test --locked --test rpc_runtime_rust
+cargo test --locked --test client_runtime_ownership_rust
+cargo test --locked --test server_concurrency_rust
+cargo test --locked --test fiber_channel_rust
+cargo test --locked --test stackless_wake_pollthread_rust
+```
+
+Choose the test for the observed behavior. To inspect or run one test by name:
+
+```sh
+cargo test --locked --test rpc_runtime_rust -- --list
+cargo test --locked --test rpc_runtime_rust -- \
+    --exact tcp_poll_thread_serves_another_request_while_a_stackful_handler_sleeps \
+    --nocapture
+```
+
+The normal Rust checks include native kernels:
+
+```sh
 cargo test --locked --workspace --all-targets
-
-# C++ lane.
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel 4
-ctest --test-dir build -L srpc --output-on-failure
-
-# One suite, then one case inside it.
-ctest --test-dir build -R '^test_fiber$' --output-on-failure
-./build/test_fiber --gtest_filter='FiberTest.SleepUsZero'
-
-# Sanitizers are a whole-configuration switch: give them their own tree.
-cmake -S . -B build-asan -G Ninja -DSRPC_SANITIZER=address   # none|address|thread|undefined
+cargo test --locked --workspace --doc
+cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-srpc always compiles with `-O2 -g -fno-omit-frame-pointer`, regardless of build
-type, so `gdb ./build/test_fiber` gives usable frames without a special build.
-Those flags are exported `PUBLIC`, which is also why your own warnings disappear
-once you link srpc: the `-w` in that same list comes along.
-
-Inspect the configured inventory with `ctest --test-dir build -N -L srpc`
-before running it. The `SRPC_RUNTIME_BATTERY` and `SRPC_DOCS_BATTERY` lists in
-`CMakeLists.txt` identify the compiled suites; other labeled tests check source
-and build contracts. Vendored tests can require targets outside `ALL`, so a
-bare `ctest` can report unbuilt executables as "Not Run". If GoogleTest is
-missing, CMake warns and omits the runtime battery. Initialize that submodule
-and reconfigure before claiming runtime acceptance. A file under `tests/` is
-not necessarily part of the configured build or a current API example.
+`--all-targets` does not include documentation tests, so keep the second
+command. Linux and a supported fiber architecture are mandatory. A missing
+`cc` or `ar` fails the native build; use `CC` and `AR` if the tools have other
+names. The C++ companion contains CMake, CTest, module-compatibility and
+sanitizer commands for generated C++ consumers.
 
 ---
 
-## 19. The C++ Lane: One Source, Two Compilers
-
-Everything before Part II described the framework in its source language. This
-chapter describes how the same sources become the shipped C++ library, and the
-checks applied to both artifacts. It is a reader's guide to machinery that
-Chapter 2 introduced and `CLAUDE.md` operationalizes; nothing here is needed to
-*use* either lane.
-
-### The translation
-
-The pinned `rusty-cpp` transpiler reads the whole crate in one invocation and
-emits one C++23 module interface unit per canonical file: `rpc/client.rs`
-becomes `srpc.client.cppm`, exporting `namespace srpc` declarations whose
-spellings are the historical C++ API. The mapping is source-to-source and
-deliberately conservative:
-
-- Types map through the `rusty` runtime: `Vec<T>` to `rusty::Vec<T>`, `Arc` /
-  `Rc` / `Box` / `Option` / `Result` to their `rusty::` ports, closures to
-  `rusty::Function` or lambdas at the call site.
-- `async fn f(..) -> T` becomes a C++ coroutine returning `rusty::Task<T>`;
-  `.await` becomes `co_await`, `return` becomes `co_return` (Chapter 3).
-- `thread_local!` becomes `inline thread_local rusty::LocalKey<T>`, with the
-  closure-only `.with()` accessor lowering through the ordinary method-call
-  path (Chapter 4).
-- Rust names that collide with C++ keywords are mangled predictably:
-  `Server::new` emits as `new_`, `this_fiber::r#yield` as `yield()`.
-
-Some contracts C++ needs cannot be said in Rust, and they are spelled as inert
-`#[cfg_attr(any(), ...)]` attributes — invisible to rustc (`any()` is false),
-directive to the emitter. The census as of this writing: `cpp_namespace(::janus)`
-on the quorum surface (Chapter 5), `cpp_noexcept`, `cpp_abi`, and a dozen
-smaller families; `CLAUDE.md` keeps the authoritative list. The mirror form
-`#[cfg_attr(not(any()), derive(...))]` is the opposite tool: derives rustc
-applies that the emitter must not see, which is how a C++ `operator==` can be
-deliberately withheld while the Rust side keeps `PartialEq`.
-
-Handwritten native code is limited to the shared nine-C manifest and architecture-selected
-fiber context-switch assembly, plus the ABI/import headers described in Chapter 2.
-Canonical Rust owns runtime and protocol decisions. A neighboring header does not supply
-a second implementation.
-
-### What the gates hold
-
-The normal CMake `ALL` build includes the source and dual-compile gates.
-
-The **source gate** (`srpc_goal0_source_gate`) runs the DSL census, the
-extraction check (`src/lib.rs` must match `rust-modules.toml`), contract negative
-controls, the canonical Rust AST audit, native source and ABI-binding checks,
-Cargo tests, and clippy with warnings denied. The Cargo independence check also
-runs tests and doctests in a copied tree containing only Rust sources and the
-C/assembly kernel, without the facade, vendored C++ runtime or transpiler.
-A new clippy warning breaks the C++ build.
-
-The **dual-compile gate** (`srpc_goal0_dual_compile`) is the ABI oracle. It
-recompiles every generated module into its own object, links one importer
-program twice — once over the fresh objects placed ahead of `libsrpc.a`, once
-over the archive alone — runs both, and compares per-module `nm` strong-symbol
-sets against an exact reviewed inventory (`scripts/check_srpc_crate_mode.py`).
-Changes to that inventory require a measured, explained delta. Passing Cargo
-tests does not establish C++ behavior. Verify changes in both lanes and update
-the expected ABI only when the measured public contracts change.
-
-Byte digests of the generated C++ are advisory only; symbol sets, import lists
-and the zero-hand-slot requirement are mandatory. Unsupported-lowering markers
-fail the gate, but their absence does not prove faithful translation. Compile
-tests must instantiate the relevant templates, and runtime tests must check the
-resulting behavior. The ABI/import checks and paired runtime fixtures provide
-bounded evidence; they do not prove equivalence for every input or interleaving.
-
-### Standard adapters, from the C++ side
-
-The transpiler maps Rust std values, ownership types, synchronization, futures and
-wakers to the C++ runtime. Explicit compiler mappings preserve the established C++
-callback and container interfaces where their representation differs from Rust.
-These mappings and C++ headers are inputs only to the generated C++ lane. Cargo uses
-the standard Rust implementations directly. SRPC scheduling, events, archives and
-protocol policy stay in canonical Rust.
-
-The canonical AST audit rejects missing runtime bodies and checks empty or
-constant-returning functions against a reviewed inventory. Native source and ABI
-audits check the shared C/assembly kernel and its declarations. The Cargo independence
-check rejects production Rust dependencies and builds a copy without the C++ inputs.
-These checks complement behavioral tests; they do not establish equivalent behavior
-for every input or execution schedule.
-
 ---
 
-## 20. Consuming SRPC from C++
+## 16. Rust API and verification
 
-The C++ consumer's view, end to end, using the generated typed layer from
-Chapter 12. This is the material the rest of the book defers here; the API
-reference for everything named is Chapter 16.
+### Public API documentation
 
-### The service
+Generate the native Rust reference from the checkout:
 
-Given the IDL from Chapter 1 —
-
-```
-namespace demo
-
-abstract service Demo {
-    sum(i32 a, i32 b, i32 c | i32 result);
-};
+```sh
+cargo doc --locked --no-deps --open
 ```
 
-— the generator produces `DemoService` (with `RpcSumRequest` / `RpcSumResponse`
-as members) and `DemoProxy`. You subclass and override:
+Rustdoc shows public methods, trait bounds and unsafe-call contracts from the same
+sources Cargo compiles. Use it when checking whether a method is callable from an
+external crate. A C++ export listing does not establish native Rust visibility.
 
-```cpp srpc-no-compile
-#include "demo.h"
+The following index gives the main entry points and their source modules.
 
-class MyDemoService : public demo::DemoService {
-public:
-    rusty::Result<RpcSumResponse, srpc::i32> sum(const RpcSumRequest& req) override {
-        RpcSumResponse resp{};
-        resp.result = req.a + req.b + req.c;
-        return rusty::Result<RpcSumResponse, srpc::i32>::Ok(resp);
-    }
-};
+| Task | Rust API | Source |
+| --- | --- | --- |
+| Create a client and issue requests | `Client`, `Future`, `FutureAttr` | [client.rs](../rpc/client.rs) |
+| Configure attempts and wait budgets | `RequestOptions` | [request_options.rs](../rpc/request_options.rs) |
+| Implement and register a service | `Service`, `Server`, `Request`, `ServerReplyFn` | [server.rs](../rpc/server.rs) |
+| Retain a deferred response | `DeferredReply` | [server.rs](../rpc/server.rs) |
+| Select pooled connections | `ClientPool`, `PoolConfig`, `LoadBalancingStrategy` | [client.rs](../rpc/client.rs), [load_balancer.rs](../rpc/load_balancer.rs) |
+| Poll I/O and drive the runtime | `PollThread`, `Reactor`, `Fiber` and event types | [reactor.rs](../reactor/reactor.rs) |
+| Suspend the current fiber | `srpc::fiber::this_fiber` | [fiber.rs](../reactor/fiber.rs) |
+| Exchange a value between fibers | `FiberPromise<T>`, `FiberFuture<T>` | [future.rs](../reactor/future.rs) |
+| Implement a transport | `ChannelConnectionBase`, `ChannelFactoryBase` | [channel.rs](../rpc/channel.rs) |
+| Test without sockets | `InMemorySwitchboard`, `InMemoryFactory` | [inmemory_channel.rs](../rpc/inmemory_channel.rs) |
+| Read or write archive values | `Serialize`, `Deserialize`, `BinaryReadArchive`, `BinaryWriteArchive` | [serializable.rs](../misc/serializable.rs) |
+| Carry registered payloads | `AnyMessage`, `SerializableEnvelope` | [any_message.rs](../misc/any_message.rs), [serializable_envelope.rs](../misc/serializable_envelope.rs) |
+| Configure reconnect, admission and liveness | `ReconnectPolicy`, `CircuitBreakerConfig`, `HeartbeatConfig` | [reconnect_policy.rs](../rpc/reconnect_policy.rs), [circuit_breaker.rs](../rpc/circuit_breaker.rs), [heartbeat.rs](../rpc/heartbeat.rs) |
+| Read connection counters | `ConnectionMetrics` | [connection_metrics.rs](../rpc/connection_metrics.rs) |
+| Decode wire frames and classify errors | `FrameStreamReader`, `RpcError` | [frame_codec.rs](../rpc/frame_codec.rs), [errors.rs](../rpc/errors.rs) |
+
+Source and test links are useful together. Integration tests exercise the public
+Rust API from outside the library; an internal helper in the same module may have
+different visibility. The preceding chapters link the tests behind their examples.
+
+### Checking Rust contracts
+
+Five canonical modules contain Verus specifications behind `#[cfg(verus)]`:
+
+| Module | Contract examples |
+| --- | --- |
+| `base/basetypes.rs` | Sparse-integer length bounds and the 64-bit round trip |
+| `misc/stat.rs` | The first-sample statistics invariant |
+| `rpc/errors.rs` | Error classification predicates |
+| `rpc/frame_codec.rs` | Header-word round trip, write bound and peek bound |
+| `rpc/internal_protocol.rs` | Response-header encoding and decoding |
+
+The verification package checks the real source files. Install the Verus
+distribution described in [verification.md](verification.md), then run from the
+repository root:
+
+```sh
+VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh
 ```
 
-Return `::Ok(resp)` and the generated wrapper serializes and replies with error
-code 0; return `::Err(code)` and it replies with your code and an empty body.
-Register with `server.reg_service_typed(rusty::make_box<MyDemoService>());` —
-the typed entry point exists because a generated service class has no base
-class (Chapter 9 has the shim details).
+The script's output and that document define the proved scope. Cargo tests do not
+run Verus implicitly. A new contract needs a negative control that fails when the
+relevant implementation is deliberately changed; a proof of a codec property does
+not establish correctness of the whole concurrent runtime.
 
-### The client
+### Translation as a separate consumer
 
-Wrap a connected `Client` in the proxy and call methods; every method also has
-an `async_<method>` form returning a typed future:
-
-```cpp srpc-no-compile
-demo::DemoProxy proxy(const_cast<srpc::Client*>(client.get()));
-
-demo::DemoProxy::RpcSumRequest req;
-req.a = 1; req.b = 2; req.c = 3;
-
-auto result = proxy.sum(req);              // rusty::Result<RpcSumResponse, srpc::i32>
-if (result.is_ok()) {
-    printf("%d\n", result.unwrap().result);
-}
-
-auto fu = proxy.async_sum(req);            // typed future; same 1s wait cap as Chapter 8
-```
-
-### Build wiring
-
-A consumer includes `srpc.hpp` (plus explicit `import srpc.<module>;` for the
-trimmed modules Chapter 2 lists), builds with the same toolchain settings srpc
-itself uses — Clang 22+ with libc++, `-std=gnu++23`, and `-march=native`, which
-is a module-compatibility requirement, not an optimization — and links
-`libsrpc.a` together with the rusty runtime archives. There is no `install()`
-target: consumption is `add_subdirectory` inside your own CMake, or replicating
-the compile of `tests/rpcbench.cc` by hand, which the repository's benchmark
-procedure documents.
-
-Interoperability needs no ceremony: the wire format is identical in both lanes,
-so this C++ client drives a Rust-lane server (and the reverse) exactly as it
-drives a C++ one — Chapter 15's cross-lane matrix is measured precisely that
-way, with one unmodified C++ `rpcbench` binary against both servers.
-
----
+The [C++ companion](srpc-cpp-book.md) covers module generation, ownership mappings,
+ABI checks, service IDL and application APIs. A change to canonical Rust can affect
+both consumers, so contributors run the checks documented in
+[CLAUDE.md](../CLAUDE.md). Native Rust applications need only Cargo and the native
+kernel described in this book.
