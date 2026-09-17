@@ -1,6 +1,6 @@
-# The SRPC book
+# The sRPC book
 
-SRPC is an RPC library written in Rust. This book starts with a working Rust
+sRPC is an RPC library written in Rust. This book starts with a working Rust
 service and client, then explains the runtime, protocol and public APIs used by
 native Cargo applications. The Rust library uses Rust std and a small C/assembly
 kernel.
@@ -32,7 +32,7 @@ the canonical Rust implementation.
 
 ## 1. Getting started
 
-SRPC is a Rust RPC library. Applications implement services, serialize requests and
+sRPC is a Rust RPC library. Applications implement services, serialize requests and
 use clients through the `srpc` crate. The runtime provides TCP and in-memory
 transports, an epoll poller, stackful fibers, standard Rust futures, and request
 reliability policies.
@@ -44,7 +44,7 @@ the same Rust implementation, including its service generator and typed proxies.
 
 ### Scope and requirements
 
-SRPC supports Linux on x86_64 and aarch64. Install a stable Rust toolchain, a C
+sRPC supports Linux on x86_64 and aarch64. Install a stable Rust toolchain, a C
 compiler and an archiver. `build.rs` uses `CC` and `AR` when set, otherwise `cc` and
 `ar`, and selects the fiber assembly for the target architecture. The native build
 currently assumes those tools produce code for the Cargo target.
@@ -53,7 +53,7 @@ The root Cargo package has no production Rust dependencies. Its property tests u
 `proptest` as a development dependency. The library is consumed from a checkout;
 `Cargo.toml` currently sets `publish = false`.
 
-### Building and testing SRPC
+### Building and testing sRPC
 
 ```sh
 git clone https://github.com/stonysystems/srpc
@@ -173,7 +173,7 @@ fn main() {
 }
 ```
 
-Run it with `cargo run --manifest-path ../hello-srpc/Cargo.toml` from the SRPC
+Run it with `cargo run --manifest-path ../hello-srpc/Cargo.toml` from the sRPC
 checkout. The expected output includes `double(21) = 42`. The maintained
 [in-memory round-trip tests](../tests/rpc_roundtrip_inmemory_rust.rs) cover the same
 path and an unknown RPC id.
@@ -335,7 +335,7 @@ canonical code must validate both consumers as described in [CLAUDE.md](../CLAUD
 ## 3. Fibers
 
 A fiber lets a handler suspend in the middle of an ordinary function and resume
-with its local variables intact. SRPC uses stackful fibers for handlers that need
+with its local variables intact. sRPC uses stackful fibers for handlers that need
 to wait for another RPC. Each fiber has its own stack, but fibers on one reactor
 share one operating-system thread and run cooperatively.
 
@@ -347,15 +347,15 @@ The same reactor also polls standard Rust futures, described later in this chapt
 
 A suspended fiber leaves its worker free to handle other requests. Creating one
 operating-system thread for every waiting request would instead leave scheduling
-and a much larger population of threads to the kernel. SRPC fibers reserve a
+and a much larger population of threads to the kernel. sRPC fibers reserve a
 1 MiB stack plus a guard page by default. The mapped stack does not imply that
 all of those pages are resident.
 
-| Property | Operating-system thread | SRPC fiber |
+| Property | Operating-system thread | sRPC fiber |
 |----------|-------------------------|------------|
 | Scheduling | The kernel can preempt it | Runs until it yields, waits, or returns |
 | Parallel execution | Can run on another CPU | Shares its reactor's thread |
-| Waiting | A blocking call blocks this thread | An SRPC fiber wait suspends this fiber |
+| Waiting | A blocking call blocks this thread | An sRPC fiber wait suspends this fiber |
 | State shared with peers | Usually needs synchronization | Can use `Cell` and `RefCell` on the same thread |
 | Stack | Allocated by the thread runtime | Native fiber stack, 1 MiB by default |
 
@@ -586,7 +586,7 @@ owner drains that queue during `run_loop`. It does not move the future or the
 reactor to the waking thread. Copy `cx.waker()` with `clone()` when registering a
 notification; never retain a reference to the temporary `Context`.
 
-SRPC does not supply a ready-made standard `Future` adapter for its events.
+sRPC does not supply a ready-made standard `Future` adapter for its events.
 A future's `poll` must return promptly instead of using a stackful event wait.
 Likewise, an `async` body runs synchronously until its first pending `.await`.
 Blocking there blocks the worker just as it would in a fast handler.
@@ -606,7 +606,7 @@ stack reuse; they are not synchronized cross-thread metrics.
 
 ## 4. The reactor pattern
 
-SRPC separates scheduling from I/O ownership. `Reactor` schedules local fibers,
+sRPC separates scheduling from I/O ownership. `Reactor` schedules local fibers,
 events, and standard futures. `PollThreadWorker` owns epoll registrations, jobs,
 and the I/O loop. `PollThread` is a shareable handle that sends commands to that
 worker. All three live in `srpc::reactor`.
@@ -1305,7 +1305,7 @@ fiber. `Done()` does not keep it scheduled, and an unready job is tested again
 on a later pass. Repeating work needs another submission. Jobs are keyed by
 `Arc` identity, so removal must refer to the same object that was added.
 
-SRPC uses `OneTimeJob` for deferred channel close and for starting receive work.
+sRPC uses `OneTimeJob` for deferred channel close and for starting receive work.
 It orders that work on the owning poll thread and keeps captured owners alive
 until the callback returns. A custom job that waits inside its fiber must obey
 the same borrow and teardown rules as any other fiber.
@@ -1488,7 +1488,7 @@ peers. The companion book describes generator output and compatibility rules.
 
 #### The internal heartbeat id
 
-`kInternalHeartbeatRpcId` is `i32::MIN`. Reserve it for SRPC and do not register
+`kInternalHeartbeatRpcId` is `i32::MIN`. Reserve it for sRPC and do not register
 an application method with that value. A heartbeat request contains only xid
 and rpc_id. The server recognizes it before ordinary service lookup and replies
 with error code zero and no payload. A test hook can suppress those replies.
@@ -1739,7 +1739,7 @@ fn call_i64(client: &Client, rpc_id: i32, value: i64) -> Result<i64, i32> {
 }
 ```
 
-`Future` here is SRPC's reply object, not an implementation of `std::future::Future`. It has no `.await` operation. The methods that wait use a standard condition variable and block the calling OS thread. Do not call them on a poll worker that must receive the reply, or assume that putting the call inside a stackful fiber makes it cooperative.
+`Future` here is sRPC's reply object, not an implementation of `std::future::Future`. It has no `.await` operation. The methods that wait use a standard condition variable and block the calling OS thread. Do not call them on a poll worker that must receive the reply, or assume that putting the call inside a stackful fiber makes it cooperative.
 
 `get_reply()` returns a mutex guard over the future's owned reply buffer. `deserialize_from` consumes that guard and advances the buffer's cursor. For a response with several fields, call it once per field in wire order, taking a fresh guard each time. Do not keep a reply guard across another RPC, callback, or suspension. Copy decoded values into your own storage before retaining them elsewhere.
 
@@ -1912,7 +1912,7 @@ Random and round-robin selection use the live pool. Least-connections selection 
 
 ### TCP keepalive
 
-`KeepaliveConfig` configures kernel TCP keepalive, independently of the SRPC heartbeat protocol:
+`KeepaliveConfig` configures kernel TCP keepalive, independently of the sRPC heartbeat protocol:
 
 ```rust,no_run
 use srpc::client::{Client, KeepaliveConfig};
@@ -2117,7 +2117,7 @@ The maintained Rust tests exercise inline in-memory dispatch, TCP round trips, s
 
 ## 10. Serialization
 
-SRPC serialization has three parts. A sink or source moves bytes. A `BinaryWriteArchive` or `BinaryReadArchive` holds that byte interface. The native `Serialize` and `Deserialize` traits choose how a value is encoded.
+sRPC serialization has three parts. A sink or source moves bytes. A `BinaryWriteArchive` or `BinaryReadArchive` holds that byte interface. The native `Serialize` and `Deserialize` traits choose how a value is encoded.
 
 The same traits work with memory buffers, descriptors, and application-defined byte interfaces. The canonical implementations live in `misc/serializable.rs` and are available as `srpc::serializable`.
 
@@ -2844,11 +2844,11 @@ fn stop_on_command(mut server: Server, commands: Receiver<()>, poll: Arc<PollThr
 ```
 
 Close any clients that use the worker before its final shutdown. Signal
-handlers must not invoke mutex-taking SRPC shutdown methods.
+handlers must not invoke mutex-taking sRPC shutdown methods.
 
 ### Choose a Rust synchronization type
 
-For your own code, prefer `std::sync::Mutex`, atomics and channels. SRPC also
+For your own code, prefer `std::sync::Mutex`, atomics and channels. sRPC also
 exposes `srpc::threading::SpinLock`, with bare `lock()` and `unlock()` methods
 and no guard. Its contended path sleeps the OS thread for 50 microseconds per
 attempt. It is unsuitable for waiting on another fiber and easy to leave
@@ -2918,7 +2918,7 @@ cargo build --release
 ```
 
 Cargo takes profile settings from the workspace root. Put application profile
-changes in that manifest, measure them, and record them with results. SRPC's
+changes in that manifest, measure them, and record them with results. sRPC's
 [build.rs](../build.rs) separately compiles its C and assembly kernels with
 `-O2`, debug information and `-DREUSE_FIBER`; a Rust release profile does not
 change those native flags.
@@ -2931,7 +2931,7 @@ C++ modules for a Rust build.
 
 Register a short, nonblocking handler with `Server::reg_fast_rpc` to avoid a
 fiber dispatch. Use `Server::reg_rpc` when the handler needs stackful
-suspension through SRPC's fiber APIs. A new fiber reserves a default 1 MiB
+suspension through sRPC's fiber APIs. A new fiber reserves a default 1 MiB
 stack and a guard page. The checked-in Cargo build enables fiber reuse so
 finished stacks can serve later handlers.
 

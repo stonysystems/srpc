@@ -10,29 +10,13 @@
     "trait-dispatch": "C++ ADL or erased trait forwarding and native declarations; no serialization algorithm."
   },
   "files": {
-    "base/all.hpp": {
-      "role": "import-shim",
-      "sha256": "fe2c4b5768c56c1f6422c70a25c420c7503fb70d528787187389aad82711697c"
-    },
     "base/srpc_base.c": {
       "role": "os-leaf",
       "sha256": "5ad51be942a2bf95d099a5e6e0e5e7cca31be93a9771585337b2c31eec973345"
     },
-    "misc/any_message.hpp": {
-      "role": "import-shim",
-      "sha256": "586e5fdc76fcccbcdb60623c0f13e9db523a159f3a177854481d32b64dbcea04"
-    },
-    "misc/serializable.hpp": {
-      "role": "import-shim",
-      "sha256": "b101df4ac99f967fb9ed57f48042a2e7af5ff0d9f0d39c02330285b3862986b6"
-    },
     "misc/serializable_adapters.hpp": {
       "role": "trait-dispatch",
       "sha256": "461dbc058ce8ffa03a51550c297c5a00917a4633e9b8f6e12cfa858fc31b4d4f"
-    },
-    "misc/serializable_envelope.hpp": {
-      "role": "import-shim",
-      "sha256": "68102510d9146311520b126d443217e84ad90b33dd0927abfb8212847e4e6e32"
     },
     "misc/serializable_support.hpp": {
       "role": "trait-dispatch",
@@ -82,30 +66,6 @@
       "role": "c-declarations",
       "sha256": "817f0253325746608ff1b37439023a80adc93d08b4e0144b55f2238c8b0e6935"
     },
-    "rpc/completion_tracker.hpp": {
-      "role": "import-shim",
-      "sha256": "f5987d037e4c02c43fd903abff84f6fd196d7ed4eadef571a63bd3c22d39cd68"
-    },
-    "rpc/fiber_channel.hpp": {
-      "role": "import-shim",
-      "sha256": "e9082f93e92eb4ee8b66a605d7e20e4ac63d7b89f3d5f6b8aba32368cd5ae4b9"
-    },
-    "rpc/frame_codec.hpp": {
-      "role": "import-shim",
-      "sha256": "c9a39e42c7f6fc18f3fbdbb4fdcd9070d83169433290f237bcad68900a80d4af"
-    },
-    "rpc/idempotency.hpp": {
-      "role": "import-shim",
-      "sha256": "35aaaf6717414051df5c8798b445b887cc7efc85a808e1db9318ac40862a7b60"
-    },
-    "rpc/inmemory_channel.hpp": {
-      "role": "import-shim",
-      "sha256": "b694878befefbab548776faaa4adaf7b638797dd48350d35fd9736dd94a16b15"
-    },
-    "rpc/request_queue.hpp": {
-      "role": "import-shim",
-      "sha256": "aebc469e9be6aaf7fe0b5e72ead598d65112ac606e5fa9ba08c010192182118a"
-    },
     "rpc/srpc_connect.c": {
       "role": "os-leaf",
       "sha256": "a9a9e7acd10d57a34cb61340bba32737bb507754564987cb7d38ad7bc954eb68"
@@ -128,7 +88,7 @@
     },
     "srpc.hpp": {
       "role": "import-shim",
-      "sha256": "f3f13d8ff073c569c0159da286bbfc0d1d6451412348ac74d10c631e83c9fce8"
+      "sha256": "31fc5c7f5d0b4e74fd6db23f9b0d42d1ad54a4b45db5df51ac34fc0ca0de230e"
     },
     "std_compat.hpp": {
       "role": "import-shim",
