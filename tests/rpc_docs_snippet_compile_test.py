@@ -307,8 +307,8 @@ int main() {{
         # serialization chapter). Generated code calls the two free dispatchers
         # `srpc::Serialize_::serialize` / `srpc::Deserialize_::deserialize`
         # over a BinaryWriteArchive / BinaryReadArchive; canonical source is
-        # misc/serializable.rs (module srpc.serializable, pulled in by
-        # srpc.hpp through misc/serializable.hpp).
+        # misc/serializable.rs (module srpc.serializable, which srpc.hpp
+        # imports).
         return f"""{SNIPPET_UNIT_HEADER}
 struct UserInfo {{
     int id = 0;

@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 #include <rusty/rusty.hpp>
-#include "../misc/any_message.hpp"
-#include "../misc/serializable_envelope.hpp"
 
 import std;
 import rusty;
 import srpc.serializable;
+import srpc.any_message;
+import srpc.serializable_envelope;
 
 namespace {
 

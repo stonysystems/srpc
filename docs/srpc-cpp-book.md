@@ -835,8 +835,8 @@ need their types: `srpc.circuit_breaker`, `srpc.connection_metrics`, `srpc.epoll
 `srpc.heartbeat`, `srpc.internal_protocol`, `srpc.load_balancer`, `srpc.reconnect_policy`,
 `srpc.request_options`. That commented-out list is hand-maintained and nothing checks it.
 Four more modules were never in the umbrella at all and also need naming:
-`srpc.inmemory_channel` (where `make_inmemory_factory_proxy` below lives; the header
-`rpc/inmemory_channel.hpp` does nothing but import it), `srpc.any_message`,
+`srpc.inmemory_channel` (where `make_inmemory_factory_proxy` below lives),
+`srpc.any_message`,
 `srpc.serializable_envelope` and `srpc.callback_wrapper`.
 
 ### Client
@@ -1936,8 +1936,7 @@ duplicate, or reject selected sends, as described in the Rust protocol chapter.
 #### Header and module exposure
 
 `srpc.internal_protocol` needs an explicit import when used directly.
-`srpc.frame_codec` also provides a compatibility header: `srpc.hpp` includes
-`rpc/frame_codec.hpp` textually. That makes `kFrameHeaderSize`,
+`srpc.hpp` imports `srpc.frame_codec`, which makes `kFrameHeaderSize`,
 `kMaxFramePayloadSize`, `FrameHeader`, and `FrameDecodeStatus` visible through
 the umbrella. Preserve the project's include-before-`import std` order and
 configured module map when combining textual headers and modules.

@@ -19,11 +19,11 @@
 
 
 #include "../srpc.hpp"
-#include "../misc/any_message.hpp"
-#include "../misc/serializable.hpp"
 
 import std;
 import rusty;
+import srpc.any_message;
+import srpc.serializable;
 
 namespace srpc {
 namespace {
