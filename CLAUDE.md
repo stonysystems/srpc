@@ -290,10 +290,13 @@ Run documentation tests separately, since `--all-targets` does not run compile-f
 Internal synchronization layouts may differ between languages; C++ ABI measurements belong in the
 C++ gate, not in invented Rust-size equivalents. Keep tests for real public wire/ABI contracts.
 
-**C++ lane.** CMake explicitly lists test sources. Adding a `.cc` file does not register or build it.
+**C++ lane.** CMake explicitly lists test sources. `tests/test-inventory.json` must account for every
+`tests/**/*.cc` source, including exclusions with reasons and named Rust coverage. Configuration and
+the source gate reject unaccounted sources; configuration also checks actual targets, default-build
+membership and CTest registration. See [test-coverage.md](docs/test-coverage.md).
 Use `ctest --test-dir build -N -L srpc` to inspect the configured inventory, then run
-`ctest --test-dir build -L srpc --output-on-failure`. Missing googletest or omitted runtime targets
-must not be mistaken for a passing complete battery. Vendored rusty-cpp tests have a separate inventory.
+`ctest --test-dir build -L srpc --output-on-failure`. Missing googletest fails configuration when
+`BUILD_TESTING=ON`. Vendored rusty-cpp tests have a separate inventory.
 Historical test files may still depend on the upstream Mako layout. Their presence in `tests/` does not
 prove they compile or run; check the actual CMake target and include paths.
 

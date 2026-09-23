@@ -124,8 +124,8 @@ cmake --build build --parallel 4
 ctest --test-dir build -L srpc --output-on-failure
 ```
 
-GoogleTest is needed for the runtime battery. Inspect the configured inventory with
-`ctest --test-dir build -N -L srpc`; a checkout without GoogleTest builds fewer tests.
+GoogleTest is required when `BUILD_TESTING=ON`; configuration fails if it is missing.
+Inspect the configured inventory with `ctest --test-dir build -N -L srpc`.
 The `srpc` label excludes vendored tests whose executables are outside the default
 build. Cargo tests and clippy are also part of the C++ source gate.
 
@@ -2900,8 +2900,9 @@ ctest --test-dir build -R '^test_fiber$' --output-on-failure
 Some runtime targets are plain programs and do not accept GoogleTest
 filters. `CMakeLists.txt` explicitly lists built test sources; a historical
 file in `tests/` does not establish that a target exists or uses the current
-API. Missing GoogleTest can omit the runtime battery. Initialize the
-submodule and reconfigure before claiming complete acceptance. A bare
+API. The [coverage inventory](test-coverage.md) checks every C++ test source's
+disposition and registration. Missing GoogleTest fails configuration unless
+`BUILD_TESTING=OFF` explicitly disables test acceptance. A bare
 `ctest` can also report unbuilt vendored executables as `Not Run`.
 
 Sanitizers use a separate build tree:

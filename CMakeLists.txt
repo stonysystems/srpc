@@ -640,6 +640,12 @@ find_program(SRPC_CARGO_EXECUTABLE NAMES cargo REQUIRED)
 
 add_custom_target(srpc_goal0_source_gate
     COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_test_inventory.py"
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_test_inventory.py"
+    COMMAND
         "${SRPC_BASH_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/srpc_dsl_check.sh"
         "${RUSTYCPP_TRANSPILER}"
@@ -925,6 +931,11 @@ set(SRPC_RUNTIME_BATTERY_AVAILABLE OFF)
 if(EXISTS ${SRPC_GTEST_ROOT}/src/gtest-all.cc AND
    EXISTS ${SRPC_GTEST_ROOT}/include/gtest/gtest.h)
     set(SRPC_RUNTIME_BATTERY_AVAILABLE ON)
+elseif(BUILD_TESTING)
+    message(FATAL_ERROR
+        "BUILD_TESTING requires vendored GoogleTest. Run "
+        "`git submodule update --init --recursive`, or explicitly configure "
+        "with -DBUILD_TESTING=OFF.")
 else()
     message(WARNING
         "Vendored GoogleTest not found at ${SRPC_GTEST_ROOT}; the Goal-0 "
@@ -1074,6 +1085,35 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     )
     set(SRPC_BATTERY_SRC_test_rpc_docs_symbols  tests/rpc_docs_symbols_test.cc)
 
+    # Retained C++ consumer contracts. Rust behavioral counterparts and the
+    # disposition of every other test source are recorded in test-inventory.json.
+    set(SRPC_CPP_CONTRACT_SOURCES
+        rpc_errors_test
+        rpc_circuit_breaker_test
+        rpc_connection_state_test
+        rpc_frame_codec_test
+        rpc_heartbeat_test
+        rpc_reconnect_policy_test
+        rpc_request_queue_test
+        rpc_pollable_proxy_facade_test
+        rpc_service_proxy_facade_test
+        rpc_graceful_shutdown_test
+        rpc_restart_detection_test
+        rpc_callbacks_test
+        rpc_any_message_test
+        test_completion_tracker
+        test_idempotency
+        test_marshal
+        test_timer
+    )
+    foreach(_contract IN LISTS SRPC_CPP_CONTRACT_SOURCES)
+        list(APPEND SRPC_RUNTIME_BATTERY ${_contract})
+        set(SRPC_BATTERY_SRC_${_contract} tests/${_contract}.cc)
+    endforeach()
+    list(APPEND SRPC_BATTERY_OWN_MAIN
+        rpc_request_queue_test rpc_callbacks_test
+        test_completion_tracker test_idempotency test_marshal)
+
     foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY SRPC_DOCS_BATTERY)
         set(_battery_source
             ${CMAKE_CURRENT_SOURCE_DIR}/${SRPC_BATTERY_SRC_${_battery_target}})
@@ -1194,6 +1234,15 @@ add_dependencies(rpcbench srpc_battery_modmap)
 # whose executables are NOT in ALL.  A bare `ctest` therefore reports them as
 # "Not Run" and exits non-zero; `ctest -L srpc` selects exactly this project's.
 if(BUILD_TESTING)
+    add_test(NAME srpc_test_inventory
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_test_inventory.py"
+            --configured "${CMAKE_CURRENT_BINARY_DIR}/srpc-test-targets.txt")
+    set_tests_properties(srpc_test_inventory PROPERTIES LABELS "srpc")
+    add_test(NAME srpc_test_inventory_controls
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/test_test_inventory.py")
+    set_tests_properties(srpc_test_inventory_controls PROPERTIES LABELS "srpc")
     if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         foreach(_battery_target IN LISTS SRPC_RUNTIME_BATTERY)
             add_test(NAME ${_battery_target}
@@ -1336,3 +1385,52 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "srpc")
 endif()
+
+# A glob is only the census. Targets stay explicit, and every exclusion names
+# its reason and canonical behavioral coverage in the reviewed inventory.
+file(GLOB_RECURSE _SRPC_TEST_CENSUS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cc")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test-inventory.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_test_inventory.py")
+get_property(_SRPC_CONFIGURED_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+get_property(_SRPC_CONFIGURED_TESTS DIRECTORY PROPERTY TESTS)
+set(_SRPC_TEST_TARGET_RECORDS "")
+foreach(_target IN LISTS _SRPC_CONFIGURED_TARGETS)
+    get_target_property(_sources ${_target} SOURCES)
+    get_target_property(_excluded_from_all ${_target} EXCLUDE_FROM_ALL)
+    set(_default_build yes)
+    if(_excluded_from_all)
+        set(_default_build no)
+    endif()
+    foreach(_source IN LISTS _sources)
+        get_filename_component(_absolute "${_source}" ABSOLUTE
+            BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        file(RELATIVE_PATH _relative "${CMAKE_CURRENT_SOURCE_DIR}" "${_absolute}")
+        if(_relative MATCHES "^tests/.*\\.cc$")
+            set(_registered no)
+            if(_target IN_LIST _SRPC_CONFIGURED_TESTS)
+                set(_registered yes)
+            endif()
+            string(APPEND _SRPC_TEST_TARGET_RECORDS
+                "${_relative}|${_target}|${_registered}|${_default_build}\n")
+        endif()
+    endforeach()
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/srpc-test-targets.txt" "${_SRPC_TEST_TARGET_RECORDS}")
+set(_SRPC_TEST_INVENTORY_ARGS)
+if(NOT BUILD_TESTING)
+    list(APPEND _SRPC_TEST_INVENTORY_ARGS --no-testing)
+endif()
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_test_inventory.py"
+        --configured "${CMAKE_CURRENT_BINARY_DIR}/srpc-test-targets.txt"
+        ${_SRPC_TEST_INVENTORY_ARGS}
+    RESULT_VARIABLE _SRPC_TEST_INVENTORY_RESULT
+    OUTPUT_VARIABLE _SRPC_TEST_INVENTORY_OUTPUT
+    ERROR_VARIABLE _SRPC_TEST_INVENTORY_ERROR)
+if(NOT _SRPC_TEST_INVENTORY_RESULT EQUAL 0)
+    message(FATAL_ERROR "${_SRPC_TEST_INVENTORY_OUTPUT}${_SRPC_TEST_INVENTORY_ERROR}")
+endif()
+message(STATUS "${_SRPC_TEST_INVENTORY_OUTPUT}")

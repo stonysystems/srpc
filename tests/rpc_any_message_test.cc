@@ -187,7 +187,7 @@ TEST(AnyMessageTest, PackAsAdHocName) {
   EXPECT_EQ(am.type_name_, "graph.alias.v1");
 
   // Wire roundtrip under the alias name.
-  AnyMessage outgoing = am;
+  AnyMessage outgoing = std::move(am);
   BufferSink sink;
   {
     BinaryWriteArchive writer(make_sink_proxy_buffer(&sink));
