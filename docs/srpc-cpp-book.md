@@ -1383,7 +1383,11 @@ template<class T> void srpc::Deserialize_::deserialize(T& value, BinaryReadArchi
 
 // Archives hold a type-erased proxy over a sink or source.
 struct BinaryWriteArchive { SinkProxy sink_; };
-struct BinaryReadArchive { SourceProxy source_; };
+struct BinaryReadArchive {
+    SourceProxy source_;
+    DecodeError error_;
+    bool failed() const;
+};
 
 // Concrete backings.
 struct BufferSink { rusty::Vec<uint8_t> bytes; };

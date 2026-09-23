@@ -46,11 +46,9 @@ impl Service for RetryProbeService {
         assert_eq!(rpc_id, ECHO_RPC_ID);
         let mut value = 0i64;
         {
-            let mut ar = BinaryReadArchive {
-                source_: unsafe {
-                    srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
-                },
-            };
+            let mut ar = BinaryReadArchive::new(unsafe {
+                srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+            });
             Deserialize::deserialize(&mut value, &mut ar);
         }
         let sconn = sconn.upgrade().expect("connection alive during inline dispatch");

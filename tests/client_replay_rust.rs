@@ -22,9 +22,9 @@ impl Service for Echo {
 
     fn __dispatch__(&self, _: i32, mut request: Box<Request>, connection: WeakServerConnection) {
         let mut value = 0i64;
-        let mut archive = BinaryReadArchive {
-            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut request.src) },
-        };
+        let mut archive = BinaryReadArchive::new(unsafe {
+            srpc::serializable::make_source_proxy_buffer(&raw mut request.src)
+        });
         Deserialize::deserialize(&mut value, &mut archive);
         self.0.lock().unwrap().push(value);
         let reply: ServerReplyFn = Some(Box::new(move |output: &mut BinaryWriteArchive| {

@@ -1235,6 +1235,16 @@ pub fn sconn_reply(
     }
 }
 
+/// Reject a request whose typed arguments could not be decoded.
+///
+/// Generated service wrappers call this before invoking application code.
+pub fn reject_malformed_request(req: &Request, weak_sconn: &ArcWeak<ServerConnection>) {
+    let sconn = weak_sconn.upgrade();
+    if let Some(sconn) = sconn {
+        (*sconn).reply(req, SERVER_ERR_INVALID_ARGUMENT, None);
+    }
+}
+
 /// The three channel callbacks the connection installs, as free functions so
 /// each closure stays the single-call shape the emitter lowers into a
 /// const-callable `rusty::Function`.
@@ -1352,10 +1362,10 @@ pub unsafe fn sconn_decode_request_and_dispatch(
         unsafe { log_line(2, 0, core::ptr::null(), &message) };
         return;
     }
-    let mut header_ar = BinaryReadArchive {
-        // SAFETY: `req_box.src` is owned by the live boxed request.
-        source_: unsafe { crate::serializable::make_source_proxy_buffer(&raw mut req_box.src) },
-    };
+    // SAFETY: `req_box.src` is owned by the live boxed request.
+    let mut header_ar = BinaryReadArchive::new(unsafe {
+        crate::serializable::make_source_proxy_buffer(&raw mut req_box.src)
+    });
     let mut v_xid = v64::new(0i64);
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.

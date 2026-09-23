@@ -156,10 +156,14 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # no_reply_writer. Their only callers were inside the reactor/server providers;
 # workers now store native gettid values and absent reply writers use None.
 # No C++ consumer entry point is removed.
-# Fresh objects: load_balancer 14 unique/19 raw, serializable 597/734,
-# reactor 365/386, server 85/97. The four extra raw load-balancer entries are
+# 2055 -> 2060: recoverable UTF-8 validation adds BinaryReadArchive's
+# constructor, error accessor, failed predicate, and first-error recorder, plus
+# reject_malformed_request for generated service dispatchers. These are
+# additive entry points; no existing signature is replaced.
+# Fresh objects: load_balancer 14 unique/19 raw, serializable 601/738,
+# reactor 365/386, server 86/98. The four extra raw load-balancer entries are
 # destructor aliases.
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2055
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2060
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: surviving historical additions plus current canonical helpers.
@@ -2331,8 +2335,12 @@ ABI_SPECS = {
                 ('R', 'typeinfo name for srpc::SourceBaseAdapterRef@srpc.serializable<srpc::FdSource@srpc.serializable>'),
                 ('R', 'typeinfo name for srpc::SourceBaseAdapterRefMut@srpc.serializable<srpc::BufferSource@srpc.serializable>'),
                 ('R', 'typeinfo name for srpc::SourceBaseAdapterRefMut@srpc.serializable<srpc::FdSource@srpc.serializable>'),
+                ('T', 'srpc::BinaryReadArchive@srpc.serializable::error() const'),
+                ('T', 'srpc::BinaryReadArchive@srpc.serializable::failed() const'),
+                ('T', 'srpc::BinaryReadArchive@srpc.serializable::new_(rusty::Box<srpc::SourceBase@srpc.serializable, rusty::alloc::Global>)'),
                 ('T', 'srpc::BinaryReadArchive@srpc.serializable::read_exact(unsigned char*, unsigned long)'),
                 ('T', 'srpc::BinaryReadArchive@srpc.serializable::read_or_abort(unsigned char*, unsigned long)'),
+                ('T', 'srpc::BinaryReadArchive@srpc.serializable::record_error(srpc::DecodeError@srpc.serializable)'),
                 ('T', 'srpc::BinaryWriteArchive@srpc.serializable::write_bytes(unsigned char const*, unsigned long)'),
                 ('T', 'srpc::BufferSink@srpc.serializable::write_bytes(unsigned char const*, unsigned long)'),
                 ('T', 'srpc::BufferSource@srpc.serializable::eof() const'),
@@ -3748,6 +3756,7 @@ ABI_SPECS = {
             ('T', 'srpc::Service@srpc.server::~Service()'),
             ('T', 'srpc::make_empty_request_box@srpc.server()'),
             ('T', 'srpc::make_service_proxy_from_box@srpc.server(rusty::Box<srpc::Service@srpc.server, rusty::alloc::Global>)'),
+            ('T', 'srpc::reject_malformed_request@srpc.server(srpc::Request@srpc.server const&, rusty::sync::Weak<srpc::ServerConnection@srpc.server> const&)'),
             ('T', 'srpc::request_fill_body@srpc.server(srpc::Request@srpc.server&, std::__1::span<unsigned char const, 18446744073709551615ul>)'),
             ('T', 'srpc::sconn_decode_request_and_dispatch@srpc.server(srpc::ServerConnection@srpc.server const&, unsigned char const*, unsigned long)'),
             ('T', 'srpc::sconn_dispatch_in_fiber@srpc.server(rusty::Arc<srpc::RpcServiceContext@srpc.server>, unsigned long, int, rusty::Box<srpc::Request@srpc.server, rusty::alloc::Global>, rusty::sync::Weak<srpc::ServerConnection@srpc.server>)'),

@@ -21,8 +21,10 @@ use srpc::serializable::{BinaryReadArchive, BinaryWriteArchive, Deserialize, Ser
 use srpc::server::{Request, Server, ServerReplyFn, Service, WeakServerConnection};
 
 use srpc::reactor::PollThread;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const ECHO_DOUBLE_RPC_ID: i32 = 0x00E0_0042;
+const TEXT_RPC_ID: i32 = 0x00E0_0043;
 
 // A service with one fast RPC: read an i64, reply with twice its value.
 struct EchoDoubleService;
@@ -43,12 +45,10 @@ impl Service for EchoDoubleService {
         // rpc/server.rs's own header read.
         let mut value = 0i64;
         {
-            let mut ar = BinaryReadArchive {
-                // SAFETY: `req.src` is owned by the live boxed request.
-                source_: unsafe {
-                    srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
-                },
-            };
+            // SAFETY: `req.src` is owned by the live boxed request.
+            let mut ar = BinaryReadArchive::new(unsafe {
+                srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+            });
             Deserialize::deserialize(&mut value, &mut ar);
         }
 
@@ -57,6 +57,37 @@ impl Service for EchoDoubleService {
             Serialize::serialize(&(value * 2), ar);
         }));
         sconn.reply(&req, 0, writer);
+    }
+}
+
+struct TextProbeService {
+    invoked: Arc<AtomicBool>,
+}
+
+impl Service for TextProbeService {
+    fn __reg_to__(&mut self, server: &mut Server, svc_index: usize) -> i32 {
+        server.reg_fast_rpc(TEXT_RPC_ID, svc_index)
+    }
+
+    #[allow(unsafe_code)]
+    fn __dispatch__(&self, rpc_id: i32, mut req: Box<Request>, sconn: WeakServerConnection) {
+        assert_eq!(rpc_id, TEXT_RPC_ID);
+        let mut text = String::new();
+        let failed = {
+            let mut ar = BinaryReadArchive::new(unsafe {
+                srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+            });
+            Deserialize::deserialize(&mut text, &mut ar);
+            ar.failed()
+        };
+        if failed {
+            srpc::server::reject_malformed_request(&req, &sconn);
+            return;
+        }
+        self.invoked.store(true, Ordering::Release);
+        if let Some(sconn) = sconn.upgrade() {
+            sconn.reply(&req, 0, None);
+        }
     }
 }
 
@@ -144,6 +175,43 @@ fn unknown_rpc_id_comes_back_as_an_error_not_a_hang() {
     );
 
     // Same explicit teardown order as the happy-path test above.
+    drop(server);
+    drop(client);
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn invalid_utf8_request_is_rejected_before_application_code_runs() {
+    let switchboard = Arc::new(InMemorySwitchboard::new());
+    let addr = CString::new("inmemory://invalid-utf8").expect("static addr");
+    let invoked = Arc::new(AtomicBool::new(false));
+
+    let mut server = Server::new(Some(PollThread::create()));
+    server.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+        switchboard.clone(),
+    )))));
+    server.reg_service(Box::new(TextProbeService {
+        invoked: invoked.clone(),
+    }));
+    assert_eq!(unsafe { server.start(addr.as_ptr()) }, 0);
+
+    let client = Client::create(PollThread::create());
+    client.set_channel_factory(Some(make_inmemory_factory_proxy(Arc::new(InMemoryFactory::new(
+        switchboard,
+    )))));
+    assert_eq!(client.connect(addr.as_ptr(), true), 0);
+
+    let invalid = [0xffu8];
+    let fu = client
+        .request(TEXT_RPC_ID, &FutureAttr::default(), |ar| unsafe {
+            srpc::serializable::serialize_bytes(invalid.as_ptr(), invalid.len(), ar);
+        })
+        .expect("request accepted");
+
+    assert!(fu.ready());
+    assert_eq!(fu.get_error_code(), srpc::client::CLIENT_ERR_INVALID_ARGUMENT);
+    assert!(!invoked.load(Ordering::Acquire));
+
     drop(server);
     drop(client);
 }

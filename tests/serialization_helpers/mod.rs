@@ -21,9 +21,9 @@ pub fn decode<R>(bytes: &[u8], read: impl FnOnce(&mut BinaryReadArchive) -> R) -
     let mut source = BufferSource::new(bytes.as_ptr(), bytes.len());
     let result = {
         // Both the source cursor and its borrowed bytes outlive the archive.
-        let mut archive = BinaryReadArchive {
-            source_: unsafe { make_source_proxy_buffer(&raw mut source) },
-        };
+        let mut archive = BinaryReadArchive::new(unsafe {
+            make_source_proxy_buffer(&raw mut source)
+        });
         read(&mut archive)
     };
     (result, source.remaining())

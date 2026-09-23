@@ -255,7 +255,7 @@ fn reply_to_last_request(channel: &ChannelLifetime, server_id: i64) -> Vec<u8> {
         Deserialize, Serialize, make_sink_proxy_buffer, make_source_proxy_buffer};
     let request = channel.sent_frames.lock().unwrap().last().unwrap().clone();
     let mut source = BufferSource::new(request.as_ptr(), request.len());
-    let mut reader = BinaryReadArchive { source_: unsafe { make_source_proxy_buffer(&raw mut source) } };
+    let mut reader = BinaryReadArchive::new(unsafe { make_source_proxy_buffer(&raw mut source) });
     let mut xid = v64::new(0);
     xid.deserialize(&mut reader);
     let mut sink = BufferSink { bytes: Vec::new() };

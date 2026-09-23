@@ -115,14 +115,17 @@ impl Service for DoubleService {
     fn __dispatch__(&self, rpc_id: i32, mut req: Box<Request>, connection: WeakServerConnection) {
         assert_eq!(rpc_id, DOUBLE);
         let mut value = 0_i64;
-        {
-            let mut reader = BinaryReadArchive {
-                // SAFETY: the boxed request owns this source for the entire read.
-                source_: unsafe {
-                    srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
-                },
-            };
+        let malformed = {
+            // SAFETY: the boxed request owns this source for the entire read.
+            let mut reader = BinaryReadArchive::new(unsafe {
+                srpc::serializable::make_source_proxy_buffer(&raw mut req.src)
+            });
             Deserialize::deserialize(&mut value, &mut reader);
+            reader.failed()
+        };
+        if malformed {
+            srpc::server::reject_malformed_request(&req, &connection);
+            return;
         }
 
         if let Some(connection) = connection.upgrade() {
@@ -1962,14 +1965,17 @@ impl Service for DoubleService {
     ) {
         assert_eq!(rpc_id, DOUBLE_RPC);
         let mut value = 0_i64;
-        {
-            let mut archive = BinaryReadArchive {
-                // The boxed request keeps its cursor alive and unmoved.
-                source_: unsafe {
-                    make_source_proxy_buffer(&raw mut request.src)
-                },
-            };
+        let malformed = {
+            // The boxed request keeps its cursor alive and unmoved.
+            let mut archive = BinaryReadArchive::new(unsafe {
+                make_source_proxy_buffer(&raw mut request.src)
+            });
             value.deserialize(&mut archive);
+            archive.failed()
+        };
+        if malformed {
+            srpc::server::reject_malformed_request(&request, &connection);
+            return;
         }
         if let Some(connection) = connection.upgrade() {
             connection.reply(
@@ -2144,9 +2150,9 @@ let mut writer = BinaryWriteArchive {
 42_i32.serialize(&mut writer);
 
 let bytes = 42_i32.to_ne_bytes();
-let mut reader = BinaryReadArchive {
-    source_: Box::new(BufferSource::new(bytes.as_ptr(), bytes.len())),
-};
+let mut reader = BinaryReadArchive::new(Box::new(BufferSource::new(
+    bytes.as_ptr(), bytes.len(),
+)));
 let mut value = 0_i32;
 value.deserialize(&mut reader);
 assert_eq!(value, 42);
@@ -2175,10 +2181,10 @@ let mut sink = BufferSink { bytes: Vec::new() };
 let mut source = BufferSource::new(sink.bytes.as_ptr(), sink.bytes.len());
 let mut answer = 0_i32;
 {
-    let mut archive = BinaryReadArchive {
-        // The cursor and backing bytes outlive this archive.
-        source_: unsafe { make_source_proxy_buffer(&raw mut source) },
-    };
+    // The cursor and backing bytes outlive this archive.
+    let mut archive = BinaryReadArchive::new(unsafe {
+        make_source_proxy_buffer(&raw mut source)
+    });
     answer.deserialize(&mut archive);
 }
 assert_eq!(answer, 42);
@@ -2211,7 +2217,7 @@ Every leaf value becomes a separate `read` or `write` call, with interruption re
 
 ### Failure model
 
-Built-in decoding returns unit and checks exact reads with verification. A truncated value, unknown dynamic payload tag, or invalid UTF-8 string panics rather than returning a decode error. The descriptor sink also treats an unrecoverable write error as a verification failure. Applications that need recoverable parsing must introduce their own checked decoder or validate before invoking these built-ins.
+Built-in decoding returns unit and checks exact reads with verification. Invalid UTF-8 records `DecodeError::InvalidUtf8` on `BinaryReadArchive`, clears the destination string, and makes later `Deserialize_::deserialize` calls no-ops. Generated service wrappers reject such requests with `EINVAL` before invoking application code. Hand-written dispatchers must check `BinaryReadArchive::failed()` and call `reject_malformed_request` as shown in the service example. A truncated value or unknown dynamic payload tag still panics. The descriptor sink also treats an unrecoverable write error as a verification failure.
 
 Decoded lengths are trusted. Containers can reserve for an advertised count before discovering that the bytes are missing. The framing layer's 64 MiB payload limit does not prevent a small frame from advertising an enormous allocation. Do not treat the frame cap as a safe decoder for untrusted lengths.
 
@@ -2334,10 +2340,10 @@ fn encode(write: impl FnOnce(&mut BinaryWriteArchive)) -> Vec<u8> {
 fn decode<T>(bytes: &[u8], read: impl FnOnce(&mut BinaryReadArchive) -> T) -> T {
     let mut source = BufferSource::new(bytes.as_ptr(), bytes.len());
     let value = {
-        let mut archive = BinaryReadArchive {
-            // The source and its immutable bytes outlive the archive.
-            source_: unsafe { make_source_proxy_buffer(&raw mut source) },
-        };
+        // The source and its immutable bytes outlive the archive.
+        let mut archive = BinaryReadArchive::new(unsafe {
+            make_source_proxy_buffer(&raw mut source)
+        });
         read(&mut archive)
     };
     assert!(source.eof());

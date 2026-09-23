@@ -42,6 +42,10 @@ impl AnyMessage {
 
     pub fn load(&mut self, archive: &mut crate::serializable::BinaryReadArchive) {
         crate::serializable::Deserialize_::deserialize(&mut self.type_name_, archive);
+        if archive.failed() {
+            self.payload_ = None;
+            return;
+        }
         let proxy_option = any_message_registry::create(&self.type_name_);
         verify_at(proxy_option.is_some(), file!(), line!());
         let mut proxy = proxy_option.unwrap();

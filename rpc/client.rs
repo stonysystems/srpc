@@ -300,9 +300,7 @@ pub fn reply_buffer_fill(rb: &mut ReplyBuffer, bytes: &[u8]) {
 }
 
 pub fn deserialize_from<T: crate::serializable::Deserialize>(mut src: MutexGuard<ReplyBuffer>, value: &mut T) {
-    let mut ar = BinaryReadArchive {
-        source_: client_source_proxy(&mut src.src),
-    };
+    let mut ar = BinaryReadArchive::new(client_source_proxy(&mut src.src));
     // SAFETY: foreign named-module serialization boundary; both borrows
     // are held only for the duration of the call.
     crate::serializable::Deserialize_::deserialize(value, &mut ar);
@@ -2927,7 +2925,7 @@ pub fn clientconn_decode_response_and_notify(conn: &ClientConnection,
 fn clientconn_decode_response_for_binding(conn: &ClientConnection, generation: u64,
                                         bytes: *const u8, size: usize) {
     let mut src = BufferSource::new(bytes, size);
-    let mut ar = BinaryReadArchive { source_: client_source_proxy(&mut src) };
+    let mut ar = BinaryReadArchive::new(client_source_proxy(&mut src));
     let mut xid = v64::new(0);
     let mut error = v32::new(0);
     let mut server_id = v64::new(0);

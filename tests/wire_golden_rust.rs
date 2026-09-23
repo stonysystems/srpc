@@ -63,9 +63,9 @@ fn v32_golden_vectors_are_portable_and_decode_back() {
         // Decoder accepts the exact golden bytes.
         let mut src = BufferSource::new(gold.as_ptr(), gold.len());
         #[allow(unsafe_code)]
-        let mut ar = BinaryReadArchive {
-            source_: unsafe { make_source_proxy_buffer(&raw mut src) },
-        };
+        let mut ar = BinaryReadArchive::new(unsafe {
+            make_source_proxy_buffer(&raw mut src)
+        });
         let mut back = SerializableV32::new(0);
         Deserialize::deserialize(&mut back, &mut ar);
         assert_eq!(back.get(), val, "v32({val}) decodes from golden bytes");
@@ -82,9 +82,9 @@ fn v64_golden_vectors_are_portable_and_decode_back() {
         assert_eq!(v64_bytes(val), gold, "v64({val}) wire bytes");
         let mut src = BufferSource::new(gold.as_ptr(), gold.len());
         #[allow(unsafe_code)]
-        let mut ar = BinaryReadArchive {
-            source_: unsafe { make_source_proxy_buffer(&raw mut src) },
-        };
+        let mut ar = BinaryReadArchive::new(unsafe {
+            make_source_proxy_buffer(&raw mut src)
+        });
         let mut back = SerializableV64::new(0);
         Deserialize::deserialize(&mut back, &mut ar);
         assert_eq!(back.get(), val, "v64({val}) decodes from golden bytes");

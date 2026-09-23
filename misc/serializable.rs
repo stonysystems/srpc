@@ -657,12 +657,47 @@ pub mod Serialize_ {
     }
 }
 
+/// First decoding failure observed while reading an archive.
+///
+/// `None` is zero so C++ aggregate construction of `BinaryReadArchive` keeps
+/// working when older call sites provide only the source proxy.
+#[repr(i32)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    None = 0,
+    InvalidUtf8 = 1,
+}
+
 pub struct BinaryReadArchive {
     pub source_: SourceProxy,
+    error_: DecodeError,
 }
 
 #[allow(unsafe_code)]
 impl BinaryReadArchive {
+    pub fn new(source: SourceProxy) -> BinaryReadArchive {
+        BinaryReadArchive {
+            source_: source,
+            error_: DecodeError::None,
+        }
+    }
+
+    pub fn error(&self) -> DecodeError {
+        self.error_
+    }
+
+    pub fn failed(&self) -> bool {
+        self.error_ != DecodeError::None
+    }
+
+    /// Preserve the first failure so callers get the cause closest to the
+    /// malformed bytes.
+    pub fn record_error(&mut self, error: DecodeError) {
+        if self.error_ == DecodeError::None {
+            self.error_ = error;
+        }
+    }
+
     /// # Safety
     ///
     /// `p` and the concrete source retained by `self.source_` must satisfy all
@@ -807,7 +842,13 @@ impl Deserialize for String {
                 |storage: &mut Vec<u8>, length: usize| storage.resize(length, 0u8),
                 |storage: &mut Vec<u8>| storage.as_mut_ptr());
         }
-        *self = String::from_utf8(bytes).unwrap();
+        match String::from_utf8(bytes) {
+            Ok(mut value) => *self = std::mem::take(&mut value),
+            Err(_) => {
+                self.clear();
+                ar.record_error(DecodeError::InvalidUtf8);
+            }
+        }
     }
 }
 
@@ -927,6 +968,9 @@ pub mod Deserialize_ {
     }
 
     pub fn deserialize<T: Deserialize + ?Sized>(value: &mut T, archive: &mut BinaryReadArchive) {
+        if archive.failed() {
+            return;
+        }
         adl_detail_::dispatch_deserialize(value, archive)
     }
 }

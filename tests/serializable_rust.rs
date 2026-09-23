@@ -4,8 +4,9 @@ use srpc::serializable::{BinaryReadArchive, BinaryWriteArchive, SerializablePayl
 use std::any::TypeId;
 
 use srpc::serializable::{
-    BufferSink, BufferSource, Deserialize, Serializable, SerializableRegistry, Serialize, SinkBase,
-    SourceBase, make_serializable_proxy_copy, make_serializable_proxy_default,
+    BufferSink, BufferSource, DecodeError, Deserialize, Serializable, SerializableRegistry,
+    Serialize, SinkBase, SourceBase, make_serializable_proxy_copy,
+    make_serializable_proxy_default,
 };
 use srpc::basetypes::SparseInt;
 use srpc::basetypes::{v32 as SerializableV32, v64 as SerializableV64};
@@ -290,9 +291,9 @@ fn archive_round_trips_a_leaf_through_both_proxies() {
     let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
     let (v64, v32) = {
         // SAFETY: `source` and `encoded` both outlive the archive.
-        let mut archive = srpc::serializable::BinaryReadArchive {
-            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) },
-        };
+        let mut archive = srpc::serializable::BinaryReadArchive::new(unsafe {
+            srpc::serializable::make_source_proxy_buffer(&raw mut source)
+        });
         let mut v64 = SerializableV64::new(0);
         let mut v32 = SerializableV32::new(0);
         <SerializableV64 as Deserialize>::deserialize(&mut v64, &mut archive);
@@ -327,10 +328,10 @@ fn canonical_dispatchers_round_trip_header_leaves() {
     let encoded = sink.bytes.clone();
     let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
     {
-        let mut ar = srpc::serializable::BinaryReadArchive {
-            // SAFETY: `source` and `encoded` both outlive the archive.
-            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut source) },
-        };
+        // SAFETY: `source` and `encoded` both outlive the archive.
+        let mut ar = srpc::serializable::BinaryReadArchive::new(unsafe {
+            srpc::serializable::make_source_proxy_buffer(&raw mut source)
+        });
         let mut v64 = SerializableV64::new(0);
         let mut plain = 0i64;
         let mut v32 = SerializableV32::new(0);
@@ -457,6 +458,27 @@ fn raw_byte_helpers_preserve_invalid_utf8_and_embedded_nul() {
     });
     assert_eq!(restored, original);
     assert_eq!(remaining, 0);
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn invalid_utf8_records_a_decode_error_without_panicking() {
+    let encoded = [1u8, 0xff, 7, 0, 0, 0];
+    let mut source = BufferSource::new(encoded.as_ptr(), encoded.len());
+    let mut archive = BinaryReadArchive::new(unsafe {
+        srpc::serializable::make_source_proxy_buffer(&raw mut source)
+    });
+    let mut text = String::from("unchanged");
+    let mut following = 41i32;
+
+    srpc::serializable::Deserialize_::deserialize(&mut text, &mut archive);
+    srpc::serializable::Deserialize_::deserialize(&mut following, &mut archive);
+
+    assert!(archive.error() == DecodeError::InvalidUtf8);
+    assert!(archive.failed());
+    assert!(text.is_empty());
+    assert_eq!(following, 41, "a failed archive must stop decoding later fields");
+    assert_eq!(source.remaining(), 4);
 }
 
 #[test]

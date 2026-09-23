@@ -33,10 +33,10 @@ fn factory_retaining_weak_payload_cannot_open_a_mutation_window() {
     );
     let mut proxy = SerializableRegistry::create(196601);
     let mut source = BufferSource::new(std::ptr::null(), 0);
-    let mut archive = BinaryReadArchive {
-        // The stack cursor outlives the archive and advertises no input bytes.
-        source_: unsafe { make_source_proxy_buffer(&raw mut source) },
-    };
+    // The stack cursor outlives the archive and advertises no input bytes.
+    let mut archive = BinaryReadArchive::new(unsafe {
+        make_source_proxy_buffer(&raw mut source)
+    });
     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         Arc::get_mut(&mut proxy).unwrap().load(&mut archive);
     }));

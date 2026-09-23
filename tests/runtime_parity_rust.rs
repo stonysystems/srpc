@@ -26,10 +26,10 @@ impl Service for Echo {
 
     fn __dispatch__(&self, _: i32, mut request: Box<Request>, connection: WeakServerConnection) {
         let mut value = 0i64;
-        let mut archive = BinaryReadArchive {
-            // Request owns this buffer until deserialization completes.
-            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut request.src) },
-        };
+        // Request owns this buffer until deserialization completes.
+        let mut archive = BinaryReadArchive::new(unsafe {
+            srpc::serializable::make_source_proxy_buffer(&raw mut request.src)
+        });
         Deserialize::deserialize(&mut value, &mut archive);
         connection.upgrade().unwrap().reply(&request, 0, Some(Box::new(move |out| {
             Serialize::serialize(&(value * 2), out);

@@ -24,10 +24,10 @@ impl Service for CooperativeService {
 
     fn __dispatch__(&self, rpc_id: i32, mut request: Box<Request>, connection: WeakServerConnection) {
         let mut value = 0i64;
-        let mut archive = BinaryReadArchive {
-            // SAFETY: request owns the stable input buffer for this dispatch.
-            source_: unsafe { srpc::serializable::make_source_proxy_buffer(&raw mut request.src) },
-        };
+        // SAFETY: request owns the stable input buffer for this dispatch.
+        let mut archive = BinaryReadArchive::new(unsafe {
+            srpc::serializable::make_source_proxy_buffer(&raw mut request.src)
+        });
         Deserialize::deserialize(&mut value, &mut archive);
         if rpc_id == SLOW_RPC {
             assert!(srpc::fiber::this_fiber::in_fiber_context());
