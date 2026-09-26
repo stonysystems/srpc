@@ -220,17 +220,17 @@ These are properties Lion lacks today that an RPC server needs.
       base, and it recovers roughly half the loss.
     - The regression matters only if SRPC's workloads exercise timer churn.
       Today's client timeouts do not use reactor timers.
-- [ ] **U2. `spawn_local` for `!Send` futures.**
+- [x] **U2. `spawn_local` for `!Send` futures.** Done as `c91784a`: local tasks are stored in `OwnerThreadOnly`, spawning asserts it runs on the owner thread, and `Runtime` is now `!Send`, which a `compile_fail` doctest pins.
   - `spawn` requires `Send` (`lion-executor/src/lib.rs:130`), and the facade's
     `spawn_local` just calls `spawn` (`lion/src/lib.rs:33-39`).
   - SRPC's stackless futures are not `Send` (`async-runtime.md`), and C++
     coroutine frames will not be either.
-- [ ] **U3. Cancellation and panic isolation.**
+- [x] **U3. Cancellation and panic isolation.** Done as `a2c8fc8`. A `TaskCell` catches the unwind and checks an abort flag. An aborted or panicked task finishes its poll with Ready, so the verified `poll_task` needs no model change. `JoinError` gains tokio-style `is_cancelled`/`is_panic`/`into_panic`.
   - `JoinHandle::abort` is empty (`join_handle.rs:38`).
   - Nothing catches unwinds at the poll boundary (`executor/ext.rs:111-123`).
   - SRPC has teardown cancellation today (`StacklessCancelReport`,
     `reactor.rs:1059-1096`).
-- [ ] **U4. Runtime TLS save/restore.**
+- [x] **U4. Runtime TLS save/restore.** Done as `cf0106f`: `Runtime::new` fails with `AlreadyExists` on a thread that already has a runtime, and drop clears only its own thread-locals. `ReactorGuard` records the identity of its reactor.
   - `Runtime::new` overwrites `CURRENT_HANDLE`, `CROSS_THREAD_CTX` and
     `CURRENT_REACTOR`, and drop sets them to `None` instead of restoring them
     (`lib.rs:69-89,121-128`, `reactor/enter.rs:19-25`).
@@ -247,7 +247,7 @@ These are properties Lion lacks today that an RPC server needs.
     - drop clears only what that runtime set.
 
     Full nesting (saving and restoring the per-thread queues) is out of scope.
-- [ ] **U5. A driving API SRPC can own.**
+- [x] **U5. A driving API SRPC can own.** Done as `343f041`: `Runtime::tick()` and `tick_with_timeout(max_park)`, where `Duration::ZERO` does not block. The bound lives in trusted glue, and no `ensures` clause changed.
   - Today the only entry point is `Runtime::block_on` (`lib.rs:102-118`), and
     the executor module is private.
   - SRPC needs one of two things:
@@ -281,7 +281,7 @@ These are properties Lion lacks today that an RPC server needs.
       `srpc_epoll.c` (S2).
     - The trait keeps Lion free of a C ABI contract, and it lets Lion test the
       reactor against a mock backend. The price is one dynamic call per park.
-- [ ] **U7. (C++ route) An `Arc`/`std::task::Wake` waker only.**
+- [x] **U7. (C++ route) An `Arc`/`std::task::Wake` waker only.** Done as `d101dd0`: there is no `RawWaker` left in lion-executor. It also fixes a bug where an off-thread reactor wake was lost. The flume removal from U6 landed as `6a40bd8`.
   - Drop the `RawWakerVTable` path (`waker.rs:30-100`).
   - rusty-cpp lowers `impl Wake` with an `Arc<Self>` receiver
     (`transpiler/src/codegen/standard_future.rs:7-100`). Its C++ `rusty::Waker`
@@ -297,6 +297,25 @@ These are properties Lion lacks today that an RPC server needs.
     - So U7 is: delete the dead task path, and re-implement the reactor waker
       over `Arc` + `Wake`, or gate it behind the `mio` feature together with
       the utility networking.
+- **Results of the U2–U5/U7 batch (2026-09-26):**
+  - A cold `./ci.sh` passes with 0 errors, and every crate's verified count is
+    unchanged. `external_body` stays at 118. `unsafe` sites in lion-executor
+    drop from 15 to 4.
+  - Every new behaviour has a test with a negative control:
+    `lion-utility/tests/{reactor_waker,foreign_wake,panic_abort,spawn_local,runtime_nesting,tick}.rs`.
+  - **Performance:** micro-timer and TCP echo are unchanged. Spawn+await costs
+    about 80 ns more (the join channel), and each tick about 30 ns more (the
+    mutex queue). `catch_unwind` costs nothing measurable. S8 weighs these.
+  - **Constraints for S3:**
+    - `Runtime` is `!Send`, so a `PollThread` must construct its runtime on
+      its own thread.
+    - A loop that interleaves other blocking work must call
+      `tick_with_timeout(Duration::ZERO)`. Plain `tick` may park for 100 ms.
+  - **Liveness scope:** `abort`, a task panic, or dropping a runtime with live
+    tasks can now drop a future that is mid-await on I/O. The theorem does not
+    cover those runs (R3), and SRPC's teardown cancellation is one of them.
+  - The `spawn_blocking` `Cell` race listed under "worth raising upstream" is
+    fixed: it is now an `AtomicUsize`.
 - [ ] **U9. (C++ route) No `verus!` blocks produced by `macro_rules!`.**
   - `executor/ext.rs` and `reactor/ext.rs` define `macro_rules!` that expand
     to `verus! { impl ... }`: 7 invocations in the executor and 12 in the
@@ -786,7 +805,7 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     - the clock strictly increases. Lion's own millisecond-truncated `Instant`
       does not strictly increase between two readings in the same millisecond
       (R4).
-  - It excludes the `block_on` root, and SRPC's fibers, events and transport.
+  - It excludes the `block_on` root, SRPC's fibers, events and transport, and runs where a task is aborted, panics, or is dropped with its runtime while it waits on I/O (U3).
     In particular, it excludes:
     - Condvar client waits on a poll thread;
     - fast handlers that block;
