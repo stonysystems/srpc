@@ -563,6 +563,17 @@ transpiler fixes:**
 Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
 `Verified:` numbers are measured on that revision.
 
+- [ ] **S0. A fresh build tree must build the battery (a build bug found
+  2026-09-26).**
+  - The battery programs and `rpcbench` compile against
+    `goal0-battery-modules.modmap`. It names the std module BMIs
+    (`@cmake_cxx_std@synth_0.dir/*.bmi`), but nothing in the build graph
+    builds them. A fresh `build/` therefore fails in every battery file, and
+    so does `scripts/run_sanitizer_battery.sh` on a fresh tree.
+  - Existing trees hide the bug with BMIs dated 2026-08-29.
+  - Likely fix: extend the scanned `srpc_runtime_imports` probe
+    (`tests/runtime_imports.cc`) so it also imports the std modules the modmap
+    lists. Verify on a fresh tree.
 - [ ] **S1. Lion as pinned dependency crates, and the gate policy.**
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
@@ -631,7 +642,19 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       `paxos/service.cc` captures `[&]` and relies on the fiber starting inside
       `create_run`.
   - **Conversion order:**
-    0. **Pre-work, no semantic change:**
+    0. [x] **Pre-work, no semantic change.** Done as `897943f` and `3c09fb4`
+       on `lion-runtime`. Gate results: cargo 284 passed / 0 failed,
+       `ctest -L srpc` 50/50, and the ASan and UBSan batteries 34/34 each.
+       There is no ABI change. The negative control makes all three new
+       eviction tests fail. Its findings:
+       - Timed-out events are now freed once their handles drop. Before, they
+         stayed alive for the whole reactor lifetime. Check Mako's quorum and
+         `~RaftServer` paths before its next bump.
+       - A paused fiber can only be destroyed by tearing down its reactor. The
+         `current_fiber().unwrap()->yield_()` idiom leaves an `Rc<Fiber>` on
+         its own stack, so nothing destroys a suspended fiber today.
+
+       The original scope of this step was:
        - evict TIMEOUT events from the waiting and composite queues, and keep
          TIMEOUT sticky. Today they are re-tested forever (`reactor.rs:1523-1544`
          keeps them; `test_timeout_race.cc:226-268` pins sticky TIMEOUT);
