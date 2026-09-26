@@ -160,7 +160,7 @@ learn to transpile the Lion dependency crates too, or switch to SRPC's own CMake
 
 These are properties Lion lacks today that an RPC server needs.
 - U1–U5 and U8 block **every** route, including Rust-only.
-- U6–U7 are needed for the C++ route.
+- U6, U7 and U9 are needed for the C++ route.
 - Each item that touches verified code needs a re-proof in Lion's CI.
 
 - [x] **U1. Bounded ids.** Done as Lion `srpc/prereqs` `7d872a9`; see the result notes at the end of this item. Resource ids never recycle ("worst-case UNBOUNDED
@@ -297,6 +297,15 @@ These are properties Lion lacks today that an RPC server needs.
     - So U7 is: delete the dead task path, and re-implement the reactor waker
       over `Arc` + `Wake`, or gate it behind the `mio` feature together with
       the utility networking.
+- [ ] **U9. (C++ route) No `verus!` blocks produced by `macro_rules!`.**
+  - `executor/ext.rs` and `reactor/ext.rs` define `macro_rules!` that expand
+    to `verus! { impl ... }`: 7 invocations in the executor and 12 in the
+    reactor. For example, `reactor_log_action!` is at `reactor/ext.rs:140-160`.
+  - T1's pre-pass rejects this form on purpose. It erases literal `verus!`
+    items and does not expand macros.
+  - Write the 19 invocations out in the source. The change is mechanical, and
+    `./ci.sh` must still pass. Doing this upstream is preferred over building a
+    `macro_rules` expander into the transpiler.
 - [ ] **U8. A raw-fd readiness API that honours the `Context` waker.**
   - SRPC's transport (S5) must wait on its own sockets from a task.
   - Lion's building blocks are public (`ReactorHandle::{register_io_resource,
@@ -332,7 +341,7 @@ and `scripts/tests/test_goal0_standalone.py`. It gets its own
 exactly the executable code rustc compiles from it. It emits nothing for specs,
 proofs or ghost state, and **fails closed** on anything it cannot classify.
 
-- [ ] **T1. Erasure front end: reuse Verus's own pass. Do not reimplement it.**
+- [x] **T1. Erasure front end: reuse Verus's own pass. Do not reimplement it.** Done as rusty-cpp `lion/verus-exec` `6663736`; see the result notes at the end of this item.
   - Verus's `builtin_macros` (MIT) already has the pass plain rustc uses.
     `cfg_erase()` returns `EraseGhost::EraseAll` without `verus_keep_ghost`
     (`builtin_macros/src/lib.rs:53-81,158-161`), and
@@ -359,6 +368,29 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
   - **Rejected alternative:** a native erasure written from scratch in
     rusty-cpp. It means about 5k lines of re-derived Verus syntax handling,
     which would drift from what rustc actually compiles and weaken D2.
+  - **Result (2026-09-26, `6663736`):**
+    - **Source:** vendored from the Verus **git** revision `db81a74`, not from
+      crates.io. The crates.io `0.0.0-2025-11-10-1957` sources differ from
+      `db81a74` in `syntax.rs` and `verus_syn/src/verus.rs`, and Lion's
+      lockfile builds from git. The local diff is 39 lines;
+      `verus-erase/upstream-diff.sh` prints it.
+    - **Where it hooks in:** one chokepoint, `read_crate_source_units` /
+      `prepare_crate_source` in `main.rs`. Every pass then sees erased source.
+    - **Differential check against `cargo expand`:** slab 4/4 items and
+      timer-wheel 13/14 match exactly, and 14/14 once derives are stripped.
+      There are 0 mismatches on the executor, the reactor and the spec crates.
+    - **Flag off:** output is byte-identical to `1689f438`.
+    - **Unit tests:** 2482 passed and 0 failed (2472 baseline + 10 new).
+    - **Fail-closed rules:** any other Verus macro, a `verus!` outside item
+      position, a macro expanding to `verus!`, or a cfg the pass cannot
+      evaluate is a hard error.
+  - [ ] **T1b. Run the erasure out of process.** Linking `verus_syn` turns on
+    proc-macro2 `span-locations` for the whole transpiler. On SRPC's crate, even
+    with the flag off, peak RSS goes from 84 to 173 MB and CPU time from 56 to
+    72 s. Run `verus-erase` as a helper binary that is invoked only under
+    `--verus-exec`.
+    - Also expose `VERUS_GIT_REV` in `--build-info`, for S1's version-coupling
+      check.
 - [ ] **T2. Lowering the ghost residue.** `EraseAll` still leaves ghost
   residue in executable positions. Measured on Lion's crates (see §8 for the
   per-crate counts):
