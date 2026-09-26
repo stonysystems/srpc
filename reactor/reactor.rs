@@ -1520,8 +1520,15 @@ impl Reactor {
                     if ready_events.len() > n_before {
                         found_ready_events = true;
                     }
+                    // Evict both terminal states. TIMEOUT is sticky: only
+                    // check_timeout sets it, it has already handed the event
+                    // to the dispatcher on the pass that set it, and
+                    // event_test_impl never moves a TIMEOUT event again. Kept
+                    // here it was re-tested on every pass for as long as the
+                    // reactor lived. Eviction leaves the status untouched.
                     waiting_guard.retain(move |ev: &Arc<dyn EventPollable>| -> bool {
-                        (*ev).status() != EventStatus::DONE
+                        let status = (*ev).status();
+                        status != EventStatus::DONE && status != EventStatus::TIMEOUT
                     });
                 }
                 {
@@ -1539,8 +1546,10 @@ impl Reactor {
                     if ready_events.len() > n_before {
                         found_ready_events = true;
                     }
+                    // Same terminal-state eviction as the waiting queue.
                     composite_guard.retain(move |ev: &Arc<dyn EventPollable>| -> bool {
-                        (*ev).status() != EventStatus::DONE
+                        let status = (*ev).status();
+                        status != EventStatus::DONE && status != EventStatus::TIMEOUT
                     });
                 }
                 if do_check_timeout {
@@ -1873,7 +1882,8 @@ impl Reactor {
             let status = (*sp).status();
             status == EventStatus::READY || status == EventStatus::TIMEOUT
         });
-        // Drop events that are DONE.
+        // Drop events that are DONE. TIMEOUT needs no clause here: the
+        // extraction above has already taken every TIMEOUT entry out.
         guard.retain(move |sp: &Arc<dyn EventPollable>| -> bool {
             (*sp).status() != EventStatus::DONE
         });
@@ -3766,12 +3776,10 @@ fn quorum_event_finalize(qe: &QuorumEvent, timeout: u64,
             // Didn't receive all RPC replies.
             let dr: &mut QuorumDanglingVec = &mut dangling_rpc;
             let _ret = finalize_func.as_mut().unwrap()(dr);
-            // Drain guard: a TIMEOUT'd event is never evicted by the
-            // reactor loop (extract takes READY, retain drops DONE), so
-            // a registered finalize_event_ would otherwise linger in the
-            // queues forever at broadcast rate. Mark it DONE here (we
-            // run on the owner thread) so the next pass evicts and
-            // prune can free it.
+            // Historical drain guard. This was added when run_loop kept
+            // TIMEOUT events in its queues forever; run_loop now evicts
+            // them itself. The DONE mark stays because callers can observe
+            // finalize_event_'s final status. We run on the owner thread.
             final_ev.status_.set(EventStatus::DONE);
         }
     });
