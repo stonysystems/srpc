@@ -79,8 +79,10 @@ flume and raw-waker blockers. S1 changes the dependency policy on purpose (D5).
 - A thread with no `PollThread` still has a `Reactor`. Examples are Mako's
   `main` and an in-memory-channel sender. Such a thread can create, yield and
   continue fibers synchronously; it just has no I/O or timer driver.
-  - Events set on such a thread resume their fibers directly, as `run_loop`
-    does today.
+  - On such a thread, a fiber waiting on an event resumes only when someone
+    drains: `create_run`'s built-in `run_loop(false, true)` (`reactor.rs:3197`)
+    or an explicit `run_loop`. That is true today, and must stay true.
+    `set()` never resumes a waiter by itself (`reactor.rs:2515-2545`).
   - What a timer wait on a loop-less thread should do is an S4 design item.
     Today, `create_sp_timeout_event(..)->wait()` is serviced by whoever pumps
     `run_loop`.
@@ -547,27 +549,87 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - `Job`/`PollCommand` become an mpsc queue drained by a task that is woken on
     send, with no per-pass `try_recv`.
   - `reactor_spawn_stackless_task_with_result` keeps its C++ signature.
-- [ ] **S4. Fibers re-hosted on Lion.**
+- [ ] **S4. Fibers re-hosted on Lion.** The inventory was done on
+  2026-09-26 (read-only, from the source, the C++ battery and Mako). Its
+  findings drive the order below.
   - Keep `srpc_fiber.c` and the `.S` switches.
-  - Fibers resume from two sources:
-    - **synchronous**: `create_run` runs to the first yield, and
-      `continue_fiber` resumes immediately. This matches Mako's `run.cc`
-      assertions.
-    - **event-driven**: `event.wait()` registers a Lion waker for the owner's
-      fiber driver and yields. `set()` wakes it, and the driver task resumes the
-      fiber on the owner thread.
-  - Keep SRPC's per-thread `Reactor` as the fiber/event registry (§1).
-    - A thread with no `PollThread` must still support
-      `create_run`/`yield_`/`continue_fiber`, and event `set()` → resume, with
-      no Lion runtime present. Mako's `run.cc` does this.
-    - This is SRPC's job, not Lion's.
-  - Convert events one type at a time from per-pass polling to waking on
-    change. Today `run_loop` calls `test()` on every waiting event
-    (`reactor.rs:1503-1545`).
-    - Predicate-style waits whose readiness changes without a `set()` need a
-      compatibility task that re-tests them. List every such site before
-      converting.
-  - `TimeoutEvent` and `sleep_*` move onto Lion timers.
+  - **Resumption stays deferred.** `set()`, the `vote_*` methods and a direct
+    `test()` call only move an event from WAIT to READY. A fiber resumes later,
+    when the owner thread drains; `set()` never resumes it.
+    - Three things break if the waiter resumes inside `set()`:
+      - Mako's quorum code writes state *after* voting (`raft/commo.h:58-68`,
+        read at `server.cc:1946,2000`);
+      - `vote_*` sets `finalize_event_` after testing;
+      - `reactor_stackless_battery.cc:766-821` pins that a `wake()` must not
+        complete inline.
+    - So the design is an owner-side **ready queue plus a driver**. The
+      WAIT→READY edge enqueues the fiber once. The drain repeats until quiet,
+      which preserves `test_reactor_extended.cc:113-158`'s three-fiber
+      EventChain.
+    - On a `PollThread`, a Lion driver task performs the drain. Everywhere
+      else, `run_loop` and `create_run`'s built-in drain keep doing it.
+    - `create_run` and `continue_fiber` stay synchronous. Mako's
+      `paxos/service.cc` captures `[&]` and relies on the fiber starting inside
+      `create_run`.
+  - **Conversion order:**
+    0. **Pre-work, no semantic change:**
+       - evict TIMEOUT events from the waiting and composite queues, and keep
+         TIMEOUT sticky. Today they are re-tested forever (`reactor.rs:1523-1544`
+         keeps them; `test_timeout_race.cc:226-268` pins sticky TIMEOUT);
+       - fix the battery tests that hold references into dead stack frames
+         (`fiber_test.cc:404-418`, `fiber_runtime.cc:58-141,159-173`).
+    1. **The ready queue and driver.** The hook sits on the WAIT→READY edge in
+       `event_test_impl` (`reactor.rs:2530`). It must be reachable through
+       `test()` itself, because Mako increments vote counters directly and then
+       calls `test()` (`paxos/commo.h:28-35`).
+    2. **Leaf events that change only through their own methods:**
+       - `BoxEvent`;
+       - `IntEvent` without a predicate;
+       - `QuorumEvent`, after which its composite flag with no children
+         (`reactor.rs:2388`) is dropped;
+       - `SharedIntEvent`, which has no users.
+    3. **Timers.** `TimeoutEvent`, `NeverEvent` with a timeout, and every
+       `wait_timeout` move to Lion timers on a `PollThread`, or to a
+       per-`Reactor` deadline heap drained by `run_loop` on other threads.
+       This replaces `check_timeout`'s linear scan and `TimeoutEvent`'s clock
+       read. At the deadline, keep the rule "READY if ready, else TIMEOUT"
+       (`reactor.rs:1861-1865`).
+    4. **Composites.** Add weak parent links, created in `add_event`,
+       `waitany_make` and `waitall_make_from`. A child's WAIT→READY, its move to
+       DONE, or its timer expiry calls the parent's `test()`. A child can be
+       shared, so each child keeps a list of parents.
+       `test_and_event.cc:135-157` needs a timer child to notify its parent.
+    5. **`FiberChannel`'s predicate**, the only external predicate in SRPC,
+       the battery or Mako (`fiber_channel.rs:141-151`).
+       - Give it a ticket with an "already queued" flag, in the shape of the
+         stackless wake ingress (`reactor.rs:963-976,1155-1168`).
+       - The frame and close callbacks, which run on the poll thread, on the
+         in-memory sender's thread, or on any closer's thread, ping the ticket
+         after they publish. The ping enqueues on the owner and wakes its Lion
+         driver.
+       - The owner re-tests only the pinged events.
+       - No periodic re-test task is needed: every assignment of `test_` has
+         such a publisher.
+  - **Cross-thread `set()`.** SRPC never calls `set()` from a foreign thread.
+    Events are `!Send`, and foreign publishers go through ingress queues.
+    - Mako does, in `~RaftServer` (`raft/server.cc:1826-1830`, and
+      `testconf.cc:598` under `RAFT_TEST`). That is a data race today.
+    - Either offer a foreign-safe `set` that routes through the ingress queue,
+      or require Mako to post a Job. Decide before Mako's next bump.
+  - **Timing-sensitive tests** keep passing only if resumption stays
+    owner-driven. These pin that:
+    - `fiber_rust.rs:180-201`;
+    - `fiber_channel_rust.rs:270-287` (not run until the owner drains);
+    - the `runtime_parity` keys `timer_order`, `timer_suspended`,
+      `deadline_respected`, `pending_before_wake`, `foreign_thread`,
+      `completion_on_owner` and `wake_value`;
+    - `test_and_event.cc` (not complete after partial sets);
+    - `test_timeout_race.cc`.
+
+    Review them against the design rather than editing their expectations.
+  - The ABI pins the `EventPollable` generated C++ method layer
+    (`check_srpc_crate_mode.py:73-75,215-244`). A new trait method is a ratchet
+    edit.
   - `QuorumEvent` keeps `cpp_namespace(::janus)`.
 - [ ] **S5. Transport.**
   - The `TcpConnection`/`TcpListener` pollable shims become per-connection
