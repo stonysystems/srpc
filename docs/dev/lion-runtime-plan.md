@@ -157,7 +157,7 @@ learn to transpile the Lion dependency crates too, or switch to SRPC's own CMake
 ## 3. Upstream prerequisites in Lion (go/no-go)
 
 These are properties Lion lacks today that an RPC server needs.
-- U1–U5 block **every** route, including Rust-only.
+- U1–U5 and U8 block **every** route, including Rust-only.
 - U6–U7 are needed for the C++ route.
 - Each item that touches verified code needs a re-proof in Lion's CI.
 
@@ -171,6 +171,26 @@ These are properties Lion lacks today that an RPC server needs.
     ids, so a server with connection churn leaks memory without bound. The micro
     timer benchmark reaching about 10 GB (`README.md:55`) fits this.
   - *Verified code; re-proof required.*
+  - **Design (chosen 2026-09-26).** Keep ids logically unique: a monotonic u64
+    never wraps in practice. Every proof that relies on id freshness then stays
+    as it is. Change only the **representation** of the id-indexed containers,
+    so memory is proportional to live entries rather than to the id space:
+    - `lion_slab::Slab` backs both `ResourceSlab` and `TaskSlab`. It becomes a
+      std `HashMap<u64, V>` with the same `Map<nat, V::V>` view and the same
+      `new`/`insert`/`get`/`remove` contracts. vstd already specifies std
+      `HashMap` (`vstd/std_specs/hash.rs:826-1022`), and `get_mut` stays
+      `external_body`.
+    - `lion_timer_wheel::VecMap` (the wheel's `deadlines` and `positions`)
+      changes the same way.
+    - The erased code then uses std only, with no new vstd executable types for
+      T3.
+    - `IO_READINESS` (trusted, `readiness.rs`) becomes a `HashMap<u64, u8>`, with
+      an entry removed on deregister. `TASK_NOTIFIED` (trusted, `tls.rs`) becomes
+      a `HashSet<u64>`.
+    - `resource_slab.rs:819` iterates the slab's `Vec` directly and needs an
+      iteration method.
+    - Hashing cost on the hot path is measured in S8. A fast id hasher is a
+      later optimisation.
 - [ ] **U2. `spawn_local` for `!Send` futures.**
   - `spawn` requires `Send` (`lion-executor/src/lib.rs:130`), and the facade's
     `spawn_local` just calls `spawn` (`lion/src/lib.rs:33-39`).
@@ -190,6 +210,14 @@ These are properties Lion lacks today that an RPC server needs.
   - The in-memory channel delivers frames synchronously on the sender's thread
     (`inmemory_channel.rs:255`), so fiber handlers start on that thread
     (`server.rs:1444-1464`).
+  - **Design (2026-09-26):** SRPC never needs two Lion runtimes on one thread.
+    A `PollThread` owns the only one, and SRPC's lazy per-thread `Reactor` does
+    not create a Lion runtime (§1). The minimal fix is therefore:
+    - `Runtime::new` on a thread that already has a runtime returns an error
+      instead of clobbering its thread-locals;
+    - drop clears only what that runtime set.
+
+    Full nesting (saving and restoring the per-thread queues) is out of scope.
 - [ ] **U5. A driving API SRPC can own.**
   - Today the only entry point is `Runtime::block_on` (`lib.rs:102-118`), and
     the executor module is private.
@@ -197,6 +225,11 @@ These are properties Lion lacks today that an RPC server needs.
     - a public `turn(timeout)` step; or
     - a clean "`PollThread` = a thread parked in `block_on(worker)`" contract
       with foreign spawn.
+  - **Design (2026-09-26):** `block_on` already loops over a private
+    `exec.tick()`. Add a public `Runtime::tick()` that runs one iteration of
+    that loop (trusted glue, no proof change). A `PollThread` can then run
+    either a `block_on(shutdown_signal)` loop or its own `tick()` loop.
+    `ExecutorHandle::spawn` already accepts foreign spawns.
 - [ ] **U6. (C++ route) An OS seam behind a trait, plus optional runtime
   dependencies.**
   - `types/poll.rs`, `interrupt_handle.rs` and `io_event_queue.rs` are already
@@ -207,6 +240,18 @@ These are properties Lion lacks today that an RPC server needs.
     SRPC depends with `default-features = false`.
   - Drop `futures-task` and `pin-project-lite`: no uses were found in
     `lion-executor/src`.
+  - **Design (2026-09-26):** a trait object owned by the reactor.
+    - `lion-reactor` defines `OsBackend` (create, register, reregister,
+      deregister a raw fd with an interest; wait for events with a timeout;
+      signal and drain the cross-thread interrupt) and holds
+      `Box<dyn OsBackend>`.
+    - `Source` stops wrapping `&mut dyn mio::event::Source`
+      (`types/source.rs`) and carries a raw fd.
+    - The mio implementation stays in Lion behind the default `mio` feature.
+    - SRPC implements the trait in canonical `reactor/epoll_wrapper.rs` over
+      `srpc_epoll.c` (S2).
+    - The trait keeps Lion free of a C ABI contract, and it lets Lion test the
+      reactor against a mock backend. The price is one dynamic call per park.
 - [ ] **U7. (C++ route) An `Arc`/`std::task::Wake` waker only.**
   - Drop the `RawWakerVTable` path (`waker.rs:30-100`).
   - rusty-cpp lowers `impl Wake` with an `Arc<Self>` receiver
@@ -214,6 +259,26 @@ These are properties Lion lacks today that an RPC server needs.
     is a pair of `std::function`s, not a vtable.
   - Doing this upstream is preferred over teaching the transpiler
     `RawWakerVTable`.
+  - **Measured (2026-09-26):** most of this path is dead.
+    - The task raw waker (`create_raw_task_waker`, `TASK_WAKER_VTABLE`,
+      `GLOBAL_CTX`) has no caller; `ext.rs:3` imports it and never uses it.
+    - The reactor raw waker (`create_reactor_waker_for_current`) is used only
+      by `lion-utility`'s TCP listener and UDP code (`listener.rs:105`,
+      `udp.rs:107,147`), which SRPC does not use.
+    - So U7 is: delete the dead task path, and re-implement the reactor waker
+      over `Arc` + `Wake`, or gate it behind the `mio` feature together with
+      the utility networking.
+- [ ] **U8. A raw-fd readiness API that honours the `Context` waker.**
+  - SRPC's transport (S5) must wait on its own sockets from a task.
+  - Lion's building blocks are public (`ReactorHandle::{register_io_resource,
+    set_waker, deregister_io_resource}`, `readiness`). But every existing user
+    re-implements the edge-triggered readiness-flag protocol, and uses the TLS
+    task waker instead of the `Context` waker (`stream.rs:135,169`). The lost
+    wakeup in `HANG_FIXING_STORY.md` story 1 was a bug in exactly that protocol.
+  - Add one `AsyncFd`-style type to `lion-reactor`:
+    `poll_read_ready(cx)` / `poll_write_ready(cx)` / `clear_*_ready()`, over a
+    raw fd, owning registration and deregistration. It is the only place the
+    readiness protocol is written. It is trusted glue until someone proves it.
 
 Also worth raising upstream, though not blocking:
 - `spawn_blocking`'s `Cell` counter sits in a type force-marked `Sync`
