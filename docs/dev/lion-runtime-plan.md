@@ -163,7 +163,7 @@ These are properties Lion lacks today that an RPC server needs.
 - U6–U7 are needed for the C++ route.
 - Each item that touches verified code needs a re-proof in Lion's CI.
 
-- [ ] **U1. Bounded ids.** Resource ids never recycle ("worst-case UNBOUNDED
+- [x] **U1. Bounded ids.** Done as Lion `srpc/prereqs` `7d872a9`; see the result notes at the end of this item. Resource ids never recycle ("worst-case UNBOUNDED
   memory", `lion-reactor/src/alloc_verified.rs:9-14`, `TCB_and_limitations.md:71-81`).
   - `IO_READINESS` is indexed by raw resource id and never shrinks
     (`readiness.rs:8-21`).
@@ -193,6 +193,33 @@ These are properties Lion lacks today that an RPC server needs.
       iteration method.
     - Hashing cost on the hot path is measured in S8. A fast id hasher is a
       later optimisation.
+  - **Result (2026-09-26, `7d872a9`):**
+    - **Proofs:** no client proof changed. Every crate verifies; timer-wheel
+      goes from 123 to 117 verified items because the occupancy lemmas are
+      gone. A cold `./ci.sh` passes with 0 errors in 8m34s.
+    - **Trusted base:** `external_body` items go from 126 to 118. vstd's
+      assumed `HashMap` specs now carry what the removed items used to. One
+      `#[verifier::external]` iterator is added.
+    - **Memory:** the new `lion-utility/tests/bounded_memory.rs` churns about
+      200k task ids and 600k resource ids. RSS grows +52.6 MiB on `aa5bebe`
+      (the test fails there) and +0.4 MiB after the change.
+    - **Speed:** `micro-timer --load 10000` drops from 1.85–2.04 M to
+      0.65–0.85 M ops/s, while peak RSS falls from 2.8–3.1 GiB to 11 MiB. TCP
+      echo is about −5%, at the edge of the trial-to-trial spread.
+    - **Where the speed goes:** about half the loss is SipHash. An unverified
+      multiplicative id hasher reached 1.19–1.49 M ops/s. The rest is the cost
+      of a hash map against direct vector indexing.
+  - [ ] **U1b. Recover container speed (decide at S8, using SRPC's rpcbench).**
+    - **Option 1: generational ids** `(index, gen)`. This is the design Lion's
+      own comments name (`alloc_verified.rs`). It gives vector indexing with
+      memory proportional to the peak number of live entries. It needs
+      re-proofs of the allocator's freshness invariants.
+    - **Option 2: a fast id hasher.** It needs a new assumed fact about the
+      hasher, plus an assumed spec for `HashMap::with_hasher`, because vstd
+      only covers the default hasher. That is a small addition to the trusted
+      base, and it recovers roughly half the loss.
+    - The regression matters only if SRPC's workloads exercise timer churn.
+      Today's client timeouts do not use reactor timers.
 - [ ] **U2. `spawn_local` for `!Send` futures.**
   - `spawn` requires `Send` (`lion-executor/src/lib.rs:130`), and the facade's
     `spawn_local` just calls `spawn` (`lion/src/lib.rs:33-39`).
