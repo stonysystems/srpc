@@ -614,8 +614,11 @@ transpiler fixes:**
 Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
 `Verified:` numbers are measured on that revision.
 
-- [ ] **S0. A fresh build tree must build the battery (a build bug found
-  2026-09-26).**
+- [x] **S0. A fresh build tree must build the battery (a build bug found
+  2026-09-26).** Done as `5a2997e`. The `srpc_runtime_imports` probe now does
+  `import std; import std.compat;`, so ninja builds the BMIs the modmap
+  names. Proven on a fresh tree: without the fix it fails with 14 battery
+  errors; with it the build, `ctest` 50/50 and a self-created TSan tree pass.
   - The battery programs and `rpcbench` compile against
     `goal0-battery-modules.modmap`. It names the std module BMIs
     (`@cmake_cxx_std@synth_0.dir/*.bmi`), but nothing in the build graph
@@ -625,6 +628,17 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - Likely fix: extend the scanned `srpc_runtime_imports` probe
     (`tests/runtime_imports.cc`) so it also imports the std modules the modmap
     lists. Verify on a fresh tree.
+- [ ] **S0b. A client connection accessed from two threads (a pre-existing
+  bug found 2026-09-26).**
+  - In rpcbench, the client thread and the poll thread both call
+    `request_async` on the same `Client`. The `RefCell` in
+    `Client::connection()` (`rpc/client.rs:1795`) then panics with "already
+    mutably borrowed".
+  - gdb caught it at the same frame in both the old and the new binaries, and
+    it explains every failed rpcbench trial.
+  - A `RefCell` reachable from two threads means a `Send`/`Sync` claim is
+    wrong somewhere. Find the claim, and fix the ownership rather than the
+    symptom.
 - [ ] **S1. Lion as pinned dependency crates, and the gate policy.**
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
@@ -740,11 +754,50 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
          keeps them; `test_timeout_race.cc:226-268` pins sticky TIMEOUT);
        - fix the battery tests that hold references into dead stack frames
          (`fiber_test.cc:404-418`, `fiber_runtime.cc:58-141,159-173`).
-    1. **The ready queue and driver.** The hook sits on the WAIT→READY edge in
+    1. [x] **The ready queue and driver.** Steps 1 and 2 were done together
+       as `f0e2dd2`.
+       - **Design:** there is one ready queue per thread, owned by that
+         thread's thread-local `Reactor`. It is reached through thread-locals
+         that hold plain values, so the pinned `Reactor` layout does not
+         change. The WAIT→READY edge enqueues only on the owner thread.
+         `run_loop` takes the queue whole on each pass (the length is checked
+         first, which keeps an idle pass at O(1)) and repeats until quiet.
+       - **Measured:** there is no ABI change (2060 symbols; the reactor
+         object has the same 387 strong symbols). cargo 293/0, `ctest` 50/50,
+         and ASan/UBSan/TSan 34/34 each. Tests are in
+         `tests/reactor_wake_on_change_rust.rs` (9) and
+         `ExtendedReactorTest.WakeOnChangeResumesOnlyInTheDrain`.
+       - **rpcbench:** fiber mode is about −2.8% on the mean (631–672k against
+         651–694k); the ranges overlap and the microbenchmark does not
+         reproduce it. The other modes are within the spread.
+
+       The original scope of step 1 was: The hook sits on the WAIT→READY edge in
        `event_test_impl` (`reactor.rs:2530`). It must be reachable through
        `test()` itself, because Mako increments vote counters directly and then
        calls `test()` (`paxos/commo.h:28-35`).
-    2. **Leaf events that change only through their own methods:**
+    2. [x] **Leaf events that change only through their own methods** (in
+       `f0e2dd2`). `QuorumEvent` is no longer composite. Findings that
+       constrain later steps:
+       - **Foreign-thread `set()`** on a converted untimed wait no longer
+         wakes the waiter. Before, the scan saw it only because of a race on
+         the status field.
+         - On a timed wait, the waiter still completes at its deadline,
+           because the deadline rule re-tests readiness. Mako's `~RaftServer`
+           set is on a timed wait, so it degrades to "wakes at the deadline"
+           rather than hanging.
+         - Events stay owner-thread-only (Rust already enforces this with
+           `!Send`). Mako should post a Job instead (see *Cross-thread
+           `set()`* below).
+       - **Step 4:** a composite's children are never in WAIT; `set()` moves
+         them INIT→DONE. The parent hook therefore belongs on the child's
+         INIT→DONE path.
+       - **Step 5:** predicate events are excluded from the queue. The ticket
+         design must make a pinged predicate event eligible for the queue.
+       - **S3:** the drain is inline in `run_loop`, so factoring it out for a
+         Lion driver adds a strong symbol (re-pinned in S7). The hook must
+         wake the driver when the queue goes from empty to non-empty.
+
+       The original scope of step 2 was:
        - `BoxEvent`;
        - `IntEvent` without a predicate;
        - `QuorumEvent`, after which its composite flag with no children
