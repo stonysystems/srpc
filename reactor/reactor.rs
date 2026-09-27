@@ -4773,6 +4773,10 @@ struct PollDriver {
     // Whether the driver task is being polled.  Its own drain covers what the
     // owner-side hooks would wake it for, so they skip the wake then.
     running: Cell<bool>,
+    // The descriptor whose transport task is inside handle_read, or -1.  That
+    // task reads its pending-write latch as soon as handle_read returns, so
+    // a reply sent from inside it (a fast handler's) needs no wake.
+    reading_fd: Cell<i32>,
     // The Lion timer the driver sleeps on, and the event deadline it was
     // armed for (u64::MAX when none).
     timer: RefCell<Option<lion_reactor::ResourceId>>,
@@ -4828,6 +4832,7 @@ fn pollthread_run(receiver: PollCmdReceiver, wake: Arc<PollDriverWake>) {
         stop: Cell::new(false),
         accepting: Cell::new(true),
         running: Cell::new(false),
+        reading_fd: Cell::new(-1),
         timer: RefCell::new(None),
         armed_us: Cell::new(u64::MAX),
     });
@@ -4960,9 +4965,11 @@ fn poll_driver_wake_fd_here(wake: &Arc<PollDriverWake>, fd: i32) -> bool {
     if !Arc::ptr_eq(&driver.wake, wake) {
         return false;
     }
-    // An fd with no registration yet (its AddPollable is still queued) needs
-    // nothing: a new registration reads its latch on its first poll.
-    poll_driver_wake_fd(driver, fd);
+    // A task inside handle_read, and an fd with no registration yet (its
+    // AddPollable is still queued), need nothing: both read the latch next.
+    if driver.reading_fd.get() != fd {
+        poll_driver_wake_fd(driver, fd);
+    }
     true
 }
 
@@ -5417,7 +5424,9 @@ fn poll_fd_task_poll(driver: &PollDriver, entry: &Rc<PollFdEntry>, cx: &mut Cont
         return Poll::Ready(());
     }
     if (entry.mode.get() & PollMode::READ) != 0 && poll_fd_take_ready(entry, cx, false) {
+        driver.reading_fd.set(entry.fd);
         poll_fd_entry_handle_read(entry);
+        driver.reading_fd.set(-1);
     }
     if poll_fd_entry_is_closed(entry) {
         poll_fd_task_retire(driver, entry);
