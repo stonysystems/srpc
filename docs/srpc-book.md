@@ -627,8 +627,9 @@ background disk executor.
 
 The reactor keeps a registry of fibers, an optional fiber reuse pool, and separate
 queues for scanned waiting and composite events. Events that wake on change use a
-per-thread ready queue instead, and timed waits a per-thread deadline map (see
-"Which events the loop tests"). It also retains parked future pollers and a queue
+per-thread ready queue instead, timed waits a per-thread deadline map, and
+composites per-thread links from their children (see "Which events the loop
+tests"). It also retains parked future pollers and a queue
 of task indices ready to be polled again. It does not own socket descriptors or
 perform `epoll_wait`.
 
@@ -1031,8 +1032,8 @@ handles. Custom `IntEvent` predicates also avoid the mutable counter wrapper.
 
 ### Which events the loop tests
 
-`BoxEvent`, an `IntEvent` without a predicate, `QuorumEvent`, `TimeoutEvent` and
-`NeverEvent` wake on change. Their `set`, `vote_yes`, `vote_no` and `test` calls
+`BoxEvent`, an `IntEvent` without a predicate, `QuorumEvent`, `TimeoutEvent`,
+`NeverEvent`, `WaitAny` and `WaitAll` wake on change. Their `set`, `vote_yes`, `vote_no` and `test` calls
 move a waiting event to `READY` and queue it on the owner thread; the next
 `run_loop` pass resumes the waiter without testing the event again. The call
 itself never resumes the waiter. Code that writes such an event's fields
@@ -1051,11 +1052,18 @@ ready, even if nothing tested it, and otherwise as `TIMEOUT`. So a timed wait
 whose event was set from another thread, or written without `test()`, still
 completes, but only at its deadline.
 
-Child changes do not directly resume a fiber waiting on a composite. The owner
-must call `run_loop` to test `WaitAny`, `WaitAll` and predicate `IntEvent`s,
-serve deadlines, and then resume ready fibers. The poll worker does this on each
-pass. A manually driven reactor must do it explicitly, including the deadline
-check for timed waits.
+A `WaitAny` or `WaitAll` hears from its children. Each child keeps a list of the
+composites it belongs to, and a `set` or `test` that finds the child ready tests
+each of them, so a waiting composite becomes `READY` and is queued like any other
+event; a child `TimeoutEvent` does this at its deadline. Child changes still do
+not resume the composite's fiber directly: the next `run_loop` pass does. As with
+a leaf, a child whose fields are written directly needs a `test()` before its
+composites see the change.
+
+The owner must call `run_loop` to test predicate `IntEvent`s, serve deadlines,
+and resume ready fibers. The poll worker does this on each pass. A manually
+driven reactor must do it explicitly, including the deadline check for timed
+waits.
 
 ### Rules and gotchas
 

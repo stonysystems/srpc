@@ -81,15 +81,15 @@ fn timed_out_waits_leave_the_waiting_and_composite_queues() {
         });
     }
 
-    // Every wait is parked, and each has a live deadline. A NeverEvent wakes
-    // on change since S4 step 3 (nothing can make it ready), so the leaf
-    // joins no scanned queue; each WaitAny is still scanned, once as waiting
-    // and once as composite. Without this check, returning to baseline below
-    // would prove nothing.
+    // Every wait is parked, and each has a live deadline. Since S4 steps 3
+    // and 4 neither a NeverEvent nor a WaitAny joins a scanned queue: nothing
+    // can make the leaf ready, and the composite's children tell it when they
+    // become ready. Without this check, returning to baseline below would
+    // prove nothing.
     assert_eq!(resumed.get(), 0, "a wait finished before its deadline");
     assert_eq!(
         queue_lens(&reactor),
-        (baseline.0 + N, baseline.1 + N, baseline.2 + 2 * N)
+        (baseline.0, baseline.1, baseline.2 + 2 * N)
     );
 
     drive_until_resumed(&reactor, &resumed, 2 * N);

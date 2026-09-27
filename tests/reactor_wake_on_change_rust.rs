@@ -7,8 +7,9 @@
 // This is S4 steps 1-2 of docs/dev/lion-runtime-plan.md. The converted events
 // are BoxEvent, IntEvent without a predicate (which covers SharedIntEvent's
 // wait_until_gte and QuorumEvent's finalize_event_), and QuorumEvent.
-// Timers moved to a deadline map in step 3 (tests/reactor_deadline_rust.rs).
-// Predicate IntEvents and composites stay on the per-pass scan.
+// Timers moved to a deadline map in step 3 (tests/reactor_deadline_rust.rs)
+// and composites to parent links in step 4 (tests/reactor_composite_rust.rs).
+// Predicate IntEvents stay on the per-pass scan.
 //
 // Every #[test] runs on its own thread, so each one gets a fresh thread-local
 // Reactor. Queue baselines are still measured rather than assumed.
@@ -109,9 +110,9 @@ fn self_notifying_waits_join_no_scanned_queue() {
     assert_eq!(queue_lens(&reactor), (baseline.0, baseline.1, baseline.2 + 1));
 
     // Control: the scan still takes what S4 has not converted yet. A
-    // predicate IntEvent joins waiting_events_, and a WaitAny joins both
-    // scanned queues. A NeverEvent wakes on change since step 3: nothing can
-    // make it ready, so its timed wait only has a deadline.
+    // predicate IntEvent joins waiting_events_. A NeverEvent wakes on change
+    // since step 3 (nothing can make it ready, so its timed wait only has a
+    // deadline), and a WaitAny since step 4 (its children tell it).
     let predicate_ev = create_sp_int_event(1);
     *predicate_ev.state_.test_.borrow_mut() = Some(Box::new(|_value: i32| -> bool { false }));
     let never = create_sp_never_event();
@@ -131,7 +132,7 @@ fn self_notifying_waits_join_no_scanned_queue() {
     }
     assert_eq!(
         queue_lens(&reactor),
-        (baseline.0 + 2, baseline.1 + 1, baseline.2 + 2),
+        (baseline.0 + 1, baseline.1, baseline.2 + 2),
         "the scanned classes must still join the scanned queues"
     );
 
@@ -155,7 +156,7 @@ fn self_notifying_waits_join_no_scanned_queue() {
         assert_eq!(ev.status(), EventStatus::DONE);
     }
     // The timed event's deadline stopped being live when it was dispatched.
-    assert_eq!(queue_lens(&reactor), (baseline.0 + 2, baseline.1 + 1, baseline.2 + 1));
+    assert_eq!(queue_lens(&reactor), (baseline.0 + 1, baseline.1, baseline.2 + 1));
 }
 
 #[test]

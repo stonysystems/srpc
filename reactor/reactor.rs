@@ -267,16 +267,16 @@ trait EventCore: EventPollable {
     fn core_is_composite(&self) -> bool;
     // True when this event's readiness changes only through something that
     // tests it: its own methods (`set`, `vote_*`, or a direct `test()` after a
-    // field write), or, for a TimeoutEvent, the reactor's deadline map, which
-    // tests it at its deadline.  Such an event wakes on change: its WAIT->READY
-    // edge in event_test_impl queues it on the owner's ready queue, so
-    // run_loop never re-tests it.  False keeps the event on run_loop's
-    // per-pass scan, because something outside the event (a child event, a
-    // predicate over foreign state) can make it ready.  An IntEvent answers
+    // field write); for a TimeoutEvent, the reactor's deadline map, which
+    // tests it at its deadline; for a WaitAny or WaitAll, a child's test,
+    // which tests its parents (see event_parents_notify).  Such an event
+    // wakes on change: its WAIT->READY edge in event_test_impl queues it on
+    // the owner's ready queue, so run_loop never re-tests it.  False keeps the
+    // event on run_loop's per-pass scan, because something outside the event
+    // (a predicate over foreign state) can make it ready.  An IntEvent answers
     // per instance: installing a `test_` predicate hands readiness to that
     // predicate, so the predicate must be installed before `wait`.  This is S4
-    // of docs/dev/lion-runtime-plan.md; composites and predicate IntEvents are
-    // still scanned.
+    // of docs/dev/lion-runtime-plan.md; predicate IntEvents are still scanned.
     fn core_self_notifying(&self) -> bool;
 }
 
@@ -744,7 +744,9 @@ impl EventCore for WaitAny {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { true }
-    fn core_self_notifying(&self) -> bool { false }
+    // Its children test it when they become ready (event_parents_notify), so
+    // its WAIT->READY edge queues it like a leaf's.
+    fn core_self_notifying(&self) -> bool { true }
 }
 
 #[repr(C)]
@@ -759,6 +761,8 @@ pub struct WaitAll {
 
 impl WaitAll {
     pub fn add_event(&self, x: Arc<dyn EventPollable>) {
+        // The child tells this parent when it becomes ready (S4 step 4).
+        event_parent_link::<()>(&x, &self.self_);
         // Bind the guard, then deref — chaining `.borrow_mut().push(x)`
         // mis-lowers to push(Vec::from_iter(x)). See §7.33.
         let mut g = self.events_.borrow_mut();
@@ -827,7 +831,9 @@ impl EventCore for WaitAll {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { true }
-    fn core_self_notifying(&self) -> bool { false }
+    // Its children test it when they become ready (event_parents_notify), so
+    // its WAIT->READY edge queues it like a leaf's.
+    fn core_self_notifying(&self) -> bool { true }
 }
 
 pub const kDefaultStackBytes: usize = 1usize << 20;
@@ -1466,6 +1472,16 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
 //   are deleted lazily (see EventDeadline).  event_next_deadline_us gives the
 //   earliest deadline to a driver that has to sleep until it (S3).
 //
+// * Parent links (step 4).  A WaitAny or WaitAll child cannot tell its
+//   parents anything through `dyn EventPollable`, and the pinned event
+//   layouts have no room for a list, so the links live here, keyed by the
+//   child's address (event_address).  create_sp_waitany,
+//   create_sp_waitall_from and WaitAll::add_event record them; a test() that
+//   finds the child ready tests the parents (event_parents_notify), whose
+//   WAIT->READY edge then queues them.  A composite holds its children
+//   strongly, so a child's address cannot be reused while any parent it lists
+//   is alive; entries whose parents all died are pruned lazily.
+//
 // Resumption stays deferred throughout: an edge or a deadline only marks the
 // event, and the owner's next drain resumes the waiter through the one
 // dispatch block in run_loop, with the same DONE de-dup, registry, PAUSED,
@@ -1527,6 +1543,21 @@ struct EventWakeState {
     deadline_sweep_at: Cell<usize>,
     // The smallest key in `deadlines`, or u64::MAX when it is empty.
     next_deadline: Cell<u64>,
+    // Each composite child's parents, keyed by the child's event_address.
+    parents: RefCell<HashMap<usize, EventParentList>>,
+    // Entries in `parents`; 0 lets event_test_impl skip the lookup.
+    parent_keys: Cell<usize>,
+    // When `parent_keys` passes this, event_parent_link sweeps.
+    parents_sweep_at: Cell<usize>,
+}
+
+// One composite child's parents.  Weak, so a link never keeps a parent alive.
+// Dead links are pruned when the list passes `prune_at`, which is then re-armed
+// at twice the live length, so a long-lived child shared by many short-lived
+// parents costs O(1) amortized per link.
+struct EventParentList {
+    parents: Vec<Weak<dyn EventPollable>>,
+    prune_at: usize,
 }
 
 thread_local! {
@@ -1724,6 +1755,123 @@ fn event_deadline_take_expired<WakeDomain>(reactor: &Reactor) -> Vec<EventDeadli
     expired
 }
 
+// The address that keys an event in `parents`: its data pointer, the same
+// whichever handle reaches it.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_address<WakeDomain>(ev: &Arc<dyn EventPollable>) -> usize {
+    let ptr: *const dyn EventPollable = Arc::as_ptr(ev);
+    ptr as *const u8 as usize
+}
+
+// Record that `parent` (a WaitAny or WaitAll) waits on `child`.  Owner thread
+// only.  Called after reactor_setup_sp_event: before it, the parent has no
+// self weak-link, and setup's Arc::get_mut must see no other reference.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_parent_link<WakeDomain>(child: &Arc<dyn EventPollable>, parent: &Weak<dyn EventPollable>) {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
+        return;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    let key: usize = event_address::<WakeDomain>(child);
+    {
+        let mut map_guard: RefMut<HashMap<usize, EventParentList>> = state.parents.borrow_mut();
+        let list: &mut EventParentList = map_guard.entry(key).or_insert(EventParentList {
+            parents: Vec::new(),
+            prune_at: 8usize,
+        });
+        list.parents.push(parent.clone());
+        if list.parents.len() > list.prune_at {
+            list.parents.retain(move |p: &Weak<dyn EventPollable>| -> bool { p.strong_count() > 0usize });
+            list.prune_at = list.parents.len() * 2usize + 8usize;
+        }
+        state.parent_keys.set(map_guard.len());
+    }
+    if state.parent_keys.get() > state.parents_sweep_at.get() {
+        event_parent_sweep::<WakeDomain>(state);
+    }
+}
+
+// Drop every child entry whose parents have all died, and re-arm the sweep
+// threshold at twice the live count.  Tests nothing.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_parent_sweep<WakeDomain>(state: &EventWakeState) {
+    let mut map_guard: RefMut<HashMap<usize, EventParentList>> = state.parents.borrow_mut();
+    let mut keys: Vec<usize> = Vec::new();
+    {
+        let ks = map_guard.keys();
+        for key in ks {
+            keys.push(*key);
+        }
+    }
+    for key in keys {
+        // `mut` keeps the C++ binding non-const, so the list moves back in.
+        let mut list: EventParentList = map_guard.remove(&key).unwrap();
+        list.parents.retain(move |p: &Weak<dyn EventPollable>| -> bool { p.strong_count() > 0usize });
+        if !list.parents.is_empty() {
+            list.prune_at = list.parents.len() * 2usize + 8usize;
+            map_guard.insert(key, list);
+        }
+    }
+    state.parent_keys.set(map_guard.len());
+    state.parents_sweep_at.set(map_guard.len() * 2usize + 64usize);
+}
+
+// `ev` was just tested and found ready: test each parent that can still use
+// it.  A parent that is waiting takes its WAIT->READY edge, which queues it
+// for the owner's drain; a parent nobody waits on yet (INIT) moves to DONE and
+// tells its own parents in turn, which is how nested composites propagate.
+// A parent already DONE, READY or TIMEOUT has nothing to gain, and is left
+// alone, so a satisfied composite is never moved back to INIT here.  The
+// list is copied out first: a parent's test() re-enters this function.
+// Owner thread only; costs one thread-local read while no composite exists.
+fn event_parents_notify<W: EventCore>(ev: &W) {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
+        return;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    if state.parent_keys.get() == 0usize {
+        return;
+    }
+    // The links live on the owner thread, like the ready queue.
+    if std::thread::current().id() != ev.core_owner_thread() {
+        return;
+    }
+    let self_ref: Option<Arc<dyn EventPollable>> = ev.core_self().upgrade();
+    if self_ref.is_none() {
+        return;
+    }
+    let key: usize = event_address::<()>(&self_ref.unwrap());
+    let mut parents: Vec<Weak<dyn EventPollable>> = Vec::new();
+    {
+        let map_guard: RefMut<HashMap<usize, EventParentList>> = state.parents.borrow_mut();
+        let found: Option<&EventParentList> = map_guard.get(&key);
+        if let Some(list) = found {
+            let list: &EventParentList = list;
+            for p in list.parents.iter() {
+                parents.push(p.clone());
+            }
+        }
+    }
+    for p in parents.iter() {
+        let upgraded: Option<Arc<dyn EventPollable>> = p.upgrade();
+        if let Some(parent) = upgraded {
+            let parent: Arc<dyn EventPollable> = parent;
+            let status: EventStatus = (*parent).status();
+            if status == EventStatus::WAIT || status == EventStatus::INIT {
+                (*parent).test();
+            }
+        }
+    }
+}
+
 // Counters over this thread's event wake state, for tests and diagnostics.
 // A plain aggregate with no methods, like StacklessCancelReport, so it
 // contributes no symbol.
@@ -1737,6 +1885,11 @@ pub struct EventWakeReport {
     // All deadline entries, counting ended waits whose entries are deleted
     // lazily and have not been dropped yet.
     pub deadline_entries: usize,
+    // Composite children with a parent list, counting lists whose parents
+    // have all died and are not swept yet.
+    pub composite_children: usize,
+    // Parent links over all those lists, dead ones included.
+    pub parent_links: usize,
 }
 
 // Generic for the same reason as stackless_cancel_report: a template adds no
@@ -1747,6 +1900,8 @@ pub fn event_wake_report<WakeDomain>() -> EventWakeReport {
         ready_queued: 0usize,
         live_deadlines: 0usize,
         deadline_entries: 0usize,
+        composite_children: 0usize,
+        parent_links: 0usize,
     };
     let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
     if state_ptr.is_null() {
@@ -1758,14 +1913,22 @@ pub fn event_wake_report<WakeDomain>() -> EventWakeReport {
         report.ready_queued = queue_guard.len();
     }
     report.deadline_entries = state.deadline_entries.get();
-    let map_guard: RefMut<BTreeMap<u64, Vec<EventDeadline>>> = state.deadlines.borrow_mut();
-    let vs = map_guard.values();
-    for entries in vs {
-        for entry in entries.iter() {
-            if event_deadline_is_live::<WakeDomain>(entry) {
-                report.live_deadlines += 1usize;
+    {
+        let map_guard: RefMut<BTreeMap<u64, Vec<EventDeadline>>> = state.deadlines.borrow_mut();
+        let vs = map_guard.values();
+        for entries in vs {
+            for entry in entries.iter() {
+                if event_deadline_is_live::<WakeDomain>(entry) {
+                    report.live_deadlines += 1usize;
+                }
             }
         }
+    }
+    let parents_guard: RefMut<HashMap<usize, EventParentList>> = state.parents.borrow_mut();
+    report.composite_children = parents_guard.len();
+    let lists = parents_guard.values();
+    for list in lists {
+        report.parent_links += list.parents.len();
     }
     report
 }
@@ -2489,7 +2652,13 @@ pub fn create_sp_never_event() -> Arc<NeverEvent> {
 }
 
 pub fn create_sp_waitany(a: Arc<dyn EventPollable>, b: Arc<dyn EventPollable>) -> Arc<WaitAny> {
-    reactor_setup_sp_event::<WaitAny>(waitany_make(a, b))
+    let sp: Arc<WaitAny> = reactor_setup_sp_event::<WaitAny>(waitany_make(a, b));
+    // Each child tells this parent when it becomes ready (S4 step 4).  Linked
+    // here, not in waitany_make: setup must see the only reference.
+    for child in sp.events_.iter() {
+        event_parent_link::<()>(child, &sp.self_);
+    }
+    sp
 }
 
 pub fn create_sp_waitall() -> Arc<WaitAll> {
@@ -2497,7 +2666,13 @@ pub fn create_sp_waitall() -> Arc<WaitAll> {
 }
 
 pub fn create_sp_waitall_from(evs: &Vec<Arc<dyn EventPollable>>) -> Arc<WaitAll> {
-    reactor_setup_sp_event::<WaitAll>(waitall_make_from(evs))
+    let sp: Arc<WaitAll> = reactor_setup_sp_event::<WaitAll>(waitall_make_from(evs));
+    // Each child tells this parent when it becomes ready (S4 step 4).  Linked
+    // here, not in waitall_make_from: setup must see the only reference.
+    for child in evs.iter() {
+        event_parent_link::<()>(child, &sp.self_);
+    }
+    sp
 }
 
 pub fn create_sp_box_event<T: Clone + Default + 'static>() -> Arc<BoxEvent<T>> {
@@ -2958,10 +3133,11 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
             reactor_rc.waiting_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
         }
 
-        // Composite events (WaitAll/WaitAny) need periodic polling: a child
-        // can become ready without testing its parent.  They also join a
-        // smaller scanned queue.
-        if ev.core_is_composite() {
+        // A composite waited off its owner thread cannot hear from its
+        // children, whose links live on the owner's thread, so it still joins
+        // the scanned composite queue.  On the owner thread the children
+        // test it (event_parents_notify) and it joins no scanned queue.
+        if ev.core_is_composite() && !wakes_on_change {
             reactor_rc.composite_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
         }
 
@@ -3023,6 +3199,10 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
         } else {
             reactor_verify(false);
         }
+        // A composite waiting on this event learns of it here (S4 step 4):
+        // on the child's INIT->DONE edge from set(), a direct test(), or a
+        // child timer's deadline.
+        event_parents_notify(ev);
         return true;
     } else if ev.core_status().get() == EventStatus::DONE {
         ev.core_status().set(EventStatus::INIT);
@@ -3584,7 +3764,8 @@ fn reactor_tls_get() -> Rc<Reactor> {
             // is handed over rather than freed, so no event is dropped while
             // this slot is borrowed; its entries name the earlier reactor's
             // fibers, which the new owner's registry check skips.  The first
-            // deadline sweep runs at 64 entries (see event_deadline_sweep).
+            // deadline and parent sweeps run at 64 entries (see
+            // event_deadline_sweep and event_parent_sweep).
             if event_wake_state_th_.with(|slot| slot.get()).is_null() {
                 let fresh: Box<EventWakeState> = Box::new(EventWakeState {
                     ready: RefCell::new(VecDeque::<Arc<dyn EventPollable>>::new()),
@@ -3592,6 +3773,9 @@ fn reactor_tls_get() -> Rc<Reactor> {
                     deadline_entries: Cell::new(0usize),
                     deadline_sweep_at: Cell::new(64usize),
                     next_deadline: Cell::new(u64::MAX),
+                    parents: RefCell::new(HashMap::<usize, EventParentList>::new()),
+                    parent_keys: Cell::new(0usize),
+                    parents_sweep_at: Cell::new(64usize),
                 });
                 event_wake_state_th_.with(|slot| slot.set(Box::into_raw(fresh)));
             }
