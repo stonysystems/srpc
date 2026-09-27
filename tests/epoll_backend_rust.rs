@@ -4,7 +4,7 @@
 // Every expectation below was recorded by running the same inputs through
 // Lion's own reference backend, `lion_reactor::os::MioBackend` (Lion 3496113,
 // mio 1.2.3), in a scratch harness that also ran SRPC's backend behind the
-// forwarding `impl OsBackend` S1 will add:
+// forwarding `impl OsBackend` that S1 adds (reactor/epoll_wrapper.rs):
 //
 // * MIO_FLAG_TABLE is mio's `Event::is_*` accessors applied to every subset of
 //   {IN, PRI, OUT, ERR, HUP, RDHUP} (mio's `Event` is `repr(transparent)` over

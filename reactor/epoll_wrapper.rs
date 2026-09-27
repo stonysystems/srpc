@@ -4,8 +4,8 @@
 //! Two surfaces live here. `Epoll` and the `epoll_*_impl` functions serve the
 //! current `PollThread`. `SrpcEpollBackend` is the OS backend for the Lion
 //! runtime (docs/dev/lion-runtime-plan.md, S2): it meets the contract of
-//! `lion_reactor::os::OsBackend` method for method, so the trait impl that S1
-//! adds only forwards.
+//! `lion_reactor::os::OsBackend` method for method, so the trait impls at the
+//! end of this module (S1) only forward.
 
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -388,6 +388,9 @@ impl SrpcEpollInterrupt {
 pub struct SrpcEpollBackend {
     poll_fd_: LegacyOwnedFd,
     interrupt_: Arc<SrpcEpollInterrupt>,
+    // The Lion trait's wait batch, reused so a park allocates nothing. Only
+    // `impl OsBackend` touches it; between waits it is empty.
+    lion_batch_: Vec<SrpcOsEvent>,
 }
 
 impl SrpcEpollBackend {
@@ -422,6 +425,7 @@ impl SrpcEpollBackend {
         Ok(SrpcEpollBackend {
             poll_fd_: poll_owner,
             interrupt_: Arc::new(SrpcEpollInterrupt { event_fd_: event_owner }),
+            lion_batch_: Vec::new(),
         })
     }
 
@@ -526,5 +530,75 @@ impl SrpcEpollBackend {
     /// wake the owner's wait.
     pub fn interrupt(&self) -> Arc<SrpcEpollInterrupt> {
         self.interrupt_.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lion's OS seam (plan item S1). These impls only forward: each converts
+// Lion's type to its SRPC mirror field for field and calls the inherent method
+// of the same name, which owns the policy above. Inherent methods win method
+// resolution, so every call below names `SrpcEpollBackend::` or
+// `SrpcEpollInterrupt::` to make the forwarding target explicit.
+
+fn srpc_interest(interest: lion_reactor::Interest) -> SrpcInterest {
+    SrpcInterest { readable: interest.readable, writable: interest.writable }
+}
+
+fn lion_os_event(event: &SrpcOsEvent) -> lion_reactor::os::OsEvent {
+    lion_reactor::os::OsEvent {
+        token: event.token,
+        readable: event.readable,
+        writable: event.writable,
+        error: event.error,
+        read_closed: event.read_closed,
+        write_closed: event.write_closed,
+    }
+}
+
+impl lion_reactor::os::OsBackend for SrpcEpollBackend {
+    fn register(&mut self, fd: lion_reactor::os::RawFd, token: usize, interest: lion_reactor::Interest) -> std::io::Result<()> {
+        SrpcEpollBackend::register(self, fd, token, srpc_interest(interest))
+    }
+
+    fn reregister(&mut self, fd: lion_reactor::os::RawFd, token: usize, interest: lion_reactor::Interest) -> std::io::Result<()> {
+        SrpcEpollBackend::reregister(self, fd, token, srpc_interest(interest))
+    }
+
+    fn deregister(&mut self, fd: lion_reactor::os::RawFd) -> std::io::Result<()> {
+        SrpcEpollBackend::deregister(self, fd)
+    }
+
+    // SrpcEpollBackend::wait takes as many events as its vector has room for,
+    // at most 100 (100 when it has none), so the batch carries the room Lion's
+    // vector has. Lion's reactor passes an empty vector with capacity 1024:
+    // the batch is then the reused one, sized once for 100, and a park
+    // allocates nothing. Only a caller with room for 1 to 99 events gets a
+    // fresh batch, allocated for exactly that many. The mirror events are
+    // converted field for field on the way out.
+    fn wait(&mut self, events: &mut Vec<lion_reactor::os::OsEvent>, timeout: Option<Duration>) -> std::io::Result<()> {
+        let room = events.capacity() - events.len();
+        let mut batch = std::mem::take(&mut self.lion_batch_);
+        if room != 0_usize && room < EPOLL_BATCH_CAPACITY {
+            batch = Vec::with_capacity(room);
+        } else if batch.capacity() < EPOLL_BATCH_CAPACITY {
+            batch.reserve_exact(EPOLL_BATCH_CAPACITY);
+        }
+        let result = SrpcEpollBackend::wait(self, &mut batch, timeout);
+        for event in batch.iter() {
+            events.push(lion_os_event(event));
+        }
+        batch.clear();
+        self.lion_batch_ = batch;
+        result
+    }
+
+    fn interrupt(&self) -> Arc<dyn lion_reactor::os::OsInterrupt> {
+        SrpcEpollBackend::interrupt(self)
+    }
+}
+
+impl lion_reactor::os::OsInterrupt for SrpcEpollInterrupt {
+    fn signal(&self) -> std::io::Result<()> {
+        SrpcEpollInterrupt::signal(self)
     }
 }
