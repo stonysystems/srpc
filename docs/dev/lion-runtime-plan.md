@@ -435,14 +435,28 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     - **Fail-closed rules:** any other Verus macro, a `verus!` outside item
       position, a macro expanding to `verus!`, or a cfg the pass cannot
       evaluate is a hard error.
-  - [ ] **T1b. Run the erasure out of process.** Linking `verus_syn` turns on
+  - [x] **T1b. Run the erasure out of process.** Done as `1a63d8f4`. The
+    helper binary is `rusty-cpp-verus-erase`, and the transpiler no longer
+    links `verus_syn`. With the flag off, peak RSS is 85 MB (1689f438: 84 MB;
+    T1: 175 MB). Version and git rev are checked on every response and printed
+    by `--verus-build-info`; SRPC's `--build-info` keys stay as they were.
+    SRPC's CMake must build `-p verus-erase` in a *separate* cargo invocation,
+    or `span-locations` comes back. Linking `verus_syn` turns on
     proc-macro2 `span-locations` for the whole transpiler. On SRPC's crate, even
     with the flag off, peak RSS goes from 84 to 173 MB and CPU time from 56 to
     72 s. Run `verus-erase` as a helper binary that is invoked only under
     `--verus-exec`.
     - Also expose `VERUS_GIT_REV` in `--build-info`, for S1's version-coupling
       check.
-- [ ] **T2. Lowering the ghost residue.** `EraseAll` still leaves ghost
+- [x] **T2. Lowering the ghost residue.** Done as `2619d788`, in a pre-pass
+  (`transpiler/src/verus_lower.rs`) that runs only for crates where stage 1
+  erased something. Ghost values become a marker that codegen maps to
+  `rusty::Ghost` (`include/rusty/marker.hpp`).
+  - A residue scan of the executor and reactor output finds 0 hits for
+    vstd/View/Ghost/nat/int/Seq/Map; T1 had more than 1,000.
+  - Known limits: pruning is keyed by identifier, and the ghost-flow audit
+    does not follow pattern bindings.
+  - `gate.sh --with-cache` is still owed for the header change. `EraseAll` still leaves ghost
   residue in executable positions. Measured on Lion's crates (see §8 for the
   per-crate counts):
   - `Ghost<T>` fields, tuple elements and locals, for example
@@ -477,12 +491,28 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
   - **Fail closed.** A ghost-typed value flowing into a non-ghost position, or
     any surviving `vstd::` path not covered by T3, is a hard transpile error.
     It is never a TODO.
-- [ ] **T3. The vstd executable surface table.**
+- [x] **T3. The vstd executable surface table.** Done as `2619d788`. Across
+  all eight Lion crates, the only vstd executable items used are two
+  `Vec::set` calls. The table covers everything `vstd::prelude` brings into
+  scope; string methods are errors.
   - A small, explicit table maps the vstd executable items Lion uses to C++.
     `Vec::set(i, x)` becomes index assignment; it appears at
     `lion-slab/src/slab.rs:103`. The 11 `.set(` call sites across executor, reactor and slab (§8) are not all vstd's; Phase 0 classifies them.
   - Phase 0 produces the complete list. Unknown vstd executable items are
     errors.
+- **Status after T3 (2026-09-26):**
+  - **Slots:** slab has 0, timer-wheel 1 (`derive(Copy)`). The executor has 21
+    and the reactor 32, measured on a scratch copy of aa5bebe with U9 written
+    out by a script. All of them are T4 (cross-crate `lion_*` paths, `pub use`
+    re-exports of spec items, module naming, namespace wrapping) or T5
+    (`derive(Copy)`, orphan trait impls).
+  - **Compile blockers:**
+    - T4: `vec_map::` qualification into a module that exports into the
+      global namespace; `--crate-namespace-wrap` emitting an invalid dotted
+      namespace; `export using` in crate-root modules; hyphenated module
+      names.
+    - T5: `Vec::with_capacity` inferring `size_t` instead of `Option<V>`;
+      vec_port's `resize_with` iterator lacking `for_each`.
 - [ ] **T4. Multi-crate crate mode.** Path dependencies are already walked
   recursively (`main.rs:2712-2745`), but these pieces are needed:
   - **Per-crate C++ namespaces and module names.** For example
