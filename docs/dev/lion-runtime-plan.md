@@ -557,6 +557,17 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     for insert, remove, advance and fire. This is the existing command. Its
     stages run the Rust `cargo test` baseline, transpile, compile the C++, and
     run it (`docs/rusty-cpp-transpiler.md:3105-3120`).
+- [ ] **T7. A leak in rusty-cpp's btree port (found in S4, 2026-09-27).**
+  - The btree port's `remove` copies the value out and never destroys the
+    original. SRPC's step 3 avoids this by moving entries out before `remove`.
+  - The same bug leaves one `Rc<Fiber>` behind on every `fibers_.remove` in
+    `recycle()`: `strong_count` is 3 where 2 is expected. It also affects the
+    worker's job set.
+  - The battery's leak-check suppressions currently hide the fiber case.
+  - Fix it in rusty-cpp: the port, or its patcher if the vendored `.cppm` is
+    generated. Run `gate.sh --with-cache`, which is required for port changes.
+    Then drop the corresponding SRPC suppressions and prove the leak is gone
+    under ASan.
 - **Side benefit, not in scope.** Once T1–T3 exist, SRPC's own canonical
   modules could carry in-body Verus proofs in `verus!{}` form. That lifts the
   "no in-body `proof!`" limit in `docs/verification.md`, because the transpiler
@@ -1060,6 +1071,14 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
        - The owner re-tests only the pinged events.
        - No periodic re-test task is needed: every assignment of `test_` has
          such a publisher.
+  - **Update (2026-09-27, after step 5):** `EventPing` (in `63fd412`) is a
+    ready-made foreign-safe `set()`: publish the state, then call
+    `event_ping`. Mako's `~RaftServer` can use it instead of posting a Job.
+  - One unexplained leak report: in the step-3 ASan run, `srpc_runtime_parity`
+    once reported a 24-byte leak of the `Arc` that `bind_channel_direct`
+    allocates on the S0b client path. It did not recur in 3 battery re-runs,
+    15 runs of that test, or 200 runs of `test_runtime_parity`. Watch for it
+    in S8.
   - **Cross-thread `set()`.** SRPC never calls `set()` from a foreign thread.
     Events are `!Send`, and foreign publishers go through ingress queues.
     - Mako does, in `~RaftServer` (`raft/server.cc:1826-1830`, and
