@@ -706,11 +706,16 @@ current reactor for you.
 `Arc<PollThread>`. Cloning that handle shares the command sender and shutdown
 state. It does not expose the worker's reactor for use on another thread.
 
-The worker waits for I/O, handles readiness callbacks and commands, runs jobs,
-and calls its own `Reactor::run_loop(false, true)`. `Epoll::Wait` uses a 1 ms
-maximum idle wait. This keeps an idle worker checking timers frequently; it is
-not a guaranteed timer resolution or a promise of 1000 passes per second.
-Callbacks and operating-system scheduling can delay a pass.
+The worker thread runs a Lion runtime over SRPC's epoll backend. One task on
+it, the driver, handles commands, runs jobs and calls the thread's own
+`Reactor::run_loop(false, true)`; each registered pollable has a task that
+waits for its descriptor and calls its readiness callbacks. The worker does
+not poll: commands, pings, event wakes and timer deadlines each wake the
+driver, and an idle worker sleeps until one does. Timers are
+millisecond-granular: the driver sleeps until the next deadline rounded up to
+a whole millisecond. A job whose `Ready()` is false is re-checked every
+millisecond while it waits, because `Job` has no wake. Callbacks and
+operating-system scheduling can still delay a wake.
 
 The handle's thread identifier is a native kernel thread ID used to avoid
 joining the worker from itself. The reactor's Rust `ThreadId` checks are a

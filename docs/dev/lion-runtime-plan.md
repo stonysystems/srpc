@@ -901,19 +901,183 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
         100. `MioBackend` ignores the capacity.
       - Token 0 is refused with EINVAL.
       - In C++ the method is `register_`.
-- [ ] **S3. Core swap.**
+- [ ] **S3. Core swap.** The Rust-lane half is done on `lion/s3-core` as
+  `04aebb2` (the swap and its tests), `5d2b20d` (a skipped self-wake) and
+  `e879b61` (an RPC echo benchmark); its results are at the end of this
+  item. The C++ half waits for T4/T5, the pin bump and S1's C++ half.
   - `PollThread` becomes one OS thread running one Lion runtime.
   - Stackless tasks go to Lion `spawn_local`.
   - Foreign wakes go through the Lion waker.
   - `Job`/`PollCommand` become an mpsc queue drained by a task that is woken on
     send, with no per-pass `try_recv`.
   - `reactor_spawn_stackless_task_with_result` keeps its C++ signature.
+  - **Result, Rust lane (2026-09-27).** The C++ lane was not run.
+    - **Shape.** The poll thread builds a Lion runtime over
+      `SrpcEpollBackend` itself (`Runtime` is `!Send`) and blocks in
+      `block_on` on the `JoinHandle` of one `spawn_local` task, the driver.
+      The root future is only that join, so all SRPC work runs in spawned
+      tasks, which is what Lion's scheduling argument is about. The old
+      1 ms loop (`PollThreadWorker::poll_loop`) is no longer run.
+    - **The driver** (`PollDriverTask`) does what a pass of the old loop
+      did apart from epoll. When woken, it drains the command channel,
+      applies deferred removals, wakes registrations with a pending write,
+      runs ready jobs, and calls `run_loop(false, true)`. That call is the
+      same drain a thread with no loop runs, so nothing was factored out
+      and no drain symbol was added. Then it sleeps on a Lion timer until
+      `event_next_deadline_us`, rounded up to whole milliseconds. A timer
+      that fires early, because Lion truncates its clock, finds nothing
+      due and re-arms. Resumption stays in the drain, and `create_run`
+      and `continue_fiber` stay synchronous.
+    - **Wake sources**, each on its own empty→non-empty edge, reach the
+      driver through one `PollDriverWake`, a pending flag plus the
+      driver's Lion waker. The driver clears the flag before each drain,
+      then publishes its waker and re-reads the flag before it sleeps.
+      - every `PollThread` command method, after its send;
+      - `event_ping` when it makes the ping ingress non-empty;
+      - the stackless ingress's first queued wake. On a `PollThread` this
+        serves only pollers registered directly with
+        `register_stackless_poller`;
+      - the ready queue's WAIT→READY edge taken outside the driver's poll;
+      - a deadline earlier than the one the driver sleeps until;
+      - a pending write, through the new public
+        `PollThread::notify_pending_write(fd)`.
+
+      A command sent on `sender_` directly waits for the next wake.
+    - **Jobs.** `Job::Ready` has no wake, so while a job waits the driver
+      re-arms a 1 ms re-check, the old loop's rate. With no waiting job,
+      nothing polls. Jobs now run in submission order. `JobSet` is keyed by
+      the job's Arc address, so the old loop ran jobs in address order,
+      while the client and server queue close jobs expecting them to run
+      before later ones. The new wake path allocates on the sending thread,
+      which moved those addresses:
+      `repeated_client_close_keeps_its_queued_retirement_valid` failed 4 of
+      100 runs with address order, against 0 of 100 on the old loop and 0
+      of 200 with submission order.
+    - **Pollables (the interim adapter).** Each registration gets a Lion
+      local task (`PollFdTask`) over `lion_reactor::AsyncFd`. It keeps the
+      old EPOLLET dispatch:
+      - one `handle_read` per read edge, with the edge consumed first;
+      - `handle_write` while the mode asks for writes. Write readiness is
+        consumed only when `handle_write` returns `NO_CHANGE`, which
+        `TcpConnection` does only after EAGAIN.
+
+      It reads the pending-write latch after every `handle_read`, so a fast
+      handler's reply goes out in the same poll, and whenever woken.
+      `TcpConnection::send_frame` now wakes its registration after setting
+      the latch; this replaces the sweep over every fd. The wake is keyed
+      by the fd read under the outbound gate and carries no mode, so a
+      reused descriptor wakes at most an unrelated registration, which
+      finds its latch clear. A pollable found closed is retired and closed,
+      which replaces the closed sweep. `Add`/`Remove`/`Close`/`UpdateMode`
+      keep the old worker's rules. The `AsyncFd` is dropped before the
+      proxy's descriptor lease.
+      - **Behaviour change:** Lion reports ERR and HUP as readiness in both
+        directions, so a failed socket reaches `handle_read` (recv fails or
+        reads EOF). `handle_error` is no longer called.
+    - **Stackless split.** On a `PollThread`, both spawn functions keep
+      their signatures and their inline first poll. A task still pending
+      becomes a Lion `spawn_local` task, and the first poll's waker forwards
+      to it. Elsewhere, and on a `PollThread` once its driver has stopped,
+      they use the `Reactor`'s own executor, which `run_loop` pumps, as
+      before. S7 revisits the split. A Lion task dropped at shutdown is
+      counted in `teardown_tasks` and logged at ERROR (W2).
+    - **Panics.** A task on the poll thread aborts the process if its poll
+      unwinds (`PollTaskUnwindAbort`). This is what `spawn_abort_on_panic`
+      did before Lion's tasks began catching panics.
+    - **Shutdown.** The driver returns on `Shutdown`. The thread unbinds
+      the wake hooks, unregisters every pollable without closing it (the
+      old cleanup), and drops the runtime on its own thread.
+    - **Measured (debug test build, this tree against the pre-S3 tree
+      running the same test file).**
+      - An idle `PollThread` with a registered connection makes 10 context
+        switches and uses 0.47–0.84 ms of CPU per second. The old loop made
+        921 and used 11.2 ms.
+      - Median wake latency from another thread to the work running on the
+        poll thread: a Job 78–145 µs, a stackless wake 61–86 µs, a
+        `FiberChannel` frame 90–161 µs, with p99 at most 369 µs. Before: a
+        Job 93 µs median but 1.08 ms p90, a frame 1.015 ms median.
+      - Fiber sleep lateness p50 206–283 µs, max 988 µs, and no sleep ended
+        early. Before: p50 758 µs, max 1.05 ms.
+    - **Benchmark** (`scripts/run_rpc_echo_bench.sh --compare e94dd7e
+      5d2b20d`, release, 8 alternating runs each, host load 13–20).
+      Medians, with the ranges old against new:
+      - latency with one request in flight: p50 1214 → 140 µs
+        (1198–1234 against 103–155), p99 1443 → 387 µs;
+      - a window of 64: 95k → 170k qps (89k–107k against 160k–197k), at
+        about 5 µs of CPU per request either way;
+      - a window of 512: 290k → 223k qps (265k–315k against 155k–260k).
+        CPU per request is 3.8–4.7 µs against 5.1–8.6 µs.
+
+      The old loop amortized each pass over every request that arrived in
+      that millisecond, which a deep pipeline fills. The driver wakes per
+      event. Its per-cycle cost is Lion's tick (a non-blocking `epoll_wait`,
+      an `Arc` waker per poll) plus the driver's and the transport tasks'
+      polls. A client send from another thread takes two hops: the driver,
+      then the transport task. The window-512 loss is outside the spread,
+      and is S8's to weigh. S5's writer task, woken directly by
+      `send_frame`, removes one hop from every client send.
+    - **Gate.** cargo 383 passed / 0 failed / 1 ignored (16 new tests in
+      `tests/pollthread_lion_rust.rs`), doc tests 2, clippy clean. The
+      isolated copy ran 385 / 0 / 1. The source-gate scripts that need no
+      transpiler all pass. Seventeen timing-sensitive test binaries passed
+      20 of 20 runs each at host load 65–110. The Rust `runtime_parity`
+      transcript matches `check_runtime_parity.py`'s `EXPECTED` in 5 of 5
+      runs.
+    - **Negative controls.** Sixteen mutations each turned a named test
+      red:
+      - dropping the wake from a command, a ping, the stackless ingress,
+        the ready queue, an earlier deadline or the TCP latch;
+      - the early waker not re-pointed;
+      - spawns kept off Lion;
+      - no job re-check;
+      - a self-waking driver;
+      - a leaked runtime;
+      - either stackless drop unreported;
+      - write or read readiness not consumed (both spin);
+      - jobs in address order.
+
+      `stackless_wake_pollthread_rust`'s foreign-wake test catches the
+      early-waker mutation only when its first Lion poll wins a race; the
+      new test sleeps first.
+    - **Dead code for S7** (no longer run by `PollThread`):
+      - `PollThreadWorker`, `g_current_poll_worker`, and the
+        `pollworker_*` helpers other than the ones the driver shares
+        (`job_ready`, `job_spawn_work`, `job_identity`, `pollable_proxy_fd`,
+        `pollable_proxy_mode`);
+      - `Epoll` and `epoll_open`/`epoll_add_impl`/`epoll_remove_impl`/
+        `epoll_update_impl`/`epoll_wait_impl`, and the `epoll_remove_count`
+        instrumentation;
+      - `JobSet`: the driver queues jobs in a `Vec`, in submission order;
+      - the `Pollable` trait's `check_pending_write_update` sweep role;
+      - on a `PollThread`, the `Reactor`'s own stackless executor, except
+        for directly registered pollers.
+    - **For the C++ half and T4/T5.** `reactor.rs` now calls `lion_executor`
+      and `lion_reactor` directly. These spellings are new to the emitter:
+      - four hand-written `impl Future` types, two of them with `Drop`, one
+        generic (`StacklessLionTask<T, OnReady>`) with a bound on the
+        `Future` impl and none on `Drop`;
+      - `impl Wake` for the forwarder;
+      - `Box<dyn OsBackend>` unsizing into `RuntimeBuilder::os_backend`,
+        `block_on` over a `JoinHandle`, and `spawn_local` of local types;
+      - `AsyncFd::poll_*_ready` returning a lifetime-bound guard, matched
+        as `Poll::Ready(Ok(..))`/`Poll::Ready(Err(..))`, and `try_io` with
+        a typed closure returning `io::Result<()>`;
+      - `ReactorHandle::register_timer`/`deregister_timer`, `IoResult`,
+        and `Instant + Duration` from Lion's `verus!` impls;
+      - `std::io::Error::from(ErrorKind::WouldBlock)`;
+      - abort-on-unwind through a `Drop` guard, which assumes a panic runs
+        destructors in the generated C++;
+      - a `thread_local!` raw `*const` pointer.
+    - **ABI.** `PollThread` gains a private field and the public
+      `notify_pending_write`. `EventPingIngress` and `StacklessWakeIngress`
+      gain a private field. The driver, the adapter and the forwarding add
+      private types and functions. S7 re-pins.
 - [ ] **S4. Fibers re-hosted on Lion.** The inventory was done on
   2026-09-26 (read-only, from the source, the C++ battery and Mako). Its
   findings drive the order below. Conversion steps 0–5 are done on the
   existing reactor (2026-09-27). No event waited on its owner thread is
-  re-tested per pass any more. What remains is the Lion driver, which needs
-  S3.
+  re-tested per pass any more. What remained was the Lion driver, which
+  S3's Rust-lane half provides (`04aebb2`).
   - Keep `srpc_fiber.c` and the `.S` switches.
   - **Resumption stays deferred.** `set()`, the `vote_*` methods and a direct
     `test()` call only move an event from WAIT to READY. A fiber resumes later,

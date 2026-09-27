@@ -55,16 +55,29 @@ runtime polls do not construct an unused `T`.
 
 ## What drives the executor
 
-`PollThread` spawns a `PollThreadWorker`. Its canonical `pollworker_poll_loop`
-dispatches epoll readiness, drains commands, processes deferred removals, and
-then calls `Reactor::get_reactor().run_loop(false, true)` once per pass. The
-reactor drains wake ingress, polls ready tasks, and returns completed slots to
-the free list. Native callers may also pump `run_loop` directly.
+Two executors run stackless tasks, depending on the thread (plan item S3 in
+`docs/dev/lion-runtime-plan.md`):
 
-The executor is cooperative and local to each reactor thread. A poll that does
-not return blocks that reactor's pass. Tasks do not migrate between reactors.
-The poll loop uses a 1 ms epoll timeout; it has no timer wheel or separate wake
-notification file descriptor.
+- **On a `PollThread`**, the thread runs a Lion runtime over
+  `SrpcEpollBackend`. The spawn functions poll a task once inline, as before;
+  a task still pending becomes a Lion `spawn_local` task, and the waker of
+  that first poll forwards to it. Lion wakes it from any thread through its
+  cross-thread queue and the backend's eventfd. A task the runtime drops at
+  shutdown is counted in `stackless_cancel_report().teardown_tasks` and logged
+  at ERROR.
+- **Everywhere else**, the task registers with the thread's `Reactor`. Its
+  `run_loop` drains wake ingress, polls ready tasks, and returns completed
+  slots to the free list. A thread with no loop must pump `run_loop` itself,
+  as `create_run` does.
+
+A `PollThread`'s driver task does the owner-side work: it drains commands and
+jobs and calls `run_loop(false, true)` when woken, and sleeps on a Lion timer
+until the next event deadline. Every source of work wakes it; there is no
+polling interval. The exception is a `Job` whose `Ready()` is false: it has
+no wake, so the driver re-checks it every millisecond while it waits.
+
+The executors are cooperative and local to their thread. A poll that does not
+return blocks the thread. Tasks do not migrate between threads.
 
 SRPC's I/O path still uses epoll and stackful fibers. Stackless futures run
 alongside that path; they do not replace the fiber blocking operations with an
