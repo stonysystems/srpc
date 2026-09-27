@@ -703,12 +703,12 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       wrong somewhere. Find the claim, and fix the ownership rather than the
       symptom.
 - [ ] **S1. Lion as pinned dependency crates, and the gate policy.** The
-  Rust-lane half is done on `lion/s1-rust` as `ceb8cb4` (Lion pin
-  `aa5bebe` -> `3496113`), `9d8a439` (dependencies and the allowlist gate),
-  `4b0f7b2` (the forwarding `OsBackend` impl) and `9881337` (the
-  `verify-lion` lane); its results are at the end of this item. The C++
-  half, the transpiler invocation below, waits for T4/T5 and a rusty-cpp
-  pin bump.
+  Rust-lane half is done on `lion/s1-rust` (rebased onto `e94dd7e`) as
+  `965376c` (Lion pin `aa5bebe` -> `3496113`), `2085e7c` (dependencies and
+  the allowlist gate), `eedc960` (the forwarding `OsBackend` impl) and
+  `53c5c4a` (the `verify-lion` lane); its results are at the end of this
+  item. The C++ half, the transpiler invocation below, waits for T4/T5 and
+  a rusty-cpp pin bump.
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
     `default-features = false`; `lion-slab`, `lion-timer-wheel` and the
@@ -817,7 +817,7 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
 - [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
   `SrpcEpollBackend` meets the contract below, and its results are at the
   end of this item. S1's Rust half added the forwarding
-  `impl lion_reactor::os::OsBackend` as `4b0f7b2`; its C++ lowering waits
+  `impl lion_reactor::os::OsBackend` as `eedc960`; its C++ lowering waits
   for T4/T5.
   - Implement Lion's U6 seam in canonical `reactor/epoll_wrapper.rs` over
     `srpc_epoll.c`.
