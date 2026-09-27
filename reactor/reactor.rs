@@ -265,6 +265,18 @@ trait EventCore: EventPollable {
     fn core_self(&self) -> &Weak<dyn EventPollable>;
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable>;
     fn core_is_composite(&self) -> bool;
+    // True when this event's readiness changes only through its own methods
+    // (`set`, `vote_*`, or a direct `test()` after a field write), each of
+    // which tests the event.  Such an event wakes on change: its WAIT->READY
+    // edge in event_test_impl queues it on the owner's ready queue, so
+    // run_loop never re-tests it.  False keeps the event on run_loop's
+    // per-pass scan, because something outside the event (a clock, a child
+    // event, a predicate over foreign state) can make it ready.  An IntEvent
+    // answers per instance: installing a `test_` predicate hands readiness to
+    // that predicate, so the predicate must be installed before `wait`.  This
+    // is S4 of docs/dev/lion-runtime-plan.md; timers and composites are still
+    // scanned.
+    fn core_self_notifying(&self) -> bool;
 }
 
 fn event_core_set_self<W: EventCore>(ev: &mut W, p: Weak<dyn EventPollable>) {
@@ -359,6 +371,7 @@ impl<Type: Clone + Default + 'static> EventCore for BoxEvent<Type> {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
+    fn core_self_notifying(&self) -> bool { true }
 }
 
 fn boxevent_make<Type: Clone + Default + 'static>() -> Arc<BoxEvent<Type>> {
@@ -474,6 +487,13 @@ impl EventCore for IntEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
+    fn core_self_notifying(&self) -> bool {
+        // Bound through a typed &EventState: the emitter's trait-impl lowering
+        // loses the field types of a two-level `self.state_.test_` access.
+        let state: &EventState = &self.state_;
+        let predicate = state.test_.borrow();
+        predicate.is_none()
+    }
 }
 
 fn int_event_set(ev: &IntEvent, n: i32) -> i32 {
@@ -575,6 +595,7 @@ impl EventCore for NeverEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
+    fn core_self_notifying(&self) -> bool { false }
 }
 
 #[repr(C)]
@@ -640,6 +661,7 @@ impl EventCore for TimeoutEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
+    fn core_self_notifying(&self) -> bool { false }
 }
 
 fn timeout_event_is_ready(self_: &TimeoutEvent) -> bool {
@@ -716,6 +738,7 @@ impl EventCore for WaitAny {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { true }
+    fn core_self_notifying(&self) -> bool { false }
 }
 
 #[repr(C)]
@@ -798,6 +821,7 @@ impl EventCore for WaitAll {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { true }
+    fn core_self_notifying(&self) -> bool { false }
 }
 
 pub const kDefaultStackBytes: usize = 1usize << 20;
@@ -1410,6 +1434,65 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
     stackless_wake_release_empty_storage::<WakeDomain>(owners_ptr);
 }
 
+// ---------------------------------------------------------------------------
+// Owner-side ready queue for events that wake on change (S4 steps 1-2 of
+// docs/dev/lion-runtime-plan.md)
+// ---------------------------------------------------------------------------
+//
+// A self-notifying event (EventCore::core_self_notifying) waited on its owner
+// thread joins no scanned queue.  event_test_impl pushes it here on its
+// WAIT->READY edge, and run_loop moves this queue into its dispatch list on
+// every pass.  So run_loop's cost for such events is O(ready), not
+// O(waiting).  Resumption stays deferred: the edge only queues, and the
+// owner's next drain resumes the waiter through the same dispatch code as
+// every other event, with the same DONE de-dup, registry, PAUSED and
+// READY->DONE checks.  The queue holds strong references, so a ready event
+// stays alive until its waiter has been dispatched.
+//
+// One queue per thread, owned by that thread's TLS Reactor: reactor_tls_get
+// opens it when it creates the Reactor, and Reactor::drop closes it.
+// `event_ready_owner_th_` names the owning Reactor, so a disk reactor or a
+// directly constructed Reactor on the same thread never drains it.  Only
+// trivially destructible values live in TLS, for the reason given at
+// stackless_wake_owners_slot: C++ destroys a thread-local container before a
+// TLS Reactor that was created ahead of it, and Reactor teardown can still
+// reach event_test_impl (a cancelled task's destructor may set an event).
+// After the queue is closed an edge finds no queue and queues nothing.
+//
+// Only the owner thread touches the queue.  An edge taken on a foreign thread
+// sets READY and queues nothing.  An untimed waiter is then not woken; before
+// this change the per-pass scan found such an event by racing on its status
+// Cell.  A timed waiter still is, because check_timeout takes READY entries.
+//
+// None of this enters the exact strong-symbol census: the thread-locals lower
+// to `inline thread_local`, the enqueue helper is generic, and the open,
+// drain and close steps live inside functions that already exist.
+thread_local! {
+    static event_ready_queue_th_: Cell<*mut RefCell<VecDeque<Arc<dyn EventPollable>>>> =
+        const { Cell::new(core::ptr::null_mut()) };
+    static event_ready_owner_th_: Cell<usize> = const { Cell::new(0usize) };
+}
+
+// Queue a self-notifying event on this thread's ready queue.  Called only from
+// event_test_impl's WAIT->READY edge, and only on the event's owner thread.
+fn event_ready_enqueue<W: EventCore>(ev: &W) {
+    let queue: *mut RefCell<VecDeque<Arc<dyn EventPollable>>> = event_ready_queue_th_.with(|slot| slot.get());
+    if queue.is_null() {
+        return;
+    }
+    let self_ref: Option<Arc<dyn EventPollable>> = ev.core_self().upgrade();
+    if self_ref.is_none() {
+        return;
+    }
+    // The queue is heap storage owned by this thread's TLS Reactor, and it is
+    // only ever borrowed for one push or one drain, never across user code.
+    // The guard is typed: the emitter needs RefMut to lower `->` through it.
+    unsafe {
+        let mut queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> = (*queue).borrow_mut();
+        queue_guard.push_back(self_ref.unwrap());
+    }
+}
+
 thread_local! {
     pub static reactor_clients_th_: RefCell<HashMap<String, Vec<PollableProxy>>> =
         RefCell::new(HashMap::<String, Vec<PollableProxy>>::new());
@@ -1557,6 +1640,47 @@ impl Reactor {
                     self.check_timeout(&mut ready_events);
                     if ready_events.len() > before {
                         found_ready_events = true;
+                    }
+                }
+                // Self-notifying events arrive through the ready queue, pushed
+                // by their WAIT->READY edge; the scans above never see them.
+                // Drained last so that any edge taken before dispatch, even one
+                // taken inside a scan's predicate, is served on this pass.
+                // Edges taken during dispatch land in the queue again and are
+                // served on the next pass, which runs because dispatch implies
+                // found_ready_events.  A timed event can also arrive from
+                // check_timeout; the DONE de-dup below serves it once.  An
+                // entry that is no longer READY is dropped: it was already
+                // dispatched, or its event was re-armed, and its next edge
+                // queues it again.  The queue is borrowed only to read its
+                // length and to take it whole, so no event destructor or
+                // dispatch runs under a borrow and an edge taken there can
+                // still push.  An empty queue costs one thread-local read and
+                // one length check per pass: create_run drains on every call,
+                // so this sits on the fiber-RPC path.
+                let queue: *mut RefCell<VecDeque<Arc<dyn EventPollable>>> = event_ready_queue_th_.with(|slot| slot.get());
+                if !queue.is_null() {
+                    let pending: usize = {
+                        // Typed for the emitter, as in event_ready_enqueue.
+                        let queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> =
+                            unsafe { (*queue).borrow_mut() };
+                        queue_guard.len()
+                    };
+                    if pending > 0usize
+                        && event_ready_owner_th_.with(|owner| owner.get()) == stackless_wake_reactor_key::<()>(self)
+                    {
+                        let mut drained: VecDeque<Arc<dyn EventPollable>> = {
+                            let mut queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> =
+                                unsafe { (*queue).borrow_mut() };
+                            core::mem::take(&mut *queue_guard)
+                        };
+                        let n_before = ready_events.len();
+                        move_matching(&mut drained, &mut ready_events, move |ev: &Arc<dyn EventPollable>| -> bool {
+                            (*ev).status() == EventStatus::READY
+                        });
+                        if ready_events.len() > n_before {
+                            found_ready_events = true;
+                        }
                     }
                 }
                 // Dispatch ready events. `continue` restructured as nested
@@ -1895,6 +2019,19 @@ impl Drop for Reactor {
         reactor_verify(std::thread::current().id() == self.thread_id_.get());
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
                   self.all_events_.borrow().len(), self.fibers_.borrow().len()));
+        // Close this thread's event ready queue if this Reactor owns it, before
+        // any teardown step can set an event.  Its waiters die with this
+        // Reactor, and no later reactor may resume them.
+        if event_ready_owner_th_.with(|owner| owner.get()) == stackless_wake_reactor_key::<()>(self) {
+            let queue: *mut RefCell<VecDeque<Arc<dyn EventPollable>>> = event_ready_queue_th_.with(|slot| slot.get());
+            event_ready_queue_th_.with(|slot| slot.set(core::ptr::null_mut()));
+            event_ready_owner_th_.with(|owner| owner.set(0usize));
+            if !queue.is_null() {
+                // Allocated by Box::into_raw in reactor_tls_get; the slot no
+                // longer names it, so this is the only owner.
+                drop(unsafe { Box::from_raw(queue) });
+            }
+        }
         // Reject new foreign wakes first. Destroy every Task-bearing closure
         // while its owned Waker binding still exists, then retire the
         // private ingress. Reactor's public field layout remains unchanged.
@@ -2317,8 +2454,11 @@ impl QuorumEvent {
             (*fe).set(self.n_voted_yes_.get() + self.n_voted_no_.get());
         }
     }
+    // A QuorumEvent has no child events. It used to report itself composite
+    // only so that run_loop would put it on the scanned composite queue; it
+    // now wakes on change instead (see EventCore::core_self_notifying).
     pub fn is_composite_event(&self) -> bool {
-        true
+        false
     }
     pub fn wait(&self) {
         event_wait_impl(self, 0u64)
@@ -2395,7 +2535,8 @@ impl EventCore for QuorumEvent {
     fn core_state_mut(&mut self) -> &mut EventState { &mut self.state_ }
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
-    fn core_is_composite(&self) -> bool { true }
+    fn core_is_composite(&self) -> bool { false }
+    fn core_self_notifying(&self) -> bool { true }
 }
 
 #[cfg_attr(any(), cpp_namespace(::janus))]
@@ -2490,16 +2631,26 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         let fiber = fiber_opt.unwrap();
 
         let reactor_rc = Reactor::get_reactor();
+        // A self-notifying event waited on its owner thread wakes on change:
+        // event_test_impl queues it on its WAIT->READY edge, so it joins no
+        // scanned queue and run_loop never re-tests it.  Anything else is
+        // found by run_loop's per-pass scan of waiting_events_.  The same
+        // two-part condition decides the edge's enqueue in event_test_impl.
+        let wakes_on_change: bool = ev.core_self_notifying()
+            && std::thread::current().id() == ev.core_owner_thread();
         // Inline `borrow_mut().push_back(…)`: the RefMut temporary releases at
         // the end of each statement — before the yield below — so the reactor
         // loop can re-borrow these queues while this fiber sleeps.  With the
         // receiver spelled bare these lower to
         // `(*reactor_rc).waiting_events_.borrow_mut()->push_back(…)` — the
         // guard is still a per-statement temporary.
-        reactor_rc.waiting_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
+        if !wakes_on_change {
+            reactor_rc.waiting_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
+        }
 
-        // Composite events (WaitAll/WaitAny/Quorum) need periodic polling; add
-        // them to a smaller scanned queue. Regular RPC events self-notify.
+        // Composite events (WaitAll/WaitAny) need periodic polling: a child
+        // can become ready without testing its parent.  They also join a
+        // smaller scanned queue.
         if ev.core_is_composite() {
             reactor_rc.composite_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
         }
@@ -2528,7 +2679,8 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
         if ev.core_status().get() == EventStatus::INIT {
             ev.core_status().set(EventStatus::DONE);
         } else if ev.core_status().get() == EventStatus::WAIT {
-            if std::thread::current().id() == ev.core_owner_thread() {
+            let on_owner: bool = std::thread::current().id() == ev.core_owner_thread();
+            if on_owner {
                 // Owner-thread-only: upgrading the weak fiber ref mutates a plain
                 // (non-atomic) Rc strong count; doing this from a foreign thread
                 // races the owner's own Rc<Fiber> clones and corrupts the count.
@@ -2538,6 +2690,13 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
                 reactor_verify(ev.core_status().get() != EventStatus::DEBUG);
             }
             ev.core_status().set(EventStatus::READY);
+            // The WAIT->READY edge of an event that wakes on change: queue it
+            // once for the owner's next drain (see event_ready_enqueue).  This
+            // is reached from set(), vote_*() and a direct test() alike.  It
+            // only queues; the waiter resumes when run_loop drains, never here.
+            if on_owner && ev.core_self_notifying() {
+                event_ready_enqueue(ev);
+            }
         } else if ev.core_status().get() == EventStatus::READY {
             reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "event status ready, triggered?".to_string());
         } else if ev.core_status().get() == EventStatus::DONE
@@ -3102,6 +3261,19 @@ fn reactor_tls_get() -> Rc<Reactor> {
             reactor_log_create(false);
             let r = reactor_make();
             r.thread_id_.set(std::thread::current().id());
+            // Open this thread's event ready queue for the new TLS Reactor.
+            // A queue can still be open here only if an earlier TLS Reactor's
+            // slot was cleared while another Rc kept that reactor alive.  It
+            // is handed over rather than freed, so no event is dropped while
+            // this slot is borrowed; its entries name the earlier reactor's
+            // fibers, which the new owner's registry check skips.
+            if event_ready_queue_th_.with(|slot| slot.get()).is_null() {
+                let fresh: Box<RefCell<VecDeque<Arc<dyn EventPollable>>>> =
+                    Box::new(RefCell::new(VecDeque::<Arc<dyn EventPollable>>::new()));
+                event_ready_queue_th_.with(|slot| slot.set(Box::into_raw(fresh)));
+            }
+            let reactor_ptr: *const Reactor = Rc::<Reactor>::as_ptr(&r);
+            event_ready_owner_th_.with(|owner| owner.set(reactor_ptr as usize));
             *guard = Some(r);
         }
         guard.as_ref().unwrap().clone()

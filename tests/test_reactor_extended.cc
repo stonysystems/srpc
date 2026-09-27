@@ -367,6 +367,58 @@ TEST_F(ExtendedReactorTest, FiberOrdering) {
     }
 }
 
+// Test 13: events that wake on change (S4 of docs/dev/lion-runtime-plan.md).
+// A quorum, an IntEvent without a predicate and a BoxEvent join no scanned
+// queue, so run_loop never re-tests them. Their WAIT->READY edge, reached here
+// through test() after a direct field write (Mako's paxos FeedResponse), only
+// queues them; the waiters resume on the next drain, not inside test().
+TEST_F(ExtendedReactorTest, WakeOnChangeResumesOnlyInTheDrain) {
+    auto reactor = Reactor::get_reactor();
+    const size_t waiting_before = reactor->waiting_events_.borrow()->len();
+    const size_t composite_before = reactor->composite_events_.borrow()->len();
+
+    auto quorum = janus::create_sp_quorum_event(3, 2);
+    auto int_event = create_sp_int_event(1);
+    auto box_event = create_sp_box_event<int32_t>();
+    std::atomic<int> resumed{0};
+    reactor->create_run_fiber([quorum, &resumed]() {
+        quorum->wait();
+        resumed++;
+    });
+    reactor->create_run_fiber([int_event, &resumed]() {
+        int_event->wait();
+        resumed++;
+    });
+    reactor->create_run_fiber([box_event, &resumed]() {
+        box_event->wait();
+        resumed++;
+    });
+    EXPECT_EQ(resumed, 0);
+    EXPECT_FALSE(quorum->is_composite_event());
+    EXPECT_EQ(reactor->waiting_events_.borrow()->len(), waiting_before);
+    EXPECT_EQ(reactor->composite_events_.borrow()->len(), composite_before);
+
+    // Direct writes are not tests: the loop does not notice them by itself.
+    quorum->n_voted_yes_.set(quorum->n_voted_yes_.get() + 2);
+    int_event->value_.set(1);
+    box_event->is_set_.set(true);
+    for (int i = 0; i < 16; i++) {
+        reactor->run_loop(false, true);
+    }
+    EXPECT_EQ(resumed, 0);
+
+    EXPECT_TRUE(quorum->test());
+    EXPECT_TRUE(int_event->test());
+    EXPECT_TRUE(box_event->test());
+    EXPECT_EQ(quorum->status_.get(), EventStatus::READY);
+    EXPECT_EQ(resumed, 0) << "test() resumed a waiter inline";
+    reactor->run_loop(false, true);
+    EXPECT_EQ(resumed, 3);
+    EXPECT_EQ(quorum->status_.get(), EventStatus::DONE);
+    EXPECT_EQ(int_event->status_.get(), EventStatus::DONE);
+    EXPECT_EQ(box_event->status_.get(), EventStatus::DONE);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

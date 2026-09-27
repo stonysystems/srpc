@@ -37,6 +37,10 @@
       "sha256": "e70c451f158c33fb3cacca4b694d81426d622d45e9107a50cf0bc051efcfce7e",
       "reason": "The concrete event type fixes whether this event combines child events."
     },
+    "reactor/reactor.rs:srpc.reactor::BoxEvent < Type > as EventCore < Type : Clone + Default + 'static >::core_self_notifying": {
+      "sha256": "c2f3f1172c9131182d764e1717ce9c494ccc1519695a0b29c9526b7c20078586",
+      "reason": "Its readiness changes only through its own methods, each of which tests it, so its WAIT->READY edge queues it for the owner's drain instead of a per-pass re-test."
+    },
     "reactor/reactor.rs:srpc.reactor::IntEvent as inherent ::is_composite_event": {
       "sha256": "62fc0a6362c491d2f37371c53175f79e560793a687b64b08af80fa23ef9dd09b",
       "reason": "The concrete event type fixes whether this event combines child events."
@@ -65,6 +69,10 @@
       "sha256": "e70c451f158c33fb3cacca4b694d81426d622d45e9107a50cf0bc051efcfce7e",
       "reason": "The concrete event type fixes whether this event combines child events."
     },
+    "reactor/reactor.rs:srpc.reactor::NeverEvent as EventCore ::core_self_notifying": {
+      "sha256": "b5be61eac74b82c58a4a803888b22c7933b98160930c9616eb3b36fc3c594f3e",
+      "reason": "It never becomes ready and leaves a wait only by timing out; it moves off the per-pass scan with the timers, not here."
+    },
     "reactor/reactor.rs:srpc.reactor::TimeoutEvent as inherent ::is_composite_event": {
       "sha256": "62fc0a6362c491d2f37371c53175f79e560793a687b64b08af80fa23ef9dd09b",
       "reason": "The concrete event type fixes whether this event combines child events."
@@ -76,6 +84,10 @@
     "reactor/reactor.rs:srpc.reactor::TimeoutEvent as EventCore ::core_is_composite": {
       "sha256": "e70c451f158c33fb3cacca4b694d81426d622d45e9107a50cf0bc051efcfce7e",
       "reason": "The concrete event type fixes whether this event combines child events."
+    },
+    "reactor/reactor.rs:srpc.reactor::TimeoutEvent as EventCore ::core_self_notifying": {
+      "sha256": "b5be61eac74b82c58a4a803888b22c7933b98160930c9616eb3b36fc3c594f3e",
+      "reason": "Its readiness follows the clock, which no method of the event observes, so it stays on run_loop's per-pass scan."
     },
     "reactor/reactor.rs:srpc.reactor::WaitAny as inherent ::is_composite_event": {
       "sha256": "22f091d762e3aa3d19f2cc36a0db82ea42dd3efd451f9ff35923e7ce29575cd2",
@@ -89,6 +101,10 @@
       "sha256": "f4b0cb67c3bfd815280b8b4edd47bdbc12ea83443bf4d8437875a43f007f37ab",
       "reason": "The concrete event type fixes whether this event combines child events."
     },
+    "reactor/reactor.rs:srpc.reactor::WaitAny as EventCore ::core_self_notifying": {
+      "sha256": "b5be61eac74b82c58a4a803888b22c7933b98160930c9616eb3b36fc3c594f3e",
+      "reason": "A child event can become ready without testing its parent, so the composite stays on run_loop's per-pass scan."
+    },
     "reactor/reactor.rs:srpc.reactor::WaitAll as inherent ::is_composite_event": {
       "sha256": "22f091d762e3aa3d19f2cc36a0db82ea42dd3efd451f9ff35923e7ce29575cd2",
       "reason": "The concrete event type fixes whether this event combines child events."
@@ -97,8 +113,12 @@
       "sha256": "f4b0cb67c3bfd815280b8b4edd47bdbc12ea83443bf4d8437875a43f007f37ab",
       "reason": "The concrete event type fixes whether this event combines child events."
     },
+    "reactor/reactor.rs:srpc.reactor::WaitAll as EventCore ::core_self_notifying": {
+      "sha256": "b5be61eac74b82c58a4a803888b22c7933b98160930c9616eb3b36fc3c594f3e",
+      "reason": "A child event can become ready without testing its parent, so the composite stays on run_loop's per-pass scan."
+    },
     "reactor/reactor.rs:srpc.reactor::QuorumEvent as inherent ::is_composite_event": {
-      "sha256": "22f091d762e3aa3d19f2cc36a0db82ea42dd3efd451f9ff35923e7ce29575cd2",
+      "sha256": "62fc0a6362c491d2f37371c53175f79e560793a687b64b08af80fa23ef9dd09b",
       "reason": "The concrete event type fixes whether this event combines child events."
     },
     "reactor/reactor.rs:srpc.reactor::QuorumEvent as EventPollable ::log": {
@@ -106,8 +126,12 @@
       "reason": "This concrete event has no additional optional debug-log output; readiness and wake behavior live in its other methods."
     },
     "reactor/reactor.rs:srpc.reactor::QuorumEvent as EventCore ::core_is_composite": {
-      "sha256": "f4b0cb67c3bfd815280b8b4edd47bdbc12ea83443bf4d8437875a43f007f37ab",
+      "sha256": "e70c451f158c33fb3cacca4b694d81426d622d45e9107a50cf0bc051efcfce7e",
       "reason": "The concrete event type fixes whether this event combines child events."
+    },
+    "reactor/reactor.rs:srpc.reactor::QuorumEvent as EventCore ::core_self_notifying": {
+      "sha256": "c2f3f1172c9131182d764e1717ce9c494ccc1519695a0b29c9526b7c20078586",
+      "reason": "Its readiness changes only through vote_*() or a test() after a counter write, each of which tests it, so its WAIT->READY edge queues it for the owner's drain instead of a per-pass re-test."
     },
     "rpc/client.rs:srpc.client::Future as inherent ::safe_release": {
       "sha256": "fa659ee1f1cc2ee44ae316006d9dc2278d75e609dec8a14aaeb55350add9936d",
