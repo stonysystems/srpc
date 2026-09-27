@@ -7,32 +7,37 @@
 // This is S4 steps 1-2 of docs/dev/lion-runtime-plan.md. The converted events
 // are BoxEvent, IntEvent without a predicate (which covers SharedIntEvent's
 // wait_until_gte and QuorumEvent's finalize_event_), and QuorumEvent.
-// Predicate IntEvents, timers and composites stay on the per-pass scan.
+// Timers moved to a deadline map in step 3 (tests/reactor_deadline_rust.rs).
+// Predicate IntEvents and composites stay on the per-pass scan.
 //
 // Every #[test] runs on its own thread, so each one gets a fresh thread-local
 // Reactor. Queue baselines are still measured rather than assumed.
 
 use srpc::reactor::{
     create_sp_box_event, create_sp_int_event, create_sp_never_event, create_sp_quorum_event,
-    create_sp_waitany, EventPollable, EventStatus, Fiber, QuorumEventWrapper, Reactor,
-    SharedIntEvent,
+    create_sp_waitany, event_wake_report, EventPollable, EventStatus, Fiber, QuorumEventWrapper,
+    Reactor, SharedIntEvent,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// (waiting_events_, composite_events_, timeout_events_)
+// (waiting_events_, composite_events_, live deadlines)
+//
+// S4 step 3 moved timed waits from timeout_events_ to the reactor's deadline
+// map. Its entries are deleted lazily; the live count excludes entries whose
+// wait has already ended, so it moves exactly as timeout_events_ used to.
 fn queue_lens(reactor: &Reactor) -> (usize, usize, usize) {
     (
         reactor.waiting_events_.borrow().len(),
         reactor.composite_events_.borrow().len(),
-        reactor.timeout_events_.borrow().len(),
+        event_wake_report::<()>().live_deadlines,
     )
 }
 
 // Far beyond any test's runtime, so a timed wait here never times out; it only
-// puts the event on the timeout queue.
+// gives the event a live deadline.
 const LONG_WAIT_US: u64 = 60_000_000;
 
 // Passes run while nothing sets the event. Under the old scan, the first one
@@ -100,11 +105,13 @@ fn self_notifying_waits_join_no_scanned_queue() {
     assert_eq!(resumed.get(), 0, "a wait finished before its event was set");
 
     // Five parked waits, and none of them is on a scanned queue. Only the
-    // timed one is on the timeout queue, which is how it can still time out.
+    // timed one has a deadline, which is how it can still time out.
     assert_eq!(queue_lens(&reactor), (baseline.0, baseline.1, baseline.2 + 1));
 
-    // Control: the scan still takes everything else. A predicate IntEvent and
-    // a NeverEvent join waiting_events_; a WaitAny joins both scanned queues.
+    // Control: the scan still takes what S4 has not converted yet. A
+    // predicate IntEvent joins waiting_events_, and a WaitAny joins both
+    // scanned queues. A NeverEvent wakes on change since step 3: nothing can
+    // make it ready, so its timed wait only has a deadline.
     let predicate_ev = create_sp_int_event(1);
     *predicate_ev.state_.test_.borrow_mut() = Some(Box::new(|_value: i32| -> bool { false }));
     let never = create_sp_never_event();
@@ -124,7 +131,7 @@ fn self_notifying_waits_join_no_scanned_queue() {
     }
     assert_eq!(
         queue_lens(&reactor),
-        (baseline.0 + 3, baseline.1 + 1, baseline.2 + 2),
+        (baseline.0 + 2, baseline.1 + 1, baseline.2 + 2),
         "the scanned classes must still join the scanned queues"
     );
 
@@ -147,8 +154,8 @@ fn self_notifying_waits_join_no_scanned_queue() {
     ] {
         assert_eq!(ev.status(), EventStatus::DONE);
     }
-    // The timed event left the timeout queue when it was dispatched.
-    assert_eq!(queue_lens(&reactor), (baseline.0 + 3, baseline.1 + 1, baseline.2 + 1));
+    // The timed event's deadline stopped being live when it was dispatched.
+    assert_eq!(queue_lens(&reactor), (baseline.0 + 2, baseline.1 + 1, baseline.2 + 1));
 }
 
 #[test]
@@ -416,7 +423,7 @@ fn quorum_finalize_event_wakes_its_finalizer_through_the_queue() {
     );
     let fe = quorum.finalize_event_.clone();
     assert_eq!(fe.status(), EventStatus::WAIT);
-    // Timed, so it is on the timeout queue only.
+    // Timed, so it has a deadline and is on no scanned queue.
     assert_eq!(queue_lens(&reactor), (baseline.0, baseline.1, baseline.2 + 1));
 
     quorum.vote_yes();

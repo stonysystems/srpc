@@ -265,17 +265,18 @@ trait EventCore: EventPollable {
     fn core_self(&self) -> &Weak<dyn EventPollable>;
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable>;
     fn core_is_composite(&self) -> bool;
-    // True when this event's readiness changes only through its own methods
-    // (`set`, `vote_*`, or a direct `test()` after a field write), each of
-    // which tests the event.  Such an event wakes on change: its WAIT->READY
+    // True when this event's readiness changes only through something that
+    // tests it: its own methods (`set`, `vote_*`, or a direct `test()` after a
+    // field write), or, for a TimeoutEvent, the reactor's deadline map, which
+    // tests it at its deadline.  Such an event wakes on change: its WAIT->READY
     // edge in event_test_impl queues it on the owner's ready queue, so
     // run_loop never re-tests it.  False keeps the event on run_loop's
-    // per-pass scan, because something outside the event (a clock, a child
-    // event, a predicate over foreign state) can make it ready.  An IntEvent
-    // answers per instance: installing a `test_` predicate hands readiness to
-    // that predicate, so the predicate must be installed before `wait`.  This
-    // is S4 of docs/dev/lion-runtime-plan.md; timers and composites are still
-    // scanned.
+    // per-pass scan, because something outside the event (a child event, a
+    // predicate over foreign state) can make it ready.  An IntEvent answers
+    // per instance: installing a `test_` predicate hands readiness to that
+    // predicate, so the predicate must be installed before `wait`.  This is S4
+    // of docs/dev/lion-runtime-plan.md; composites and predicate IntEvents are
+    // still scanned.
     fn core_self_notifying(&self) -> bool;
 }
 
@@ -595,7 +596,9 @@ impl EventCore for NeverEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    fn core_self_notifying(&self) -> bool { false }
+    // Never ready, so no test can wake it and a per-pass re-test is wasted.  A
+    // timed wait ends through the deadline map; an untimed one never ends.
+    fn core_self_notifying(&self) -> bool { true }
 }
 
 #[repr(C)]
@@ -661,7 +664,10 @@ impl EventCore for TimeoutEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    fn core_self_notifying(&self) -> bool { false }
+    // Its readiness is a clock comparison.  create_sp_timeout_event registers
+    // the first instant it holds with the deadline map, which tests the event
+    // then; that test is its WAIT->READY edge, so it needs no per-pass re-test.
+    fn core_self_notifying(&self) -> bool { true }
 }
 
 fn timeout_event_is_ready(self_: &TimeoutEvent) -> bool {
@@ -1435,62 +1441,333 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
 }
 
 // ---------------------------------------------------------------------------
-// Owner-side ready queue for events that wake on change (S4 steps 1-2 of
-// docs/dev/lion-runtime-plan.md)
+// Owner-side event wake state (S4 of docs/dev/lion-runtime-plan.md)
 // ---------------------------------------------------------------------------
 //
-// A self-notifying event (EventCore::core_self_notifying) waited on its owner
-// thread joins no scanned queue.  event_test_impl pushes it here on its
-// WAIT->READY edge, and run_loop moves this queue into its dispatch list on
-// every pass.  So run_loop's cost for such events is O(ready), not
-// O(waiting).  Resumption stays deferred: the edge only queues, and the
-// owner's next drain resumes the waiter through the same dispatch code as
-// every other event, with the same DONE de-dup, registry, PAUSED and
-// READY->DONE checks.  The queue holds strong references, so a ready event
-// stays alive until its waiter has been dispatched.
+// run_loop used to find work by re-testing every waiting event on every pass
+// and by scanning every timed wait for an expired deadline.  Events now reach
+// it through this per-thread state instead, each one when it changes:
 //
-// One queue per thread, owned by that thread's TLS Reactor: reactor_tls_get
+// * The ready queue (steps 1-2).  A self-notifying event
+//   (EventCore::core_self_notifying) waited on its owner thread joins no
+//   scanned queue.  event_test_impl pushes it here on its WAIT->READY edge,
+//   and run_loop moves this queue into its dispatch list on every pass, so
+//   run_loop's cost for such events is O(ready), not O(waiting).  The queue
+//   holds strong references, so a ready event stays alive until its waiter
+//   has been dispatched.
+//
+// * The deadline map (step 3).  Every timed wait, and every TimeoutEvent from
+//   its creation, has an entry keyed by its deadline in Time::now(true)
+//   microseconds.  check_timeout pops the expired prefix in deadline order,
+//   equal deadlines in insertion order, so run_loop's timer cost is
+//   O(expired) and a pass reads the clock only while a deadline is pending.
+//   At a timed wait's deadline the rule is the one the linear scan of
+//   timeout_events_ had: READY if the event is ready, else TIMEOUT.  Entries
+//   are deleted lazily (see EventDeadline).  event_next_deadline_us gives the
+//   earliest deadline to a driver that has to sleep until it (S3).
+//
+// Resumption stays deferred throughout: an edge or a deadline only marks the
+// event, and the owner's next drain resumes the waiter through the one
+// dispatch block in run_loop, with the same DONE de-dup, registry, PAUSED,
+// READY->DONE and sticky-TIMEOUT checks.
+//
+// One state per thread, owned by that thread's TLS Reactor: reactor_tls_get
 // opens it when it creates the Reactor, and Reactor::drop closes it.
-// `event_ready_owner_th_` names the owning Reactor, so a disk reactor or a
+// `event_wake_owner_th_` names the owning Reactor, so a disk reactor or a
 // directly constructed Reactor on the same thread never drains it.  Only
 // trivially destructible values live in TLS, for the reason given at
 // stackless_wake_owners_slot: C++ destroys a thread-local container before a
 // TLS Reactor that was created ahead of it, and Reactor teardown can still
 // reach event_test_impl (a cancelled task's destructor may set an event).
-// After the queue is closed an edge finds no queue and queues nothing.
+// After the state is closed an edge queues nothing and a wait registers no
+// deadline.
 //
-// Only the owner thread touches the queue.  An edge taken on a foreign thread
-// sets READY and queues nothing.  An untimed waiter is then not woken; before
-// this change the per-pass scan found such an event by racing on its status
-// Cell.  A timed waiter still is, because check_timeout takes READY entries.
+// Only the owner thread touches the state.  An edge taken on a foreign thread
+// sets READY and queues nothing.  An untimed waiter is then not woken.  A
+// timed waiter is woken at its deadline, because the deadline rule finds the
+// event READY and dispatches it.  (Before S4 the per-pass scan found such an
+// event by racing on its status Cell, and check_timeout took READY entries on
+// every pass.)  Events are owner-thread-only; a foreign publisher goes
+// through an ingress queue.
 //
 // None of this enters the exact strong-symbol census: the thread-locals lower
-// to `inline thread_local`, the enqueue helper is generic, and the open,
-// drain and close steps live inside functions that already exist.
+// to `inline thread_local`, the state structs are private aggregates with no
+// methods, the helpers are generic, and the open, drain and close steps live
+// inside functions that already exist.
+
+// One entry of the deadline map.  `clock` marks a TimeoutEvent's own entry:
+// that event's readiness is a clock comparison, so reaching the deadline is
+// what makes it ready, and the entry tests it -- INIT->DONE, or WAIT->READY
+// through the ready queue.  Every other entry is a timed wait, and at its
+// deadline the waiter resumes READY if the event is ready, else TIMEOUT.
+//
+// Deletion is lazy.  A wait that ends first leaves its entry behind, and the
+// entry is dropped unserved when it is popped, because its event is gone, is
+// no longer waiting, or now waits with a different deadline
+// (event_wait_impl records every wait's deadline in wakeup_time_, 0 for an
+// untimed wait).  `event` is weak, so an entry never keeps an event alive.
+// event_deadline_push sweeps stale entries whenever their number passes a
+// threshold, so a long timeout on a wait that ended early costs O(1)
+// amortized instead of a map entry until the timeout.
+struct EventDeadline {
+    deadline: u64,
+    clock: bool,
+    event: Weak<dyn EventPollable>,
+}
+
+struct EventWakeState {
+    // Self-notifying events whose WAIT->READY edge was taken on the owner
+    // thread, in edge order.
+    ready: RefCell<VecDeque<Arc<dyn EventPollable>>>,
+    // Pending deadlines.  Each key's entries are in insertion order.
+    deadlines: RefCell<BTreeMap<u64, Vec<EventDeadline>>>,
+    // Entries in `deadlines`, counting stale ones not yet dropped.
+    deadline_entries: Cell<usize>,
+    // When `deadline_entries` passes this, event_deadline_push sweeps.
+    deadline_sweep_at: Cell<usize>,
+    // The smallest key in `deadlines`, or u64::MAX when it is empty.
+    next_deadline: Cell<u64>,
+}
+
 thread_local! {
-    static event_ready_queue_th_: Cell<*mut RefCell<VecDeque<Arc<dyn EventPollable>>>> =
+    static event_wake_state_th_: Cell<*mut EventWakeState> =
         const { Cell::new(core::ptr::null_mut()) };
-    static event_ready_owner_th_: Cell<usize> = const { Cell::new(0usize) };
+    static event_wake_owner_th_: Cell<usize> = const { Cell::new(0usize) };
 }
 
 // Queue a self-notifying event on this thread's ready queue.  Called only from
 // event_test_impl's WAIT->READY edge, and only on the event's owner thread.
 fn event_ready_enqueue<W: EventCore>(ev: &W) {
-    let queue: *mut RefCell<VecDeque<Arc<dyn EventPollable>>> = event_ready_queue_th_.with(|slot| slot.get());
-    if queue.is_null() {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
         return;
     }
     let self_ref: Option<Arc<dyn EventPollable>> = ev.core_self().upgrade();
     if self_ref.is_none() {
         return;
     }
-    // The queue is heap storage owned by this thread's TLS Reactor, and it is
-    // only ever borrowed for one push or one drain, never across user code.
-    // The guard is typed: the emitter needs RefMut to lower `->` through it.
+    // The state is heap storage owned by this thread's TLS Reactor, and the
+    // queue is only ever borrowed for one push or one drain, never across user
+    // code.  The guard is typed: the emitter needs RefMut to lower `->`
+    // through it.
     unsafe {
-        let mut queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> = (*queue).borrow_mut();
+        let mut queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> = (*state_ptr).ready.borrow_mut();
         queue_guard.push_back(self_ref.unwrap());
     }
+}
+
+// Register a deadline for `ev` with this thread's deadline map.  `clock` marks
+// a TimeoutEvent's own entry (see EventDeadline).  Owner thread only.
+fn event_deadline_push<W: EventCore>(ev: &W, deadline: u64, clock: bool) {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
+        return;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    let entry = EventDeadline {
+        deadline,
+        clock,
+        event: ev.core_self().clone(),
+    };
+    {
+        let mut map_guard: RefMut<BTreeMap<u64, Vec<EventDeadline>>> = state.deadlines.borrow_mut();
+        map_guard.entry(deadline).or_default().push(entry);
+    }
+    state.deadline_entries.set(state.deadline_entries.get() + 1usize);
+    if deadline < state.next_deadline.get() {
+        state.next_deadline.set(deadline);
+    }
+    if state.deadline_entries.get() > state.deadline_sweep_at.get() {
+        event_deadline_sweep::<()>(state);
+    }
+}
+
+// Whether a deadline entry can still do something when it is popped: its event
+// is alive and, for a timed wait, still waits on exactly this deadline (it may
+// already be READY, which the deadline rule hands over).  A TimeoutEvent's own
+// entry stays live until it fires.  Reads statuses only.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_deadline_is_live<WakeDomain>(entry: &EventDeadline) -> bool {
+    let upgraded: Option<Arc<dyn EventPollable>> = entry.event.upgrade();
+    if upgraded.is_none() {
+        return false;
+    }
+    if entry.clock {
+        return true;
+    }
+    let ev: Arc<dyn EventPollable> = upgraded.unwrap();
+    let status: EventStatus = (*ev).status();
+    (*ev).wakeup_time() == entry.deadline
+        && (status == EventStatus::WAIT || status == EventStatus::READY)
+}
+
+// Drop every stale entry (see EventDeadline) and re-arm the sweep threshold at
+// twice the live count.  Reads statuses only; it tests nothing, so no event
+// code runs while the map is borrowed.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`: the tag keeps this helper a template, which
+// is what keeps it out of the exact strong-symbol census.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_deadline_sweep<WakeDomain>(state: &EventWakeState) {
+    let mut map_guard: RefMut<BTreeMap<u64, Vec<EventDeadline>>> = state.deadlines.borrow_mut();
+    let mut keys: Vec<u64> = Vec::new();
+    {
+        let ks = map_guard.keys();
+        for key in ks {
+            keys.push(*key);
+        }
+    }
+    let mut live: usize = 0usize;
+    let mut next: u64 = u64::MAX;
+    for key in keys {
+        // Pruned in place; an emptied key is removed through
+        // event_deadline_remove_key.
+        let emptied: bool = {
+            let slot: &mut Vec<EventDeadline> = map_guard.get_mut(&key).unwrap();
+            slot.retain(move |entry: &EventDeadline| -> bool { event_deadline_is_live::<WakeDomain>(entry) });
+            live += slot.len();
+            slot.is_empty()
+        };
+        if emptied {
+            let _husk: Vec<EventDeadline> = event_deadline_remove_key::<WakeDomain>(&mut map_guard, key);
+        } else if key < next {
+            next = key;
+        }
+    }
+    state.deadline_entries.set(live);
+    state.next_deadline.set(next);
+    state.deadline_sweep_at.set(live * 2usize + 64usize);
+}
+
+// Remove `key` and return its entries.  The entries are taken out first, and
+// only the empty Vec left behind goes through BTreeMap::remove: the C++
+// lowering of the pinned rusty-cpp btree port copies a removed value and never
+// destroys the original (measured with a counting value type: one extra live
+// copy per remove, and LeakSanitizer reports the Vec's buffer).  An empty Vec
+// owns no allocation, so the stray copy leaks nothing.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_deadline_remove_key<WakeDomain>(
+    map_guard: &mut RefMut<BTreeMap<u64, Vec<EventDeadline>>>,
+    key: u64,
+) -> Vec<EventDeadline> {
+    let taken: Vec<EventDeadline> = {
+        let slot: &mut Vec<EventDeadline> = map_guard.get_mut(&key).unwrap();
+        core::mem::take(slot)
+    };
+    map_guard.remove(&key);
+    taken
+}
+
+// The earliest pending deadline of `reactor`'s deadline map, in
+// Time::now(true) microseconds.  None when no deadline is pending, or when
+// `reactor` does not own this thread's wake state.  It is a lower bound: an
+// entry deleted lazily counts until it is popped, so a driver that sleeps
+// until this instant may wake to find nothing due and simply asks again.
+// Deliberately private.  check_timeout uses it for its clock-free fast path;
+// the only other intended caller is S3's Lion driver task on a PollThread,
+// which will sleep until it.
+fn event_next_deadline_us<WakeDomain>(reactor: &Reactor) -> Option<u64> {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null()
+        || event_wake_owner_th_.with(|owner| owner.get()) != stackless_wake_reactor_key::<WakeDomain>(reactor)
+    {
+        return None;
+    }
+    let next: u64 = unsafe { (*state_ptr).next_deadline.get() };
+    if next == u64::MAX {
+        return None;
+    }
+    Some(next)
+}
+
+// Pop every entry whose deadline has passed, in deadline order.  The clock is
+// read only when a deadline is pending.  The map is not borrowed once this
+// returns, so serving the entries may push new deadlines.
+fn event_deadline_take_expired<WakeDomain>(reactor: &Reactor) -> Vec<EventDeadline> {
+    let mut expired: Vec<EventDeadline> = Vec::new();
+    let next: Option<u64> = event_next_deadline_us::<WakeDomain>(reactor);
+    if next.is_none() {
+        return expired;
+    }
+    let time_now: u64 = Time::now(true);
+    if time_now < next.unwrap() {
+        return expired;
+    }
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    let mut remaining_next: u64 = u64::MAX;
+    {
+        let mut map_guard: RefMut<BTreeMap<u64, Vec<EventDeadline>>> = state.deadlines.borrow_mut();
+        loop {
+            let head: Option<u64> = map_guard.keys().next().copied();
+            if head.is_none() {
+                break;
+            }
+            let key: u64 = head.unwrap();
+            if key > time_now {
+                remaining_next = key;
+                break;
+            }
+            // `mut` keeps the C++ binding non-const, so each entry moves out.
+            let mut entries: Vec<EventDeadline> = event_deadline_remove_key::<WakeDomain>(&mut map_guard, key);
+            for entry in entries {
+                expired.push(entry);
+            }
+        }
+    }
+    state.next_deadline.set(remaining_next);
+    state.deadline_entries.set(state.deadline_entries.get() - expired.len());
+    expired
+}
+
+// Counters over this thread's event wake state, for tests and diagnostics.
+// A plain aggregate with no methods, like StacklessCancelReport, so it
+// contributes no symbol.
+pub struct EventWakeReport {
+    // Events on the ready queue, waiting for the owner's next drain.
+    pub ready_queued: usize,
+    // Deadline entries whose event can still be served (see
+    // event_deadline_is_live): a timed wait that has not ended, or a
+    // TimeoutEvent that has not fired.
+    pub live_deadlines: usize,
+    // All deadline entries, counting ended waits whose entries are deleted
+    // lazily and have not been dropped yet.
+    pub deadline_entries: usize,
+}
+
+// Generic for the same reason as stackless_cancel_report: a template adds no
+// strong symbol.  Reads this thread's state whichever Reactor owns it; all
+// zero when the thread has none.
+pub fn event_wake_report<WakeDomain>() -> EventWakeReport {
+    let mut report = EventWakeReport {
+        ready_queued: 0usize,
+        live_deadlines: 0usize,
+        deadline_entries: 0usize,
+    };
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
+        return report;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    {
+        let queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> = state.ready.borrow_mut();
+        report.ready_queued = queue_guard.len();
+    }
+    report.deadline_entries = state.deadline_entries.get();
+    let map_guard: RefMut<BTreeMap<u64, Vec<EventDeadline>>> = state.deadlines.borrow_mut();
+    let vs = map_guard.values();
+    for entries in vs {
+        for entry in entries.iter() {
+            if event_deadline_is_live::<WakeDomain>(entry) {
+                report.live_deadlines += 1usize;
+            }
+        }
+    }
+    report
 }
 
 thread_local! {
@@ -1649,29 +1926,30 @@ impl Reactor {
                 // Edges taken during dispatch land in the queue again and are
                 // served on the next pass, which runs because dispatch implies
                 // found_ready_events.  A timed event can also arrive from
-                // check_timeout; the DONE de-dup below serves it once.  An
-                // entry that is no longer READY is dropped: it was already
-                // dispatched, or its event was re-armed, and its next edge
-                // queues it again.  The queue is borrowed only to read its
-                // length and to take it whole, so no event destructor or
-                // dispatch runs under a borrow and an edge taken there can
-                // still push.  An empty queue costs one thread-local read and
-                // one length check per pass: create_run drains on every call,
-                // so this sits on the fiber-RPC path.
-                let queue: *mut RefCell<VecDeque<Arc<dyn EventPollable>>> = event_ready_queue_th_.with(|slot| slot.get());
-                if !queue.is_null() {
+                // check_timeout, which hands expired timers over in deadline
+                // order; the DONE de-dup below serves it once.  An entry that
+                // is no longer READY is dropped: it was already dispatched, or
+                // its event was re-armed, and its next edge queues it again.
+                // The queue is borrowed only to read its length and to take it
+                // whole, so no event destructor or dispatch runs under a
+                // borrow and an edge taken there can still push.  An empty
+                // queue costs one thread-local read and one length check per
+                // pass: create_run drains on every call, so this sits on the
+                // fiber-RPC path.
+                let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+                if !state_ptr.is_null() {
                     let pending: usize = {
                         // Typed for the emitter, as in event_ready_enqueue.
                         let queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> =
-                            unsafe { (*queue).borrow_mut() };
+                            unsafe { (*state_ptr).ready.borrow_mut() };
                         queue_guard.len()
                     };
                     if pending > 0usize
-                        && event_ready_owner_th_.with(|owner| owner.get()) == stackless_wake_reactor_key::<()>(self)
+                        && event_wake_owner_th_.with(|owner| owner.get()) == stackless_wake_reactor_key::<()>(self)
                     {
                         let mut drained: VecDeque<Arc<dyn EventPollable>> = {
                             let mut queue_guard: RefMut<VecDeque<Arc<dyn EventPollable>>> =
-                                unsafe { (*queue).borrow_mut() };
+                                unsafe { (*state_ptr).ready.borrow_mut() };
                             core::mem::take(&mut *queue_guard)
                         };
                         let n_before = ready_events.len();
@@ -1686,12 +1964,20 @@ impl Reactor {
                 // Dispatch ready events. `continue` restructured as nested
                 // ifs (the DSL has no continue); the Arc is cloned out of
                 // the deque so no reference is held across continue_fiber.
+                // An event can be listed twice (the ready queue and its
+                // deadline both hand it over), so only a status the hand-over
+                // set is dispatched: a READY event becomes DONE on its first
+                // dispatch, and a later entry skips it.  WAIT and INIT are
+                // skipped too.  They mean the first dispatch resumed a waiter
+                // that re-armed the event and waits on it again, a new wait
+                // this entry must not end.
                 {
                     let mut i: usize = 0usize;
                     while i < ready_events.len() {
                         let ev = ready_events[i].clone();
                         i += 1usize;
-                        if (*ev).status() != EventStatus::DONE {
+                        let handed_over: EventStatus = (*ev).status();
+                        if handed_over == EventStatus::READY || handed_over == EventStatus::TIMEOUT {
                             let option_fiber = (*ev).upgrade_fiber();
                             if let Some(fiber) = option_fiber {
                                 // Block-expression bind: the registry lookup IS
@@ -1979,38 +2265,53 @@ impl Reactor {
         did_work
     }
 
+    // Serve every expired deadline of this reactor (S4 step 3 of
+    // docs/dev/lion-runtime-plan.md).  The entries come from the thread's
+    // deadline map in deadline order; see EventDeadline for the two kinds and
+    // for lazy deletion.  A timed wait that reached its deadline resumes
+    // READY if its event is ready, else TIMEOUT -- the rule the linear scan of
+    // timeout_events_ applied, now applied through test(), so a ready event
+    // takes its ordinary WAIT->READY edge.  An event that is already READY is
+    // handed over too: that is how a timed wait whose event was made ready
+    // without an owner-thread test() (a foreign-thread set, or a direct field
+    // write) still completes, at its deadline.  Only the entry that sets
+    // TIMEOUT hands that event over, once: dispatch de-duplicates READY
+    // events through DONE, but TIMEOUT is sticky and is not de-duplicated.
+    // timeout_events_ is no longer used; the field stays because the Reactor
+    // layout is pinned.
     pub fn check_timeout(&self, ready_events: &mut VecDeque<Arc<dyn EventPollable>>) {
-        let time_now: u64 = Time::now(true);
-        let mut guard = self.timeout_events_.borrow_mut();
-        // First pass: update the status of timed-out events. The Arc is
-        // cloned per slot so no reference into the guard is held across
-        // the status mutations.
-        let mut i: usize = 0usize;
-        while i < guard.len() {
-            let event = (*guard)[i].clone();
-            if (*event).status() == EventStatus::WAIT {
-                let wakeup_time = (*event).wakeup_time();
-                reactor_verify(wakeup_time > 0u64);
-                if time_now >= wakeup_time {
-                    if (*event).is_ready() {
-                        (*event).set_status(EventStatus::READY);
-                    } else {
-                        (*event).set_status(EventStatus::TIMEOUT);
+        let expired: Vec<EventDeadline> = event_deadline_take_expired::<()>(self);
+        for entry in expired.iter() {
+            let upgraded: Option<Arc<dyn EventPollable>> = entry.event.upgrade();
+            if let Some(ev) = upgraded {
+                let ev: Arc<dyn EventPollable> = ev;
+                if entry.clock {
+                    // A TimeoutEvent became ready.  Its test() is the edge:
+                    // INIT->DONE, or WAIT->READY, which also queues it.  Hand
+                    // a woken waiter over here as well, so that timers that
+                    // expire on one pass resume in deadline order.  Any other
+                    // status has nothing left to take: its own timed wait
+                    // (fiber_sleep's) may have been served first on this pass.
+                    let before: EventStatus = (*ev).status();
+                    if before == EventStatus::INIT || before == EventStatus::WAIT {
+                        (*ev).test();
+                        if before == EventStatus::WAIT && (*ev).status() == EventStatus::READY {
+                            ready_events.push_back(ev.clone());
+                        }
+                    }
+                } else if (*ev).wakeup_time() == entry.deadline {
+                    let status: EventStatus = (*ev).status();
+                    if status == EventStatus::WAIT {
+                        if !(*ev).test() {
+                            (*ev).set_status(EventStatus::TIMEOUT);
+                        }
+                        ready_events.push_back(ev.clone());
+                    } else if status == EventStatus::READY {
+                        ready_events.push_back(ev.clone());
                     }
                 }
             }
-            i += 1usize;
         }
-        // Extract events that are READY or TIMEOUT.
-        move_matching(&mut guard, ready_events, move |sp: &Arc<dyn EventPollable>| -> bool {
-            let status = (*sp).status();
-            status == EventStatus::READY || status == EventStatus::TIMEOUT
-        });
-        // Drop events that are DONE. TIMEOUT needs no clause here: the
-        // extraction above has already taken every TIMEOUT entry out.
-        guard.retain(move |sp: &Arc<dyn EventPollable>| -> bool {
-            (*sp).status() != EventStatus::DONE
-        });
     }
 }
 
@@ -2019,17 +2320,18 @@ impl Drop for Reactor {
         reactor_verify(std::thread::current().id() == self.thread_id_.get());
         reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), format!("[Reactor::~Reactor] Starting destruction, all_events_.len()={}, fibers_.size()={}",
                   self.all_events_.borrow().len(), self.fibers_.borrow().len()));
-        // Close this thread's event ready queue if this Reactor owns it, before
+        // Close this thread's event wake state if this Reactor owns it, before
         // any teardown step can set an event.  Its waiters die with this
-        // Reactor, and no later reactor may resume them.
-        if event_ready_owner_th_.with(|owner| owner.get()) == stackless_wake_reactor_key::<()>(self) {
-            let queue: *mut RefCell<VecDeque<Arc<dyn EventPollable>>> = event_ready_queue_th_.with(|slot| slot.get());
-            event_ready_queue_th_.with(|slot| slot.set(core::ptr::null_mut()));
-            event_ready_owner_th_.with(|owner| owner.set(0usize));
-            if !queue.is_null() {
+        // Reactor, and no later reactor may resume them.  The slot is cleared
+        // first, so anything the state's destructor reaches finds no state.
+        if event_wake_owner_th_.with(|owner| owner.get()) == stackless_wake_reactor_key::<()>(self) {
+            let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+            event_wake_state_th_.with(|slot| slot.set(core::ptr::null_mut()));
+            event_wake_owner_th_.with(|owner| owner.set(0usize));
+            if !state_ptr.is_null() {
                 // Allocated by Box::into_raw in reactor_tls_get; the slot no
                 // longer names it, so this is the only owner.
-                drop(unsafe { Box::from_raw(queue) });
+                drop(unsafe { Box::from_raw(state_ptr) });
             }
         }
         // Reject new foreign wakes first. Destroy every Task-bearing closure
@@ -2171,7 +2473,15 @@ pub fn create_sp_int_event(target: i32) -> Arc<IntEvent> {
 }
 
 pub fn create_sp_timeout_event(wait_us: u64) -> Arc<TimeoutEvent> {
-    reactor_setup_sp_event::<TimeoutEvent>(timeout_event_make(wait_us))
+    let sp: Arc<TimeoutEvent> = reactor_setup_sp_event::<TimeoutEvent>(timeout_event_make(wait_us));
+    // A TimeoutEvent is ready once `Time::now(true) > wakeup_time_`, which
+    // first holds at wakeup_time_ + 1.  The deadline map tests it then (S4
+    // step 3), whether or not anything waits on it yet: that test is the edge
+    // that resumes its own waiter and tells a waiting WaitAny/WaitAll parent.
+    // Registered here rather than in wait() so that a timer created ahead of
+    // its wait, or waited only as a composite's child, still fires on time.
+    event_deadline_push::<TimeoutEvent>(&*sp, sp.wakeup_time_ + 1u64, true);
+    sp
 }
 
 pub fn create_sp_never_event() -> Arc<NeverEvent> {
@@ -2655,10 +2965,17 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
             reactor_rc.composite_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
         }
 
+        // A timed wait registers its deadline with this thread's deadline
+        // map, which check_timeout drains in deadline order (S4 step 3).
+        // wakeup_time_ names the deadline of this wait, and 0 for an untimed
+        // one: an entry left by an earlier wait of the same event no longer
+        // matches it, and is dropped unserved (see EventDeadline).
         if timeout > 0 {
             let now = Time::now(true);
             ev.core_state().wakeup_time_.set(now + timeout);
-            reactor_rc.timeout_events_.borrow_mut().push_back(ev.core_self().upgrade().unwrap());
+            event_deadline_push(ev, now + timeout, false);
+        } else {
+            ev.core_state().wakeup_time_.set(0u64);
         }
 
         // Transpiled Weak has no implicit Rc→Weak conversion; use the static
@@ -3261,19 +3578,25 @@ fn reactor_tls_get() -> Rc<Reactor> {
             reactor_log_create(false);
             let r = reactor_make();
             r.thread_id_.set(std::thread::current().id());
-            // Open this thread's event ready queue for the new TLS Reactor.
-            // A queue can still be open here only if an earlier TLS Reactor's
+            // Open this thread's event wake state for the new TLS Reactor.  A
+            // state can still be open here only if an earlier TLS Reactor's
             // slot was cleared while another Rc kept that reactor alive.  It
             // is handed over rather than freed, so no event is dropped while
             // this slot is borrowed; its entries name the earlier reactor's
-            // fibers, which the new owner's registry check skips.
-            if event_ready_queue_th_.with(|slot| slot.get()).is_null() {
-                let fresh: Box<RefCell<VecDeque<Arc<dyn EventPollable>>>> =
-                    Box::new(RefCell::new(VecDeque::<Arc<dyn EventPollable>>::new()));
-                event_ready_queue_th_.with(|slot| slot.set(Box::into_raw(fresh)));
+            // fibers, which the new owner's registry check skips.  The first
+            // deadline sweep runs at 64 entries (see event_deadline_sweep).
+            if event_wake_state_th_.with(|slot| slot.get()).is_null() {
+                let fresh: Box<EventWakeState> = Box::new(EventWakeState {
+                    ready: RefCell::new(VecDeque::<Arc<dyn EventPollable>>::new()),
+                    deadlines: RefCell::new(BTreeMap::<u64, Vec<EventDeadline>>::new()),
+                    deadline_entries: Cell::new(0usize),
+                    deadline_sweep_at: Cell::new(64usize),
+                    next_deadline: Cell::new(u64::MAX),
+                });
+                event_wake_state_th_.with(|slot| slot.set(Box::into_raw(fresh)));
             }
             let reactor_ptr: *const Reactor = Rc::<Reactor>::as_ptr(&r);
-            event_ready_owner_th_.with(|owner| owner.set(reactor_ptr as usize));
+            event_wake_owner_th_.with(|owner| owner.set(reactor_ptr as usize));
             *guard = Some(r);
         }
         guard.as_ref().unwrap().clone()
@@ -3971,3 +4294,7 @@ fn quorum_event_is_slow(_qe: &QuorumEvent) -> bool {
 #[cfg(test)]
 #[path = "../tests/helpers/pollworker_fd_reuse.rs"]
 mod pollworker_fd_reuse_tests;
+
+#[cfg(test)]
+#[path = "../tests/helpers/event_wake_state.rs"]
+mod event_wake_state_tests;

@@ -626,10 +626,11 @@ poll worker uses `get_reactor()`; obtaining the disk reactor does not start a
 background disk executor.
 
 The reactor keeps a registry of fibers, an optional fiber reuse pool, and separate
-queues for scanned waiting, timed, and composite events. Events that wake on change
-use a per-thread ready queue instead (see "Which events the loop tests"). It also
-retains parked future pollers and a queue of task indices ready to be polled again. It does not
-own socket descriptors or perform `epoll_wait`.
+queues for scanned waiting and composite events. Events that wake on change use a
+per-thread ready queue instead, and timed waits a per-thread deadline map (see
+"Which events the loop tests"). It also retains parked future pollers and a queue
+of task indices ready to be polled again. It does not own socket descriptors or
+perform `epoll_wait`.
 
 ### Running the loop
 
@@ -637,9 +638,9 @@ For a manually driven reactor, call `run_loop(false, true)` to process available
 work and check deadlines. The arguments are `infinite` and `do_check_timeout`.
 
 A pass polls ready standard futures, tests the scanned waiting and composite
-events, optionally checks timeout deadlines, and takes the events that queued
-themselves when they became ready. It then resumes fibers whose events became
-ready or timed out. The event's weak fiber reference must still upgrade to a
+events, optionally serves the deadlines that have passed, in deadline order, and
+takes the events that queued themselves when they became ready. It then resumes
+fibers whose events became ready or timed out. The event's weak fiber reference must still upgrade to a
 fiber in this reactor's registry. Normal readiness becomes `DONE` before the
 continuation; a timeout stays `TIMEOUT` so the resumed code can inspect it.
 The loop repeats while it finds more ready work.
@@ -1030,22 +1031,31 @@ handles. Custom `IntEvent` predicates also avoid the mutable counter wrapper.
 
 ### Which events the loop tests
 
-`BoxEvent`, an `IntEvent` without a predicate, and `QuorumEvent` wake on change.
-Their `set`, `vote_yes`, `vote_no` and `test` calls move a waiting event to
-`READY` and queue it on the owner thread; the next `run_loop` pass resumes the
-waiter without testing the event again. The call itself never resumes the
-waiter. Code that writes such an event's fields directly while a fiber waits,
-such as `n_voted_yes_` or `value_`, must call `test()` afterwards, because the
-loop does not look at the event again. Install an `IntEvent` predicate before
-waiting on it. Only the owner thread queues the event: a `set` from another
-thread marks it `READY` without waking the waiter, so post that work to the
-owner thread instead.
+`BoxEvent`, an `IntEvent` without a predicate, `QuorumEvent`, `TimeoutEvent` and
+`NeverEvent` wake on change. Their `set`, `vote_yes`, `vote_no` and `test` calls
+move a waiting event to `READY` and queue it on the owner thread; the next
+`run_loop` pass resumes the waiter without testing the event again. The call
+itself never resumes the waiter. Code that writes such an event's fields
+directly while a fiber waits, such as `n_voted_yes_` or `value_`, must call
+`test()` afterwards, because the loop does not look at the event again. Install
+an `IntEvent` predicate before waiting on it. Only the owner thread queues the
+event: a `set` from another thread marks it `READY` without waking the waiter,
+so post that work to the owner thread instead.
+
+Timers use a per-thread deadline map instead of a scan. Every timed wait, and
+every `TimeoutEvent` from its creation, has an entry at its deadline, and a pass
+that checks deadlines serves the ones that have passed in deadline order. A
+`TimeoutEvent` becomes ready at its own deadline even if nothing waits on it
+yet. At a timed wait's deadline the waiter resumes as ready if its event is
+ready, even if nothing tested it, and otherwise as `TIMEOUT`. So a timed wait
+whose event was set from another thread, or written without `test()`, still
+completes, but only at its deadline.
 
 Child changes do not directly resume a fiber waiting on a composite. The owner
-must call `run_loop` to test `WaitAny`, `WaitAll`, predicate `IntEvent`s and
-timers, and then resume ready fibers. The poll worker does this on each pass. A
-manually driven reactor must do it explicitly, including timeout checking for
-timed waits.
+must call `run_loop` to test `WaitAny`, `WaitAll` and predicate `IntEvent`s,
+serve deadlines, and then resume ready fibers. The poll worker does this on each
+pass. A manually driven reactor must do it explicitly, including the deadline
+check for timed waits.
 
 ### Rules and gotchas
 

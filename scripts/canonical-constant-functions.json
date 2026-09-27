@@ -70,8 +70,8 @@
       "reason": "The concrete event type fixes whether this event combines child events."
     },
     "reactor/reactor.rs:srpc.reactor::NeverEvent as EventCore ::core_self_notifying": {
-      "sha256": "b5be61eac74b82c58a4a803888b22c7933b98160930c9616eb3b36fc3c594f3e",
-      "reason": "It never becomes ready and leaves a wait only by timing out; it moves off the per-pass scan with the timers, not here."
+      "sha256": "c2f3f1172c9131182d764e1717ce9c494ccc1519695a0b29c9526b7c20078586",
+      "reason": "It never becomes ready, so no test can wake it and a per-pass re-test is wasted; a timed wait ends through the reactor's deadline map."
     },
     "reactor/reactor.rs:srpc.reactor::TimeoutEvent as inherent ::is_composite_event": {
       "sha256": "62fc0a6362c491d2f37371c53175f79e560793a687b64b08af80fa23ef9dd09b",
@@ -86,8 +86,8 @@
       "reason": "The concrete event type fixes whether this event combines child events."
     },
     "reactor/reactor.rs:srpc.reactor::TimeoutEvent as EventCore ::core_self_notifying": {
-      "sha256": "b5be61eac74b82c58a4a803888b22c7933b98160930c9616eb3b36fc3c594f3e",
-      "reason": "Its readiness follows the clock, which no method of the event observes, so it stays on run_loop's per-pass scan."
+      "sha256": "c2f3f1172c9131182d764e1717ce9c494ccc1519695a0b29c9526b7c20078586",
+      "reason": "Its readiness follows the clock, and the reactor's deadline map tests it at the first instant it holds, so that test is its WAIT->READY edge and it needs no per-pass re-test."
     },
     "reactor/reactor.rs:srpc.reactor::WaitAny as inherent ::is_composite_event": {
       "sha256": "22f091d762e3aa3d19f2cc36a0db82ea42dd3efd451f9ff35923e7ce29575cd2",

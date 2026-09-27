@@ -12,7 +12,7 @@
 
 use srpc::reactor::{
     create_sp_int_event, create_sp_never_event, create_sp_waitall_from, create_sp_waitany,
-    EventPollable, EventStatus, Fiber, Reactor,
+    event_wake_report, EventPollable, EventStatus, Fiber, Reactor,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -23,12 +23,17 @@ use std::time::{Duration, Instant};
 // deadline, even under a sanitizer. The "all parked" assertions depend on it.
 const WAIT_US: u64 = 50_000;
 
-// (waiting_events_, composite_events_, timeout_events_)
+// (waiting_events_, composite_events_, live deadlines)
+//
+// S4 step 3 moved timed waits from the linear timeout_events_ queue to the
+// reactor's deadline map, whose entries are deleted lazily. The live count
+// excludes entries whose wait has already ended, so it moves exactly as
+// timeout_events_ used to.
 fn queue_lens(reactor: &Reactor) -> (usize, usize, usize) {
     (
         reactor.waiting_events_.borrow().len(),
         reactor.composite_events_.borrow().len(),
-        reactor.timeout_events_.borrow().len(),
+        event_wake_report::<()>().live_deadlines,
     )
 }
 
@@ -76,13 +81,15 @@ fn timed_out_waits_leave_the_waiting_and_composite_queues() {
         });
     }
 
-    // Every wait is parked. Each event is queued once as waiting and once in
-    // the timeout queue, and each composite is queued once more as composite.
-    // Without this check, returning to baseline below would prove nothing.
+    // Every wait is parked, and each has a live deadline. A NeverEvent wakes
+    // on change since S4 step 3 (nothing can make it ready), so the leaf
+    // joins no scanned queue; each WaitAny is still scanned, once as waiting
+    // and once as composite. Without this check, returning to baseline below
+    // would prove nothing.
     assert_eq!(resumed.get(), 0, "a wait finished before its deadline");
     assert_eq!(
         queue_lens(&reactor),
-        (baseline.0 + 2 * N, baseline.1 + N, baseline.2 + 2 * N)
+        (baseline.0 + N, baseline.1 + N, baseline.2 + 2 * N)
     );
 
     drive_until_resumed(&reactor, &resumed, 2 * N);
