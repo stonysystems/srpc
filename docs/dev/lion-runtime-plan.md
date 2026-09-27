@@ -984,6 +984,12 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
 - [ ] **S7. Retire and re-pin.**
   - **Delete** the 1 ms loop, the linear timeout scan, the disk reactor, the
     `epoll_wrapper` `Pollable` remnants and the ticket ingress.
+  - **Revert S2's `derive` workaround.** `SrpcInterest` and `SrpcOsEvent`
+    (`reactor/epoll_wrapper.rs`) hide their derives behind
+    `cfg_attr(not(any()), derive(...))`, because the pinned transpiler emits
+    `derive(Copy)` as a hand-attention slot. Once the T5 `derive(Copy)`
+    lowering is in the pinned transpiler, return them to plain derives. Update
+    CLAUDE.md's count of that spelling to match: 19 sites before S2, 21 after.
   - **Re-pin SRPC's ABI** with fresh objects and measured symbol and layout
     evidence. Layout pins such as `sizeof(PollThread)` and the `fiber_channel_`
     offset will move. Record why each interface changed.
