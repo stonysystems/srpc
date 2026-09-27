@@ -259,8 +259,9 @@ These are properties Lion lacks today that an RPC server needs.
     that loop (trusted glue, no proof change). A `PollThread` can then run
     either a `block_on(shutdown_signal)` loop or its own `tick()` loop.
     `ExecutorHandle::spawn` already accepts foreign spawns.
-- [ ] **U6. (C++ route) An OS seam behind a trait, plus optional runtime
-  dependencies.**
+- [x] **U6. (C++ route) An OS seam behind a trait, plus optional runtime
+  dependencies.** Done as `f11d6f1` (flume removal was `6a40bd8`); see the
+  S2 contract recorded under S2.
   - `types/poll.rs`, `interrupt_handle.rs` and `io_event_queue.rs` are already
     `external_body` glue. Put them behind a small `Poller`/`Interrupt` trait.
     SRPC then implements that trait over `srpc_epoll.c` from a canonical module.
@@ -316,7 +317,8 @@ These are properties Lion lacks today that an RPC server needs.
     cover those runs (R3), and SRPC's teardown cancellation is one of them.
   - The `spawn_blocking` `Cell` race listed under "worth raising upstream" is
     fixed: it is now an `AtomicUsize`.
-- [ ] **U9. (C++ route) No `verus!` blocks produced by `macro_rules!`.**
+- [x] **U9. (C++ route) No `verus!` blocks produced by `macro_rules!`.** Done
+  as `b7342a2`: all 19 are written out, and verification is unchanged.
   - `executor/ext.rs` and `reactor/ext.rs` define `macro_rules!` that expand
     to `verus! { impl ... }`: 7 invocations in the executor and 12 in the
     reactor. For example, `reactor_log_action!` is at `reactor/ext.rs:140-160`.
@@ -325,7 +327,8 @@ These are properties Lion lacks today that an RPC server needs.
   - Write the 19 invocations out in the source. The change is mechanical, and
     `./ci.sh` must still pass. Doing this upstream is preferred over building a
     `macro_rules` expander into the transpiler.
-- [ ] **U8. A raw-fd readiness API that honours the `Context` waker.**
+- [x] **U8. A raw-fd readiness API that honours the `Context` waker.** Done
+  as `3496113` (`lion-reactor/src/async_fd.rs`).
   - SRPC's transport (S5) must wait on its own sockets from a task.
   - Lion's building blocks are public (`ReactorHandle::{register_io_resource,
     set_waker, deregister_io_resource}`, `readiness`). But every existing user
@@ -337,9 +340,38 @@ These are properties Lion lacks today that an RPC server needs.
     raw fd, owning registration and deregistration. It is the only place the
     readiness protocol is written. It is trusted glue until someone proves it.
 
+- **Results of the U6/U8/U9 batch (2026-09-26):**
+  - A cold `./ci.sh` passes with 0 errors. Reactor goes from 206 to 208
+    verified items (new `assemble` and `with_poll` constructors). Every other
+    crate is unchanged.
+  - `external_body` goes from 118 to 119 (`backend_setup`). There are 31
+    trusted files (three under `os/`, plus `async_fd.rs`).
+  - lion-utility tests pass 51/51, and the backend tests with the mock
+    backend pass 4/4 + 4/4. Every negative-control mutation went red.
+  - Micro-timer and TCP echo are unchanged.
+  - With `--no-default-features`, lion-reactor + lion-executor have no mio,
+    socket2 or tokio in `cargo tree -e normal`.
+  - **Behaviour fixes:**
+    - an error-only or hang-up-only event now wakes both directions (before,
+      it woke nobody);
+    - EINTR is an empty wait.
+  - **The trait as landed** (`lion-reactor/src/os/mod.rs:96-140`):
+    - `OsBackend: Send` has `register(fd, token, interest)`, `reregister`,
+      `deregister(fd)`, `wait(&mut Vec<OsEvent>, Option<Duration>)` and
+      `interrupt() -> Arc<dyn OsInterrupt>`.
+    - `OsInterrupt` is `Send + Sync` and has `signal()`.
+    - `Reactor::with_backend` and `RuntimeBuilder::os_backend` take the
+      backend.
+    - Verus rejects `dyn` in verified signatures, so the verified constructor
+      takes an opaque `Poll`.
+  - **Liveness gap (TCB §2):** `AsyncFd` registers the caller's waker, so its
+    wake goes through the task queue, as `Sleep`'s already does. The theorem's
+    I/O obligation does not cover `AsyncFd` waits.
+
 Also worth raising upstream, though not blocking:
-- `spawn_blocking`'s `Cell` counter sits in a type force-marked `Sync`
-  (`blocking.rs:17,20,70-71`).
+- ~~`spawn_blocking`'s `Cell` counter sits in a type force-marked `Sync`
+  (`blocking.rs:17,20,70-71`).~~ Fixed in `a2c8fc8`: it is now an
+  `AtomicUsize`.
 - Sockets carry hand-written `unsafe impl Send` but only work on their creating
   thread (`stream.rs:200-201`, `listener.rs:30-31`).
 - Network futures use the TLS task waker instead of the `Context` waker
@@ -631,6 +663,35 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - New native leaves need review against `scripts/native-kernels.json` and
     `native-abi-bindings.json`. There is no auto-approval.
   - Keep edge-triggered semantics: EPOLLET today, and mio's behaviour in Lion.
+  - **The contract SRPC's backend must meet** (recorded from U6, 2026-09-26;
+    the full text is the doc comment of `lion-reactor/src/os/mod.rs`):
+    - **Tokens, not fds.** The reactor registers each fd under a `usize` token
+      and expects that token back. `srpc_epoll_ctl` stores `data.fd`. There are
+      two options:
+      - a reviewed native-kernel variant that stores a 64-bit token;
+      - an fd→token map in canonical Rust. This is safe because the reactor
+        never registers an fd twice without deregistering it, and deregisters
+        before the fd is closed.
+    - **Interrupt.** It needs a new eventfd seam. `signal()` runs from any
+      thread and must absorb EAGAIN/EINTR itself, because an error return
+      panics in the waker. The backend consumes the interrupt inside `wait`,
+      never reports it as an event, and may coalesce signals.
+    - **Registration:** always `EPOLLET|EPOLLRDHUP`, plus IN and/or OUT. The
+      reactor never uses token 0.
+    - **Event flags follow mio:**
+      - readable = IN or PRI;
+      - writable = OUT;
+      - error = ERR;
+      - read_closed = HUP, or IN together with RDHUP;
+      - write_closed = HUP, or OUT together with ERR, or ERR alone.
+    - **Waiting:**
+      - a level-triggered backend makes the loop spin;
+      - returning at most 100 events per wait is fine;
+      - a `None` timeout means block, otherwise whole milliseconds;
+      - EINTR comes back as an empty wait. `srpc_epoll_wait` returns -1 with
+        errno today, so the seam must return `-errno`, as `srpc_epoll_ctl`
+        already does.
+    - **Threads:** everything except `signal` runs on the owner thread.
 - [ ] **S3. Core swap.**
   - `PollThread` becomes one OS thread running one Lion runtime.
   - Stackless tasks go to Lion `spawn_local`.
@@ -744,6 +805,17 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     - async RPCs go to `spawn_local`.
   - `lion-utility`'s `TcpStream` is not used. It needs tokio traits and
     socket2, and it takes the TLS-waker shortcut.
+  - **`AsyncFd` rules (from U8):**
+    - It is `!Send`: create, poll and drop it on the runtime thread
+      (`spawn_local`).
+    - The fd must be non-blocking and must stay open until the `AsyncFd` drops.
+    - Each direction supports one waiter, which gives one reader task and one
+      writer task per connection.
+    - A short read does not clear readiness, so expect one extra EAGAIN read
+      per wake. Measure it in S8.
+    - Depend on `lion-reactor` and `lion-executor` with
+      `default-features = false`. Never depend on `lion-utility` or `lion`:
+      feature unification would bring mio back.
   - The TCP send path open-codes the frame header (CLAUDE.md). Keep that
     unchanged.
 - [ ] **S6. (Optional scope.) Cooperative client waits.**
