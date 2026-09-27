@@ -673,8 +673,9 @@ fn main() {
 }
 ```
 
-Setting `do_check_timeout` to false skips the deadline queue. Event predicates
-can still become ready, but `wait_timeout` deadlines need a timeout-enabled pass.
+Setting `do_check_timeout` to false skips the deadline map: neither a
+`wait_timeout` deadline nor a `TimeoutEvent` progresses without a pass that
+checks deadlines.
 `run_loop(true, true)` repeatedly scans even when idle. It can busy-spin, so use
 the poll worker for a long-lived network runtime. An owner-thread callback can
 clear `reactor.looping_` to stop an infinite loop once the current work drains.
@@ -832,6 +833,8 @@ A custom readiness predicate is stored in `event.state_.test_` as
 `Option<Box<dyn Fn(i32) -> bool>>`. On a fresh event, assign
 `Some(Box::new(predicate))` through `borrow_mut()`, then release that borrow
 before waiting or setting. This overrides the usual target comparison.
+The loop never evaluates the predicate on its own: `set`, `test` or a ping does
+(see "Which events the loop tests").
 Use it sparingly; named event types make ordinary conditions easier to follow.
 
 ### TimeoutEvent
@@ -1032,8 +1035,9 @@ handles. Custom `IntEvent` predicates also avoid the mutable counter wrapper.
 
 ### Which events the loop tests
 
-`BoxEvent`, an `IntEvent` without a predicate, `QuorumEvent`, `TimeoutEvent`,
-`NeverEvent`, `WaitAny` and `WaitAll` wake on change. Their `set`, `vote_yes`, `vote_no` and `test` calls
+Every event waited on its owner thread wakes on change: `BoxEvent`, `IntEvent`
+with or without a predicate, `QuorumEvent`, `TimeoutEvent`, `NeverEvent`,
+`WaitAny` and `WaitAll`. Their `set`, `vote_yes`, `vote_no` and `test` calls
 move a waiting event to `READY` and queue it on the owner thread; the next
 `run_loop` pass resumes the waiter without testing the event again. The call
 itself never resumes the waiter. Code that writes such an event's fields
@@ -1060,10 +1064,21 @@ not resume the composite's fiber directly: the next `run_loop` pass does. As wit
 a leaf, a child whose fields are written directly needs a `test()` before its
 composites see the change.
 
-The owner must call `run_loop` to test predicate `IntEvent`s, serve deadlines,
-and resume ready fibers. The poll worker does this on each pass. A manually
-driven reactor must do it explicitly, including the deadline check for timed
-waits.
+An `IntEvent` predicate is evaluated only when the event is tested, so whatever
+changes the state it reads must say so. On the owner thread, call `set` or
+`test`. From another thread, publish the state, then call
+`event_ping::<()>(&ticket)` on an `EventPing` ticket (`event_ping_new`) that the
+owner armed with the event (`event_ping_arm`) before waiting on it and disarms
+afterwards (`event_ping_disarm`). The ping only queues the ticket; the owner's
+next `run_loop` pass tests the armed event, and a ready one resumes its waiter
+there. `FiberChannel` pings from its frame and close callbacks this way.
+
+The owner must call `run_loop` to serve pings and deadlines and resume ready
+fibers. The poll worker does this on each pass. A manually driven reactor must
+do it explicitly, including the deadline check for timed waits. An event waited
+on a thread other than the one that created it, which only C++ can do, cannot
+use its owner's queue and is still re-tested on every pass of the waiting
+thread.
 
 ### Rules and gotchas
 

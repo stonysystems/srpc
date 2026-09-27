@@ -265,19 +265,17 @@ trait EventCore: EventPollable {
     fn core_self(&self) -> &Weak<dyn EventPollable>;
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable>;
     fn core_is_composite(&self) -> bool;
-    // True when this event's readiness changes only through something that
-    // tests it: its own methods (`set`, `vote_*`, or a direct `test()` after a
-    // field write); for a TimeoutEvent, the reactor's deadline map, which
-    // tests it at its deadline; for a WaitAny or WaitAll, a child's test,
-    // which tests its parents (see event_parents_notify).  Such an event
-    // wakes on change: its WAIT->READY edge in event_test_impl queues it on
-    // the owner's ready queue, so run_loop never re-tests it.  False keeps the
-    // event on run_loop's per-pass scan, because something outside the event
-    // (a predicate over foreign state) can make it ready.  An IntEvent answers
-    // per instance: installing a `test_` predicate hands readiness to that
-    // predicate, so the predicate must be installed before `wait`.  This is S4
-    // of docs/dev/lion-runtime-plan.md; predicate IntEvents are still scanned.
-    fn core_self_notifying(&self) -> bool;
+    // Every event's readiness changes only through something that tests it
+    // (S4 of docs/dev/lion-runtime-plan.md): its own methods (`set`,
+    // `vote_*`, or a direct `test()` after a field write); for a TimeoutEvent,
+    // the reactor's deadline map; for a WaitAny or WaitAll, a child's test
+    // (event_parents_notify); for a predicate IntEvent, its publisher, which
+    // calls set() or, from another thread, pings the owner (event_ping), whose
+    // drain tests it.  So every event waited on its owner thread wakes on
+    // change: its WAIT->READY edge queues it on the owner's ready queue, and
+    // run_loop never re-tests it.  A predicate must be installed before
+    // `wait`, and a predicate over state another thread publishes needs that
+    // publisher to ping.
 }
 
 fn event_core_set_self<W: EventCore>(ev: &mut W, p: Weak<dyn EventPollable>) {
@@ -372,7 +370,6 @@ impl<Type: Clone + Default + 'static> EventCore for BoxEvent<Type> {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    fn core_self_notifying(&self) -> bool { true }
 }
 
 fn boxevent_make<Type: Clone + Default + 'static>() -> Arc<BoxEvent<Type>> {
@@ -488,13 +485,6 @@ impl EventCore for IntEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    fn core_self_notifying(&self) -> bool {
-        // Bound through a typed &EventState: the emitter's trait-impl lowering
-        // loses the field types of a two-level `self.state_.test_` access.
-        let state: &EventState = &self.state_;
-        let predicate = state.test_.borrow();
-        predicate.is_none()
-    }
 }
 
 fn int_event_set(ev: &IntEvent, n: i32) -> i32 {
@@ -596,9 +586,6 @@ impl EventCore for NeverEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    // Never ready, so no test can wake it and a per-pass re-test is wasted.  A
-    // timed wait ends through the deadline map; an untimed one never ends.
-    fn core_self_notifying(&self) -> bool { true }
 }
 
 #[repr(C)]
@@ -664,10 +651,6 @@ impl EventCore for TimeoutEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    // Its readiness is a clock comparison.  create_sp_timeout_event registers
-    // the first instant it holds with the deadline map, which tests the event
-    // then; that test is its WAIT->READY edge, so it needs no per-pass re-test.
-    fn core_self_notifying(&self) -> bool { true }
 }
 
 fn timeout_event_is_ready(self_: &TimeoutEvent) -> bool {
@@ -744,9 +727,6 @@ impl EventCore for WaitAny {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { true }
-    // Its children test it when they become ready (event_parents_notify), so
-    // its WAIT->READY edge queues it like a leaf's.
-    fn core_self_notifying(&self) -> bool { true }
 }
 
 #[repr(C)]
@@ -831,9 +811,6 @@ impl EventCore for WaitAll {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { true }
-    // Its children test it when they become ready (event_parents_notify), so
-    // its WAIT->READY edge queues it like a leaf's.
-    fn core_self_notifying(&self) -> bool { true }
 }
 
 pub const kDefaultStackBytes: usize = 1usize << 20;
@@ -1454,9 +1431,8 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
 // and by scanning every timed wait for an expired deadline.  Events now reach
 // it through this per-thread state instead, each one when it changes:
 //
-// * The ready queue (steps 1-2).  A self-notifying event
-//   (EventCore::core_self_notifying) waited on its owner thread joins no
-//   scanned queue.  event_test_impl pushes it here on its WAIT->READY edge,
+// * The ready queue (steps 1-2).  An event waited on its owner thread joins
+//   no scanned queue.  event_test_impl pushes it here on its WAIT->READY edge,
 //   and run_loop moves this queue into its dispatch list on every pass, so
 //   run_loop's cost for such events is O(ready), not O(waiting).  The queue
 //   holds strong references, so a ready event stays alive until its waiter
@@ -1482,6 +1458,17 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
 //   strongly, so a child's address cannot be reused while any parent it lists
 //   is alive; entries whose parents all died are pruned lazily.
 //
+// * Pings (step 5).  An IntEvent predicate may read state that other threads
+//   publish; FiberChannel's reads its frame queue and closed latch, filled by
+//   transport callbacks on the poll thread, an in-memory sender's thread or
+//   any closer's thread.  Such a publisher holds an EventPing ticket and
+//   pings it after publishing (event_ping).  The ticket crosses to the owner
+//   through a mutex-guarded ingress, in the shape of the stackless wake
+//   ingress, with an "already queued" flag so repeated pings before a drain
+//   queue it once.  Each pass, the owner takes the pinged tickets, looks up
+//   the event each one has armed (event_ping_arm), and tests only those; a
+//   ready one takes its ordinary WAIT->READY edge onto the ready queue.
+//
 // Resumption stays deferred throughout: an edge or a deadline only marks the
 // event, and the owner's next drain resumes the waiter through the one
 // dispatch block in run_loop, with the same DONE de-dup, registry, PAUSED,
@@ -1498,13 +1485,14 @@ fn stackless_wake_unregister<WakeDomain>(reactor: &Reactor) {
 // After the state is closed an edge queues nothing and a wait registers no
 // deadline.
 //
-// Only the owner thread touches the state.  An edge taken on a foreign thread
-// sets READY and queues nothing.  An untimed waiter is then not woken.  A
-// timed waiter is woken at its deadline, because the deadline rule finds the
-// event READY and dispatches it.  (Before S4 the per-pass scan found such an
-// event by racing on its status Cell, and check_timeout took READY entries on
-// every pass.)  Events are owner-thread-only; a foreign publisher goes
-// through an ingress queue.
+// Only the owner thread touches the state; the one exception is the ping
+// ingress, which exists to be reached from other threads.  An edge taken on
+// a foreign thread sets READY and queues nothing.  An untimed waiter is then
+// not woken.  A timed waiter is woken at its deadline, because the deadline
+// rule finds the event READY and dispatches it.  (Before S4 the per-pass
+// scan found such an event by racing on its status Cell, and check_timeout
+// took READY entries on every pass.)  Events are owner-thread-only; a
+// foreign publisher pings, or goes through another ingress queue.
 //
 // None of this enters the exact strong-symbol census: the thread-locals lower
 // to `inline thread_local`, the state structs are private aggregates with no
@@ -1549,6 +1537,10 @@ struct EventWakeState {
     parent_keys: Cell<usize>,
     // When `parent_keys` passes this, event_parent_link sweeps.
     parents_sweep_at: Cell<usize>,
+    // Tickets pinged from any thread since the last drain.
+    pings: Arc<EventPingIngress>,
+    // The event each armed ticket re-tests, keyed by the ticket's address.
+    armed: RefCell<HashMap<usize, Weak<dyn EventPollable>>>,
 }
 
 // One composite child's parents.  Weak, so a link never keeps a parent alive.
@@ -1566,7 +1558,7 @@ thread_local! {
     static event_wake_owner_th_: Cell<usize> = const { Cell::new(0usize) };
 }
 
-// Queue a self-notifying event on this thread's ready queue.  Called only from
+// Queue an event on this thread's ready queue.  Called only from
 // event_test_impl's WAIT->READY edge, and only on the event's owner thread.
 fn event_ready_enqueue<W: EventCore>(ev: &W) {
     let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
@@ -1872,6 +1864,157 @@ fn event_parents_notify<W: EventCore>(ev: &W) {
     }
 }
 
+// A cross-thread readiness ping for one predicate event at a time (S4 step 5).
+// Built by event_ping_new on any thread and shared with the publishers, which
+// call event_ping after publishing.  The owner thread arms it with the event
+// its fiber is about to wait on (event_ping_arm), which also binds it to that
+// thread's ingress, and disarms it when the wait is over (event_ping_disarm).
+// Only atomics and a mutex: the event itself is !Send and never leaves the
+// owner, which maps the ticket back to it through its `armed` table.
+pub struct EventPing {
+    // The ingress of the owner thread that last armed this ticket.
+    ingress: std::sync::Mutex<Option<Arc<EventPingIngress>>>,
+    // Set by the ping that queues the ticket, cleared by the owner's drain.
+    queued: AtomicBool,
+}
+
+// The owner side of the pings.  `accepting` goes false when the owner's wake
+// state closes, which turns later pings into no-ops.  `signaled` lets the
+// owner skip the mutex on a pass with nothing pinged.
+struct EventPingIngress {
+    accepting: AtomicBool,
+    signaled: AtomicBool,
+    pending: std::sync::Mutex<Vec<Arc<EventPing>>>,
+}
+
+// The ticket's address, which keys the owner's `armed` table.  Bound through
+// a typed pointer: the emitter lowers `ptr as usize` only from a named one.
+// MEASURED allow — see the `extra_unused_type_parameters` note on
+// `stackless_wake_owners_slot`.
+#[allow(clippy::extra_unused_type_parameters)]
+fn event_ping_key<WakeDomain>(ping: &Arc<EventPing>) -> usize {
+    let ptr: *const EventPing = Arc::as_ptr(ping);
+    ptr as usize
+}
+
+// A fresh, unarmed ticket.  Generic for the same reason as
+// stackless_cancel_report: a template adds no strong symbol.
+pub fn event_ping_new<WakeDomain>() -> Arc<EventPing> {
+    Arc::new(EventPing {
+        ingress: std::sync::Mutex::new(None),
+        queued: AtomicBool::new(false),
+    })
+}
+
+// Tell the owner that the armed event may have become ready.  Call it after
+// publishing the state the event's predicate reads, from any thread.  It
+// never tests the event and never resumes a waiter: the owner re-tests the
+// armed event on its next run_loop pass.  A ticket already queued and not yet
+// drained is not queued again; the drain clears the flag before it tests, so
+// a publish that lands after the test re-queues the ticket.  Returns true when
+// this ping made the owner's ingress non-empty: that is the edge on which S3
+// wakes the owner's driver; until then the owner notices on its next pass
+// (a PollThread passes at least every millisecond).
+pub fn event_ping<WakeDomain>(ping: &Arc<EventPing>) -> bool {
+    let bound: Option<Arc<EventPingIngress>> = {
+        let guard = ping.ingress.lock().unwrap();
+        (*guard).clone()
+    };
+    if bound.is_none() {
+        // Never armed: nothing waits on it, and the arming fiber rechecks the
+        // published state after arming.
+        return false;
+    }
+    let ingress: Arc<EventPingIngress> = bound.unwrap();
+    if !ingress.accepting.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    if ping.queued.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return false;
+    }
+    let mut pending = ingress.pending.lock().unwrap();
+    if !ingress.accepting.load(std::sync::atomic::Ordering::Acquire) {
+        ping.queued.store(false, std::sync::atomic::Ordering::Release);
+        return false;
+    }
+    let was_empty: bool = (*pending).is_empty();
+    (*pending).push(ping.clone());
+    ingress.signaled.store(true, std::sync::atomic::Ordering::Release);
+    was_empty
+}
+
+// Arm `ping` with `ev`: until disarmed, each drained ping of it re-tests `ev`.
+// Owner thread only, before the wait, and before the arming code rechecks the
+// state the predicate reads; a publish that lands in between is then caught
+// either by that recheck or by the ping.
+pub fn event_ping_arm<Ev: EventPollable + 'static>(ping: &Arc<EventPing>, ev: &Arc<Ev>) {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
+        return;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    {
+        let mut guard = ping.ingress.lock().unwrap();
+        *guard = Some(state.pings.clone());
+    }
+    let base: Arc<dyn EventPollable> = ev.clone();
+    let key: usize = event_ping_key::<()>(ping);
+    let mut armed_guard: RefMut<HashMap<usize, Weak<dyn EventPollable>>> = state.armed.borrow_mut();
+    armed_guard.insert(key, Arc::downgrade(&base));
+}
+
+// Disarm `ping`.  Owner thread only, once its wait is over.  A ping still
+// queued is dropped unserved by the drain.
+pub fn event_ping_disarm<WakeDomain>(ping: &Arc<EventPing>) {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null() {
+        return;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    let key: usize = event_ping_key::<WakeDomain>(ping);
+    let mut armed_guard: RefMut<HashMap<usize, Weak<dyn EventPollable>>> = state.armed.borrow_mut();
+    armed_guard.remove(&key);
+}
+
+// Test the event armed on each ticket pinged since the last drain.  Owner
+// reactor only.  One atomic load when nothing was pinged.  Returns whether any
+// ticket was drained.
+fn event_ping_drain<WakeDomain>(reactor: &Reactor) -> bool {
+    let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
+    if state_ptr.is_null()
+        || event_wake_owner_th_.with(|owner| owner.get()) != stackless_wake_reactor_key::<WakeDomain>(reactor)
+    {
+        return false;
+    }
+    let state: &EventWakeState = unsafe { &*state_ptr };
+    if !state.pings.signaled.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let pinged: Vec<Arc<EventPing>> = {
+        let mut pending = state.pings.pending.lock().unwrap();
+        state.pings.signaled.store(false, std::sync::atomic::Ordering::Release);
+        core::mem::take(&mut *pending)
+    };
+    for ping in pinged.iter() {
+        // Clear the flag before the test (AcqRel: the publish that set it is
+        // visible to the test), so a publish after the test queues again.
+        ping.queued.swap(false, std::sync::atomic::Ordering::AcqRel);
+        let key: usize = event_ping_key::<WakeDomain>(ping);
+        let armed: Option<Weak<dyn EventPollable>> = {
+            let armed_guard: RefMut<HashMap<usize, Weak<dyn EventPollable>>> = state.armed.borrow_mut();
+            armed_guard.get(&key).cloned()
+        };
+        if let Some(weak) = armed {
+            let upgraded: Option<Arc<dyn EventPollable>> = weak.upgrade();
+            if let Some(ev) = upgraded {
+                let ev: Arc<dyn EventPollable> = ev;
+                (*ev).test();
+            }
+        }
+    }
+    !pinged.is_empty()
+}
+
 // Counters over this thread's event wake state, for tests and diagnostics.
 // A plain aggregate with no methods, like StacklessCancelReport, so it
 // contributes no symbol.
@@ -1890,6 +2033,8 @@ pub struct EventWakeReport {
     pub composite_children: usize,
     // Parent links over all those lists, dead ones included.
     pub parent_links: usize,
+    // Pings armed with an event (see EventPing).
+    pub armed_pings: usize,
 }
 
 // Generic for the same reason as stackless_cancel_report: a template adds no
@@ -1902,6 +2047,7 @@ pub fn event_wake_report<WakeDomain>() -> EventWakeReport {
         deadline_entries: 0usize,
         composite_children: 0usize,
         parent_links: 0usize,
+        armed_pings: 0usize,
     };
     let state_ptr: *mut EventWakeState = event_wake_state_th_.with(|slot| slot.get());
     if state_ptr.is_null() {
@@ -1930,6 +2076,8 @@ pub fn event_wake_report<WakeDomain>() -> EventWakeReport {
     for list in lists {
         report.parent_links += list.parents.len();
     }
+    let armed_guard: RefMut<HashMap<usize, Weak<dyn EventPollable>>> = state.armed.borrow_mut();
+    report.armed_pings = armed_guard.len();
     report
 }
 
@@ -2028,6 +2176,16 @@ impl Reactor {
                     found_ready_events = true;
                 }
                 let mut ready_events: VecDeque<Arc<dyn EventPollable>> = Default::default();
+                // Pinged predicate events are re-tested here; a ready one
+                // queues itself on the ready queue drained below.
+                if event_ping_drain::<()>(self) {
+                    found_ready_events = true;
+                }
+                // The per-pass scans below serve only a wait taken on a thread
+                // other than the event's owner (see event_wait_impl): no event
+                // type is scanned when waited on its owner thread any more.
+                // Both queues are empty otherwise, and cost one borrow and one
+                // length check each per pass.
                 {
                     let mut waiting_guard = self.waiting_events_.borrow_mut();
                     let mut i: usize = 0usize;
@@ -2492,6 +2650,21 @@ impl Drop for Reactor {
             event_wake_state_th_.with(|slot| slot.set(core::ptr::null_mut()));
             event_wake_owner_th_.with(|owner| owner.set(0usize));
             if !state_ptr.is_null() {
+                // Refuse later pings, then release what is queued, as
+                // stackless_wake_shutdown_begin does for wakes.  A publisher
+                // may still hold a ticket bound to this ingress; it now
+                // pings nothing.
+                {
+                    let state: &EventWakeState = unsafe { &*state_ptr };
+                    state.pings.accepting.store(false, std::sync::atomic::Ordering::Release);
+                    let drained: Vec<Arc<EventPing>> = {
+                        let mut pending = state.pings.pending.lock().unwrap();
+                        core::mem::take(&mut *pending)
+                    };
+                    for ping in drained.iter() {
+                        ping.queued.store(false, std::sync::atomic::Ordering::Release);
+                    }
+                }
                 // Allocated by Box::into_raw in reactor_tls_get; the slot no
                 // longer names it, so this is the only owner.
                 drop(unsafe { Box::from_raw(state_ptr) });
@@ -2941,7 +3114,7 @@ impl QuorumEvent {
     }
     // A QuorumEvent has no child events. It used to report itself composite
     // only so that run_loop would put it on the scanned composite queue; it
-    // now wakes on change instead (see EventCore::core_self_notifying).
+    // now wakes on change instead (see the event wake state).
     pub fn is_composite_event(&self) -> bool {
         false
     }
@@ -3021,7 +3194,6 @@ impl EventCore for QuorumEvent {
     fn core_self(&self) -> &Weak<dyn EventPollable> { &self.self_ }
     fn core_self_mut(&mut self) -> &mut Weak<dyn EventPollable> { &mut self.self_ }
     fn core_is_composite(&self) -> bool { false }
-    fn core_self_notifying(&self) -> bool { true }
 }
 
 #[cfg_attr(any(), cpp_namespace(::janus))]
@@ -3116,13 +3288,14 @@ fn event_wait_impl<W: EventCore>(ev: &W, timeout: u64) {
         let fiber = fiber_opt.unwrap();
 
         let reactor_rc = Reactor::get_reactor();
-        // A self-notifying event waited on its owner thread wakes on change:
+        // An event waited on its owner thread wakes on change:
         // event_test_impl queues it on its WAIT->READY edge, so it joins no
-        // scanned queue and run_loop never re-tests it.  Anything else is
-        // found by run_loop's per-pass scan of waiting_events_.  The same
-        // two-part condition decides the edge's enqueue in event_test_impl.
-        let wakes_on_change: bool = ev.core_self_notifying()
-            && std::thread::current().id() == ev.core_owner_thread();
+        // scanned queue and run_loop never re-tests it.  An event waited on
+        // another thread -- possible only from C++, since events are !Send --
+        // cannot reach this thread's ready queue, so it is still found by
+        // run_loop's per-pass scan of waiting_events_.  The same condition
+        // decides the edge's enqueue in event_test_impl.
+        let wakes_on_change: bool = std::thread::current().id() == ev.core_owner_thread();
         // Inline `borrow_mut().push_back(…)`: the RefMut temporary releases at
         // the end of each statement — before the yield below — so the reactor
         // loop can re-borrow these queues while this fiber sleeps.  With the
@@ -3185,9 +3358,10 @@ fn event_test_impl<W: EventCore>(ev: &W) -> bool {
             ev.core_status().set(EventStatus::READY);
             // The WAIT->READY edge of an event that wakes on change: queue it
             // once for the owner's next drain (see event_ready_enqueue).  This
-            // is reached from set(), vote_*() and a direct test() alike.  It
-            // only queues; the waiter resumes when run_loop drains, never here.
-            if on_owner && ev.core_self_notifying() {
+            // is reached from set(), vote_*(), a direct test(), a deadline, a
+            // child's test and a drained ping alike.  It only queues; the
+            // waiter resumes when run_loop drains, never here.
+            if on_owner {
                 event_ready_enqueue(ev);
             }
         } else if ev.core_status().get() == EventStatus::READY {
@@ -3776,6 +3950,12 @@ fn reactor_tls_get() -> Rc<Reactor> {
                     parents: RefCell::new(HashMap::<usize, EventParentList>::new()),
                     parent_keys: Cell::new(0usize),
                     parents_sweep_at: Cell::new(64usize),
+                    pings: Arc::new(EventPingIngress {
+                        accepting: AtomicBool::new(true),
+                        signaled: AtomicBool::new(false),
+                        pending: std::sync::Mutex::new(Vec::<Arc<EventPing>>::new()),
+                    }),
+                    armed: RefCell::new(HashMap::<usize, Weak<dyn EventPollable>>::new()),
                 });
                 event_wake_state_th_.with(|slot| slot.set(Box::into_raw(fresh)));
             }

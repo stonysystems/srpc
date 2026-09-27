@@ -419,6 +419,58 @@ TEST_F(ExtendedReactorTest, WakeOnChangeResumesOnlyInTheDrain) {
     EXPECT_EQ(box_event->status_.get(), EventStatus::DONE);
 }
 
+// Test 14: predicate events wake on a ping (S4 step 5 of
+// docs/dev/lion-runtime-plan.md). A foreign thread publishes the state an
+// IntEvent predicate reads and pings the event's ticket; the owner's next
+// pass re-tests only that event and resumes its waiter. Nothing evaluates the
+// predicate on an idle pass, and the ping itself neither tests nor resumes.
+// This runs the generated C++ ingress; tests/reactor_ping_rust.rs is the Rust
+// lane's version, and FiberChannel's callbacks use the same calls.
+TEST_F(ExtendedReactorTest, ForeignPingWakesAPredicateWaiterOnTheNextPass) {
+    auto reactor = Reactor::get_reactor();
+    const size_t waiting_before = reactor->waiting_events_.borrow()->len();
+    auto flag = std::make_shared<std::atomic<bool>>(false);
+    auto probes = std::make_shared<int>(0);
+    auto event = create_sp_int_event(1);
+    *event->state_.test_.borrow_mut() = [flag, probes](int32_t) {
+        ++*probes;
+        return flag->load(std::memory_order_acquire);
+    };
+    auto ping = event_ping_new<std::tuple<>>();
+    event_ping_arm(ping, event);
+    auto resumed = std::make_shared<int>(0);
+    reactor->create_run_fiber([event, resumed]() {
+        event->wait();
+        ++*resumed;
+    });
+    EXPECT_EQ(event->status_.get(), EventStatus::WAIT);
+    EXPECT_EQ(reactor->waiting_events_.borrow()->len(), waiting_before);
+    const int parked_probes = *probes;
+    for (int i = 0; i < 16; i++) {
+        reactor->run_loop(false, true);
+    }
+    EXPECT_EQ(*probes, parked_probes) << "run_loop evaluated a predicate per pass";
+
+    bool first = false;
+    bool second = true;
+    std::thread publisher([flag, ping, &first, &second]() {
+        flag->store(true, std::memory_order_release);
+        first = event_ping<std::tuple<>>(ping);
+        second = event_ping<std::tuple<>>(ping);
+    });
+    publisher.join();
+    EXPECT_TRUE(first) << "the first ping did not report an empty ingress";
+    EXPECT_FALSE(second) << "a queued ticket was queued twice";
+    EXPECT_EQ(event->status_.get(), EventStatus::WAIT);
+    EXPECT_EQ(*resumed, 0) << "a ping resumed the waiter";
+
+    reactor->run_loop(false, true);
+    EXPECT_EQ(*resumed, 1);
+    EXPECT_EQ(event->status_.get(), EventStatus::DONE);
+    EXPECT_EQ(*probes, parked_probes + 1);
+    event_ping_disarm<std::tuple<>>(ping);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
