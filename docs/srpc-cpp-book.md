@@ -1632,10 +1632,11 @@ boundaries and acceptance results.
 | `rusty::Option<T>` | Optional values such as a client's current connection |
 | `rusty::Result<T, E>` | Results that require a success or failure decision |
 
-An `Arc<Client>` does not authorize simultaneous application calls from multiple
-threads. Likewise, a `const` C++ method can modify interior state. Follow the
+A `rusty::Arc<T>` does not by itself authorize simultaneous calls from multiple
+threads, and a `const` C++ method can modify interior state. Follow the
 canonical type's synchronization and lifecycle contract, rather than inferring it
-from the pointer wrapper or the method qualifier.
+from the pointer wrapper or the method qualifier. `Client` is synchronized, so
+one `rusty::Arc<Client>` may be called from several threads at once.
 
 Check optional connections before reading their metrics:
 
@@ -1977,7 +1978,7 @@ int main() {
 
 A successful connect returns zero; common failures are 111 for refused connection, 22 for an invalid address, and 107 for other factory connection failures. The default factory is TCP. Preserve the close-before-worker-shutdown ordering from the main book.
 
-The client is a `rusty::Arc<Client>`, and `connection()` returns `rusty::Option<rusty::Arc<ClientConnection>>`. Empty options must be checked before unwrapping. A C++ handle does not enforce the native Rust client's thread restrictions, so preserve owner-thread access in application code.
+The client is a `rusty::Arc<Client>`, and `connection()` returns `rusty::Option<rusty::Arc<ClientConnection>>`. Empty options must be checked before unwrapping. The client's state is synchronized, so application threads and reply callbacks may share one handle.
 
 ### Requests and typed futures
 
@@ -2505,10 +2506,13 @@ SRPC fiber suspension; it does not make arbitrary blocking operations yield.
 | `rusty::Weak` | Non-owning references. Check `upgrade()` before using the payload. |
 | `rusty::Box<T>` | Unique ownership, including registered services and request bodies. |
 
-`Client::create` returning an `Arc` does not authorize concurrent access to
-one client handle. Its canonical Rust `Client` is not `Sync`. Keep one client
-handle per application thread. Clients may share a poll worker or use separate
-workers; the choice determines scheduling and CPU use.
+`Client::create` returns an `Arc` that may be shared across threads. The
+canonical Rust `Client` is `Send + Sync`: its connection slot is a mutex, never
+held across a call into the connection, and its staged settings and scalar
+fields are synchronized. Application threads and reply callbacks on the poll thread
+may therefore call one client at once, as rpcbench's pipeline does. Clients may
+share a poll worker or use separate workers; the choice determines scheduling
+and CPU use.
 
 Services have const-callable dispatch and must synchronize mutable shared
 state. The shared context owns boxed services and immutable routing tables.

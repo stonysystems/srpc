@@ -1732,7 +1732,7 @@ The default factory creates TCP channels. Chapter 6 shows how to install an in-m
 
 `connect` builds a replacement connection and publishes it only after a successful dial. A failed replacement leaves the previous connection installed. `close` marks the current binding as closing and queues a close job that retains its owner until execution. The client retains its connection handle. Dropping `Client` also closes it.
 
-Keep the `Client` value on its owning thread. Its `Cell` and `RefCell` fields make it unsuitable for shared native Rust access across threads; putting it in an `Arc` does not change that. `ClientConnection` has synchronized shared state, and `client.connection()` returns an `Option<Arc<ClientConnection>>` after releasing the client's internal borrow. These are different ownership contracts.
+`Client` is `Send + Sync`, so one `Arc<Client>` may be used from several threads at once, including from reply callbacks on the poll thread. Its connection slot is a mutex held only while the handle is cloned out or replaced, and its staged settings and scalar fields are synchronized. `client.connection()` returns an `Option<Arc<ClientConnection>>` after releasing that lock; `ClientConnection` synchronizes its own shared state.
 
 ### Issuing a request
 
@@ -1875,7 +1875,7 @@ fn request_owned_reply(
 }
 ```
 
-The callback may run inline for an in-memory channel or on a transport worker. Keep it short, and retain only captures allowed by its `Send` bound. It cannot safely capture an `Arc<Client>` for cross-thread use. An owned message sent back to the client's owner is one way to request more work.
+The callback may run inline for an in-memory channel or on a transport worker. Keep it short, and retain only captures allowed by its `Send` bound. An `Arc<Client>` is one, so a callback may issue the next request through the same client.
 
 This path has no request-options coordinator, timeout timer, or disconnected-request buffering. It uses a fixed 16,384-entry callback array indexed by transaction ID modulo that size. An occupied slot rejects submission with `16`; a disconnected connection rejects it with `107`; send failure can return `5`. Transport teardown drains outstanding callbacks with a connection error.
 
@@ -2751,13 +2751,13 @@ requested but the worker may still be running when that call returns.
 ### Shared ownership does not imply thread safety
 
 Rust's `Arc<T>` controls the lifetime of `T`. Sending an `Arc<T>` across a thread
-also requires `T: Send + Sync`. The distinction matters because
-`Client::create()` returns `Arc<Client>`, while `Client` is not `Sync`.
+also requires `T: Send + Sync`. The distinction matters because several
+factories below return an `Arc` whose payload is still confined to one thread.
 
 | Value | Ownership and access |
 | --- | --- |
 | `Arc<PollThread>` | Share across threads to submit worker commands. |
-| `Arc<Client>` | Keep the client handle on its application thread. Its connection slot and staged settings use `RefCell` and `Cell`. |
+| `Arc<Client>` | Share across threads, including with reply callbacks. The connection slot is a mutex; staged settings and scalar fields are synchronized. |
 | `Server` | Keep lifecycle operations on its owning thread. The handle is not `Sync`. |
 | `Arc<ClientConnection>`, `Arc<ServerConnection>` | Shared connection owners synchronize transport slots and mutable connection state. |
 | `Arc<srpc::client::Future>` | Shared completion state uses mutexes and a condition variable. Its wait blocks an OS thread. |
@@ -2765,10 +2765,10 @@ also requires `T: Send + Sync`. The distinction matters because
 | Reactor events | Owner-thread values even where their factories return `Arc`. They contain unsynchronized fiber and event state. |
 | `WeakServerConnection` | `std::sync::Weak<ServerConnection>`. Upgrade it before replying and handle `None` after teardown. |
 
-For several application threads, construct a client on each thread. They may
-share a poll worker, or use separate workers if measurements justify the extra
-threads. Do not add an unsafe `Send` or `Sync` implementation to move a reactor,
-event or client handle around a compiler error.
+Several application threads may share one client, or construct one each for
+separate connections. Clients may share a poll worker, or use separate workers
+if measurements justify the extra threads. Do not add an unsafe `Send` or `Sync`
+implementation to move a reactor or event handle around a compiler error.
 
 ### Fibers share one thread
 
