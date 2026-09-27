@@ -905,12 +905,27 @@ unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> Chan
                 i += 1usize;
             }
         }
-    }
+        // The descriptor that keys this connection's registration, read under
+        // the gate that protects the slot. While the slot holds it, the
+        // number cannot be reused.
+        let registered_fd: i32 = tcpconn_fd_locked(conn);
+        drop(guard);
 
-    // Publish against the connection itself. The worker reads this flag
-    // through its owned registration; a delayed raw-fd command could instead
-    // update an unrelated socket after this connection's descriptor is reused.
-    conn.pending_write_update_.store(true, Ordering::Release);
+        // Publish against the connection itself. The worker reads this flag
+        // through its owned registration; a delayed raw-fd command could
+        // instead update an unrelated socket after this connection's
+        // descriptor is reused.
+        conn.pending_write_update_.store(true, Ordering::Release);
+        // Then wake that registration (S3 of docs/dev/lion-runtime-plan.md),
+        // which replaces the poll loop's per-pass sweep of every latch. The
+        // wake carries no mode: the registration re-reads its own latch, so
+        // a descriptor reused after a concurrent close wakes an unrelated
+        // registration, which finds its latch clear.
+        if let Some(pt) = conn.poll_thread_.as_ref() {
+            let pt: &Arc<PollThread> = pt;
+            pt.notify_pending_write(registered_fd);
+        }
+    }
     ChannelError::None
 }
 
