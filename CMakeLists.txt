@@ -1081,6 +1081,11 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
     list(APPEND SRPC_BATTERY_OWN_MAIN test_native_policy)
     set(SRPC_BATTERY_SRC_test_native_policy tests/native_policy_test.cc)
 
+    # The Lion OS backend (reactor/epoll_wrapper.rs SrpcEpollBackend) through
+    # the generated provider: real epoll, eventfd and pipes, so a runtime suite.
+    list(APPEND SRPC_RUNTIME_BATTERY test_epoll_backend)
+    set(SRPC_BATTERY_SRC_test_epoll_backend tests/epoll_backend_test.cc)
+
     list(APPEND SRPC_RUNTIME_BATTERY test_runtime_parity)
     list(APPEND SRPC_BATTERY_OWN_MAIN test_runtime_parity)
     set(SRPC_BATTERY_SRC_test_runtime_parity tests/runtime_parity_test.cc)

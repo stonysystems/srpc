@@ -166,7 +166,17 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # 2060 -> 2060: S0b synchronizes Client's fields (connection Mutex, atomic
 # scalars, ClientCloneCell staged configs). Its fieldwise constructor is
 # respelled in place (row replacement, count-neutral).
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2060
+# 2060 -> 2082: the Lion OS backend in srpc.epoll_wrapper (lion-runtime plan
+# S2), all additive; no existing row changes. +15 'T': SrpcEpollBackend's
+# new_/fd/register_/reregister/deregister/wait/wait_timeout_ms/interrupt and
+# its private control helper, SrpcEpollInterrupt's signal and private drain,
+# the pure epoll_interest_flags/epoll_os_event/epoll_timeout_ms mappings and
+# the private epoll_result. +7 'R': the private LINUX_EPOLLET/LINUX_EPOLLPRI
+# flags, the EPOLL_ERR_INTR/AGAIN/INVAL errno numerics, the reserved
+# EPOLL_INTERRUPT_TOKEN and EPOLL_BATCH_CAPACITY. SrpcInterest and SrpcOsEvent
+# hide their derives from the emitter, so they add no symbols. Measured from
+# fresh objects: the gate's unexpected list was exactly these 22 rows.
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2082
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: surviving historical additions plus current canonical helpers.
@@ -726,7 +736,8 @@ EXPECTED_IMPORTS = {
         'vec_port.vec',
     ],
     "srpc.channel": ["srpc.callback_wrapper"],
-    "srpc.epoll_wrapper": [],
+    # The OS backend's `wait(&mut Vec<SrpcOsEvent>, ..)` brings in the Vec port.
+    "srpc.epoll_wrapper": ["vec_port.vec"],
     "srpc.pollable_proxy": [],
     "srpc.callbacks": ["vec_port.vec", "srpc.errors"],
     "srpc.inmemory_channel": ["vec_port.vec", "std_port", "srpc.channel"],
@@ -830,7 +841,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.fiber": '48ad7bbc9166a86a19d2e30af4b5a8625b0c339087c6e1da5efcefe64d42aed5',
     "srpc.misc": 'dd3e1de2a3438768cd76c705be400793162985599bca02e2ac41b4276a2cc2cd',
     "srpc.channel": 'd21076754387dbd84050018f9ecfa9b3418708d67036c36dc6a85176af156447',
-    "srpc.epoll_wrapper": '52365a3c57622c2f9eb6c7693aba94881dd1d0748b107560557239eab6bcfc0c',
+    "srpc.epoll_wrapper": '360d0d8c67190671871ebb0b896847c7ce7ffea7ed0ff8b5c1aadc048fa312df',
     "srpc.pollable_proxy": 'c24f86cae48a2b20597a09f7a3d1a349a3f29ea0473dfd60d48d9adccb26a3ca',
     "srpc.callbacks": 'ff88b9e88ea364f8dcdcac543d4679a4eeb88319ad055cff8efecdc732548b60',
     "srpc.inmemory_channel": '805a30ab85eb6ac8d28815fc433637ecd39d1c1932b21d797324541f5c24b6b9',
@@ -2965,6 +2976,21 @@ ABI_SPECS = {
                 "int32_t Add(int32_t fd, int32_t poll_mode);",
                 "int32_t Remove(int32_t fd);",
                 "int32_t Update(int32_t fd, int32_t new_mode, int32_t old_mode);",
+                "export struct SrpcInterest;",
+                "export struct SrpcOsEvent;",
+                "export struct SrpcEpollInterrupt;",
+                "export struct SrpcEpollBackend;",
+                "export uint32_t epoll_interest_flags(SrpcInterest interest);",
+                "export SrpcOsEvent epoll_os_event(size_t token, uint32_t kernel_events);",
+                "export int32_t epoll_timeout_ms(rusty::Option<rusty::time::Duration> timeout);",
+                "static rusty::Result<SrpcEpollBackend, rusty::io::Error> new_();",
+                "rusty::io::Result<rusty::Unit> register_(int32_t fd, size_t token, SrpcInterest interest);",
+                "rusty::io::Result<rusty::Unit> reregister(int32_t fd, size_t token, SrpcInterest interest);",
+                "rusty::io::Result<rusty::Unit> deregister(int32_t fd);",
+                "rusty::io::Result<rusty::Unit> wait(rusty::Vec<SrpcOsEvent>& events, rusty::Option<rusty::time::Duration> timeout);",
+                "rusty::io::Result<rusty::Unit> wait_timeout_ms(rusty::Vec<SrpcOsEvent>& events, int32_t timeout_ms);",
+                "rusty::Arc<SrpcEpollInterrupt> interrupt() const;",
+                "rusty::io::Result<rusty::Unit> signal() const;",
             }
         ),
         symbols=frozenset(
@@ -2995,6 +3021,29 @@ ABI_SPECS = {
                 ('T', 'srpc::epoll_open@srpc.epoll_wrapper()'),
                 ('T', 'srpc::epoll_remove_impl@srpc.epoll_wrapper(int, int)'),
                 ('T', 'srpc::epoll_update_impl@srpc.epoll_wrapper(int, int, int, int)'),
+                # The Lion OS backend (plan S2); see the 2060 -> 2082 note.
+                ('R', 'srpc::EPOLL_BATCH_CAPACITY@srpc.epoll_wrapper'),
+                ('R', 'srpc::EPOLL_ERR_AGAIN@srpc.epoll_wrapper'),
+                ('R', 'srpc::EPOLL_ERR_INTR@srpc.epoll_wrapper'),
+                ('R', 'srpc::EPOLL_ERR_INVAL@srpc.epoll_wrapper'),
+                ('R', 'srpc::EPOLL_INTERRUPT_TOKEN@srpc.epoll_wrapper'),
+                ('R', 'srpc::LINUX_EPOLLET@srpc.epoll_wrapper'),
+                ('R', 'srpc::LINUX_EPOLLPRI@srpc.epoll_wrapper'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::control(int, int, unsigned long, srpc::SrpcInterest@srpc.epoll_wrapper)'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::deregister(int)'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::fd() const'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::interrupt() const'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::new_()'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::register_(int, unsigned long, srpc::SrpcInterest@srpc.epoll_wrapper)'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::reregister(int, unsigned long, srpc::SrpcInterest@srpc.epoll_wrapper)'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::wait(rusty::port::vec::Vec@vec_port.vec<srpc::SrpcOsEvent@srpc.epoll_wrapper, rusty::alloc::Global>&, rusty::Option<rusty::time::Duration>)'),
+                ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::wait_timeout_ms(rusty::port::vec::Vec@vec_port.vec<srpc::SrpcOsEvent@srpc.epoll_wrapper, rusty::alloc::Global>&, int)'),
+                ('T', 'srpc::SrpcEpollInterrupt@srpc.epoll_wrapper::drain() const'),
+                ('T', 'srpc::SrpcEpollInterrupt@srpc.epoll_wrapper::signal() const'),
+                ('T', 'srpc::epoll_interest_flags@srpc.epoll_wrapper(srpc::SrpcInterest@srpc.epoll_wrapper)'),
+                ('T', 'srpc::epoll_os_event@srpc.epoll_wrapper(unsigned long, unsigned int)'),
+                ('T', 'srpc::epoll_result@srpc.epoll_wrapper(int)'),
+                ('T', 'srpc::epoll_timeout_ms@srpc.epoll_wrapper(rusty::Option<rusty::time::Duration>)'),
             }
         ),
     ),
@@ -6817,6 +6866,17 @@ static_assert(std::is_same_v<
               std::int32_t (srpc::Epoll::*)() const>);
 static_assert(std::is_same_v<
               decltype(&srpc::epoll_bump_remove_count), void (*)()>);
+// The Lion OS backend (plan S2): the Lion-mirroring records and the pure
+// mapping keep their Rust shapes.
+static_assert(sizeof(srpc::SrpcInterest) == 2);
+static_assert(sizeof(srpc::SrpcOsEvent) == 16);
+static_assert(offsetof(srpc::SrpcOsEvent, readable) == 8);
+static_assert(std::is_same_v<
+              decltype(&srpc::epoll_os_event),
+              srpc::SrpcOsEvent (*)(size_t, std::uint32_t)>);
+static_assert(std::is_same_v<
+              decltype(&srpc::epoll_interest_flags),
+              std::uint32_t (*)(srpc::SrpcInterest)>);
 static_assert(std::is_abstract_v<srpc::PollableBase>);
 static_assert(std::is_same_v<srpc::PollableProxy,
                              rusty::Box<srpc::PollableBase>>);
@@ -9945,6 +10005,25 @@ int main() {
             rusty::sync::atomic::Ordering::SeqCst) !=
         remove_count_before + 1) {
         return 241;
+    }
+    {
+        // A signalled wait on the Lion OS backend returns promptly and does
+        // not report the interrupt as an event.
+        auto created = srpc::SrpcEpollBackend::new_();
+        if (!created.is_ok()) {
+            return 253;
+        }
+        auto backend = created.unwrap();
+        auto interrupt = backend.interrupt();
+        rusty::Vec<srpc::SrpcOsEvent> events;
+        if (!interrupt->signal().is_ok() ||
+            !backend.wait_timeout_ms(events, 10000).is_ok() ||
+            events.len() != 0 ||
+            !srpc::epoll_os_event(7, 0x008).write_closed ||
+            srpc::epoll_interest_flags(srpc::SrpcInterest{true, false}) !=
+                0x80002001u) {
+            return 253;
+        }
     }
     auto callback_manager = srpc::CallbackManager::new_();
     if (callback_manager.has_callbacks() ||

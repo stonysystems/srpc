@@ -2,6 +2,7 @@
   "version": 1,
   "runtime": {
     "tests/client_replay_test.cc": "test_client_replay",
+    "tests/epoll_backend_test.cc": "test_epoll_backend",
     "tests/fiber_runtime.cc": "test_fiber_runtime",
     "tests/fiber_test.cc": "test_fiber",
     "tests/native_policy_test.cc": "test_native_policy",

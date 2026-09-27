@@ -52,11 +52,11 @@
     },
     "reactor/srpc_epoll.c": {
       "role": "os-leaf",
-      "sha256": "87f2d56e641b0eabdced32d258b0e65ce543020227d58a2815108e09d58434a8"
+      "sha256": "d3276d7250c352db139264e7268fe8387458190c44853abfd86914c41fc19a2b"
     },
     "reactor/srpc_epoll.h": {
       "role": "c-declarations",
-      "sha256": "3370a01d92139d1d6e7682d47b273201c5d75f7b0b54198e123b2ee173343fe7"
+      "sha256": "70ca30081c987ed22a9b0ed06cc128188a41c7d7b8b6e36f51fc62830195375e"
     },
     "reactor/srpc_fiber.c": {
       "role": "context-switch",
