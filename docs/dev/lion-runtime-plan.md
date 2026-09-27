@@ -721,7 +721,10 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     `37` hard-codes do not change. Lion modules are not canonical SRPC modules.
     The census rules for `base/`, `misc/`, `rpc/` and `reactor/` stay as they
     are.
-- [ ] **S2. OS backend.**
+- [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
+  `SrpcEpollBackend` meets the contract below, and its results are at the
+  end of this item. S1 still has to add the `impl lion_reactor::os::OsBackend`
+  that forwards to it, once SRPC depends on Lion.
   - Implement Lion's U6 seam in canonical `reactor/epoll_wrapper.rs` over
     `srpc_epoll.c`.
   - SRPC's kernel has no eventfd today (a grep for `eventfd|EFD_|pipe2` is
@@ -758,6 +761,52 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
         errno today, so the seam must return `-errno`, as `srpc_epoll_ctl`
         already does.
     - **Threads:** everything except `signal` runs on the owner thread.
+  - **Result (2026-09-27, `3afd1fe`).**
+    - **C seam.** Six new leaves. Each makes one system call and returns
+      its result or `-errno`:
+      - `srpc_epoll_create`, which calls `epoll_create1(EPOLL_CLOEXEC)`;
+      - `srpc_epoll_ctl_token`, which stores a `u64` token in
+        `epoll_event.data`;
+      - `srpc_epoll_wait_tokens`, which returns tokens and flags in two plain
+        arrays of capacity 1 to 100, so no record layout is shared;
+      - `srpc_epoll_eventfd_{create,signal,drain}`.
+
+      The fd-based leaves stay for `PollThread`. EINTR retries, EAGAIN
+      handling, token 0, the flag mapping and timeout rounding are all in
+      Rust. The drain is one read, which zeroes the counter, not a
+      read-until-EAGAIN loop.
+    - **Rust.** `SrpcEpollBackend` has
+      `new`/`register`/`reregister`/`deregister`/`wait`/`interrupt`, plus
+      `wait_timeout_ms` and `fd`. `SrpcEpollInterrupt::signal`, and the
+      `SrpcInterest`/`SrpcOsEvent` mirrors of Lion's types, complete it. The
+      pure mappings are `epoll_os_event`, `epoll_interest_flags` and
+      `epoll_timeout_ms`.
+    - **Parity with Lion's `MioBackend`.** A scratch harness ran both
+      backends, Lion `3496113` with mio 1.2.3:
+      - mio's own accessors agree with `epoll_os_event` on all 64 flag
+        subsets;
+      - the timeout rule agrees on 17 of 17 samples;
+      - 62 of 63 real-kernel transcript lines are identical. The other line
+        is a write-only registration with a full send buffer whose peer
+        half-closes. SRPC always asks for RDHUP, so its wait returns early,
+        with no events. mio asks for RDHUP only with readable interest, so
+        its wait times out. Lion never registers write-only.
+    - **ABI.** 2060 -> 2082 symbols, all 22 new rows in `srpc.epoll_wrapper`.
+      The module now imports `vec_port.vec`.
+    - **Gate.** cargo 322 passed / 0 failed; `ctest -L srpc` 51/51; the TSan
+      and ASan batteries 35/35 each. Negative controls went red in both the
+      Rust and the C++ lane.
+    - **For S1.**
+      - The forwarding impl is about 40 lines. The scratch harness compiled
+        it against the real `lion_reactor::os` traits.
+      - It needs `impl OsInterrupt for SrpcEpollInterrupt`.
+      - To avoid an allocation per park, it should reuse one
+        `Vec<SrpcOsEvent>`, or `SrpcOsEvent` should become an alias of
+        `OsEvent`.
+      - SRPC returns at most `events.capacity()` events per wait, capped at
+        100. `MioBackend` ignores the capacity.
+      - Token 0 is refused with EINVAL.
+      - In C++ the method is `register_`.
 - [ ] **S3. Core swap.**
   - `PollThread` becomes one OS thread running one Lion runtime.
   - Stackless tasks go to Lion `spawn_local`.
