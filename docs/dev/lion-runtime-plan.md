@@ -658,17 +658,39 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - Likely fix: extend the scanned `srpc_runtime_imports` probe
     (`tests/runtime_imports.cc`) so it also imports the std modules the modmap
     lists. Verify on a fresh tree.
-- [ ] **S0b. A client connection accessed from two threads (a pre-existing
-  bug found 2026-09-26).**
-  - In rpcbench, the client thread and the poll thread both call
-    `request_async` on the same `Client`. The `RefCell` in
-    `Client::connection()` (`rpc/client.rs:1795`) then panics with "already
-    mutably borrowed".
-  - gdb caught it at the same frame in both the old and the new binaries, and
-    it explains every failed rpcbench trial.
-  - A `RefCell` reachable from two threads means a `Send`/`Sync` claim is
-    wrong somewhere. Find the claim, and fix the ownership rather than the
-    symptom.
+- [x] **S0b. A client connection accessed from two threads (a pre-existing
+  bug found 2026-09-26).** Done as `80b4f9a`. `Client` is now `Send + Sync`.
+  Its connection slot is a mutex that is never held across a call into the
+  connection. Its scalars are atomics, and its staged configs are
+  `ClientCloneCell`s. Short rpcbench client runs failed 4 of 80 before the
+  fix and 0 of 80 after it. Full rpcbench trials failed 1 of 67 before and
+  0 of 67 after.
+  - No `borrow_mut` was involved. `rusty::RefCell` counts borrows in a plain
+    `int`. Two threads borrowing at once lost an update, and the count
+    reached -1. The next `borrow()` then reported "already mutably borrowed".
+  - The wrong claim was in C++. Rust never called `Client` `Sync`, and
+    clippy's `arc_with_non_send_sync` fired on `Client::create`. The pin
+    that silenced it said "the C++ Arc erases Rust auto traits".
+    `rusty::Arc` and `rusty::Function` carry no `Send` bound, so rpcbench's
+    reply callback captured the handle with no error.
+  - ABI: one row is respelled in place, the fieldwise constructor, and the
+    crate still has 2060 symbols. `sizeof(Client)` grows from 224 to 416.
+    The importer now pins `is_sync<Client>`.
+  - Throughput: no change beyond trial spread in interleaved same-sitting
+    runs. Medians moved as follows: fast 1110k -> 1107k, fiber 662k -> 653k,
+    defer 638k -> 650k, async 725k -> 711k. Back-to-back blocks on the
+    loaded host did show fiber 30% lower, but that gap did not reproduce
+    once the trials were interleaved.
+  - Original report:
+    - In rpcbench, the client thread and the poll thread both call
+      `request_async` on the same `Client`. The `RefCell` in
+      `Client::connection()` (`rpc/client.rs:1795`) then panics with
+      "already mutably borrowed".
+    - gdb caught it at the same frame in both the old and the new binaries,
+      and it explains every failed rpcbench trial.
+    - A `RefCell` reachable from two threads means a `Send`/`Sync` claim is
+      wrong somewhere. Find the claim, and fix the ownership rather than the
+      symptom.
 - [ ] **S1. Lion as pinned dependency crates, and the gate policy.**
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
