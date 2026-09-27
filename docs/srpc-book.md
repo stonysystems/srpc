@@ -49,7 +49,10 @@ compiler and an archiver. `build.rs` uses `CC` and `AR` when set, otherwise `cc`
 `ar`, and selects the fiber assembly for the target architecture. The native build
 currently assumes those tools produce code for the Cargo target.
 
-The root Cargo package has no production Rust dependencies. Its property tests use
+The root Cargo package's only production dependencies are the Lion runtime crates
+`lion-reactor` and `lion-executor`, path dependencies into the `third-party/lion`
+submodule built without their `mio` feature. They bring the other Lion crates and
+Verus's erased `vstd` library from Verus's git repository. Its property tests use
 `proptest` as a development dependency. The library is consumed from a checkout;
 `Cargo.toml` currently sets `publish = false`.
 
@@ -58,13 +61,16 @@ The root Cargo package has no production Rust dependencies. Its property tests u
 ```sh
 git clone https://github.com/stonysystems/srpc
 cd srpc
+git submodule update --init third-party/lion
 cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --doc
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo doc --locked --no-deps --open
 ```
 
-These commands need no submodule initialization. For an application beside the
+These commands need only the `third-party/lion` submodule. The first build
+fetches `vstd` from Verus's git repository and a few crates.io crates for its
+proc-macros; after that Cargo also works offline. For an application beside the
 checkout, create a Cargo project and add a path dependency:
 
 ```sh

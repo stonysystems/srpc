@@ -702,7 +702,13 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     - A `RefCell` reachable from two threads means a `Send`/`Sync` claim is
       wrong somewhere. Find the claim, and fix the ownership rather than the
       symptom.
-- [ ] **S1. Lion as pinned dependency crates, and the gate policy.**
+- [ ] **S1. Lion as pinned dependency crates, and the gate policy.** The
+  Rust-lane half is done on `lion/s1-rust` as `ceb8cb4` (Lion pin
+  `aa5bebe` -> `3496113`), `9d8a439` (dependencies and the allowlist gate),
+  `4b0f7b2` (the forwarding `OsBackend` impl) and `9881337` (the
+  `verify-lion` lane); its results are at the end of this item. The C++
+  half, the transpiler invocation below, waits for T4/T5 and a rusty-cpp
+  pin bump.
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
     `default-features = false`; `lion-slab`, `lion-timer-wheel` and the
@@ -732,10 +738,87 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     `37` hard-codes do not change. Lion modules are not canonical SRPC modules.
     The census rules for `base/`, `misc/`, `rpc/` and `reactor/` stay as they
     are.
+  - **Result, Rust lane (2026-09-27).** Green in the Rust lane only; the C++
+    lane was not run.
+    - **Workspace.** Cargo made all eight Lion path crates workspace
+      members, since they sit under the workspace root. `[workspace]` now
+      excludes `third-party/lion`. Lion then compiles uncapped under
+      `-Dwarnings`, with 0 warnings at `3496113` on rustc 1.97.1. clippy
+      runs only on `srpc`'s own targets. vstd stays capped.
+    - **Graph.** `cargo tree -e normal` has 22 packages:
+      - `srpc`;
+      - the 8 Lion path crates;
+      - 6 crates from Verus git `db81a74`: vstd, verus_builtin, the two
+        proc-macros, verus_syn and verus_prettyplease;
+      - 7 host-only crates.io crates under those proc-macros: proc-macro2,
+        quote, syn, unicode-ident, synstructure, indexmap 1.9.3 and
+        hashbrown 0.12.3.
+
+      No mio, flume, tokio, socket2, futures-task or pin-project-lite
+      appears. Lion has no lockfile; the vstd revision comes from its
+      manifests (`rev = "db81a74"`), and SRPC's `Cargo.lock` records the
+      full commit.
+    - **Allowlist as implemented** (`check_rust_independence.py`):
+      - The manifest's `[dependencies]` is exactly the two Lion crates, each
+        `{ path = "third-party/lion/<crate>", default-features = false }`.
+        There are no build or target dependencies, and no `[patch]` or
+        `[replace]`.
+      - In the resolved graph, everything linked into `srpc` is one of the
+        eight named Lion crates at its gitlink directory, built with no
+        features, or vstd/verus_builtin at the exact Verus source.
+      - The only proc-macros are Verus's two. Their host closure is
+        crates.io plus Verus's parser crates.
+      - The forbidden crates appear nowhere. The submodule must be at the
+        gitlink commit with no local change.
+      - The isolated copy carries the closure crates' tracked files, and
+        builds and tests offline.
+      - 36 unit tests hold the negative controls.
+    - **Offline.** Resolution and the isolated copy ran offline against a
+      warm `~/.cargo`. On a cold machine, run one networked
+      `cargo fetch --locked` first.
+    - **Tests.** 14 new Rust tests drive a Lion runtime over
+      `SrpcEpollBackend`: the trait itself, tasks, timers, an AsyncFd echo,
+      a non-blocking ZERO tick, and foreign wakes. Foreign wakes land in
+      54-205 us, against the 100 ms idle park. Nine mutations of the
+      forwarding code each turned a test red.
+    - **Gate.** cargo 336 passed / 0 failed / 1 ignored. The isolated copy
+      ran 338 tests. The source-gate scripts that need no transpiler all
+      pass. `test_goal0_contracts.py` skipped its transpiler class.
+    - **`verify-lion`.** `scripts/verify_lion.sh` ran Lion's `ci.sh` on the
+      gitlink commit: all nine crates passed, in 538 s. The extraction must
+      lie outside the checkout, because Cargo would otherwise take SRPC's
+      root as the Lion crates' workspace.
+    - **Docs.** README, the book and `canonical-rust-runtime.md` no longer
+      claim Cargo needs no submodule and no dependency. CLAUDE.md still
+      does, and is the owner's edit to make:
+      - "Production Cargo dependencies ... are rejected";
+      - "Cargo uses the Rust standard library and the reviewed C/assembly
+        kernel";
+      - it has no Lion-submodule or warm-git-cache prerequisite for the
+        Rust lane.
+    - **Still owed by the C++ half.**
+      - From rusty-cpp:
+        - T4: per-crate namespaces and module names; no provider for the
+          `*-spec` crates; per-crate feature evaluation; the cross-crate
+          trait impl `epoll_wrapper` now contains; the adapter and
+          opaque-surface audits;
+        - T5;
+        - a pin bump carrying T1-T3 and `--verus-exec`.
+      - From SRPC:
+        - `--verus-exec`, and the separately built `verus-erase` helper, in
+          CMake, `check_srpc_crate_mode.py` and `test_goal0_contracts.py`;
+        - the T1 version-coupling check against `Cargo.lock`'s vstd source;
+        - the Lion providers as a separately inventoried class in
+          `libsrpc.a` and the dual-compile gate;
+        - a re-pin of `srpc.epoll_wrapper`: the trait impls, the new
+          `lion_batch_` field, and the Lion imports;
+        - S2's derive revert (S7);
+        - the CLAUDE.md edits above.
 - [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
   `SrpcEpollBackend` meets the contract below, and its results are at the
-  end of this item. S1 still has to add the `impl lion_reactor::os::OsBackend`
-  that forwards to it, once SRPC depends on Lion.
+  end of this item. S1's Rust half added the forwarding
+  `impl lion_reactor::os::OsBackend` as `4b0f7b2`; its C++ lowering waits
+  for T4/T5.
   - Implement Lion's U6 seam in canonical `reactor/epoll_wrapper.rs` over
     `srpc_epoll.c`.
   - SRPC's kernel has no eventfd today (a grep for `eventfd|EFD_|pipe2` is
