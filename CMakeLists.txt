@@ -876,6 +876,14 @@ endif()
 # now import individual std ports, so their dependency graph alone does not
 # build the umbrella BMI that C++ consumers still import. Match srpc's flags
 # and link only the runtime here to avoid the mixed std-module closure below.
+#
+# The same holds for srpc's own `std` variant (@cmake_cxx_std@synth_0): no
+# provider or port imports `std`, yet goal0-battery-modules.modmap names its
+# `std` and `std.compat` BMIs for every battery program and rpcbench.  Only
+# stale BMIs in an old tree hid that nothing built them.  The probe therefore
+# also imports `std` and `std.compat`; with srpc's flags it resolves them to
+# the same synth variant as srpc (CXXModules.json of both targets agree), and
+# the modmap command below depends on this target.
 add_library(srpc_runtime_imports OBJECT EXCLUDE_FROM_ALL
     tests/runtime_imports.cc
 )
