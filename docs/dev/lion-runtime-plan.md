@@ -816,7 +816,10 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - `reactor_spawn_stackless_task_with_result` keeps its C++ signature.
 - [ ] **S4. Fibers re-hosted on Lion.** The inventory was done on
   2026-09-26 (read-only, from the source, the C++ battery and Mako). Its
-  findings drive the order below.
+  findings drive the order below. Conversion steps 0–5 are done on the
+  existing reactor (2026-09-27). No event waited on its owner thread is
+  re-tested per pass any more. What remains is the Lion driver, which needs
+  S3.
   - Keep `srpc_fiber.c` and the `.S` switches.
   - **Resumption stays deferred.** `set()`, the `vote_*` methods and a direct
     `test()` call only move an event from WAIT to READY. A fiber resumes later,
@@ -904,19 +907,150 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
        - `QuorumEvent`, after which its composite flag with no children
          (`reactor.rs:2388`) is dropped;
        - `SharedIntEvent`, which has no users.
-    3. **Timers.** `TimeoutEvent`, `NeverEvent` with a timeout, and every
-       `wait_timeout` move to Lion timers on a `PollThread`, or to a
-       per-`Reactor` deadline heap drained by `run_loop` on other threads.
-       This replaces `check_timeout`'s linear scan and `TimeoutEvent`'s clock
-       read. At the deadline, keep the rule "READY if ready, else TIMEOUT"
-       (`reactor.rs:1861-1865`).
-    4. **Composites.** Add weak parent links, created in `add_event`,
-       `waitany_make` and `waitall_make_from`. A child's WAIT→READY, its move to
-       DONE, or its timer expiry calls the parent's `test()`. A child can be
-       shared, so each child keeps a list of parents.
+    3. [x] **Timers.** Done as `959a9da`.
+       - **Design:** the per-thread wake state from steps 1–2 gains a
+         deadline map, `BTreeMap<deadline, Vec<entry>>` in `Time::now(true)`
+         microseconds. Equal deadlines keep insertion order.
+         - Every timed wait has an entry. Every `TimeoutEvent` also gets
+           one at creation, at `wakeup_time_ + 1`, whether or not anything
+           waits on it.
+         - `check_timeout` keeps its pinned signature. It serves the expired
+           prefix in deadline order, and reads the clock only while a
+           deadline is pending.
+         - The rule "READY if ready, else TIMEOUT" is kept. It now goes
+           through `test()`, so a ready event takes the ordinary WAIT→READY
+           edge. An event that is already READY is handed over at its
+           deadline.
+         - Deletion is lazy. Entries hold `Weak` events, and `wakeup_time_`
+           names each wait's own deadline (0 when untimed). A threshold
+           sweep keeps an early-ending long timeout O(1) amortized.
+         - `event_next_deadline_us` (private, generic) is the accessor S3's
+           driver will sleep on. It is a lower bound under lazy deletion.
+         - The map is used on every thread. On a `PollThread`, S3 can keep
+           it and sleep until the next deadline, or move the entries to Lion
+           timers.
+       - **Measured:** there is no ABI change (2082; all 38 objects keep
+         their 2340 strong symbols). cargo 335/0, `ctest` 51/51. Tests are in
+         `tests/reactor_deadline_rust.rs` (11),
+         `tests/helpers/event_wake_state.rs` (2, crate-internal) and
+         `test_timeout_race.cc` Tests 7–11.
+       - **Findings:**
+         - A foreign-thread `set()` on a timed wait now completes exactly at
+           its deadline, READY, and not before. Before, `check_timeout`
+           rescued it on the next pass.
+         - Expired timers resume in deadline order. Before, a `TimeoutEvent`
+           came first and the rest followed in wait order.
+         - An unwaited `TimeoutEvent` moves INIT→DONE at its deadline.
+         - `run_loop(_, false)` no longer advances `TimeoutEvent` readiness.
+           No caller passes `false`.
+         - **Pre-existing crash, fixed.** One pass could list an event twice:
+           once through the ready queue, and once through `check_timeout`,
+           which took READY entries on every pass. A waiter that re-armed the
+           event and waited again then tripped
+           `reactor_verify(status == TIMEOUT)`. Dispatch now hands over only
+           READY or TIMEOUT.
+         - **rusty-cpp's btree port leaks on `remove`.** It copies the value
+           out and never destroys the original. Its first ASan run showed 3
+           leaks, so the map now moves the entries out before `remove`. The
+           same bug leaves one `Rc<Fiber>` behind per `fibers_.remove` in
+           `recycle()` (measured `strong_count` 3 where 2 is expected). The
+           battery's LSan suppressions hide it. It needs an upstream fix and
+           a pin bump.
+         - **One unexplained LSan report.** The ASan battery on this
+           revision once failed `srpc_runtime_parity` with a 24-byte leak.
+           The leaked object is the `Arc<Box<ChannelConnectionBase>>` that
+           `ClientConnection::bind_channel_direct` allocates, on the client
+           path S0b changed, and no reactor frame is involved. It did not
+           recur in 3 battery re-runs, 15 runs of that test or 200 runs of
+           `test_runtime_parity`. Nothing attributes it yet.
+
+       The original scope of step 3 was: `TimeoutEvent`, `NeverEvent` with a
+       timeout, and every `wait_timeout` move to Lion timers on a
+       `PollThread`, or to a per-`Reactor` deadline heap drained by
+       `run_loop` on other threads. This replaces `check_timeout`'s linear
+       scan and `TimeoutEvent`'s clock read. At the deadline, keep the rule
+       "READY if ready, else TIMEOUT" (`reactor.rs:1861-1865`).
+    4. [x] **Composites.** Done as `cba098e`.
+       - **Design:** the parent links live in the wake state as
+         `HashMap<child address, Weak parents>`. A child is an
+         `Arc<dyn EventPollable>`, and the event layouts are pinned. A new
+         trait method would cost 6 UFCS symbols and the vtable rows.
+         - The links are made after `reactor_setup_sp_event`, in
+           `create_sp_waitany`, `create_sp_waitall_from` and `add_event`.
+           Inside `*_make` the parent has no self link yet, and setup's
+           `Arc::get_mut` must see no other reference.
+         - Any `test()` that finds an event ready tests its WAIT and INIT
+           parents, on the owner thread. A waiting parent queues itself. An
+           unwaited parent moves INIT→DONE and tells its own parents.
+         - This fires on a child's INIT→DONE from `set()`, and on a child
+           timer's deadline through step 3's creation entry.
+           `MixedEventTypes` needs the second case.
+         - Links are pruned lazily, both per list and per map.
+       - **Measured:** there is no ABI change (2082 and 2340). cargo 345/0,
+         `ctest` 51/51. Tests are in `tests/reactor_composite_rust.rs` (10)
+         and 4 new `test_and_event.cc` cases. The "not complete after
+         partial sets" cases pass unchanged.
+       - **Finding:** `all_events_` keeps every event alive until its own
+         pruning threshold. So in a loop that creates and drops composites,
+         the number still alive varies from run to run. The link-bound
+         tests therefore prune `all_events_` on every round; a first
+         version with a loose bound failed once in the independence run.
+
+       The original scope of step 4 was: Add weak parent links, created in
+       `add_event`, `waitany_make` and `waitall_make_from`. A child's
+       WAIT→READY, its move to DONE, or its timer expiry calls the parent's
+       `test()`. A child can be shared, so each child keeps a list of parents.
        `test_and_event.cc:135-157` needs a timer child to notify its parent.
-    5. **`FiberChannel`'s predicate**, the only external predicate in SRPC,
-       the battery or Mako (`fiber_channel.rs:141-151`).
+    5. [x] **`FiberChannel`'s predicate.** Done as `63fd412`.
+       - **Design:** `EventPing` is a ticket, in the shape of the stackless
+         wake ingress. It holds a mutex-bound owner ingress and a `queued`
+         flag.
+         - `event_ping` runs on any thread, after the caller publishes. It
+           queues the ticket once, and returns true on the empty→non-empty
+           edge. S3 wakes the driver on that edge.
+         - `event_ping_arm` and `event_ping_disarm` run on the owner. They
+           map the ticket to the event it re-tests.
+         - `run_loop` drains pings first on each pass, with one atomic load
+           when none are pending. It clears `queued` before testing only the
+           armed events.
+         - `FiberChannel`'s frame and closed callbacks ping after they
+           publish. `arm_waiter` arms the ticket and `recv_frame` disarms it.
+           The arm-then-recheck race handling is kept.
+         - `core_self_notifying` is gone: every event waited on its owner
+           thread wakes on change.
+       - **Measured:** there is no ABI change (2082 and 2340). cargo 353/0,
+         `ctest` 51/51, and ASan/UBSan/TSan 35/35 each with 0 reports. Tests
+         are in `tests/reactor_ping_rust.rs` (5), in 3 new
+         `fiber_channel_rust.rs` tests, and in
+         `ExtendedReactorTest.ForeignPingWakesAPredicateWaiterOnTheNextPass`.
+       - **Remaining per-pass scan:** none for an event waited on its owner
+         thread.
+         - `waiting_events_` and `composite_events_` are still scanned, but
+           only a wait taken on a thread other than the event's creator
+           joins them. Only C++ can do that, since events are `!Send`, and
+           such a waiter cannot reach the owner's ready queue.
+         - Both queues are otherwise empty. S7 can retire them together
+           with the unused `timeout_events_`.
+       - **rpcbench:** `1806420` before, this series after, interleaved,
+         with the host at load 114–123. Every range overlaps its
+         counterpart. Medians: fast 1122k → 1110k, fiber 660k → 664k,
+         defer 648k → 652k, async 749k → 731k. No trial failed. No mode
+         waits on an event, so this measures only the per-pass checks.
+       - **Findings for S3:**
+         - Sleep until `event_next_deadline_us`, rounded up, because Lion is
+           millisecond-granular.
+         - Wake on `event_ping`'s empty→non-empty edge. That needs a driver
+           handle in the private `EventPingIngress`, and adding a field there
+           is free.
+         - The ping, deadline and ready-queue drains are inline in
+           `run_loop`. Factoring them out adds strong symbols, to be re-pinned
+           in S7.
+         - `EventPing` is also a ready-made foreign-safe `set()` for Mako
+           (see *Cross-thread `set()`*): publish, then ping.
+
+       The original scope of step 5 was: `FiberChannel`'s predicate, the only
+       external predicate in SRPC, the battery or Mako
+       (`fiber_channel.rs:141-151`).
        - Give it a ticket with an "already queued" flag, in the shape of the
          stackless wake ingress (`reactor.rs:963-976,1155-1168`).
        - The frame and close callbacks, which run on the poll thread, on the
