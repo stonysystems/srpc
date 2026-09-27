@@ -31,8 +31,10 @@ blocker was that srpc was not shaped as a Verus package.
 The `verify/` package supplies that shape without perturbing production:
 
 - **Workspace-excluded** (`exclude = ["verify"]` in the root `Cargo.toml`). It
-  never enters the production `cargo build` or the rusty-cpp transpile, and the
-  srpc crate itself keeps **no `vstd` dependency**. `verify/` has an empty
+  never enters the production `cargo build` or the rusty-cpp transpile, and
+  srpc's own sources keep **no `vstd` dependency**. (Production does link the
+  *erased* vstd from Verus's git repository, but only as a dependency of the
+  Lion crates; see "Lion's proofs" below.) `verify/` has an empty
   `[workspace]` table so it is its own single-package root.
 - **Verifies the real sources in place.** `verify/src/main.rs` pulls each
   specced module with `#[path = "../../<module>.rs"] mod ...;` — the same bytes
@@ -65,6 +67,29 @@ bare `verus <file> --cfg verus` driver links them with no cargo at all. That was
 the first unblock, and it still works as a fallback, but only for **dependency-
 free** leaf files. The cargo-verus route resolves real dependencies and is the
 supported path, so it is what `scripts/verify_srpc.sh` uses.
+
+### Lion's proofs: the `verify-lion` lane
+
+SRPC depends on Lion's verified executor and reactor (`third-party/lion`,
+docs/dev/lion-runtime-plan.md, D2). SRPC does not re-prove them in `verify/`:
+Lion's own CI (`./ci.sh`, Verus) is the proof of record, and SRPC's claim is
+identity with the pinned commit. The optional lane re-runs that CI on exactly
+the gitlink's bytes:
+
+```sh
+VERUS_PATH=/path/to/verus-x86-linux scripts/verify_lion.sh
+# => every Lion crate PASSED, "All checks passed"; about nine minutes cold
+```
+
+It needs Verus `0.2025.11.15.db81a74` (not the `verify/` harness's crates.io
+Verus) and the Rust 1.91.0 toolchain through rustup, both as Lion's
+REQUIREMENTS.md pins them. It extracts the gitlink commit with `git archive`
+into `VERIFY_LION_DIR` (default `~/.cache/srpc/verify-lion`, which must lie
+outside the checkout: Cargo would take the checkout for the Lion crates'
+workspace), so a dirty submodule cannot change what is verified. Lion's CI also
+verifies lion-utility and lion-liveness, which pull mio and tokio from
+crates.io, so the first run needs network access or a warm registry. Like
+`verify_srpc.sh`, it is not wired to CMake or ctest.
 
 ## What is proven today
 
