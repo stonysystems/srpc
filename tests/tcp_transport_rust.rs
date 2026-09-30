@@ -42,6 +42,7 @@ extern "C" {
     fn fcntl(fd: i32, command: i32, ...) -> i32;
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const core::ffi::c_void, length: u32) -> i32;
     fn getsockopt(fd: i32, level: i32, name: i32, value: *mut core::ffi::c_void, length: *mut u32) -> i32;
+    fn getsockname(fd: i32, address: *mut core::ffi::c_void, length: *mut u32) -> i32;
 }
 
 fn open_fds() -> usize {
@@ -709,7 +710,10 @@ fn a_close_on_the_poll_thread_retires_both_tasks() {
 
 // Frames sent before the PollThread has started the connection's tasks (the
 // connect's hand-over job is still queued) go out on the writer's first
-// poll: no edge wake reaches a writer that has not parked yet.
+// poll: no edge wake reaches a writer that has not parked yet. (With
+// write-through these small frames go out from the sending thread instead;
+// a_hand_back_before_the_tasks_start_is_sent_on_the_first_poll covers the
+// writer's first poll there.)
 #[test]
 fn frames_sent_before_the_tasks_start_go_out_on_the_first_poll() {
     let _serial = serial();
@@ -881,6 +885,410 @@ fn a_foreign_send_wakes_the_writer_promptly() {
     assert!(at(0.5) < Duration::from_millis(2), "median foreign send wake {:?}", at(0.5));
     proxy.close();
     drop(proxy);
+    pt.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Write-through (lion/s5-writethrough): a sender on another thread that finds
+// the outbound buffer empty writes its frame itself, and hands whatever
+// send(2) did not take to the writer task.
+
+// Holds `pt`'s thread inside a job until the returned sender is dropped or
+// sent to, so its tasks cannot run meanwhile.
+fn hold_poll_thread(pt: &Arc<PollThread>) -> mpsc::Sender<()> {
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let release_rx = Mutex::new(release_rx);
+    pt.add(Arc::new(OneTimeJob::new(Box::new(move || {
+        entered_tx.lock().unwrap().send(()).unwrap();
+        let _ = release_rx.lock().unwrap().recv_timeout(LIMIT);
+    }))));
+    entered_rx.recv_timeout(LIMIT).unwrap();
+    release_tx
+}
+
+// A frame sent from another thread reaches the peer while the connection's
+// poll thread is busy: the sender wrote it itself.
+#[test]
+fn a_foreign_send_goes_out_while_the_poll_thread_is_busy() {
+    let _serial = serial();
+    let pt = PollThread::create();
+    let (proxy, mut peer) = connect_to_raw_peer(&pt);
+    // Let the tasks start and park.
+    std::thread::sleep(Duration::from_millis(5));
+    for round in 0..10usize {
+        let release = hold_poll_thread(&pt);
+        let payload = pattern(round, 64 + round);
+        assert_eq!(send(&proxy, &payload), ChannelError::None);
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let got = read_frame(&mut peer).expect("a foreign send waited for the busy poll thread");
+        assert_eq!(got, payload);
+        drop(release);
+    }
+    proxy.close();
+    pt.shutdown();
+}
+
+// A frame larger than the socket takes: the sender writes a prefix, and the
+// writer -- woken by the hand-back, since no write edge will come for a
+// writer parked on the buffer -- sends the rest once it runs.
+#[test]
+fn a_partial_write_hands_the_rest_to_the_writer() {
+    let _serial = serial();
+    let pt = PollThread::create();
+    for round in 0..3usize {
+        let (mut proxy, mut peer) = connect_to_raw_peer(&pt);
+        let observed = observe(&mut proxy);
+        std::thread::sleep(Duration::from_millis(5));
+        let release = hold_poll_thread(&pt);
+        let payload = pattern(round, 16 << 20);
+        let expected = encode(&payload);
+        assert_eq!(send(&proxy, &payload), ChannelError::None);
+        // The prefix the sender wrote is readable now; the rest waits for
+        // the writer, which cannot run while the poll thread is held.
+        peer.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let mut got = Vec::with_capacity(expected.len());
+        let mut chunk = vec![0u8; 1 << 16];
+        loop {
+            match peer.read(&mut chunk) {
+                Ok(0) => panic!("the connection closed"),
+                Ok(n) => got.extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+        }
+        let direct = got.len();
+        assert!(direct > 0, "the sender wrote nothing itself");
+        assert!(direct < expected.len(), "the socket took all of a 16 MiB frame at once");
+        drop(release);
+        peer.set_read_timeout(Some(LIMIT)).unwrap();
+        while got.len() < expected.len() {
+            let n = peer.read(&mut chunk).expect("the writer never sent the handed-back rest");
+            assert!(n > 0, "the connection closed early");
+            got.extend_from_slice(&chunk[..n]);
+        }
+        assert!(got == expected, "the frame arrived corrupted");
+        println!("partial write: {direct} of {} bytes by the sender", expected.len());
+        assert!(observed.errors.lock().unwrap().is_empty());
+        proxy.close();
+        drop(proxy);
+        assert!(eventually(LIMIT, || observed.dropped.load(Ordering::Acquire)));
+    }
+    pt.shutdown();
+}
+
+// The hand-back before the connection's tasks have started (the connect's
+// hand-over job waits behind a held poll thread): no writer waker exists yet,
+// so the writer's first poll must send the rest.
+#[test]
+fn a_hand_back_before_the_tasks_start_is_sent_on_the_first_poll() {
+    let _serial = serial();
+    let pt = PollThread::create();
+    for round in 0..3usize {
+        let release = hold_poll_thread(&pt);
+        let (proxy, mut peer) = connect_to_raw_peer(&pt);
+        let payload = pattern(round, 16 << 20);
+        let expected = encode(&payload);
+        assert_eq!(send(&proxy, &payload), ChannelError::None);
+        peer.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let mut got = Vec::with_capacity(expected.len());
+        let mut chunk = vec![0u8; 1 << 16];
+        loop {
+            match peer.read(&mut chunk) {
+                Ok(0) => panic!("the connection closed"),
+                Ok(n) => got.extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+        }
+        assert!(!got.is_empty() && got.len() < expected.len(), "no partial write before the tasks started");
+        drop(release);
+        peer.set_read_timeout(Some(LIMIT)).unwrap();
+        while got.len() < expected.len() {
+            let n = peer.read(&mut chunk).expect("the writer's first poll never sent the handed-back rest");
+            assert!(n > 0, "the connection closed early");
+            got.extend_from_slice(&chunk[..n]);
+        }
+        assert!(got == expected, "the frame arrived corrupted");
+        let small = pattern(round + 7, 33);
+        assert_eq!(send(&proxy, &small), ChannelError::None);
+        assert_eq!(read_frame(&mut peer).unwrap(), small);
+        proxy.close();
+    }
+    pt.shutdown();
+}
+
+// Foreign senders racing each other, the poll thread's own sends and the
+// writer's drains, with frames large enough to be written partly and a peer
+// that stalls: every frame arrives whole, and each sender's in order.
+#[test]
+fn write_through_keeps_every_senders_order_under_contention() {
+    let _serial = serial();
+    const FOREIGN: usize = 6;
+    const PER_SENDER: usize = 400;
+    const POLL_SENDER: usize = FOREIGN;
+    let pt = PollThread::create();
+    let (proxy, mut peer) = connect_to_raw_peer(&pt);
+    let proxy: Arc<ChannelConnectionProxy> = Arc::new(proxy);
+    fn frame_for(sender: usize, seq: usize) -> Vec<u8> {
+        let len = match seq % 7 {
+            0 => 300_000 + seq * 13,
+            1 => 70_000,
+            _ => 9 + (seq * 31 + sender) % 2000,
+        };
+        let mut payload = pattern(sender * 100_000 + seq, len);
+        payload[0] = sender as u8;
+        payload[1..5].copy_from_slice(&(seq as u32).to_ne_bytes());
+        payload
+    }
+    fn send_retrying(proxy: &ChannelConnectionProxy, payload: &[u8]) {
+        let deadline = Instant::now() + LIMIT;
+        loop {
+            match send(proxy, payload) {
+                ChannelError::None => return,
+                ChannelError::WouldBlock => {
+                    assert!(Instant::now() < deadline, "refused for good");
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                other => panic!("send failed: {other:?}"),
+            }
+        }
+    }
+    let reader = std::thread::spawn(move || {
+        peer.set_read_timeout(Some(LIMIT)).unwrap();
+        let mut next = [0usize; FOREIGN + 1];
+        let total = (FOREIGN + 1) * PER_SENDER;
+        for n in 0..total {
+            if n % 97 == 0 {
+                // Stall, so the socket fills and senders meet EAGAIN.
+                std::thread::sleep(Duration::from_millis(3));
+            }
+            let frame = read_frame(&mut peer).expect("a frame was lost");
+            let sender = frame[0] as usize;
+            let seq = u32::from_ne_bytes(frame[1..5].try_into().unwrap()) as usize;
+            assert!(sender <= FOREIGN, "a frame from no sender: the stream is corrupt");
+            assert_eq!(seq, next[sender], "sender {sender} out of order");
+            assert!(frame == frame_for(sender, seq), "sender {sender} frame {seq} corrupt");
+            next[sender] += 1;
+        }
+    });
+    // The poll thread's own sender: a job that sends its frames from the
+    // poll thread, where sends keep S5's path.
+    let poll_proxy = proxy.clone();
+    let (poll_done_tx, poll_done_rx) = mpsc::channel::<()>();
+    let poll_done_tx = Mutex::new(poll_done_tx);
+    pt.add(Arc::new(OneTimeJob::new(Box::new(move || {
+        for seq in 0..PER_SENDER {
+            let payload = frame_for(POLL_SENDER, seq);
+            loop {
+                match send(&poll_proxy, &payload) {
+                    ChannelError::None => break,
+                    ChannelError::WouldBlock => srpc::fiber::this_fiber::sleep_ms(1),
+                    other => panic!("send failed: {other:?}"),
+                }
+            }
+        }
+        poll_done_tx.lock().unwrap().send(()).unwrap();
+    }))));
+    let senders: Vec<_> = (0..FOREIGN)
+        .map(|sender| {
+            let proxy = proxy.clone();
+            std::thread::spawn(move || {
+                for seq in 0..PER_SENDER {
+                    send_retrying(&proxy, &frame_for(sender, seq));
+                }
+            })
+        })
+        .collect();
+    for sender in senders {
+        sender.join().unwrap();
+    }
+    poll_done_rx.recv_timeout(LIMIT).expect("the poll thread's sender never finished");
+    reader.join().unwrap();
+    proxy.close();
+    drop(proxy);
+    pt.shutdown();
+}
+
+// The descriptor in this process whose local address is `local`: the
+// transport's side of a connection whose std peer is known.
+fn find_local_socket(local: std::net::SocketAddr) -> i32 {
+    #[repr(C)]
+    struct SockaddrIn {
+        family: u16,
+        port: u16,
+        address: u32,
+        padding: [u8; 8],
+    }
+    let std::net::SocketAddr::V4(local) = local else { panic!("IPv4 expected") };
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+        let Ok(fd) = entry.unwrap().file_name().to_string_lossy().parse::<i32>() else { continue };
+        let mut address = SockaddrIn { family: 0, port: 0, address: 0, padding: [0; 8] };
+        let mut length: u32 = std::mem::size_of::<SockaddrIn>() as u32;
+        if unsafe { getsockname(fd, (&raw mut address).cast(), &raw mut length) } == 0
+            && address.family == 2
+            && u16::from_be(address.port) == local.port()
+            && address.address == u32::from_ne_bytes(local.ip().octets())
+        {
+            return fd;
+        }
+    }
+    panic!("no descriptor has local address {local}");
+}
+
+// The same under steady backpressure: small socket buffers on both sides
+// and a peer that reads in small pieces, so the socket keeps filling and
+// emptying and write-through sends are often partial, racing the writer's
+// drains of the rest and each other. The stream is checked frame by frame.
+#[test]
+fn write_through_keeps_frames_whole_under_backpressure() {
+    let _serial = serial();
+    const SENDERS: usize = 8;
+    const PER_SENDER: usize = 250;
+    const SOL_SOCKET: i32 = 1;
+    const SO_SNDBUF: i32 = 7;
+    const SO_RCVBUF: i32 = 8;
+    fn frame_for(sender: usize, seq: usize) -> Vec<u8> {
+        let len = 5 + (seq * 7919 + sender * 104_729) % (24 << 10);
+        let mut payload = pattern(sender * 100_000 + seq, len);
+        payload[0] = sender as u8;
+        payload[1..5].copy_from_slice(&(seq as u32).to_ne_bytes());
+        payload
+    }
+    let pt = PollThread::create();
+    for _round in 0..2 {
+        let raw = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let small: i32 = 16 << 10;
+        assert_eq!(unsafe { setsockopt(raw.as_raw_fd(), SOL_SOCKET, SO_RCVBUF, (&raw const small).cast(), 4) }, 0);
+        let connected = TcpFactory::new(pt.clone()).connect(&raw.local_addr().unwrap().to_string());
+        assert_eq!(connected.error, ChannelError::None);
+        let (mut peer, client_address) = raw.accept().unwrap();
+        let client_fd = find_local_socket(client_address);
+        assert_eq!(unsafe { setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF, (&raw const small).cast(), 4) }, 0);
+        let proxy: Arc<ChannelConnectionProxy> = Arc::new(connected.connection.unwrap());
+        let reader = std::thread::spawn(move || {
+            peer.set_read_timeout(Some(LIMIT)).unwrap();
+            let mut next = [0usize; SENDERS];
+            let mut pending: Vec<u8> = Vec::new();
+            let mut chunk = vec![0u8; 8 << 10];
+            let mut frames = 0usize;
+            let mut reads = 0usize;
+            while frames < SENDERS * PER_SENDER {
+                let n = peer.read(&mut chunk).expect("the stream stalled");
+                assert!(n > 0, "the connection closed early");
+                pending.extend_from_slice(&chunk[..n]);
+                reads += 1;
+                if reads.is_multiple_of(8) {
+                    std::thread::sleep(Duration::from_micros(20));
+                }
+                loop {
+                    if pending.len() < 4 {
+                        break;
+                    }
+                    let size = u32::from_ne_bytes(pending[..4].try_into().unwrap()) as usize;
+                    assert!(size < (1 << 20), "a torn frame: header claims {size} bytes");
+                    if pending.len() < 4 + size {
+                        break;
+                    }
+                    let frame: Vec<u8> = pending[4..4 + size].to_vec();
+                    pending.drain(..4 + size);
+                    let sender = frame[0] as usize;
+                    assert!(sender < SENDERS, "a torn frame: no sender {sender}");
+                    let seq = u32::from_ne_bytes(frame[1..5].try_into().unwrap()) as usize;
+                    assert_eq!(seq, next[sender], "sender {sender} out of order");
+                    assert!(frame == frame_for(sender, seq), "sender {sender} frame {seq} torn");
+                    next[sender] += 1;
+                    frames += 1;
+                }
+            }
+        });
+        let senders: Vec<_> = (0..SENDERS)
+            .map(|sender| {
+                let proxy = proxy.clone();
+                std::thread::spawn(move || {
+                    for seq in 0..PER_SENDER {
+                        let payload = frame_for(sender, seq);
+                        let deadline = Instant::now() + LIMIT;
+                        loop {
+                            match send(&proxy, &payload) {
+                                ChannelError::None => break,
+                                ChannelError::WouldBlock => {
+                                    assert!(Instant::now() < deadline, "refused for good");
+                                    std::thread::yield_now();
+                                }
+                                other => panic!("send failed: {other:?}"),
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for sender in senders {
+            sender.join().unwrap();
+        }
+        reader.join().unwrap();
+        proxy.close();
+    }
+    pt.shutdown();
+}
+
+// A connection reset that a foreign sender's own send(2) meets first -- the
+// poll thread is held, so neither transport task can see it -- is reported
+// as the writer always reported a send failure: once, as ConnectionReset,
+// from the poll thread, never from the sender's thread. The sender's send
+// consumes the socket's pending error, so the reader then reads a plain EOF.
+// Even rounds start the tasks before the reset (the woken writer runs
+// first); odd rounds only after it (the reader, spawned first, runs first
+// and reads that EOF).
+#[test]
+fn a_reset_met_by_a_foreign_sender_is_reported_as_a_send_failure() {
+    let _serial = serial();
+    let pt = PollThread::create();
+    for round in 0..10usize {
+        let early_release = if round % 2 == 1 { Some(hold_poll_thread(&pt)) } else { None };
+        let (mut proxy, peer) = connect_to_raw_peer(&pt);
+        if early_release.is_none() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let callback_threads: Arc<Mutex<Vec<std::thread::ThreadId>>> = Arc::new(Mutex::new(Vec::new()));
+        let (closed_tx, closed_rx) = mpsc::channel::<ChannelError>();
+        let closed_tx = Mutex::new(closed_tx);
+        let on_closed_threads = callback_threads.clone();
+        proxy.set_on_closed(OnClosedCallback::from_callable(Box::new(move |reason: ChannelError| {
+            on_closed_threads.lock().unwrap().push(std::thread::current().id());
+            let _ = closed_tx.lock().unwrap().send(reason);
+        })));
+        let on_error_threads = callback_threads.clone();
+        let errors: Arc<Mutex<Vec<(ChannelError, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let error_log = errors.clone();
+        proxy.set_on_error(OnErrorCallback::from_callable(Box::new(move |error: ChannelError, what: &str| {
+            on_error_threads.lock().unwrap().push(std::thread::current().id());
+            error_log.lock().unwrap().push((error, what.to_string()));
+        })));
+        let release = match early_release {
+            Some(release) => release,
+            None => hold_poll_thread(&pt),
+        };
+        // Reset the connection from the peer's side (SO_LINGER, zero timeout).
+        #[repr(C)]
+        struct Linger {
+            onoff: i32,
+            linger: i32,
+        }
+        let linger = Linger { onoff: 1, linger: 0 };
+        assert_eq!(unsafe { setsockopt(peer.as_raw_fd(), 1, 13, (&raw const linger).cast(), 8) }, 0);
+        drop(peer);
+        std::thread::sleep(Duration::from_millis(5));
+        // The frame is accepted: the connection is not known to be closed.
+        assert_eq!(send(&proxy, &pattern(round, 1000)), ChannelError::None);
+        drop(release);
+        assert_eq!(closed_rx.recv_timeout(LIMIT).unwrap(), ChannelError::ConnectionReset, "round {round}");
+        assert!(closed_rx.recv_timeout(Duration::from_millis(50)).is_err(), "on_closed fired twice");
+        let errors = errors.lock().unwrap().clone();
+        assert_eq!(errors, vec![(ChannelError::ConnectionReset, "outbound write failed".to_string())], "round {round}");
+        let threads = callback_threads.lock().unwrap().clone();
+        assert!(!threads.contains(&std::thread::current().id()), "a callback ran on the sending thread");
+        proxy.close();
+    }
     pt.shutdown();
 }
 

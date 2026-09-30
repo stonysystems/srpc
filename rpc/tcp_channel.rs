@@ -117,6 +117,11 @@ pub struct TcpConnection {
     // the task retires.  Gated by `outbound_`, like `fd_`: an append and the
     // writer's emptiness check never interleave, so no edge is lost.
     writer_: UnsafeCell<Option<Waker>>,
+    // A hard send error met by a write-through sender (lion/s5-writethrough),
+    // as an errno; 0 when none.  That send consumed the socket's pending
+    // error, so the transport tasks report this one instead: the writer on
+    // its next drain, the reader if it reads the EOF that follows first.
+    send_error_: std::sync::atomic::AtomicI32,
 }
 
 // SAFETY: all state reachable through shared references is either immutable
@@ -157,6 +162,7 @@ impl TcpConnection {
             on_closed_: std::sync::Mutex::<OnClosedCallback>::new(Default::default()),
             on_error_: std::sync::Mutex::<OnErrorCallback>::new(Default::default()),
             writer_: UnsafeCell::new(None),
+            send_error_: std::sync::atomic::AtomicI32::new(0),
         }
     }
 
@@ -897,6 +903,8 @@ unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> Chan
         return ChannelError::Internal;
     }
     let extended_header_flag = false;
+    // Decided before the gate: the TLS read needs no lock.
+    let foreign: bool = tcpconn_is_foreign_sender(conn);
 
     let edge_waker: Option<Waker>;
     {
@@ -939,13 +947,83 @@ unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> Chan
         // the edge is already woken, draining, or waiting for write
         // readiness, and a writer not yet started drains on its first poll.
         // On the poll thread a wake is a push onto its local ready queue.
-        edge_waker = if was_empty { tcpconn_take_writer_locked(conn) } else { None };
+        //
+        // Write-through (experiment on lion/s5-writethrough): a sender on
+        // another thread that finds the buffer empty writes the frame
+        // itself, here under the gate, and wakes the writer only when
+        // send(2) did not take all of it.  Nothing is queued ahead of the
+        // frame (the buffer was empty) and every other send, drain and
+        // flush holds the same gate, so bytes leave in gate order and each
+        // sender's frames stay in order.  The writer stays the only user of
+        // write readiness: this path never polls or consumes it, and hands
+        // an EAGAIN, a short write or an error back as queued bytes, which
+        // the writer then sends, waits on or fails with, as before.
+        let mut handed_back: bool = was_empty;
+        if was_empty && foreign {
+            handed_back = !tcpconn_write_through_locked(conn, &mut *guard);
+        }
+        edge_waker = if handed_back { tcpconn_take_writer_locked(conn) } else { None };
         drop(guard);
     }
     if let Some(waker) = edge_waker {
         waker.wake();
     }
     ChannelError::None
+}
+
+// Whether a send on this thread may write through: the connection has a
+// PollThread (so a writer task exists or will) and this is not that thread.
+// On the PollThread a send keeps S5's path: a reply inside the reader's poll
+// wakes the writer on the local ready queue, and one drain carries them all.
+fn tcpconn_is_foreign_sender(conn: &TcpConnection) -> bool {
+    match conn.poll_thread_.as_ref() {
+        Some(pt) => {
+            let pt: &Arc<PollThread> = pt;
+            !pt.is_current_thread()
+        }
+        None => false,
+    }
+}
+
+// Under the outbound gate: send what the socket takes from the buffer, the
+// sender's own frame (the buffer was empty before it).  True when all of it
+// went out.  Otherwise the sent prefix is trimmed and the rest stays queued
+// for the writer: after EAGAIN it waits for write readiness as always.  A
+// hard error (or a zero-byte send) is recorded in send_error_ for the tasks
+// to report, since this send consumed the socket's pending error; the bytes
+// stay queued, not dropped as tcpconn_drain_outbound_locked drops them for
+// callers that report the error themselves.  EINTR retries.
+fn tcpconn_write_through_locked(conn: &TcpConnection, buf: &mut TcpOutBuf) -> bool {
+    let mut offset: usize = 0;
+    let mut stopped: bool = false;
+    while !stopped && offset < buf.len() {
+        let io = tcpconn_send_bytes(conn, buf, offset);
+        if io.count > 0 {
+            offset += io.count as usize;
+        } else if io.count < 0 && io.error == TCP_ERR_INTERRUPTED {
+            // retry
+        } else {
+            stopped = true;
+            let fd_open: bool = tcpconn_fd_locked(conn) >= 0;
+            let hard: bool = io.count == 0 || (io.error != TCP_ERR_AGAIN && io.error != TCP_ERR_WOULD_BLOCK);
+            if fd_open && hard {
+                let err: i32 = if io.count == 0 { TCP_ERR_CONNECTION_RESET } else { io.error };
+                let _first = conn.send_error_.compare_exchange(0, err, Ordering::AcqRel, Ordering::Acquire);
+            }
+        }
+    }
+    tcpconn_trim_sent(buf, offset);
+    buf.is_empty()
+}
+
+// The hard send error a write-through sender recorded, as a ChannelError, or
+// None.
+fn tcpconn_recorded_send_error(conn: &TcpConnection) -> ChannelError {
+    let err: i32 = conn.send_error_.load(Ordering::Acquire);
+    if err == 0 {
+        return ChannelError::None;
+    }
+    tcpconn_errno_to_channel_error(err)
 }
 
 fn tcpconn_flush(conn: &TcpConnection) {
@@ -2009,7 +2087,14 @@ fn tcp_reader_poll(t: &TcpTransport, cx: &mut Context<'_>) -> Poll<()> {
             if undelivered && !tcp_reader_deliver(t) {
                 return Poll::Ready(());
             }
-            tcpconn_peer_closed(conn);
+            // A write-through sender's send consumed a reset that this EOF
+            // stands for: report that send failure, as the writer would.
+            let recorded: ChannelError = tcpconn_recorded_send_error(conn);
+            if recorded != ChannelError::None {
+                tcpconn_fail(conn, recorded, "outbound write failed");
+            } else {
+                tcpconn_peer_closed(conn);
+            }
             tcp_reader_finish(t);
             return Poll::Ready(());
         }
@@ -2150,6 +2235,11 @@ fn tcp_writer_drain(conn: &TcpConnection, closed: &mut bool) -> ChannelError {
     }
     if (*guard).is_empty() {
         return ChannelError::None;
+    }
+    // A write-through sender already met a hard error on this socket.
+    let recorded: ChannelError = tcpconn_recorded_send_error(conn);
+    if recorded != ChannelError::None {
+        return recorded;
     }
     tcpconn_drain_outbound_locked(conn, &mut *guard)
 }
