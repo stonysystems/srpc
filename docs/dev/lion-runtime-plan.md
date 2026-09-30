@@ -557,17 +557,50 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     for insert, remove, advance and fire. This is the existing command. Its
     stages run the Rust `cargo test` baseline, transpile, compile the C++, and
     run it (`docs/rusty-cpp-transpiler.md:3105-3120`).
-- [ ] **T7. A leak in rusty-cpp's btree port (found in S4, 2026-09-27).**
-  - The btree port's `remove` copies the value out and never destroys the
-    original. SRPC's step 3 avoids this by moving entries out before `remove`.
-  - The same bug leaves one `Rc<Fiber>` behind on every `fibers_.remove` in
-    `recycle()`: `strong_count` is 3 where 2 is expected. It also affects the
-    worker's job set.
-  - The battery's leak-check suppressions currently hide the fiber case.
-  - Fix it in rusty-cpp: the port, or its patcher if the vendored `.cppm` is
-    generated. Run `gate.sh --with-cache`, which is required for port changes.
-    Then drop the corresponding SRPC suppressions and prove the leak is gone
-    under ASan.
+- [x] **T7. A leak in rusty-cpp's btree port (found in S4, 2026-09-27).**
+  Fixed as rusty-cpp `lion/t7-btree-leak` `72e66871` (based on `758a6a86`).
+  Cherry-pick it onto `lion/verus-exec` once T4/T5 is done.
+  - **Root cause:** the runtime headers, not the port.
+    `rusty::MaybeUninit::assume_init_read` (`include/rusty/maybe_uninit.hpp`)
+    and `NonNull::read` (`include/rusty/ptr.hpp`) copied, where Rust moves.
+    - Every btree slot read leaked. That covers remove, inserts that split
+      nodes, pop, `into_iter`, `append` and `split_off`, so SRPC's `fibers_`
+      leaked on insert too.
+    - `alloc.cppm`'s btree and vec `IntoIter` are affected as well.
+    - Both functions now relocate, the way `rusty::ptr::read` already does.
+  - **Tests:** new drop-balance and relocating-read tests. LSan reported
+    1008 B leaked before the fix and nothing after. ctest passes 74/74. The
+    negative control fails 12/12.
+  - **After the pin bump, in SRPC:**
+    - Re-run the sanitizer battery without the five fiber lines in
+      `scripts/lsan_suppressions.txt`.
+    - `event_deadline_remove_key`'s move-out workaround can go back to a plain
+      `remove`.
+    - Re-measure `Rc<Fiber>::strong_count` after `fibers_.remove`; expect 2.
+  - **Pre-existing, found while testing:**
+    - Under ASan, btree `extract_if`/`retain` has use-after-free and
+      double-free bugs. SRPC does not call either on a `BTreeMap`; every one of
+      its `retain` calls is on a `Vec` or `VecDeque`.
+    - Under libstdc++, `std::string` keys break when btree moves slots. SRPC
+      builds with libc++ and is not exposed.
+- [ ] **T8. rusty-cpp's own gate must be green before the pin bump.** Measured
+  at `758a6a86`/`72e66871`, `gate.sh --with-cache` is RED for reasons that
+  predate this work:
+  - `strpat` is in the parity-matrix crate list (added in `bc41eb7c`), but its
+    crate directory was never committed. Under `set -u` that kills the whole
+    matrix at `run_parity_matrix.sh:394`.
+  - `gate.sh` is committed without its execute bit.
+  - The `either` crate fails to compile in the matrix, with and without T7.
+    That accounts for 3 transpiler-test failures.
+  - `crate_mode_uses_one_cargo_selected_target_dependency_graph_atomically`
+    fails for an environmental reason (cargo metadata cannot exec the test's
+    fake rustc).
+  - With `strpat` dropped locally, the matrix gives 21 total: 7 pass, 12 fail,
+    2 known-fail. The 12 are codegen errors in generated code, and they are
+    identical with and without T7.
+  - Decide with the owner what "green" means for the pin bump. Options: fix
+    the matrix, or record the pre-existing failures as the known baseline.
+
 - **Side benefit, not in scope.** Once T1–T3 exist, SRPC's own canonical
   modules could carry in-body Verus proofs in `verus!{}` form. That lifts the
   "no in-body `proof!`" limit in `docs/verification.md`, because the transpiler
