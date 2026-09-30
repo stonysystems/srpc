@@ -1172,7 +1172,37 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     (`check_srpc_crate_mode.py:73-75,215-244`). A new trait method is a ratchet
     edit.
   - `QuorumEvent` keeps `cpp_namespace(::janus)`.
-- [ ] **S5. Transport.**
+- [~] **S5. Transport.** The Rust lane is done (2026-09-30); the C++ lane
+  waits on T5e and the pin bump.
+  - **Branches** (SRPC main repo):
+    - `lion/s5-transport` (`bbf7fa2`): each connection is a reader task and a
+      writer task over `AsyncFd`; `send_frame` wakes the writer directly.
+    - `lion/s5-writethrough` (`daf3d92`): a foreign sender writes through an
+      empty buffer.
+    - `lion/s5-cork` (`95057e3`/`7e51a80`): write-through only when the
+      connection's last `send(2)` is at least 20 µs old
+      (`kTcpWriteThroughIdleUs`).
+  - **Adopted, tentatively, as the Rust-lane tip:** `lion/s5-cork`. S8 must
+    re-check the gain with rpcbench.
+  - **Rust echo benchmark, release, 12 alternating trials, medians:**
+
+    | Build | w=1 qps | w=64 qps | w=512 qps (range) | CPU/req at w=512 | p99 at w=1 |
+    | --- | --- | --- | --- | --- | --- |
+    | old 1 ms loop | 817 | 108k | 269k | 4.32 µs | 1436 µs |
+    | S5 | 4836 | 182k | 248k | 5.07 µs | 449 µs |
+    | write-through | 8842 | 235k | 282k | 6.97 µs | 310 µs |
+    | cork 20 µs | 9184 | 223k | 371k (348k–393k) | 4.01 µs | 310 µs |
+
+  - **Tests:** 406 passed / 0 failed on the cork branch.
+  - **Notes to carry forward:** the per-branch result notes live in each
+    branch's copy of this plan.
+    - EOF behind data on the same edge is now seen.
+    - A hard error recorded by a foreign sender is reported on the poll
+      thread as `ConnectionReset`.
+    - New ABI rows for S7: `TcpConnection::{writer_, send_error_,
+      last_send_us_}` and `kTcpWriteThroughIdleUs`.
+  - **The original S5 design:**
+
   - The `TcpConnection`/`TcpListener` pollable shims become per-connection
     async read and write tasks, registered with Lion's reactor.
   - `send_frame` from a foreign thread wakes the writer task. That replaces the
