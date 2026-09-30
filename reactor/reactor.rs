@@ -3169,6 +3169,15 @@ impl PollThread {
         }
     }
 
+    /// Whether the calling thread is this PollThread's own thread while its
+    /// Lion runtime runs: inside its driver, a fiber the driver resumes, a job,
+    /// or one of the runtime's tasks.  State that must live on the runtime (a
+    /// Lion `AsyncFd`, a `spawn_local` task) can then be created in place
+    /// rather than through a job.
+    pub fn is_current_thread(&self) -> bool {
+        poll_driver_is_current(&self.driver_)
+    }
+
     /// Count accepted remove requests, including requests for an absent fd.
     /// Requests sent after worker shutdown are rejected and do not count.
     pub fn get_remove_count(&self) -> i32 {
@@ -4798,9 +4807,10 @@ struct PollFdEntry {
 }
 
 // Aborts the process when dropped while still armed, i.e. when a task's poll
-// unwinds.  Every poll disarms it before returning.
-struct PollTaskUnwindAbort {
-    armed: bool,
+// unwinds.  Every poll disarms it before returning.  Public so that tasks
+// other modules spawn on the poll thread (S5's TCP transport) abort alike.
+pub struct PollTaskUnwindAbort {
+    pub armed: bool,
 }
 
 impl Drop for PollTaskUnwindAbort {
@@ -4952,6 +4962,17 @@ fn poll_driver_deadline_added(deadline: u64) {
     if !driver.running.get() && deadline < driver.armed_us.get() {
         poll_driver_wake(&driver.wake);
     }
+}
+
+// Whether this thread runs the driver that owns `wake`, and that driver still
+// accepts work on its runtime.
+fn poll_driver_is_current(wake: &Arc<PollDriverWake>) -> bool {
+    let local: *const PollDriver = poll_driver_th_.with(|slot| slot.get());
+    if local.is_null() {
+        return false;
+    }
+    let driver: &PollDriver = unsafe { &*local };
+    driver.accepting.get() && Arc::ptr_eq(&driver.wake, wake)
 }
 
 // On the poll thread that owns `wake`, wake the registration of `fd` and
@@ -5471,6 +5492,29 @@ fn poll_fd_is_ready(entry: &PollFdEntry, cx: &mut Context<'_>, write: bool) -> b
         return false;
     }
     let async_fd: &lion_reactor::AsyncFd = (*fd_guard).as_ref().unwrap();
+    lion_fd_poll_ready(async_fd, cx, write)
+}
+
+// Consume one direction's readiness (see lion_fd_consume_ready).
+fn poll_fd_take_ready(entry: &PollFdEntry, cx: &mut Context<'_>, write: bool) -> bool {
+    let fd_guard = entry.async_fd.borrow();
+    if (*fd_guard).is_none() {
+        return false;
+    }
+    let async_fd: &lion_reactor::AsyncFd = (*fd_guard).as_ref().unwrap();
+    lion_fd_consume_ready(async_fd, cx, write)
+}
+
+/// Whether `async_fd` may be ready in one direction (read, or write when
+/// `write`).  When it is not, `cx`'s waker is registered for that
+/// direction's next edge and false is returned.  Call on the poll thread that
+/// registered the descriptor.
+///
+/// A true result obliges the caller to act: perform the operation, and when
+/// it reports EAGAIN, call `lion_fd_consume_ready` in the same poll; or wake
+/// its own task before returning Pending.  Otherwise no waker is registered
+/// and nothing wakes the task (the AsyncFd protocol of U8).
+pub fn lion_fd_poll_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
     let polled = if write {
         async_fd.poll_write_ready(cx)
     } else {
@@ -5487,15 +5531,17 @@ fn poll_fd_is_ready(entry: &PollFdEntry, cx: &mut Context<'_>, write: bool) -> b
     }
 }
 
-// Consume one direction's readiness: true if it was ready, and the flag is
-// then clear until the next edge.  The guard's try_io is the only way to
-// clear it, and clears only on WouldBlock, which the empty operation reports.
-fn poll_fd_take_ready(entry: &PollFdEntry, cx: &mut Context<'_>, write: bool) -> bool {
-    let fd_guard = entry.async_fd.borrow();
-    if (*fd_guard).is_none() {
-        return false;
-    }
-    let async_fd: &lion_reactor::AsyncFd = (*fd_guard).as_ref().unwrap();
+/// Consume one direction's readiness: true if it was ready, and the flag is
+/// then clear until the next edge.  The guard's try_io is the only way to
+/// clear it, and clears only on WouldBlock, which the empty operation reports.
+///
+/// Call it only right after the caller's own operation on the descriptor
+/// returned EAGAIN, in the same poll: no park lies between that EAGAIN and
+/// the clear, so the clear consumes exactly the readiness the EAGAIN
+/// disproved (U8 invariant 2), and the next transition raises a new edge.
+/// (The interim pollable adapter also calls it before handle_read, whose
+/// pollables drain to EAGAIN or a short read under EPOLLET rules.)
+pub fn lion_fd_consume_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
     let polled = if write {
         async_fd.poll_write_ready(cx)
     } else {
