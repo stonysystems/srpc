@@ -41,6 +41,7 @@ const LIMIT: Duration = Duration::from_secs(20);
 extern "C" {
     fn fcntl(fd: i32, command: i32, ...) -> i32;
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const core::ffi::c_void, length: u32) -> i32;
+    fn getsockopt(fd: i32, level: i32, name: i32, value: *mut core::ffi::c_void, length: *mut u32) -> i32;
 }
 
 fn open_fds() -> usize {
@@ -329,6 +330,11 @@ fn large_frames_cross_many_partial_writes_and_reads() {
 // listening socket's receive buffer is raised first, so an accepted socket
 // can hold the whole burst, and the poll thread is held in a job while the
 // peer writes it.
+//
+// This needs net.core.rmem_max of at least 4 MiB (SO_RCVBUF is clamped to
+// it silently). Below that the burst does not fit before the reader runs,
+// more data arrives on later edges, and the test passes without reaching
+// the budget; it says so on stderr (shown with --nocapture).
 #[test]
 fn a_burst_beyond_the_read_budget_is_read_to_the_end() {
     let _serial = serial();
@@ -356,6 +362,20 @@ fn a_burst_beyond_the_read_budget_is_read_to_the_end() {
         unsafe { setsockopt(listener.fd(), SOL_SOCKET, SO_RCVBUF, (&raw const rcvbuf).cast(), 4) },
         0
     );
+    // Linux reports twice the granted size.
+    let mut granted: i32 = 0;
+    let mut length: u32 = 4;
+    assert_eq!(
+        unsafe { getsockopt(listener.fd(), SOL_SOCKET, SO_RCVBUF, (&raw mut granted).cast(), &raw mut length) },
+        0
+    );
+    if granted < 2 * rcvbuf {
+        eprintln!(
+            "a_burst_beyond_the_read_budget_is_read_to_the_end: SO_RCVBUF clamped to {} bytes \
+             (raise net.core.rmem_max to 4 MiB); the read budget is not exercised",
+            granted / 2
+        );
+    }
     for round in 0..5usize {
         let (entered_tx, entered_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
