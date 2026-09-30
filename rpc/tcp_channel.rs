@@ -49,7 +49,7 @@ pub const kTcpConnectionOutboundHighWaterDefault: usize = 4 * 1024 * 1024; // 4 
 // send(2), by any path, is at least this many microseconds old.  A busier
 // connection leaves the frame queued for the writer task, which then sends
 // every frame queued meanwhile in one drain.  0 writes through always.
-pub const kTcpWriteThroughIdleUs: u64 = 50;
+pub const kTcpWriteThroughIdleUs: u64 = 20;
 
 // Private numeric seams deliberately avoid libc's macro spellings so the
 // generated module remains valid after the runtime headers include errno.h.
@@ -2423,6 +2423,10 @@ fn tcp_accept_release(task: &mut TcpAcceptTask) {
     let lease: Option<Arc<LegacyTcpListener>> = task.lease_.take();
     drop(lease);
 }
+
+#[cfg(test)]
+#[path = "../tests/helpers/tcp_cork.rs"]
+mod tcp_cork_tests;
 
 #[cfg(test)]
 mod native_connect_tests {

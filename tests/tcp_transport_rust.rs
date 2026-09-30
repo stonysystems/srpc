@@ -22,7 +22,7 @@ use srpc::channel::{
 };
 use srpc::misc::OneTimeJob;
 use srpc::reactor::PollThread;
-use srpc::tcp_channel::{kTcpWriteThroughIdleUs, make_tcp_listener_channel_proxy, TcpFactory, TcpListener};
+use srpc::tcp_channel::{make_tcp_listener_channel_proxy, TcpFactory, TcpListener};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::AsRawFd;
@@ -1226,84 +1226,6 @@ fn write_through_keeps_frames_whole_under_backpressure() {
             sender.join().unwrap();
         }
         reader.join().unwrap();
-        proxy.close();
-    }
-    pt.shutdown();
-}
-
-// Data segments this socket has sent (tcp_info.tcpi_segs_out). With
-// TCP_NODELAY set and no data flowing the other way, every send(2) that
-// carries bytes emits at least one segment, so the count bounds the number
-// of such sends from above.
-fn segments_out(fd: i32) -> u32 {
-    const IPPROTO_TCP: i32 = 6;
-    const TCP_INFO: i32 = 11;
-    let mut info = [0u8; 256];
-    let mut length: u32 = info.len() as u32;
-    assert_eq!(unsafe { getsockopt(fd, IPPROTO_TCP, TCP_INFO, info.as_mut_ptr().cast(), &raw mut length) }, 0);
-    assert!(length >= 144, "tcp_info too short: {length}");
-    u32::from_ne_bytes(info[136..140].try_into().unwrap())
-}
-
-// The cork (lion/s5-cork): foreign sends that follow the connection's last
-// send within kTcpWriteThroughIdleUs are queued for the writer, not written
-// through, so a burst leaves in fewer send(2) calls than frames. The poll
-// thread is held during the burst: the first frame (the connection was
-// idle) goes out from the sender at once, the rest wait for the writer and
-// leave in one drain after the release.
-#[test]
-fn a_burst_inside_the_cork_interval_is_batched() {
-    let _serial = serial();
-    // Few enough that a burst fits inside even a 20 us interval.
-    const FRAMES: usize = 4;
-    const IPPROTO_TCP: i32 = 6;
-    const TCP_NODELAY: i32 = 1;
-    let pt = PollThread::create();
-    let mut batched_rounds = 0usize;
-    let mut attempts = 0usize;
-    while batched_rounds < 5 {
-        attempts += 1;
-        assert!(attempts <= 200, "no burst completed inside {kTcpWriteThroughIdleUs} us in 200 attempts");
-        let raw = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let connected = TcpFactory::new(pt.clone()).connect(&raw.local_addr().unwrap().to_string());
-        assert_eq!(connected.error, ChannelError::None);
-        let (mut peer, client_address) = raw.accept().unwrap();
-        let client_fd = find_local_socket(client_address);
-        let one: i32 = 1;
-        assert_eq!(unsafe { setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, (&raw const one).cast(), 4) }, 0);
-        let proxy = connected.connection.unwrap();
-        // Idle past the interval, with the tasks started and parked.
-        std::thread::sleep(Duration::from_millis(5));
-        let release = hold_poll_thread(&pt);
-        let payloads: Vec<Vec<u8>> = (0..FRAMES).map(|i| pattern(attempts * 100 + i, 16 + i)).collect();
-        let segments_before = segments_out(client_fd);
-        let start = Instant::now();
-        for payload in &payloads {
-            assert_eq!(send(&proxy, payload), ChannelError::None);
-        }
-        let burst = start.elapsed();
-        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        assert!(read_frame(&mut peer).unwrap() == payloads[0], "the idle connection's first frame was not written through");
-        let inside = burst < Duration::from_micros(kTcpWriteThroughIdleUs);
-        if inside {
-            // Nothing more until the writer runs.
-            peer.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-            let mut probe = [0u8; 1];
-            assert!(peer.read(&mut probe).is_err(), "a frame inside the interval was written through");
-        }
-        let segments_held = segments_out(client_fd);
-        drop(release);
-        peer.set_read_timeout(Some(LIMIT)).unwrap();
-        for payload in &payloads[1..] {
-            assert!(read_frame(&mut peer).expect("a corked frame was never sent") == *payload);
-        }
-        let segments = segments_out(client_fd) - segments_before;
-        if inside {
-            assert_eq!(segments_held - segments_before, 1, "the burst's first frame is one send");
-            assert!(segments < FRAMES as u32, "{FRAMES} frames left in {segments} segments: not batched");
-            println!("cork: {FRAMES} frames in {burst:?}, {segments} segments");
-            batched_rounds += 1;
-        }
         proxy.close();
     }
     pt.shutdown();
