@@ -1650,6 +1650,62 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     `fast_vec`, reading the spread as CLAUDE.md describes.
   - `scripts/run_microbench.sh --compare`. The codec leaves should not move.
   - A Mako build against the new tree.
+  - **Decision input: write-through for foreign senders.** Measured
+    2026-09-30 on `lion/s5-writethrough` (`daf3d92`, off S5's `bbf7fa2`;
+    not merged). A `send_frame` on a thread other than the connection's
+    PollThread that finds the outbound buffer empty writes the frame itself,
+    under the outbound mutex, and wakes the writer only for what send(2) did
+    not take. Sends on the PollThread keep S5's path. A hard error that
+    sender meets is recorded (`send_error_`) and reported by the transport
+    tasks, because its send consumed the socket's pending error. Tests and
+    negative controls are in that commit.
+    - **Benchmark** (`run_rpc_echo_bench.sh --compare e94dd7e bbf7fa2
+      daf3d92`, release, 12 alternating trials per build and window; load 5-10,
+      except that the window-1 sitting began at 48, decaying). Medians with
+      ranges; p50 and p99 are the one-in-flight latency phase of the
+      window-64 sitting.
+
+      | | `e94dd7e` 1 ms loop | `bbf7fa2` S5 | `daf3d92` write-through |
+      | --- | --- | --- | --- |
+      | window 1 | 822 qps (807-841) | 5467 (4398-6830) | 10699 (7739-13606) |
+      | CPU per request, 1 | 63.6 us (55.5-68.6) | 58.4 (50.3-66.7) | 40.4 (39.4-42.1) |
+      | window 64 | 100k qps (79k-135k) | 169k (153k-210k) | 228k (200k-256k) |
+      | CPU per request, 64 | 4.23 us (3.75-4.52) | 5.15 (4.50-6.35) | 6.80 (6.36-7.71) |
+      | window 512 | 286k qps (269k-339k) | 258k (236k-301k) | 271k (235k-302k) |
+      | CPU per request, 512 | 4.25 us (3.78-4.60) | 4.92 (4.49-5.57) | 7.03 (6.73-8.03) |
+      | p50, one in flight | 1216 us (1208-1237) | 154 (73-179) | 76 (72-153) |
+      | p99, one in flight | 1426 us (1403-1453) | 425 (289-463) | 309 (232-311) |
+
+    - **Counters** (instrumented copies, 5 alternating runs, medians, per
+      completed request, S5 / write-through):
+      - Window 1: client poll thread 2 / 1 context switches, 31.4 / 9.8 us
+        of CPU; eventfd writes 1 / 0; blocking parks 3 / 2; writer polls
+        2 / 1. The one wake left on the client poll thread is the reply.
+      - Window 64: sends 0.077 / 1.11 (the client thread now makes one
+        send(2) per request); eventfd writes 0.038 / 0; server recvs 0.14 /
+        0.30 and reader polls 0.069 / 0.137, because requests reach the
+        server in smaller segments. CPU per thread: client 2.11 / 3.52 us,
+        client poll thread 2.43 / 1.76, server poll thread 1.01 / 2.49.
+      - Window 512: sends 0.050 / 1.10; recvs 0.081 / 0.273; CPU per thread:
+        client 2.22 / 3.29 us, client poll thread 2.30 / 1.59, server poll
+        thread 0.79 / 2.35.
+    - **Reading.** Write-through removes the client-side wake that S5's
+      note traced. At one in flight that halves the latency and cuts CPU per
+      request by 30%. At 64 it raises throughput by a third. At 512
+      throughput is within the spread of S5's, and still below the 1 ms
+      loop's median. The price is un-batched sends: one send(2) per request
+      on the caller's thread, and smaller segments at the peer, whose reader
+      then wakes and reads about twice as often. CPU per request rises by
+      32% at 64 and 43% at 512. The increase lands on the calling thread
+      (+1.1 to +1.4 us) and the server's poll thread (+1.5 to +1.6 us); the
+      client poll thread saves 0.7 us.
+    - **Recommendation: a knob, on by default.** RPC traffic is mostly
+      shallow, where write-through wins on latency, CPU and throughput. A
+      deep pipeline bound by CPU per request should turn it off. A knob is an
+      ABI row (a setter or a module-scope constant). Worth measuring before
+      fixing the default: an adaptive cork, which writes through only when
+      the previous send on the connection is older than a short interval,
+      and otherwise lets the writer batch.
 
 ## 7. Risks
 
