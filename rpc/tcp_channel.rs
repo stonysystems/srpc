@@ -44,6 +44,13 @@ type PollThread = crate::reactor::PollThread;
 
 pub const kTcpConnectionOutboundHighWaterDefault: usize = 4 * 1024 * 1024; // 4 MiB
 
+// The adaptive cork (experiment on lion/s5-cork): a send from another thread
+// writes through an empty outbound buffer only when the connection's last
+// send(2), by any path, is at least this many microseconds old.  A busier
+// connection leaves the frame queued for the writer task, which then sends
+// every frame queued meanwhile in one drain.  0 writes through always.
+pub const kTcpWriteThroughIdleUs: u64 = 50;
+
 // Private numeric seams deliberately avoid libc's macro spellings so the
 // generated module remains valid after the runtime headers include errno.h.
 const TCP_ERR_ACCES: i32 = 13;
@@ -122,6 +129,10 @@ pub struct TcpConnection {
     // error, so the transport tasks report this one instead: the writer on
     // its next drain, the reader if it reads the EOF that follows first.
     send_error_: std::sync::atomic::AtomicI32,
+    // When send(2) last wrote bytes on this connection, in monotonic
+    // microseconds (Time::now(true)); 0 before the first.  Written by every
+    // send, all under `outbound_`, and read by the cork.
+    last_send_us_: std::sync::atomic::AtomicU64,
 }
 
 // SAFETY: all state reachable through shared references is either immutable
@@ -163,6 +174,7 @@ impl TcpConnection {
             on_error_: std::sync::Mutex::<OnErrorCallback>::new(Default::default()),
             writer_: UnsafeCell::new(None),
             send_error_: std::sync::atomic::AtomicI32::new(0),
+            last_send_us_: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -958,8 +970,13 @@ unsafe fn tcpconn_send_frame(conn: &TcpConnection, frame: &ChannelFrame) -> Chan
         // write readiness: this path never polls or consumes it, and hands
         // an EAGAIN, a short write or an error back as queued bytes, which
         // the writer then sends, waits on or fails with, as before.
+        //
+        // The cork (lion/s5-cork): only a connection idle for
+        // kTcpWriteThroughIdleUs writes through.  A busier one keeps the
+        // frame queued and wakes the writer, as S5 does, so the frames that
+        // follow within the interval ride one drain.
         let mut handed_back: bool = was_empty;
-        if was_empty && foreign {
+        if was_empty && foreign && tcpconn_idle_for_write_through(conn) {
             handed_back = !tcpconn_write_through_locked(conn, &mut *guard);
         }
         edge_waker = if handed_back { tcpconn_take_writer_locked(conn) } else { None };
@@ -983,6 +1000,21 @@ fn tcpconn_is_foreign_sender(conn: &TcpConnection) -> bool {
         }
         None => false,
     }
+}
+
+// Whether the connection's last send(2) is at least kTcpWriteThroughIdleUs
+// old (or there was none).  One monotonic clock read, only for a foreign
+// sender that found the buffer empty.
+fn tcpconn_idle_for_write_through(conn: &TcpConnection) -> bool {
+    if kTcpWriteThroughIdleUs == 0 {
+        return true;
+    }
+    let last: u64 = conn.last_send_us_.load(Ordering::Relaxed);
+    if last == 0 {
+        return true;
+    }
+    let now: u64 = crate::basetypes::Time::now(true);
+    now >= last + kTcpWriteThroughIdleUs
 }
 
 // Under the outbound gate: send what the socket takes from the buffer, the
@@ -1341,6 +1373,10 @@ fn tcpconn_send_bytes(conn: &TcpConnection, buf: &mut TcpOutBuf, offset: usize) 
     }
     let remaining = buf.len() - offset;
     let count = unsafe { srpc_tcp_send_bytes(fd, buf.as_ptr().add(offset), remaining) };
+    if count > 0 && kTcpWriteThroughIdleUs != 0 {
+        // For the cork: the connection just sent.
+        conn.last_send_us_.store(crate::basetypes::Time::now(true), Ordering::Relaxed);
+    }
     let error = if count < 0 {
         unsafe { srpc_tcp_last_errno() }
     } else {
