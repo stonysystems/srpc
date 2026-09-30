@@ -708,10 +708,13 @@ state. It does not expose the worker's reactor for use on another thread.
 
 The worker thread runs a Lion runtime over SRPC's epoll backend. One task on
 it, the driver, handles commands, runs jobs and calls the thread's own
-`Reactor::run_loop(false, true)`; each registered pollable has a task that
-waits for its descriptor and calls its readiness callbacks. The worker does
-not poll: commands, pings, event wakes and timer deadlines each wake the
-driver, and an idle worker sleeps until one does. Timers are
+`Reactor::run_loop(false, true)`. Each TCP connection on the thread is a
+reader task and a writer task over one descriptor registration, and each TCP
+listener an accept task; any other pollable registered with `add_proxy` has a
+task that waits for its descriptor and calls its readiness callbacks. The
+worker does not poll: commands, pings, event wakes and timer deadlines each
+wake the driver, a send wakes its connection's writer, and an idle worker
+sleeps until one of them does. Timers are
 millisecond-granular: the driver sleeps until the next deadline rounded up to
 a whole millisecond. A job whose `Ready()` is false is re-checked every
 millisecond while it waits, because `Job` has no wake. Callbacks and
@@ -1227,10 +1230,14 @@ proxy factory, which also retains the socket registration's ownership.
 
 ### What is actually registered
 
-The TCP runtime registers connection and listener proxies. RPC `ClientConnection`
-and `ServerConnection` objects sit above the channel and do not become epoll
-registrations merely by having similarly named methods. In particular, a method
-on an RPC wrapper is not automatically a poll-loop hook.
+The TCP runtime does not register pollable proxies. Each connection is a reader
+task and a writer task on its PollThread, and each listener an accept task;
+they register the socket with the thread's Lion runtime themselves. The TCP
+proxy factories and `TcpConnection`'s pollable methods remain for the retired
+worker and its tests. RPC `ClientConnection` and `ServerConnection` objects sit
+above the channel and do not become epoll registrations merely by having
+similarly named methods. In particular, a method on an RPC wrapper is not
+automatically a poll-loop hook.
 
 Transport callbacks hand complete payload frames to RPC decoding. The worker
 owns its proxy and registration tables; channels and application handles can
@@ -1316,17 +1323,22 @@ A registration proxy retains a separate socket owner until the worker has
 unregistered it. This prevents a close/reuse race from turning an epoll operation
 into an operation on an unrelated newly opened descriptor.
 
-### Handing write interest back to the poll thread
+### Handing output to the poll thread
 
-A send from another thread can append output while the connection is registered
-for reads only. TCP records pending write interest on the connection with an
-atomic flag. The worker consumes that flag and enables `READ | WRITE` for the
-still-registered proxy. It avoids sending a delayed raw-fd update that could
-outlive the connection to which it belonged.
+A send from any thread appends the frame to the connection's outbound buffer
+under its mutex. When that append makes the buffer non-empty, it wakes the
+connection's writer task directly, through the task's waker, which is kept
+under the same mutex; appends to a non-empty buffer need no wake, since the
+writer is already draining or waiting for the socket. On the poll thread
+itself, for example a reply sent from a fast handler, the wake only queues the
+writer on that thread, and it runs after the handler's reader task. The
+writer drains until the buffer is empty or the socket reports `EAGAIN`, and
+then waits for write readiness.
 
-When output drains, `handle_write()` can return a read-only mask. Edge-triggered
-write notification should be enabled while there is output to flush, rather
-than treated as a recurring timer.
+Close and errors reach both tasks: a close from any thread wakes the writer,
+and the task that retires the connection wakes the other. A pollable
+registered with `add_proxy` still uses `check_pending_write_update()` and
+`PollThread::notify_pending_write` to ask for write interest.
 
 ### The job system
 
@@ -2671,7 +2683,7 @@ Defaults are 10 seconds between probes, a 5-second response timeout, and three c
 
 The server recognizes the reserved heartbeat RPC and returns success with an empty body. Every inbound reply calls `on_pong_received`, so ordinary response traffic also counts as activity.
 
-Automatic client scheduling remains missing. Probe logic exists in `ClientConnection::check_pending_write_update`, but the registered TCP pollable uses its own dirty-flag update and does not call that method. Enabling heartbeat settings alone emits no periodic probes and provides no silent-peer timeout. Unit tests of `HeartbeatManager` validate its state machine, not an automatic timer connection.
+Automatic client scheduling remains missing. Probe logic exists in `ClientConnection::check_pending_write_update`, but the TCP transport never calls that method. Enabling heartbeat settings alone emits no periodic probes and provides no silent-peer timeout. Unit tests of `HeartbeatManager` validate its state machine, not an automatic timer connection.
 
 Kernel TCP keepalive is independent and does apply socket options through the channel capability. On Linux these are `SO_KEEPALIVE`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, and `TCP_KEEPCNT`. Disabling keepalive clears `SO_KEEPALIVE` without resetting the tuning values.
 

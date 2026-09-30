@@ -1347,7 +1347,11 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     (`check_srpc_crate_mode.py:73-75,215-244`). A new trait method is a ratchet
     edit.
   - `QuorumEvent` keeps `cpp_namespace(::janus)`.
-- [ ] **S5. Transport.**
+- [ ] **S5. Transport.** The Rust-lane half is done on `lion/s5-transport` as
+  `9d587bd` (the readiness helpers made shareable), `21ce10a` (the transport
+  tasks and their tests) and `d55d625` (a benchmark runner for three builds);
+  its results are at the end of this item. The C++ half waits for T4/T5, the
+  pin bump and S1's C++ half.
   - The `TcpConnection`/`TcpListener` pollable shims become per-connection
     async read and write tasks, registered with Lion's reactor.
   - `send_frame` from a foreign thread wakes the writer task. That replaces the
@@ -1372,6 +1376,238 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       feature unification would bring mio back.
   - The TCP send path open-codes the frame header (CLAUDE.md). Keep that
     unchanged.
+  - **Result, Rust lane (2026-09-30).** The C++ lane was not run.
+    - **Shape.** On its PollThread each connection is two Lion local tasks
+      over one `AsyncFd`, and each listener is one accept task, all in
+      `rpc/tcp_channel.rs`. They use the readiness helpers of S3's adapter,
+      now public in `reactor.rs` (`lion_fd_poll_ready`,
+      `lion_fd_consume_ready`, `PollTaskUnwindAbort`), so the transport
+      spells no `AsyncFd` guard of its own.
+      - **Reader.** It reads into the existing `FrameStreamReader` and
+        delivers each complete frame to `on_frame`, as `handle_read` does.
+        Fast RPCs run inline in it, fiber RPCs start their fiber there, and
+        stackless RPCs make their first poll there. It reads until recv(2)
+        returns EAGAIN, the only evidence that consumes readiness. After a
+        short read it delivers, then reads again, which also picks up what
+        arrived meanwhile: the "one extra EAGAIN read per wake" of U8. A poll
+        makes at most 16 reads, then wakes itself and yields.
+      - **Writer.** It drains the existing outbound buffer while the socket
+        takes it, then waits for the buffer's empty->non-empty edge, or,
+        after EAGAIN, for write readiness. A poll makes at most 16 drains.
+      - **Accept.** The accept task runs `handle_read`'s accept driver on
+        each read edge, and consumes readiness only when accept(2) returned
+        EAGAIN.
+      - **Hand-over.** An accepted connection starts its tasks in place. A
+        connect still blocks the calling thread, then hands the socket over
+        through a `OneTimeJob`, as a listen does. New
+        `PollThread::is_current_thread` lets both start in place on the
+        PollThread itself. A frame sent before the tasks start goes out on
+        the writer's first poll.
+    - **Wake sources.**
+      - The writer's Lion waker lives in `TcpConnection::writer_`, gated by
+        the outbound mutex like `fd_`. `send_frame` takes it under the same
+        lock as the append, on the empty->non-empty edge only, and wakes it
+        from any thread. There is no driver hop and no latch sweep, and
+        `send_frame` no longer touches `pending_write_update_` or
+        `notify_pending_write`.
+      - A reply sent inside the reader's poll wakes the writer on the
+        thread's own ready queue, with no eventfd write. The writer runs in
+        the same tick, and one drain carries every reply of that poll. That
+        is `5d2b20d`'s skipped wake, with no `reading_fd`-style latch.
+      - The driver is not woken for TCP work: an instrumented build counted
+        0 driver polls per request in the benchmark below. S3 woke it for
+        every foreign send by design (see its note); that build had no
+        counter.
+    - **Close and errors** keep the adapter's observable behaviour.
+      - EOF closes with `on_closed(None)` and no `on_error`. A receive
+        error, a write error and a malformed stream call `on_error`, then
+        `on_closed` with the same reason.
+      - A task that finds the connection closed (any thread's close, or a
+        failed flush) closes it. Close is idempotent, so `on_closed` fires
+        once.
+      - Retiring drops the `AsyncFd`, then the descriptor lease, explicitly,
+        because the generated C++ destroys fields in reverse order. It then
+        wakes the other task.
+      - `close()` and a failed flush wake a writer parked on the empty
+        buffer, which no readiness edge reaches.
+      - The retiring task must wake the reader itself. A close made on the
+        poll thread (`Client::close`'s job) wakes the writer locally, and the
+        writer retires and deregisters the descriptor before the next park
+        harvests the shutdown's hang-up edge. Deregistration discards that
+        edge.
+      - A listener needs no waker: shutting a listening socket down moves it
+        to CLOSE, which the kernel reports as a hang-up.
+      - At PollThread shutdown the runtime drops the tasks, and the
+        registration is released without closing the connection, as the old
+        cleanup did.
+    - **Behaviour changes.**
+      - An EOF that arrives behind data on one edge is now seen, after the
+        data is delivered. The old EPOLLET loop and S3's adapter stopped at a
+        short read, and missed the FIN until another edge came. Run against
+        `462e2ca`, `a_frame_followed_by_eof_is_delivered_and_then_closes`
+        fails; the other 14 new tests pass there.
+      - `tcpconn_drain_outbound_locked` returns WouldBlock whenever send(2)
+        stopped on EAGAIN, not only when nothing was sent. `handle_write` and
+        `flush` treat a partial drain the same either way.
+      - A `TcpConnection` registered by hand through
+        `add_proxy(make_tcp_connection_pollable_proxy(..))` is no longer
+        written, because nothing sets its latch. No production path, test or
+        Mako does that. The two proxy factories are now `pub`, for the retired
+        worker's crate tests.
+      - TCP connections are no longer registrations, so `request_close`,
+        `remove_fd` and `update_mode` do not reach them.
+      - A failed `AsyncFd` registration fails the connection with
+        `on_error(Internal, "poll registration failed")`.
+    - **Measured** (debug test build, unless noted).
+      - A foreign `send_frame` to bytes at a raw peer, 5 alternating runs of
+        300 samples each, against `462e2ca`: p50 125-172 us against
+        160-183 us, minimum 42-53 us against 65-97 us, and p99 275-335 us
+        against 300-335 us. The ~30 us lower minimum is the driver hop. The
+        medians are dominated by the idle cores' C2 exit, which this
+        Threadripper 2990WX lists at 100 us.
+      - An idle PollThread with a registered connection: 10 context switches
+        and 0.51-0.85 ms of CPU per second over 4 runs, in S3's range
+        (0.47-0.84 ms).
+      - At one request in flight, per request (release, instrumented copy):
+        2 reader polls, 4 recvs (2 of them EAGAIN), 2 writer polls, 2 sends,
+        3 blocking parks and 1 eventfd write. The poll threads switch 2
+        (client) + 1 (server) times, the minimum for this thread structure.
+    - **Benchmark** (`scripts/run_rpc_echo_bench.sh --compare e94dd7e 5d2b20d
+      21ce10a`, release, 12 alternating trials per build and window; the host
+      was shared with other agents' builds, load 9-13). Medians with ranges:
+
+      | | `e94dd7e` 1 ms loop | `5d2b20d` S3 | `21ce10a` S5 |
+      | --- | --- | --- | --- |
+      | p50, one in flight | 1207 us (1185-1224) | 150 us (63-172) | 150 us (72-280) |
+      | p99, one in flight | 1423 us (1361-1449) | 388 us (304-453) | 435 us (303-462) |
+      | window 64 | 106k qps (69k-130k) | 175k (153k-219k) | 170k (154k-282k) |
+      | CPU per request, 64 | 4.69 us (3.72-5.12) | 5.86 (4.55-7.65) | 5.46 (3.87-6.47) |
+      | window 512 | 286k qps (263k-339k) | 222k (182k-316k) | 246k (191k-292k) |
+      | CPU per request, 512 | 4.42 us (3.97-4.85) | 5.47 (4.40-6.69) | 5.15 (4.60-7.13) |
+
+      The latency rows come from the window-64 sitting; the window-512
+      sitting gave p50 1203 / 151 / 151 us and p99 1430 / 385 / 388 us. An
+      earlier sitting (10 trials, load decaying from 35 to 13) gave 275k /
+      237k / 238k qps at 512 and 103k / 164k / 166k at 64. Pinned to one
+      NUMA node (8 trials) it gave 284k / 291k / 243k at 512 and 111k / 211k
+      / 203k at 64.
+      - S5 and S3 are within each other's spread at every window, in every
+        sitting. The 1 ms loop stays ahead at 512, by 10-20% in median,
+        with overlapping ranges.
+      - **The window-512 regression is not recovered.** Removing the driver
+        hop saves one task poll per foreign send, which is small against the
+        rest of a request.
+    - **Where the remaining cost is** (instrumented copies of the three
+      builds, window 512, pinned to one NUMA node, medians of 4 runs, per
+      completed request, old / S3 / S5):
+      - total CPU 4.12 / 5.75 / 5.21 us;
+      - client poll thread 1.77 / 2.51 / 2.26 us, with 0.022 / 0.048 / 0.038
+        context switches;
+      - server poll thread 0.50 / 0.99 / 0.85 us, with 0.008 / 0.029 / 0.019
+        switches;
+      - client thread 1.85 / 2.25 / 2.17 us.
+
+      S5's syscalls per request: 0.089 recv (0.043 of them the confirming
+      EAGAIN, one per reader poll), 0.054 send, 0.062 blocking parks, no
+      non-blocking parks, and 0.028 eventfd writes. The per-request work is
+      the same in all three builds. What differs is how often the poll
+      threads wake: 1.8 times (client) and 2.3 times (server) as often as
+      the old loop's. Most of the client poll thread's wakes, 0.028 of
+      0.038, are the client thread's sends waking the writer. The old loop
+      never woke for a send; it found the latch on its next pass, so each
+      pass carried a bigger batch, and the server's reads grew with it.
+      Knobs for S8, none taken here because they change S5's design:
+      - write-through: a foreign `send_frame` that finds the buffer empty and
+        the writer parked tries send(2) itself, and wakes the writer only on
+        EAGAIN. This removes the client's dominant wake source;
+      - coalescing the writer's wake (a yield or a short timer), which trades
+        away the latency S3 and S5 gained;
+      - dropping the confirming EAGAIN read, which U8 forbids unless the
+        readiness is consumed on other evidence.
+    - **Gate.** cargo 399 passed / 0 failed / 1 ignored: 15 new tests in
+      `tests/tcp_transport_rust.rs` and 1 in `pollthread_lion_rust.rs`,
+      whose TCP test was renamed `tcp_frames_echo_through_the_transport_tasks`.
+      Doc tests 2, clippy clean. The isolated copy ran 401 / 0 / 1. The
+      source-gate scripts that need no transpiler all pass. The Rust
+      `runtime_parity` transcript matches `check_runtime_parity.py`'s
+      `EXPECTED` in 5 of 5 runs.
+    - **Repeats.**
+      - 26 timing-sensitive test binaries passed 20 of 20 runs each at load
+        2-10.
+      - Under 56 CPU-spinning processes (load 36-68), `tcp_transport_rust`,
+        `pollthread_lion_rust` and the pre-S5 `pollthread_lion_rust` each
+        passed 20 of 20.
+      - Under 72 on 64 CPUs (load 66-87), `tcp_transport_rust` passed 12 of
+        12, and `pollthread_lion_rust` 11 of 12 (pre-S5: 12 of 12). The
+        failure is S3's foreign-job latency test, whose median sits on a
+        ~1 ms mode when no CPU is idle. In 40 saturated runs of that test
+        alone, 5 of the S5 build's medians and 4 of the pre-S5 build's sat at
+        960-965 us; the rest were 36-88 us.
+    - **Negative controls.** Each mutation turned the named test red:
+      - no edge wake in `send_frame`: the foreign-send latency test and the
+        8-sender test;
+      - close not waking the writer: idle foreign close, poll-thread close,
+        and no-leak;
+      - retirement not waking the reader: poll-thread close;
+      - the reader's budget without its self-wake: the budget burst;
+      - no read readiness consumed on EAGAIN: the latency and 64-connection
+        tests time out;
+      - no write readiness consumed on EAGAIN: the stalled-writer CPU bound;
+      - consuming read readiness after a short read, the adapter's rule: the
+        EOF behind a frame is missed;
+      - a writer whose first poll ignores queued frames: frames sent before
+        the tasks start;
+      - an accept task that ignores its closed listener: the listening fd
+        stays open;
+      - EOF reported as an error: half-close;
+      - an EOF path that does not retire the transport: half-close and
+        no-leak.
+
+      The writer's 16-drain budget has no control. Its self-wake stayed
+      green against every test, including a 16-sender stress test written
+      for it and then dropped. The loop repeats only if a sender takes the
+      outbound lock between a drain and the next check, which the writer,
+      re-taking a lock it just released, almost never loses.
+    - **Dead code for S7**, beyond S3's list. No production pollable is
+      left, so all of this runs only for `add_proxy`'s other callers: the
+      tests, and the C++ battery's own pollables.
+      - the adapter: `PollFdTask`, `PollFdEntry`, the `poll_fd_*` and
+        `poll_driver_{add,close,update_mode,apply_removals,retire_all}`
+        functions, and the driver's `fds`, `pending_remove` and `reading_fd`;
+      - `PollThread::notify_pending_write`, `PollDriverWake::write_ready`,
+        `poll_driver_wake_fd_here`, `poll_driver_wake_fd` and
+        `poll_driver_wake_writers`;
+      - TCP's pollable surface: `TcpPollableShim`,
+        `TcpListenerPollableShim`, `make_tcp_{connection,listener}_pollable_proxy`,
+        `pending_write_update_`, `TcpConnection::{poll_mode, handle_write,
+        handle_error, check_pending_write_update}` and their `tcpconn_*`
+        bodies, `TcpListener::{poll_mode, content_size, handle_write,
+        handle_error, check_pending_write_update}` and
+        `tcplistener_handle_error`. Production no longer calls either
+        pollable `handle_read` either, but the tasks share their parts: the
+        reader the frame delivery, the accept task the accept driver.
+      - S7 decides whether `add_proxy` and `Pollable`/`PollableBase`
+        survive at all.
+    - **For the C++ half and T4/T5.** New to the emitter in
+      `srpc.tcp_channel` (nothing new in `reactor.rs`):
+      - three hand-written `impl Future` types (`TcpReaderTask`,
+        `TcpWriterTask`, `TcpAcceptTask`) of `PollFdTask`'s shape;
+      - `Drop` for `TcpTransport` and `TcpAcceptTask`;
+      - `std::task::Waker` in `UnsafeCell<Option<..>>` and
+        `RefCell<Option<..>>`, and `cx.waker().wake_by_ref()`;
+      - `Rc` of a struct holding `RefCell<Option<lion_reactor::AsyncFd>>`;
+      - `lion_executor::spawn_local` with a dropped `JoinHandle`, and
+        `AsyncFd::new`'s `io::Result`;
+      - the module's first direct Lion imports.
+    - **ABI.** S7 re-pins all of this:
+      - `TcpConnection` gains `writer_`, so
+        `tests/rpc_tcp_channel_test.cc`'s `sizeof(TcpConnection) == 352` pin
+        moves. `TcpListener` is unchanged.
+      - The two pollable-proxy factories are now `pub`.
+      - `srpc.tcp_channel` now imports `srpc.misc` (`OneTimeJob`) and the
+        Lion modules, which changes `EXPECTED_IMPORTS`.
+      - `srpc.reactor` gains `lion_fd_poll_ready`, `lion_fd_consume_ready`,
+        `PollThread::is_current_thread` and a `pub` `PollTaskUnwindAbort`.
 - [ ] **S6. (Optional scope.) Cooperative client waits.**
   - The client `Future` blocks an OS thread on a Condvar, so a nested RPC made
     from a fiber blocks the poll thread.
