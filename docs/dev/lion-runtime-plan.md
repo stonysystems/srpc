@@ -1699,13 +1699,91 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       32% at 64 and 43% at 512. The increase lands on the calling thread
       (+1.1 to +1.4 us) and the server's poll thread (+1.5 to +1.6 us); the
       client poll thread saves 0.7 us.
-    - **Recommendation: a knob, on by default.** RPC traffic is mostly
-      shallow, where write-through wins on latency, CPU and throughput. A
-      deep pipeline bound by CPU per request should turn it off. A knob is an
-      ABI row (a setter or a module-scope constant). Worth measuring before
-      fixing the default: an adaptive cork, which writes through only when
-      the previous send on the connection is older than a short interval,
-      and otherwise lets the writer batch.
+    - **Recommendation (superseded by the cork measurement below): a knob,
+      on by default.** RPC traffic is mostly shallow, where write-through
+      wins on latency, CPU and throughput. A deep pipeline bound by CPU per
+      request should turn it off. A knob is an ABI row (a setter or a
+      module-scope constant). Worth measuring before fixing the default: an
+      adaptive cork, which writes through only when the previous send on the
+      connection is older than a short interval, and otherwise lets the
+      writer batch.
+  - **Decision input: the adaptive cork.** Measured 2026-09-30 on
+    `lion/s5-cork` (off `lion/s5-writethrough`; not merged). A foreign
+    `send_frame` that finds the buffer empty writes through only when the
+    connection's last send(2), by any path, is at least
+    `kTcpWriteThroughIdleUs` old (a module-level `pub const`); otherwise it
+    queues the frame and wakes the writer, as S5 does. Every write-through
+    ordering and error rule is kept. The send time is one monotonic clock
+    read after each send(2) that wrote bytes, and one more per cork
+    decision. Builds: `4c008ed` (50 us), and variants that differ only in
+    the constant, `8d0d866` (20 us) and `5afe15f` (200 us), kept as
+    `refs/bench/s5-cork-{20,200}us`. The branch head sets 20 us.
+    - **Benchmark** (`run_rpc_echo_bench.sh --compare e94dd7e bbf7fa2
+      daf3d92 8d0d866 4c008ed 5afe15f`, release, 12 alternating trials per
+      build and window, load 3-8). Medians with ranges:
+
+      | | 1 ms loop | S5 | write-through | cork 20 us | cork 50 us | cork 200 us |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | window 1, qps | 817 (809-836) | 4836 (4246-7395) | 8842 (5806-12690) | 9184 (6963-10820) | 9560 (6245-12637) | 6661 (5009-9779) |
+      | CPU/request, 1 | 64.6 us | 60.8 | 41.9 | 41.7 | 41.9 | 50.5 |
+      | window 64, qps | 108k (91k-127k) | 182k (164k-224k) | 235k (191k-256k) | 223k (211k-244k) | 226k (215k-267k) | 202k (165k-220k) |
+      | CPU/request, 64 | 4.21 us | 5.02 | 6.52 | 4.50 | 4.46 | 4.27 |
+      | window 512, qps | 269k (247k-370k) | 248k (211k-282k) | 282k (257k-298k) | 371k (348k-393k) | 370k (321k-384k) | 270k (252k-319k) |
+      | CPU/request, 512 | 4.32 us | 5.07 | 6.97 | 4.01 | 4.00 | 4.86 |
+      | p99, one in flight | 1436 us | 449 | 310 | 310 | 310 | 386 |
+      | p50 < 100 us, runs | 0 of 36 | 2 of 36 | 19 of 36 | 16 of 36 | 12 of 36 | 5 of 36 |
+
+      The one-in-flight latency pools the latency phase of all 36 runs per
+      build. Its p50 is bimodal per run, at about 72 us or 150 us (which one
+      a run gets depends on scheduling, not on the build), so the table
+      gives the number of runs in the fast mode rather than a median of
+      medians; p99 is stable.
+    - **Counters** (instrumented copies, 5 alternating runs, medians, per
+      completed request, S5 / write-through / cork 20 / cork 50 / cork 200):
+      - Window 1: write-throughs 0 / 1 / 1 / 0.996 / 0.199; eventfd writes
+        1 / 0 / 0 / 0.004 / 0.80; client poll thread CPU 25.4 / 10.1 / 9.8 /
+        10.0 / 22.6 us. At 20 and 50 us the one-in-flight gap (the round
+        trip) exceeds the interval, so the cork writes through; at 200 us it
+        mostly does not.
+      - Window 64: sends 0.078 / 1.11 / 0.136 / 0.121 / 0.087; write-throughs
+        0 / 1 / 0.020 / 0.015 / 0.001; server poll thread CPU 1.02 / 2.37 /
+        1.43 / 1.30 / 1.15 us; client thread CPU 1.94 / 3.21 / 1.57 / 1.57 /
+        1.48 us.
+      - Window 512: sends 0.054 / 1.11 / 0.043 / 0.041 / 0.058; buffer found
+        empty by a foreign send (wakes or write-throughs) 0.054 / 1 / 0.024 /
+        0.023 / 0.031; client poll thread context switches 0.057 / 0.069 /
+        0.016 / 0.017 / 0.048; client poll thread CPU 2.46 / 1.65 / 1.61 /
+        1.65 / 2.39 us.
+    - **Reading.**
+      - At one in flight the 20 and 50 us corks behave as write-through:
+        the same CPU per request, the same p99, and the fast mode about as
+        often.
+      - At depth they keep S5's batching, with about one send per 24
+        requests at 512 against write-through's one per request, and none of
+        write-through's CPU cost.
+      - At 512 they also beat S5, the old loop and write-through, with
+        disjoint ranges against S5 and write-through, at the lowest CPU per
+        request measured on this benchmark (4.0 us). The counters show the
+        mechanism but not a proof: the buffer is found empty half as often
+        as under S5, so each writer drain carries about twice as many
+        requests, and the client poll thread context-switches 3.5 times
+        less often. The
+        rare write-through at a burst's start (0.006-0.0075 per request)
+        seems to move the pipeline to that larger-batch operating point.
+      - 200 us is too long: one-in-flight requests are then mostly corked
+        (80%), and the depth gain disappears.
+      - 20 and 50 us are indistinguishable here. The shorter interval keeps
+        write-through for round trips down to 20 us, which this loopback
+        benchmark (round trips of 44 us and up) cannot show, while still
+        exceeding the 3-5 us between back-to-back pipelined sends.
+    - **Recommendation: cork, interval 20 us.** It matches write-through at
+      one in flight and the best of everything measured at depth, and needs
+      no runtime knob. Costs: a `pub const` and two private fields
+      (`send_error_`, `last_send_us_`) as ABI rows for S7, one clock read per
+      send(2) and per cork decision, and `srpc.tcp_channel` importing
+      `srpc.basetypes`. The operating-point effect at 512 is empirical;
+      re-check it with rpcbench in S8 before relying on it beyond this
+      benchmark.
 
 ## 7. Risks
 
