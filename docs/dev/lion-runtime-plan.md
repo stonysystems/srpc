@@ -1349,8 +1349,9 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - `QuorumEvent` keeps `cpp_namespace(::janus)`.
 - [ ] **S5. Transport.** The Rust-lane half is done on `lion/s5-transport` as
   `9d587bd` (the readiness helpers made shareable), `21ce10a` (the transport
-  tasks and their tests) and `d55d625` (a benchmark runner for three builds);
-  its results are at the end of this item. The C++ half waits for T4/T5, the
+  tasks and their tests), `d55d625` (a benchmark runner for three builds)
+  and `b39e66a` (a host requirement of one test); its results are at the end
+  of this item. The C++ half waits for T4/T5, the
   pin bump and S1's C++ half.
   - The `TcpConnection`/`TcpListener` pollable shims become per-connection
     async read and write tasks, registered with Lion's reactor.
@@ -1549,7 +1550,10 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       - close not waking the writer: idle foreign close, poll-thread close,
         and no-leak;
       - retirement not waking the reader: poll-thread close;
-      - the reader's budget without its self-wake: the budget burst;
+      - the reader's budget without its self-wake: the budget burst. That
+        test needs `net.core.rmem_max` of at least 4 MiB (4194304 here);
+        below it the burst cannot queue whole, the budget is never reached,
+        and the test says so on stderr instead of failing;
       - no read readiness consumed on EAGAIN: the latency and 64-connection
         tests time out;
       - no write readiness consumed on EAGAIN: the stalled-writer CPU bound;
