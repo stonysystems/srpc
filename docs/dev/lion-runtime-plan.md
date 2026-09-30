@@ -513,7 +513,22 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
       names.
     - T5: `Vec::with_capacity` inferring `size_t` instead of `Option<V>`;
       vec_port's `resize_with` iterator lacking `for_each`.
-- [ ] **T4. Multi-crate crate mode.** Path dependencies are already walked
+- [x] **T4. Multi-crate crate mode.** Done on rusty-cpp `lion/verus-exec`
+  (`59fa35e8` `--crate-graph`, `758a6a86` audit ordering, plus
+  `6ea095ec`/`beb47135`/`07b154d7`/`8f64d978`/`47619027`).
+  - **Naming:** each dependency crate becomes one named module (for example
+    `lion_reactor`) in `namespace lion_reactor`, emitted to
+    `<out>/<package>/<module>.cppm`. `crate-graph.json` gives the build order,
+    the `ghost_only` crates and the unused crates.
+  - **Features:** each crate's features are evaluated separately, and
+    ghost-only modules are pruned.
+  - **Cross-crate `dyn Trait`:** SRPC implementing Lion's `OsBackend` goes
+    through `*DynAdapter`s.
+  - **Adapter restriction:** SRPC's `cpp_abi` adapters never target Lion
+    items, so the cross-crate adapter restriction stays.
+  - **Byte identity:** with the flag off, output is byte-identical to
+    `1689f438`.
+ Path dependencies are already walked
   recursively (`main.rs:2712-2745`), but these pieces are needed:
   - **Per-crate C++ namespaces and module names.** For example
     `lion_executor::...` and `import lion_executor.<mod>;`. Namespace wrapping
@@ -538,7 +553,31 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
       `verus!` or `use vstd::prelude::*`.
     - Confirm its scope is per crate and not the whole graph, before Phase 0
       step 4.
-- [ ] **T5. Lowering gaps in Lion's executable code.** Whatever Phase 0 and its
+- [~] **T5. Lowering gaps in Lion's executable code.** Partly done
+  (2026-09-30, `47619027`):
+  - lion-slab and lion-timer-wheel have 0 slots, compile, and give the same
+    runtime output as `cargo run`.
+  - lion-reactor has 0 slots and compiles.
+  - SRPC `lion/s3-core` plus Lion transpiles with 0 slots.
+  - **Remaining (T5e):** lion-executor has 0 slots but **24 C++ compile
+    errors**, in these classes:
+    - backward inference of a `let` bound to an `if`/`match` with early
+      returns;
+    - dependency method signatures missing from the manifests (Duration
+      conversions, `?` on `with_backend`);
+    - `let (tx, rx) = mpsc_queue()` inference;
+    - `pin!`;
+    - typing `LocalKey::with`/`try_with` closures;
+    - moving move-only values out of match bindings and tuples;
+    - a generic variant struct inside a `std::visit` lambda;
+    - `Box<dyn FnOnce()+Send>` converted to `rusty::Function`;
+    - access through `RefMut<Box<Executor>>`;
+    - vec_port iterating Lion's `VecDeque` wrapper.
+  - **Probably next, after lion-executor builds, from SRPC's own code:**
+    - a `const` move-only `Box` that is later moved;
+    - a missing `rusty::io::Error::from(ErrorKind)`;
+    - a lifetime-bound `AsyncFd` ready guard bound through `std::as_const`.
+ Whatever Phase 0 and its
   stretch surface: generics over `Slab<V>` and the timer wheel, `thread_local!`
   holding `RefCell`s, statics, `dyn Future + Send` boxes (already supported),
   and closures. Each gets a general fix with a codegen fixture, never a
