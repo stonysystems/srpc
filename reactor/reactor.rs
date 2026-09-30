@@ -994,8 +994,10 @@ struct PollDriverWake {
     // The driver task's Lion waker; None before its first poll and after it
     // has finished.
     waker: std::sync::Mutex<Option<Waker>>,
-    // Descriptors whose registration may have a write pending (the TCP send
-    // latch), queued by PollThread::notify_pending_write off the poll thread.
+    // Descriptors whose registration may have a write pending, queued by
+    // PollThread::notify_pending_write off the poll thread.  S3's TCP send
+    // latch used it; since S5 the TCP writer task is woken directly and no
+    // production code calls notify_pending_write.
     write_ready: std::sync::Mutex<Vec<i32>>,
 }
 
@@ -3136,7 +3138,8 @@ impl PollThread {
     /// (check_pending_write_update) when woken, so a stale descriptor wakes
     /// at most an unrelated registration, which finds its latch clear.
     /// Callable from any thread; on the poll thread itself the registration
-    /// is woken directly, elsewhere through the driver.
+    /// is woken directly, elsewhere through the driver.  No production caller
+    /// since S5: TCP connections no longer register as pollables.
     pub fn notify_pending_write(&self, fd: i32) {
         if fd < 0 {
             return;
@@ -4737,8 +4740,10 @@ fn pollthread_drop(pt: &PollThread) {
 //
 // * Each registered pollable gets a transport task (PollFdTask) that waits on
 //   its descriptor through Lion's AsyncFd and calls handle_read and
-//   handle_write, as the epoll loop's dispatch did.  This is an interim
-//   adapter: S5 replaces the pollable shims with reader and writer tasks.
+//   handle_write, as the epoll loop's dispatch did.  This was S3's interim
+//   adapter for TCP.  Since S5 the TCP connections and listeners run their
+//   own reader, writer and accept tasks (srpc.tcp_channel), and no production
+//   pollable remains; the adapter serves only add_proxy's other callers.
 //
 // * Stackless tasks spawned on the thread run as Lion spawn_local tasks (see
 //   reactor_spawn_stackless_task_with_result).
@@ -5426,8 +5431,8 @@ impl Future for PollFdTask {
 // which the adapter does not call.
 // The pending-write latch is read here after every handle_read (a fast
 // handler's reply is written in the same poll) and whenever the task is
-// woken: send_frame on another context wakes it (notify_pending_write), which
-// replaces the epoll loop's sweep of every registration.  A pollable found
+// woken: notify_pending_write wakes it, which replaces the epoll loop's sweep
+// of every registration.  (TCP's send_frame did so until S5.)  A pollable found
 // closed is retired and closed, as that loop's closed sweep did.
 fn poll_fd_task_poll(driver: &PollDriver, entry: &Rc<PollFdEntry>, cx: &mut Context<'_>) -> Poll<()> {
     // Publish the waker before reading any state it may be woken for.

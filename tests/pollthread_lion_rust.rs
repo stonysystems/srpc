@@ -2,7 +2,9 @@
 // docs/dev/lion-runtime-plan.md): a driver task does the owner-side work
 // run_loop does elsewhere, woken by each source of work instead of by a 1 ms
 // epoll timeout; each registered pollable has a transport task over Lion's
-// AsyncFd; stackless tasks run as Lion spawn_local tasks.
+// AsyncFd (since S5 a TCP connection has its own reader and writer tasks
+// instead, see tcp_transport_rust.rs); stackless tasks run as Lion
+// spawn_local tasks.
 //
 // These tests drive the real crate: real PollThreads, real sockets, real
 // fibers. Each wake path has a test that times out if that wake is dropped
@@ -111,8 +113,8 @@ fn open_fds() -> usize {
 fn an_idle_poll_thread_does_not_spin() {
     let _serial = serial();
     let pt = PollThread::create();
-    // With a registered, idle connection: its transport task must wait for
-    // the next edge rather than re-poll a readiness it already consumed.
+    // With a registered, idle connection: its transport tasks must wait for
+    // the next edge rather than re-poll a readiness they already consumed.
     let peer = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let connected = TcpFactory::new(pt.clone()).connect(&peer.local_addr().unwrap().to_string());
     assert_eq!(connected.error, ChannelError::None);
@@ -622,7 +624,7 @@ fn a_foreign_fiber_channel_frame_resumes_its_receiver_promptly() {
 }
 
 // ---------------------------------------------------------------------------
-// TCP through the interim pollable adapter
+// TCP through the transport tasks (the pollable adapter until S5)
 
 type ProxySlot = Arc<Mutex<Option<ChannelConnectionProxy>>>;
 
@@ -638,13 +640,13 @@ fn pattern(seed: usize, len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn tcp_frames_echo_through_the_pollable_adapter() {
+fn tcp_frames_echo_through_the_transport_tasks() {
     let _serial = serial();
     let server_pt = PollThread::create();
     let client_pt = PollThread::create();
 
     // Server: echo every frame back on the connection that carried it,
-    // from inside the transport task's handle_read.
+    // from inside the reader task.
     let accepted: Arc<Mutex<Vec<ProxySlot>>> = Arc::new(Mutex::new(Vec::new()));
     let (server_closed_tx, server_closed_rx) = mpsc::channel();
     let server_closed_tx = Mutex::new(server_closed_tx);
@@ -721,7 +723,7 @@ fn tcp_frames_echo_through_the_pollable_adapter() {
     assert_eq!(many, 2_000);
 
     // Closing the client from this thread shuts its socket down; the server's
-    // transport task reads EOF and retires the registration.
+    // reader task reads EOF and retires the transport.
     client.close();
     server_closed_rx.recv_timeout(LIMIT).expect("the server never saw the client close");
     listener.close();
@@ -773,6 +775,88 @@ fn a_stalled_writer_waits_for_the_write_edge_and_resumes() {
     peer_stream.read_exact(&mut got).expect("the stalled writer never resumed");
     assert_eq!(&got[4..4 + payload.len()], &payload[..]);
     drop(client);
+    pt.shutdown();
+}
+
+// The pollable adapter (S3's PollFdTask) no longer carries TCP, but
+// PollThread::add_proxy still takes any pollable. A socketpair end: its
+// read edge reaches handle_read, and request_close retires and closes it.
+struct SocketPollable {
+    stream: std::os::unix::net::UnixStream,
+    seen: Arc<Mutex<Vec<u8>>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl srpc::pollable_proxy::PollableBase for SocketPollable {
+    fn fd(&self) -> i32 {
+        use std::os::fd::AsRawFd;
+        self.stream.as_raw_fd()
+    }
+    fn poll_mode(&self) -> i32 {
+        1
+    }
+    fn content_size(&mut self) -> usize {
+        0
+    }
+    fn handle_read(&mut self) -> bool {
+        use std::io::Read;
+        let mut buffer = [0u8; 256];
+        let mut any = false;
+        while let Ok(n) = self.stream.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            self.seen.lock().unwrap().extend_from_slice(&buffer[..n]);
+            any = true;
+        }
+        any
+    }
+    fn handle_write(&mut self) -> i32 {
+        -1
+    }
+    fn handle_error(&mut self) {}
+    fn close(&mut self) {
+        self.closed.store(true, Ordering::Release);
+    }
+    fn check_pending_write_update(&self) -> bool {
+        false
+    }
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+}
+
+#[test]
+fn a_custom_pollable_still_runs_through_the_adapter() {
+    let _serial = serial();
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    let pt = PollThread::create();
+    let (local, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    local.set_nonblocking(true).unwrap();
+    let fd = local.as_raw_fd();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(AtomicBool::new(false));
+    pt.add_proxy(Box::new(SocketPollable { stream: local, seen: seen.clone(), closed: closed.clone() }));
+    for chunk in [&b"adapter "[..], &b"still "[..], &b"reads"[..]] {
+        peer.write_all(chunk).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let start = Instant::now();
+    while seen.lock().unwrap().as_slice() != b"adapter still reads" {
+        assert!(start.elapsed() < LIMIT, "the adapter never delivered the read edges: {:?}", seen.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    pt.request_close(fd);
+    let start = Instant::now();
+    while !closed.load(Ordering::Acquire) {
+        assert!(start.elapsed() < LIMIT, "request_close never closed the pollable");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // Retirement dropped the pollable, and with it the socket.
+    peer.set_read_timeout(Some(LIMIT)).unwrap();
+    let mut rest = Vec::new();
+    assert_eq!(peer.read_to_end(&mut rest).unwrap(), 0);
     pt.shutdown();
 }
 
