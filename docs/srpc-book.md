@@ -208,8 +208,8 @@ modules; it does not re-export every type at the crate root.
 
 Use ordinary Rust ownership and error handling: `Arc`, `Rc`, `Box`, `Option`,
 `Result`, closures and standard futures. An `Arc<T>` does not make `T` thread-safe.
-In particular, each application thread owns its own `Client`; reactor events and
-fibers also stay on their creating thread.
+`Client` is `Send + Sync`, so one `Arc<Client>` may be used from several threads;
+reactor events and fibers, by contrast, stay on their creating thread.
 
 There are three different future mechanisms:
 
@@ -278,9 +278,11 @@ receiver let the implementation synchronize application state explicitly. With T
 one server currently uses one dispatch poll thread. The `Server` configuration and lifecycle
 handle is not itself a freely shared Rust value.
 
-Clients retain shared connections and RPC futures, but the `Client` handle contains
-thread-confined configuration and a connection slot. Connection state, future
-completion and reliability managers use their own synchronization. Keep the
+Clients retain shared connections and RPC futures. The `Client` handle itself is
+`Send + Sync`: its connection slot and staged configuration are behind mutexes and its
+scalars are atomics, so a reply callback on the poll thread may issue the next request
+through the same handle. Connection state, future completion and reliability managers
+use their own synchronization. Keep the
 properties of these types separate when designing a multithreaded application.
 
 ### The path of one request

@@ -1,8 +1,11 @@
 # srpc's async runtime
 
-The stackless executor lives in canonical `reactor/reactor.rs`. It accepts
-standard Rust futures and runs the same scheduling policy in the Rust and C++
-lanes. The Rust lane uses `std::future::Future`, `std::pin::Pin`, and
+Stackless tasks are standard Rust futures, spawned through canonical
+`reactor/reactor.rs`. On a `PollThread` they run on that thread's Lion runtime
+(`lion-executor`, whose executor is verified in Verus); on any other thread
+they run on the `Reactor`'s own executor, described below. Both lanes run the
+same code: the C++ lane transpiles SRPC's canonical Rust and Lion's executable
+code alike. The Rust lane uses `std::future::Future`, `std::pin::Pin`, and
 `std::task::{Poll, Context, Wake, Waker}` directly.
 
 ## Executor interface
@@ -79,6 +82,9 @@ no wake, so the driver re-checks it every millisecond while it waits.
 The executors are cooperative and local to their thread. A poll that does not
 return blocks the thread. Tasks do not migrate between threads.
 
-SRPC's I/O path still uses epoll and stackful fibers. Stackless futures run
-alongside that path; they do not replace the fiber blocking operations with an
-async I/O driver.
+SRPC's TCP transport runs as Lion tasks on the `PollThread` (a reader and a
+writer task per connection over `lion_reactor::AsyncFd`, an accept task per
+listener), over SRPC's own epoll backend. Stackful fibers remain SRPC's: they
+block on SRPC events, and a fiber resumes only in its owner thread's drain.
+Stackless futures and fibers run side by side; the fiber blocking operations
+are not replaced by async I/O.

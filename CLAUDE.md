@@ -136,7 +136,7 @@ Override with `RPCBENCH_N` (seconds), `RPCBENCH_B` (packet bytes), `RPCBENCH_TRI
 The **Rust echo benchmark** needs no C++ lane, so it is the quick way to see a driver or transport change.
 `bench/src/bin/rpc_echo.rs` sends one fast-handler RPC over loopback TCP between two `PollThread`s through
 the public `Server`/`Client` API and prints one `RPC_ECHO` line per run: throughput with
-`RPC_ECHO_WINDOW` (default 64) requests in flight, CPU per request, and one-in-flight p50/p99. It does not
+`RPC_ECHO_WINDOW` (default 64) requests in flight, CPU per request, and one-in-flight p50/p90/p99. It does not
 replace rpcbench's dispatch-mode matrix:
 
 ```sh
