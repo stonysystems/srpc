@@ -41,8 +41,13 @@ wrapper at a time.
 
 ## Permitted adapters and native kernels
 
-The canonical Cargo package has no production Rust dependencies. It uses Rust std
-and the C/assembly kernel described below. The `rusty-rustc` and `rusty-cpp-markers`
+The canonical Cargo package's production Rust dependencies are the Lion runtime
+crates, under an exact allowlist (docs/dev/lion-runtime-plan.md, D5): `lion-reactor`
+and `lion-executor` from the `third-party/lion` gitlink with `default-features =
+false`, the Lion crates they bring, the erased `vstd` library at the Verus revision
+Lion names, and the proc-macros' build-time closure. mio, flume, tokio and socket2
+must stay out. Otherwise it uses Rust std and the C/assembly kernel described
+below. The `rusty-rustc` and `rusty-cpp-markers`
 packages have been removed. Standard Rust futures, contexts and wakers are polled
 by the canonical reactor; generated C++ uses the compiler's coroutine runtime.
 Scheduling and wake admission remain in canonical Rust.
@@ -50,9 +55,11 @@ Scheduling and wake admission remain in canonical Rust.
 C++ type mappings, native declarations, module preambles and serialization
 forwarders remain build inputs for the generated C++ lane. Cargo does not compile
 or link the C++ runtime. The
-[Cargo independence check](../scripts/check_rust_independence.py) builds and tests
-a copied tree containing only Cargo inputs, canonical Rust and native C/assembly
-sources, with no C++ tool on its restricted tool path.
+[Cargo independence check](../scripts/check_rust_independence.py) enforces that
+allowlist on the manifest and on the resolved graph, then builds and tests a copied
+tree containing only Cargo inputs, canonical Rust, native C/assembly sources and
+the tracked files of the Lion crates in the closure, offline, with no C++ tool on
+its restricted tool path.
 
 The repaired C++ `Arc` adapter follows Rust's ownership contract: `get_mut` requires one strong
 owner and no `Weak` owners. If `new_cyclic` construction fails, it releases its temporary ownership;

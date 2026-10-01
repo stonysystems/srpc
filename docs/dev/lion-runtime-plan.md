@@ -829,7 +829,13 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     - A `RefCell` reachable from two threads means a `Send`/`Sync` claim is
       wrong somewhere. Find the claim, and fix the ownership rather than the
       symptom.
-- [ ] **S1. Lion as pinned dependency crates, and the gate policy.**
+- [x] **S1. Lion as pinned dependency crates, and the gate policy.** The
+  Rust-lane half is done on `lion/s1-rust` (rebased onto `e94dd7e`) as
+  `965376c` (Lion pin `aa5bebe` -> `3496113`), `2085e7c` (dependencies and
+  the allowlist gate), `eedc960` (the forwarding `OsBackend` impl) and
+  `53c5c4a` (the `verify-lion` lane); its results are at the end of this
+  item. The C++ half is done on `lion/integrate` under rusty-cpp `a130025e`;
+  see *Result, C++ half* at the end of this item.
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
     `default-features = false`; `lion-slab`, `lion-timer-wheel` and the
@@ -859,10 +865,250 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     `37` hard-codes do not change. Lion modules are not canonical SRPC modules.
     The census rules for `base/`, `misc/`, `rpc/` and `reactor/` stay as they
     are.
+  - **Result, Rust lane (2026-09-27).** Green in the Rust lane only; the C++
+    lane was not run.
+    - **Workspace.** Cargo made all eight Lion path crates workspace
+      members, since they sit under the workspace root. `[workspace]` now
+      excludes `third-party/lion`. Lion then compiles uncapped under
+      `-Dwarnings`, with 0 warnings at `3496113` on rustc 1.97.1. clippy
+      runs only on `srpc`'s own targets. vstd stays capped.
+    - **Graph.** `cargo tree -e normal` has 22 packages:
+      - `srpc`;
+      - the 8 Lion path crates;
+      - 6 crates from Verus git `db81a74`: vstd, verus_builtin, the two
+        proc-macros, verus_syn and verus_prettyplease;
+      - 7 host-only crates.io crates under those proc-macros: proc-macro2,
+        quote, syn, unicode-ident, synstructure, indexmap 1.9.3 and
+        hashbrown 0.12.3.
+
+      No mio, flume, tokio, socket2, futures-task or pin-project-lite
+      appears. Lion has no lockfile; the vstd revision comes from its
+      manifests (`rev = "db81a74"`), and SRPC's `Cargo.lock` records the
+      full commit.
+    - **Allowlist as implemented** (`check_rust_independence.py`):
+      - The manifest's `[dependencies]` is exactly the two Lion crates, each
+        `{ path = "third-party/lion/<crate>", default-features = false }`.
+        There are no build or target dependencies, and no `[patch]` or
+        `[replace]`.
+      - In the resolved graph, everything linked into `srpc` is one of the
+        eight named Lion crates at its gitlink directory, built with no
+        features, or vstd/verus_builtin at the exact Verus source.
+      - The only proc-macros are Verus's two. Their host closure is
+        crates.io plus Verus's parser crates.
+      - The forbidden crates appear nowhere. The submodule must be at the
+        gitlink commit with no local change.
+      - The isolated copy carries the closure crates' tracked files, and
+        builds and tests offline.
+      - 36 unit tests hold the negative controls.
+    - **Offline.** Resolution and the isolated copy ran offline against a
+      warm `~/.cargo`. On a cold machine, run one networked
+      `cargo fetch --locked` first.
+    - **Tests.** 14 new Rust tests drive a Lion runtime over
+      `SrpcEpollBackend`: the trait itself, tasks, timers, an AsyncFd echo,
+      a non-blocking ZERO tick, and foreign wakes. Foreign wakes land in
+      54-205 us, against the 100 ms idle park. Nine mutations of the
+      forwarding code each turned a test red.
+    - **Gate.** cargo 336 passed / 0 failed / 1 ignored. The isolated copy
+      ran 338 tests. The source-gate scripts that need no transpiler all
+      pass. `test_goal0_contracts.py` skipped its transpiler class.
+    - **`verify-lion`.** `scripts/verify_lion.sh` ran Lion's `ci.sh` on the
+      gitlink commit: all nine crates passed, in 538 s. The extraction must
+      lie outside the checkout, because Cargo would otherwise take SRPC's
+      root as the Lion crates' workspace.
+    - **Docs.** README, the book and `canonical-rust-runtime.md` no longer
+      claim Cargo needs no submodule and no dependency. CLAUDE.md still
+      does, and is the owner's edit to make:
+      - "Production Cargo dependencies ... are rejected";
+      - "Cargo uses the Rust standard library and the reviewed C/assembly
+        kernel";
+      - it has no Lion-submodule or warm-git-cache prerequisite for the
+        Rust lane.
+    - **Still owed by the C++ half.**
+      - From rusty-cpp:
+        - T4: per-crate namespaces and module names; no provider for the
+          `*-spec` crates; per-crate feature evaluation; the cross-crate
+          trait impl `epoll_wrapper` now contains; the adapter and
+          opaque-surface audits;
+        - T5;
+        - a pin bump carrying T1-T3 and `--verus-exec`.
+      - From SRPC:
+        - `--verus-exec`, and the separately built `verus-erase` helper, in
+          CMake, `check_srpc_crate_mode.py` and `test_goal0_contracts.py`;
+        - the T1 version-coupling check against `Cargo.lock`'s vstd source;
+        - the Lion providers as a separately inventoried class in
+          `libsrpc.a` and the dual-compile gate;
+        - a re-pin of `srpc.epoll_wrapper`: the trait impls, the new
+          `lion_batch_` field, and the Lion imports;
+        - S2's derive revert (S7);
+        - the CLAUDE.md edits above.
+  - **Result, C++ half (done 2026-10-01, `lion/integrate`).** SRPC with Lion
+    builds, passes both gates and the whole battery in the C++ lane, under
+    rusty-cpp `a130025e`.
+    - **Commits.** `9a74fd1` and `5bc322a` pin bumps (`1689f438` ->
+      `dc6e7558` -> `a130025e`); `e004152` CMake; `47313d2` gate; `f49f456`
+      battery adaptations; `246c496` ABI re-pin; `c20e65d` StressTest;
+      `479386d` T7 follow-up.
+    - **CMake.** The `rusty-cpp-verus-erase` helper is built by its own
+      `cargo build --locked -p verus-erase` target, never together with the
+      transpiler (T1b), with a fingerprint edge like the transpiler's.
+      Generation runs with `--verus-exec --crate-graph --verus-erase-helper`
+      and depends on Lion's sources. The five generated Lion providers
+      (`SRPC_LION_PROVIDERS`, in `crate-graph.json` order:
+      `lion_executor_spec`, `lion_slab`, `lion_timer_wheel`, `lion_reactor`,
+      `lion_executor`) compile in srpc's own file set, so they share its BMIs
+      and land in `libsrpc.a`. They stay out of `SRPC_MODULE_SRC`, so the
+      37-provider checks are unchanged. `lion-framework-spec` is ghost-only;
+      `lion-utility-spec` and `lion-reactor-spec` are unused.
+    - **Gate.** `check_srpc_crate_mode.py` inventories the Lion providers as
+      their own class: `crate-graph.json` exactly, the placeholder ratchet and
+      zero hand slots per provider, exact imports, and each provider's strong
+      symbols in both the fresh object and the archive (`DEPENDENCY_ABI`, 374:
+      1 + 1 + 25 + 190 + 157, including six `std::hash` specializations the
+      providers define; identical at `dc6e7558` and `a130025e`, and in the
+      `-O2` and fresh lanes). Canonical children may `export import` only the
+      pinned Lion modules (`epoll_wrapper` -> `lion_reactor`; `reactor` and
+      `tcp_channel` -> both). The importer imports `lion_reactor` and
+      `lion_executor` and builds a Lion runtime over `SrpcEpollBackend`. The
+      T1 version coupling runs in the source gate: `--verus-build-info` must
+      name the commit every Verus git package in `Cargo.lock` resolves to,
+      and `Cargo.lock`'s `verus_builtin_macros` version.
+    - **ABI re-pin** (fresh objects, `a130025e`): 2082 -> 2189 strong
+      provider symbols, 108 rows added, 1 respelled, none removed.
+      - `srpc.epoll_wrapper` +5 (raw 51 -> 56): the `OsBackend`/`OsInterrupt`
+        forwarding (`eedc960`). Its trait `deregister(RawFd)` collapses into
+        the inherent `deregister(int)` (T5f E1) and adds no row.
+      - `srpc.reactor` +57 (raw 386 -> 449): the Lion driver, the interim
+        pollable adapter and the stackless forwarding (`04aebb2`), and the
+        readiness helpers, unwind guard and `PollThread::is_current_thread`
+        (`9d587bd`), all listed as reviewed reactor additions. `PollThread`'s
+        fieldwise constructor is respelled for `driver_`.
+      - `srpc.tcp_channel` +45 (raw 185 -> 236): the transport tasks
+        (`21ce10a`), write-through (`daf3d92`), the cork (`4c008ed`) and
+        `kTcpWriteThroughIdleUs` (`95057e3`).
+      - Layout: `sizeof(PollThread)` 112 -> 136. `rusty::thread::JoinHandle`
+        gained its `Thread` handle (rusty-cpp `beb47135`), so `join_handle_`
+        grows by 16 and `remove_count_` moves 100 -> 116; `driver_` sits at
+        120. `sizeof(TcpConnection)` 352 -> 400, still 8-aligned: `writer_`
+        at 352 (32 bytes with `a130025e`'s heap-held `Waker` callable),
+        `send_error_` at 384, `last_send_us_` at 392. `Client`,
+        `ClientConnection`, `Future`, `ServerConnection`, `TcpListener` and
+        `TcpFactory` do not move. The importer's Send/Sync asserts on
+        `Client`, `ClientConnection` and `ClientPool` hold with no
+        `unsafe impl`.
+    - **Battery adaptations** (each with a note in the test):
+      - `test_reactor.cc` `DestructorCleanupWithoutExplicitRemove`: the epoll
+        loop's `epoll_remove_count` no longer runs. The test proves every
+        registration live (a byte from each peer reaches its pollable), then
+        that shutdown releases every registration without closing a pollable.
+      - `rpc_tcp_channel_test.cc` `SendFrameQueuesWithoutThePendingWriteLatch`
+        (was `CheckPendingWriteUpdateLatchesAndClears`): `send_frame` wakes
+        the writer task and never sets the latch. On a connection with no
+        PollThread the frame stays queued and the latch reads clear.
+      - `test_reactor.cc` `StressTest` counted 110 `handle_read` calls for 100
+        writes. A new registration's `AsyncFd` starts readable (U8), so the
+        S3 adapter delivers one empty read per descriptor; the epoll loop's
+        `EPOLLET` registration had no initial edge. The expectation was
+        wrong, not the adapter: an edge-triggered `handle_read` must tolerate
+        `EAGAIN`, nothing promised otherwise, and the Rust lane does the same.
+        The test now counts bytes (all 100) and at least one call per
+        descriptor; the book's `PollableBase` table says `handle_read` may
+        find nothing.
+    - **T7 follow-up.** The transpiler pin has carried T7's relocating reads
+      (`400cb4d1`) since `dc6e7558`. The ASan battery passes 35 of 35 with
+      none of the five fiber suppressions in `scripts/lsan_suppressions.txt`
+      and no leak report (LSan is live on this host: a deliberate 24-byte
+      leak is reported), so all five are dropped and the file records why.
+      `event_deadline_remove_key`'s move-out workaround is back to a plain
+      `BTreeMap::remove` (a generic function; no ABI row).
+    - **Acceptance, measured on the committed tree:**
+      - `RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets`:
+        406 passed, 0 failed, 1 ignored.
+      - Configure exit 0; `cmake --build build --parallel 16` exit 0, both
+        gates included (the dual-compile gate: 5 Lion providers with 374
+        symbols, 38 modules compiled, 0 hand slots, 2189 provider symbols,
+        the importer run against fresh objects and `libsrpc.a`).
+      - `ctest -L srpc` 51/51, `srpc_runtime_parity` included.
+      - Sanitizer batteries: address 35/35 (no suppressions), undefined
+        35/35, thread 34/35. The TSan failure is `test_rpc_transport_matrix`,
+        deterministic (20 of 20 runs): a reported race on Lion's
+        `Instant::now()` `START`. It is a false positive of rusty-cpp's
+        `OnceCell::get_or_init`, which relies on `std::call_once`'s release
+        inside the uninstrumented `libc++.so`: a 20-line reproduction reports
+        the same race, and an acquire fast path on `initialized_`
+        (`if (initialized_.load(acquire)) return *as_ptr();`) in a scratch
+        copy of `include/rusty/once.hpp` removes it. That fix is rusty-cpp's
+        (G6); SRPC adds no TSan suppression for it.
+      - rpcbench, a first look for S8 (`scripts/run_rpcbench.sh`, default
+        modes, 3 trials, two interleaved rounds, host load 3.5-4.1),
+        median and range of 6 trials:
+
+        | mode | `lion/integrate` | old loop + S0b (`s0b-after`) | main checkout `build/rpcbench` (2026-09-07) |
+        | --- | --- | --- | --- |
+        | fast | 1166k (1153k-1185k) | 1143k (1106k-1195k) | 1256k (1215k-1284k), 1 of 6 trials failed |
+        | fiber | 650k (645k-656k) | 660k (649k-675k) | 718k (710k-730k) |
+        | defer | 636k (628k-638k) | 663k (646k-670k) | 709k (690k-724k) |
+        | async | 743k (739k-759k) | 720k (712k-735k) | 982k (964k-1011k) |
+
+        `s0b-after` is the S0b measurement's "after" binary, identified by its
+        scratch directory name and date (2026-09-26), not rebuilt here.
+        Against the old 1 ms loop with the same S0b client: fast and fiber
+        are within each other's range, async is about 3% higher and defer
+        about 4% lower, both outside the ranges. The 2026-09-07 binary is
+        faster in every mode, but it predates S0b's synchronized `Client`
+        (its one failed trial is consistent with the pre-S0b race, which
+        failed 4 of 80 short runs; the runner keeps no server log to confirm
+        it) and more than three weeks of
+        other changes, so that gap is not Lion's until S8 builds `e94dd7e`
+        (the last pre-Lion tree) and measures it the same way.
+    - **How it got here: gaps the C++ half found at `dc6e7558`, fixed in
+      T5f (`a130025e`).** E1 (`SrpcEpollBackend::deregister` overload
+      collision) and R2 (`AsyncFd` `try_io` deduction) were known. Diagnostic
+      builds with those two hand-patched (never committed) found three more:
+      - G3: Lion's `Reactor::enter` took the next epoch in a
+        `NEXT_EPOCH.with(..)` closure that the emitter lowered to a
+        `-> decltype(auto)` lambda ending `return std::move(e);`, a dangling
+        `uint64_t&&`. The epoch read 0, so every `AsyncFd` registration
+        failed with "no Lion reactor". Clang's `-Wreturn-stack-address`
+        (hidden by SRPC's `-w`) flagged it, the only such warning in the 43
+        generated units. rusty-cpp's own gate could build with
+        `-Werror=return-stack-address`.
+      - G4: the emitter's auto-trait table had no `std::task::Waker`, so
+        `PollThread` and the client types lost Send/Sync in C++.
+      - G5: `free(): invalid pointer` destroying a `Waker` moved bitwise
+        through Lion's resource slab; T5f now keeps the callable on the heap.
+    - **Policy decisions recorded here.** `lion_executor` contains
+      `rusty::io::Error::Kind::Unsupported` (the C++ spelling of
+      `std::io::ErrorKind::Unsupported`, returned without the `mio` feature),
+      which the case-insensitive `UNSUPPORTED` ratchet matched; that one fully
+      qualified token is allowlisted. The helper's `verus_syn` and
+      `verus_prettyplease` come from Verus's git repository, so a cold machine
+      needs one networked `cargo fetch` in `third-party/rusty-cpp`; CLAUDE.md
+      should say so (the owner's edit, with the S1 ones above).
+    - **Left for S7b** (dead code, now pinned ABI):
+      - the S3 adapter's `PollFdTask`/`poll_fd_*`/`poll_driver_*` pollable
+        path and `PollThread::notify_pending_write` once `add_proxy` is
+        retired or reduced;
+      - TCP's pollable surface (`TcpPollableShim`, `TcpListenerPollableShim`,
+        their factories, `pending_write_update_`, `check_pending_write_update`,
+        `handle_write`/`handle_error`), the epoll loop
+        (`PollThreadWorker`, `Epoll`, `epoll_*_impl`, `epoll_remove_count`)
+        and `JobSet`; `pollworker_fd_reuse_test.cc` and the C++ pollable
+        tests go with them or move to the `AsyncFd` contract;
+      - the book still says `handle_error` handles a reported hangup; since
+        S3 a failed socket reaches `handle_read` instead;
+      - S2's `derive` workaround on `SrpcInterest`/`SrpcOsEvent` (the pinned
+        emitter no longer reports `derive(Copy)` as a slot in Lion's types,
+        so the revert should now be possible; it changes their ABI rows).
+    - **Left for rusty-cpp:** G6, the TSan false positive above (an acquire
+      fast path in `OnceCell::get_or_init`). Until it lands, the thread
+      battery is 34/35.
+    - **Left for S8:** the full rpcbench comparison against a fresh build of
+      `e94dd7e`, including `fast_vec`, and the microbenchmark compare.
 - [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
   `SrpcEpollBackend` meets the contract below, and its results are at the
-  end of this item. S1 still has to add the `impl lion_reactor::os::OsBackend`
-  that forwards to it, once SRPC depends on Lion.
+  end of this item. S1's Rust half added the forwarding
+  `impl lion_reactor::os::OsBackend` as `eedc960`; its C++ lowering waits
+  for T4/T5.
   - Implement Lion's U6 seam in canonical `reactor/epoll_wrapper.rs` over
     `srpc_epoll.c`.
   - SRPC's kernel has no eventfd today (a grep for `eventfd|EFD_|pipe2` is
@@ -945,19 +1191,184 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
         100. `MioBackend` ignores the capacity.
       - Token 0 is refused with EINVAL.
       - In C++ the method is `register_`.
-- [ ] **S3. Core swap.**
+- [ ] **S3. Core swap.** The Rust-lane half is done on `lion/s3-core` as
+  `04aebb2` (the swap and its tests), `5d2b20d` (a skipped self-wake) and
+  `e879b61` (an RPC echo benchmark); its results are at the end of this
+  item. The C++ half is done with S1's on `lion/integrate`: its ABI re-pin
+  and battery adaptations are in S1's *Result, C++ half*.
   - `PollThread` becomes one OS thread running one Lion runtime.
   - Stackless tasks go to Lion `spawn_local`.
   - Foreign wakes go through the Lion waker.
   - `Job`/`PollCommand` become an mpsc queue drained by a task that is woken on
     send, with no per-pass `try_recv`.
   - `reactor_spawn_stackless_task_with_result` keeps its C++ signature.
+  - **Result, Rust lane (2026-09-27).** The C++ lane was not run.
+    - **Shape.** The poll thread builds a Lion runtime over
+      `SrpcEpollBackend` itself (`Runtime` is `!Send`) and blocks in
+      `block_on` on the `JoinHandle` of one `spawn_local` task, the driver.
+      The root future is only that join, so all SRPC work runs in spawned
+      tasks, which is what Lion's scheduling argument is about. The old
+      1 ms loop (`PollThreadWorker::poll_loop`) is no longer run.
+    - **The driver** (`PollDriverTask`) does what a pass of the old loop
+      did apart from epoll. When woken, it drains the command channel,
+      applies deferred removals, wakes registrations with a pending write,
+      runs ready jobs, and calls `run_loop(false, true)`. That call is the
+      same drain a thread with no loop runs, so nothing was factored out
+      and no drain symbol was added. Then it sleeps on a Lion timer until
+      `event_next_deadline_us`, rounded up to whole milliseconds. A timer
+      that fires early, because Lion truncates its clock, finds nothing
+      due and re-arms. Resumption stays in the drain, and `create_run`
+      and `continue_fiber` stay synchronous.
+    - **Wake sources**, each on its own empty→non-empty edge, reach the
+      driver through one `PollDriverWake`, a pending flag plus the
+      driver's Lion waker. The driver clears the flag before each drain,
+      then publishes its waker and re-reads the flag before it sleeps.
+      - every `PollThread` command method, after its send;
+      - `event_ping` when it makes the ping ingress non-empty;
+      - the stackless ingress's first queued wake. On a `PollThread` this
+        serves only pollers registered directly with
+        `register_stackless_poller`;
+      - the ready queue's WAIT→READY edge taken outside the driver's poll;
+      - a deadline earlier than the one the driver sleeps until;
+      - a pending write, through the new public
+        `PollThread::notify_pending_write(fd)`.
+
+      A command sent on `sender_` directly waits for the next wake.
+    - **Jobs.** `Job::Ready` has no wake, so while a job waits the driver
+      re-arms a 1 ms re-check, the old loop's rate. With no waiting job,
+      nothing polls. Jobs now run in submission order. `JobSet` is keyed by
+      the job's Arc address, so the old loop ran jobs in address order,
+      while the client and server queue close jobs expecting them to run
+      before later ones. The new wake path allocates on the sending thread,
+      which moved those addresses:
+      `repeated_client_close_keeps_its_queued_retirement_valid` failed 4 of
+      100 runs with address order, against 0 of 100 on the old loop and 0
+      of 200 with submission order.
+    - **Pollables (the interim adapter).** Each registration gets a Lion
+      local task (`PollFdTask`) over `lion_reactor::AsyncFd`. It keeps the
+      old EPOLLET dispatch:
+      - one `handle_read` per read edge, with the edge consumed first;
+      - `handle_write` while the mode asks for writes. Write readiness is
+        consumed only when `handle_write` returns `NO_CHANGE`, which
+        `TcpConnection` does only after EAGAIN.
+
+      It reads the pending-write latch after every `handle_read`, so a fast
+      handler's reply goes out in the same poll, and whenever woken.
+      `TcpConnection::send_frame` now wakes its registration after setting
+      the latch; this replaces the sweep over every fd. The wake is keyed
+      by the fd read under the outbound gate and carries no mode, so a
+      reused descriptor wakes at most an unrelated registration, which
+      finds its latch clear. A pollable found closed is retired and closed,
+      which replaces the closed sweep. `Add`/`Remove`/`Close`/`UpdateMode`
+      keep the old worker's rules. The `AsyncFd` is dropped before the
+      proxy's descriptor lease.
+      - **Behaviour change:** Lion reports ERR and HUP as readiness in both
+        directions, so a failed socket reaches `handle_read` (recv fails or
+        reads EOF). `handle_error` is no longer called.
+    - **Stackless split.** On a `PollThread`, both spawn functions keep
+      their signatures and their inline first poll. A task still pending
+      becomes a Lion `spawn_local` task, and the first poll's waker forwards
+      to it. Elsewhere, and on a `PollThread` once its driver has stopped,
+      they use the `Reactor`'s own executor, which `run_loop` pumps, as
+      before. S7 revisits the split. A Lion task dropped at shutdown is
+      counted in `teardown_tasks` and logged at ERROR (W2).
+    - **Panics.** A task on the poll thread aborts the process if its poll
+      unwinds (`PollTaskUnwindAbort`). This is what `spawn_abort_on_panic`
+      did before Lion's tasks began catching panics.
+    - **Shutdown.** The driver returns on `Shutdown`. The thread unbinds
+      the wake hooks, unregisters every pollable without closing it (the
+      old cleanup), and drops the runtime on its own thread.
+    - **Measured (debug test build, this tree against the pre-S3 tree
+      running the same test file).**
+      - An idle `PollThread` with a registered connection makes 10 context
+        switches and uses 0.47–0.84 ms of CPU per second. The old loop made
+        921 and used 11.2 ms.
+      - Median wake latency from another thread to the work running on the
+        poll thread: a Job 78–145 µs, a stackless wake 61–86 µs, a
+        `FiberChannel` frame 90–161 µs, with p99 at most 369 µs. Before: a
+        Job 93 µs median but 1.08 ms p90, a frame 1.015 ms median.
+      - Fiber sleep lateness p50 206–283 µs, max 988 µs, and no sleep ended
+        early. Before: p50 758 µs, max 1.05 ms.
+    - **Benchmark** (`scripts/run_rpc_echo_bench.sh --compare e94dd7e
+      5d2b20d`, release, 8 alternating runs each, host load 13–20).
+      Medians, with the ranges old against new:
+      - latency with one request in flight: p50 1214 → 140 µs
+        (1198–1234 against 103–155), p99 1443 → 387 µs;
+      - a window of 64: 95k → 170k qps (89k–107k against 160k–197k), at
+        about 5 µs of CPU per request either way;
+      - a window of 512: 290k → 223k qps (265k–315k against 155k–260k).
+        CPU per request is 3.8–4.7 µs against 5.1–8.6 µs.
+
+      The old loop amortized each pass over every request that arrived in
+      that millisecond, which a deep pipeline fills. The driver wakes per
+      event. Its per-cycle cost is Lion's tick (a non-blocking `epoll_wait`,
+      an `Arc` waker per poll) plus the driver's and the transport tasks'
+      polls. A client send from another thread takes two hops: the driver,
+      then the transport task. The window-512 loss is outside the spread,
+      and is S8's to weigh. S5's writer task, woken directly by
+      `send_frame`, removes one hop from every client send.
+    - **Gate.** cargo 383 passed / 0 failed / 1 ignored (16 new tests in
+      `tests/pollthread_lion_rust.rs`), doc tests 2, clippy clean. The
+      isolated copy ran 385 / 0 / 1. The source-gate scripts that need no
+      transpiler all pass. Seventeen timing-sensitive test binaries passed
+      20 of 20 runs each at host load 65–110. The Rust `runtime_parity`
+      transcript matches `check_runtime_parity.py`'s `EXPECTED` in 5 of 5
+      runs.
+    - **Negative controls.** Sixteen mutations each turned a named test
+      red:
+      - dropping the wake from a command, a ping, the stackless ingress,
+        the ready queue, an earlier deadline or the TCP latch;
+      - the early waker not re-pointed;
+      - spawns kept off Lion;
+      - no job re-check;
+      - a self-waking driver;
+      - a leaked runtime;
+      - either stackless drop unreported;
+      - write or read readiness not consumed (both spin);
+      - jobs in address order.
+
+      `stackless_wake_pollthread_rust`'s foreign-wake test catches the
+      early-waker mutation only when its first Lion poll wins a race; the
+      new test sleeps first.
+    - **Dead code for S7** (no longer run by `PollThread`):
+      - `PollThreadWorker`, `g_current_poll_worker`, and the
+        `pollworker_*` helpers other than the ones the driver shares
+        (`job_ready`, `job_spawn_work`, `job_identity`, `pollable_proxy_fd`,
+        `pollable_proxy_mode`);
+      - `Epoll` and `epoll_open`/`epoll_add_impl`/`epoll_remove_impl`/
+        `epoll_update_impl`/`epoll_wait_impl`, and the `epoll_remove_count`
+        instrumentation;
+      - `JobSet`: the driver queues jobs in a `Vec`, in submission order;
+      - the `Pollable` trait's `check_pending_write_update` sweep role;
+      - on a `PollThread`, the `Reactor`'s own stackless executor, except
+        for directly registered pollers.
+    - **For the C++ half and T4/T5.** `reactor.rs` now calls `lion_executor`
+      and `lion_reactor` directly. These spellings are new to the emitter:
+      - four hand-written `impl Future` types, two of them with `Drop`, one
+        generic (`StacklessLionTask<T, OnReady>`) with a bound on the
+        `Future` impl and none on `Drop`;
+      - `impl Wake` for the forwarder;
+      - `Box<dyn OsBackend>` unsizing into `RuntimeBuilder::os_backend`,
+        `block_on` over a `JoinHandle`, and `spawn_local` of local types;
+      - `AsyncFd::poll_*_ready` returning a lifetime-bound guard, matched
+        as `Poll::Ready(Ok(..))`/`Poll::Ready(Err(..))`, and `try_io` with
+        a typed closure returning `io::Result<()>`;
+      - `ReactorHandle::register_timer`/`deregister_timer`, `IoResult`,
+        and `Instant + Duration` from Lion's `verus!` impls;
+      - `std::io::Error::from(ErrorKind::WouldBlock)`;
+      - abort-on-unwind through a `Drop` guard, which assumes a panic runs
+        destructors in the generated C++;
+      - a `thread_local!` raw `*const` pointer.
+    - **ABI.** `PollThread` gains a private field and the public
+      `notify_pending_write`. `EventPingIngress` and `StacklessWakeIngress`
+      gain a private field. The driver, the adapter and the forwarding add
+      private types and functions. S7 re-pins.
 - [ ] **S4. Fibers re-hosted on Lion.** The inventory was done on
   2026-09-26 (read-only, from the source, the C++ battery and Mako). Its
   findings drive the order below. Conversion steps 0–5 are done on the
   existing reactor (2026-09-27). No event waited on its owner thread is
-  re-tested per pass any more. What remains is the Lion driver, which needs
-  S3.
+  re-tested per pass any more. What remained was the Lion driver, which
+  S3's Rust-lane half provides (`04aebb2`).
   - Keep `srpc_fiber.c` and the `.S` switches.
   - **Resumption stays deferred.** `set()`, the `vote_*` methods and a direct
     `test()` call only move an event from WAIT to READY. A fiber resumes later,
@@ -1227,8 +1638,13 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     (`check_srpc_crate_mode.py:73-75,215-244`). A new trait method is a ratchet
     edit.
   - `QuorumEvent` keeps `cpp_namespace(::janus)`.
-- [~] **S5. Transport.** The Rust lane is done (2026-09-30); the C++ lane
-  waits on T5e and the pin bump.
+- [x] **S5. Transport.** Both lanes are done (2026-10-01).
+  - **C++ half:** done with S1's on `lion/integrate`. Its ABI re-pin and the
+    battery adaptations are recorded in S1's *Result, C++ half*.
+  - **Rust-lane commits on `lion/s5-transport`:** `9d587bd` (shareable
+    readiness helpers), `21ce10a` (transport tasks and their tests),
+    `d55d625` (a three-build benchmark runner) and `b39e66a` (a host
+    requirement of one test).
   - **Branches** (SRPC main repo):
     - `lion/s5-transport` (`bbf7fa2`): each connection is a reader task and a
       writer task over `AsyncFd`; `send_frame` wakes the writer directly.
@@ -1282,6 +1698,241 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       feature unification would bring mio back.
   - The TCP send path open-codes the frame header (CLAUDE.md). Keep that
     unchanged.
+  - **Result, Rust lane (2026-09-30).** The C++ lane was not run.
+    - **Shape.** On its PollThread each connection is two Lion local tasks
+      over one `AsyncFd`, and each listener is one accept task, all in
+      `rpc/tcp_channel.rs`. They use the readiness helpers of S3's adapter,
+      now public in `reactor.rs` (`lion_fd_poll_ready`,
+      `lion_fd_consume_ready`, `PollTaskUnwindAbort`), so the transport
+      spells no `AsyncFd` guard of its own.
+      - **Reader.** It reads into the existing `FrameStreamReader` and
+        delivers each complete frame to `on_frame`, as `handle_read` does.
+        Fast RPCs run inline in it, fiber RPCs start their fiber there, and
+        stackless RPCs make their first poll there. It reads until recv(2)
+        returns EAGAIN, the only evidence that consumes readiness. After a
+        short read it delivers, then reads again, which also picks up what
+        arrived meanwhile: the "one extra EAGAIN read per wake" of U8. A poll
+        makes at most 16 reads, then wakes itself and yields.
+      - **Writer.** It drains the existing outbound buffer while the socket
+        takes it, then waits for the buffer's empty->non-empty edge, or,
+        after EAGAIN, for write readiness. A poll makes at most 16 drains.
+      - **Accept.** The accept task runs `handle_read`'s accept driver on
+        each read edge, and consumes readiness only when accept(2) returned
+        EAGAIN.
+      - **Hand-over.** An accepted connection starts its tasks in place. A
+        connect still blocks the calling thread, then hands the socket over
+        through a `OneTimeJob`, as a listen does. New
+        `PollThread::is_current_thread` lets both start in place on the
+        PollThread itself. A frame sent before the tasks start goes out on
+        the writer's first poll.
+    - **Wake sources.**
+      - The writer's Lion waker lives in `TcpConnection::writer_`, gated by
+        the outbound mutex like `fd_`. `send_frame` takes it under the same
+        lock as the append, on the empty->non-empty edge only, and wakes it
+        from any thread. There is no driver hop and no latch sweep, and
+        `send_frame` no longer touches `pending_write_update_` or
+        `notify_pending_write`.
+      - A reply sent inside the reader's poll wakes the writer on the
+        thread's own ready queue, with no eventfd write. The writer runs in
+        the same tick, and one drain carries every reply of that poll. That
+        is `5d2b20d`'s skipped wake, with no `reading_fd`-style latch.
+      - The driver is not woken for TCP work: an instrumented build counted
+        0 driver polls per request in the benchmark below. S3 woke it for
+        every foreign send by design (see its note); that build had no
+        counter.
+    - **Close and errors** keep the adapter's observable behaviour.
+      - EOF closes with `on_closed(None)` and no `on_error`. A receive
+        error, a write error and a malformed stream call `on_error`, then
+        `on_closed` with the same reason.
+      - A task that finds the connection closed (any thread's close, or a
+        failed flush) closes it. Close is idempotent, so `on_closed` fires
+        once.
+      - Retiring drops the `AsyncFd`, then the descriptor lease, explicitly,
+        because the generated C++ destroys fields in reverse order. It then
+        wakes the other task.
+      - `close()` and a failed flush wake a writer parked on the empty
+        buffer, which no readiness edge reaches.
+      - The retiring task must wake the reader itself. A close made on the
+        poll thread (`Client::close`'s job) wakes the writer locally, and the
+        writer retires and deregisters the descriptor before the next park
+        harvests the shutdown's hang-up edge. Deregistration discards that
+        edge.
+      - A listener needs no waker: shutting a listening socket down moves it
+        to CLOSE, which the kernel reports as a hang-up.
+      - At PollThread shutdown the runtime drops the tasks, and the
+        registration is released without closing the connection, as the old
+        cleanup did.
+    - **Behaviour changes.**
+      - An EOF that arrives behind data on one edge is now seen, after the
+        data is delivered. The old EPOLLET loop and S3's adapter stopped at a
+        short read, and missed the FIN until another edge came. Run against
+        `462e2ca`, `a_frame_followed_by_eof_is_delivered_and_then_closes`
+        fails; the other 14 new tests pass there.
+      - `tcpconn_drain_outbound_locked` returns WouldBlock whenever send(2)
+        stopped on EAGAIN, not only when nothing was sent. `handle_write` and
+        `flush` treat a partial drain the same either way.
+      - A `TcpConnection` registered by hand through
+        `add_proxy(make_tcp_connection_pollable_proxy(..))` is no longer
+        written, because nothing sets its latch. No production path, test or
+        Mako does that. The two proxy factories are now `pub`, for the retired
+        worker's crate tests.
+      - TCP connections are no longer registrations, so `request_close`,
+        `remove_fd` and `update_mode` do not reach them.
+      - A failed `AsyncFd` registration fails the connection with
+        `on_error(Internal, "poll registration failed")`.
+    - **Measured** (debug test build, unless noted).
+      - A foreign `send_frame` to bytes at a raw peer, 5 alternating runs of
+        300 samples each, against `462e2ca`: p50 125-172 us against
+        160-183 us, minimum 42-53 us against 65-97 us, and p99 275-335 us
+        against 300-335 us. The ~30 us lower minimum is the driver hop. The
+        medians are dominated by the idle cores' C2 exit, which this
+        Threadripper 2990WX lists at 100 us.
+      - An idle PollThread with a registered connection: 10 context switches
+        and 0.51-0.85 ms of CPU per second over 4 runs, in S3's range
+        (0.47-0.84 ms).
+      - At one request in flight, per request (release, instrumented copy):
+        2 reader polls, 4 recvs (2 of them EAGAIN), 2 writer polls, 2 sends,
+        3 blocking parks and 1 eventfd write. The poll threads switch 2
+        (client) + 1 (server) times, the minimum for this thread structure.
+    - **Benchmark** (`scripts/run_rpc_echo_bench.sh --compare e94dd7e 5d2b20d
+      21ce10a`, release, 12 alternating trials per build and window; the host
+      was shared with other agents' builds, load 9-13). Medians with ranges:
+
+      | | `e94dd7e` 1 ms loop | `5d2b20d` S3 | `21ce10a` S5 |
+      | --- | --- | --- | --- |
+      | p50, one in flight | 1207 us (1185-1224) | 150 us (63-172) | 150 us (72-280) |
+      | p99, one in flight | 1423 us (1361-1449) | 388 us (304-453) | 435 us (303-462) |
+      | window 64 | 106k qps (69k-130k) | 175k (153k-219k) | 170k (154k-282k) |
+      | CPU per request, 64 | 4.69 us (3.72-5.12) | 5.86 (4.55-7.65) | 5.46 (3.87-6.47) |
+      | window 512 | 286k qps (263k-339k) | 222k (182k-316k) | 246k (191k-292k) |
+      | CPU per request, 512 | 4.42 us (3.97-4.85) | 5.47 (4.40-6.69) | 5.15 (4.60-7.13) |
+
+      The latency rows come from the window-64 sitting; the window-512
+      sitting gave p50 1203 / 151 / 151 us and p99 1430 / 385 / 388 us. An
+      earlier sitting (10 trials, load decaying from 35 to 13) gave 275k /
+      237k / 238k qps at 512 and 103k / 164k / 166k at 64. Pinned to one
+      NUMA node (8 trials) it gave 284k / 291k / 243k at 512 and 111k / 211k
+      / 203k at 64.
+      - S5 and S3 are within each other's spread at every window, in every
+        sitting. The 1 ms loop stays ahead at 512, by 10-20% in median,
+        with overlapping ranges.
+      - **The window-512 regression is not recovered.** Removing the driver
+        hop saves one task poll per foreign send, which is small against the
+        rest of a request.
+    - **Where the remaining cost is** (instrumented copies of the three
+      builds, window 512, pinned to one NUMA node, medians of 4 runs, per
+      completed request, old / S3 / S5):
+      - total CPU 4.12 / 5.75 / 5.21 us;
+      - client poll thread 1.77 / 2.51 / 2.26 us, with 0.022 / 0.048 / 0.038
+        context switches;
+      - server poll thread 0.50 / 0.99 / 0.85 us, with 0.008 / 0.029 / 0.019
+        switches;
+      - client thread 1.85 / 2.25 / 2.17 us.
+
+      S5's syscalls per request: 0.089 recv (0.043 of them the confirming
+      EAGAIN, one per reader poll), 0.054 send, 0.062 blocking parks, no
+      non-blocking parks, and 0.028 eventfd writes. The per-request work is
+      the same in all three builds. What differs is how often the poll
+      threads wake: 1.8 times (client) and 2.3 times (server) as often as
+      the old loop's. Most of the client poll thread's wakes, 0.028 of
+      0.038, are the client thread's sends waking the writer. The old loop
+      never woke for a send; it found the latch on its next pass, so each
+      pass carried a bigger batch, and the server's reads grew with it.
+      Knobs for S8, none taken here because they change S5's design:
+      - write-through: a foreign `send_frame` that finds the buffer empty and
+        the writer parked tries send(2) itself, and wakes the writer only on
+        EAGAIN. This removes the client's dominant wake source;
+      - coalescing the writer's wake (a yield or a short timer), which trades
+        away the latency S3 and S5 gained;
+      - dropping the confirming EAGAIN read, which U8 forbids unless the
+        readiness is consumed on other evidence.
+    - **Gate.** cargo 399 passed / 0 failed / 1 ignored: 15 new tests in
+      `tests/tcp_transport_rust.rs` and 1 in `pollthread_lion_rust.rs`,
+      whose TCP test was renamed `tcp_frames_echo_through_the_transport_tasks`.
+      Doc tests 2, clippy clean. The isolated copy ran 401 / 0 / 1. The
+      source-gate scripts that need no transpiler all pass. The Rust
+      `runtime_parity` transcript matches `check_runtime_parity.py`'s
+      `EXPECTED` in 5 of 5 runs.
+    - **Repeats.**
+      - 26 timing-sensitive test binaries passed 20 of 20 runs each at load
+        2-10.
+      - Under 56 CPU-spinning processes (load 36-68), `tcp_transport_rust`,
+        `pollthread_lion_rust` and the pre-S5 `pollthread_lion_rust` each
+        passed 20 of 20.
+      - Under 72 on 64 CPUs (load 66-87), `tcp_transport_rust` passed 12 of
+        12, and `pollthread_lion_rust` 11 of 12 (pre-S5: 12 of 12). The
+        failure is S3's foreign-job latency test, whose median sits on a
+        ~1 ms mode when no CPU is idle. In 40 saturated runs of that test
+        alone, 5 of the S5 build's medians and 4 of the pre-S5 build's sat at
+        960-965 us; the rest were 36-88 us.
+    - **Negative controls.** Each mutation turned the named test red:
+      - no edge wake in `send_frame`: the foreign-send latency test and the
+        8-sender test;
+      - close not waking the writer: idle foreign close, poll-thread close,
+        and no-leak;
+      - retirement not waking the reader: poll-thread close;
+      - the reader's budget without its self-wake: the budget burst. That
+        test needs `net.core.rmem_max` of at least 4 MiB (4194304 here);
+        below it the burst cannot queue whole, the budget is never reached,
+        and the test says so on stderr instead of failing;
+      - no read readiness consumed on EAGAIN: the latency and 64-connection
+        tests time out;
+      - no write readiness consumed on EAGAIN: the stalled-writer CPU bound;
+      - consuming read readiness after a short read, the adapter's rule: the
+        EOF behind a frame is missed;
+      - a writer whose first poll ignores queued frames: frames sent before
+        the tasks start;
+      - an accept task that ignores its closed listener: the listening fd
+        stays open;
+      - EOF reported as an error: half-close;
+      - an EOF path that does not retire the transport: half-close and
+        no-leak.
+
+      The writer's 16-drain budget has no control. Its self-wake stayed
+      green against every test, including a 16-sender stress test written
+      for it and then dropped. The loop repeats only if a sender takes the
+      outbound lock between a drain and the next check, which the writer,
+      re-taking a lock it just released, almost never loses.
+    - **Dead code for S7**, beyond S3's list. No production pollable is
+      left, so all of this runs only for `add_proxy`'s other callers: the
+      tests, and the C++ battery's own pollables.
+      - the adapter: `PollFdTask`, `PollFdEntry`, the `poll_fd_*` and
+        `poll_driver_{add,close,update_mode,apply_removals,retire_all}`
+        functions, and the driver's `fds`, `pending_remove` and `reading_fd`;
+      - `PollThread::notify_pending_write`, `PollDriverWake::write_ready`,
+        `poll_driver_wake_fd_here`, `poll_driver_wake_fd` and
+        `poll_driver_wake_writers`;
+      - TCP's pollable surface: `TcpPollableShim`,
+        `TcpListenerPollableShim`, `make_tcp_{connection,listener}_pollable_proxy`,
+        `pending_write_update_`, `TcpConnection::{poll_mode, handle_write,
+        handle_error, check_pending_write_update}` and their `tcpconn_*`
+        bodies, `TcpListener::{poll_mode, content_size, handle_write,
+        handle_error, check_pending_write_update}` and
+        `tcplistener_handle_error`. Production no longer calls either
+        pollable `handle_read` either, but the tasks share their parts: the
+        reader the frame delivery, the accept task the accept driver.
+      - S7 decides whether `add_proxy` and `Pollable`/`PollableBase`
+        survive at all.
+    - **For the C++ half and T4/T5.** New to the emitter in
+      `srpc.tcp_channel` (nothing new in `reactor.rs`):
+      - three hand-written `impl Future` types (`TcpReaderTask`,
+        `TcpWriterTask`, `TcpAcceptTask`) of `PollFdTask`'s shape;
+      - `Drop` for `TcpTransport` and `TcpAcceptTask`;
+      - `std::task::Waker` in `UnsafeCell<Option<..>>` and
+        `RefCell<Option<..>>`, and `cx.waker().wake_by_ref()`;
+      - `Rc` of a struct holding `RefCell<Option<lion_reactor::AsyncFd>>`;
+      - `lion_executor::spawn_local` with a dropped `JoinHandle`, and
+        `AsyncFd::new`'s `io::Result`;
+      - the module's first direct Lion imports.
+    - **ABI.** S7 re-pins all of this:
+      - `TcpConnection` gains `writer_`, so
+        `tests/rpc_tcp_channel_test.cc`'s `sizeof(TcpConnection) == 352` pin
+        moves. `TcpListener` is unchanged.
+      - The two pollable-proxy factories are now `pub`.
+      - `srpc.tcp_channel` now imports `srpc.misc` (`OneTimeJob`) and the
+        Lion modules, which changes `EXPECTED_IMPORTS`.
+      - `srpc.reactor` gains `lion_fd_poll_ready`, `lion_fd_consume_ready`,
+        `PollThread::is_current_thread` and a `pub` `PollTaskUnwindAbort`.
 - [ ] **S6. (Optional scope.) Cooperative client waits.**
   - The client `Future` blocks an OS thread on a Condvar, so a nested RPC made
     from a fiber blocks the poll thread.
@@ -1291,7 +1942,12 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - With Lion underneath, `Future` can implement `std::future::Future`, and
     `wait()` can yield when it is called inside a fiber.
   - Fix the doc contradiction regardless of whether this scope is taken.
-- [ ] **S7. Retire and re-pin.**
+- [ ] **S7. Retire and re-pin.** Partly done with S1's C++ half
+  (`lion/integrate`, see its *Result*): the dependency-provider inventory,
+  the importer's Lion imports, `EXPECTED_IMPORTS`, and the ABI and layout
+  re-pin for S1/S3/S5 as they stand. What remains is S7b: delete the dead
+  code (S1's *Left for S7b* list), revert S2's `derive` workaround, and
+  re-pin again after the deletions.
   - **Delete** the 1 ms loop, the linear timeout scan, the disk reactor, the
     `epoll_wrapper` `Pollable` remnants and the ticket ingress.
   - **Revert S2's `derive` workaround.** `SrpcInterest` and `SrpcOsEvent`
@@ -1320,6 +1976,140 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     `fast_vec`, reading the spread as CLAUDE.md describes.
   - `scripts/run_microbench.sh --compare`. The codec leaves should not move.
   - A Mako build against the new tree.
+  - **Decision input: write-through for foreign senders.** Measured
+    2026-09-30 on `lion/s5-writethrough` (`daf3d92`, off S5's `bbf7fa2`;
+    not merged). A `send_frame` on a thread other than the connection's
+    PollThread that finds the outbound buffer empty writes the frame itself,
+    under the outbound mutex, and wakes the writer only for what send(2) did
+    not take. Sends on the PollThread keep S5's path. A hard error that
+    sender meets is recorded (`send_error_`) and reported by the transport
+    tasks, because its send consumed the socket's pending error. Tests and
+    negative controls are in that commit.
+    - **Benchmark** (`run_rpc_echo_bench.sh --compare e94dd7e bbf7fa2
+      daf3d92`, release, 12 alternating trials per build and window; load 5-10,
+      except that the window-1 sitting began at 48, decaying). Medians with
+      ranges; p50 and p99 are the one-in-flight latency phase of the
+      window-64 sitting.
+
+      | | `e94dd7e` 1 ms loop | `bbf7fa2` S5 | `daf3d92` write-through |
+      | --- | --- | --- | --- |
+      | window 1 | 822 qps (807-841) | 5467 (4398-6830) | 10699 (7739-13606) |
+      | CPU per request, 1 | 63.6 us (55.5-68.6) | 58.4 (50.3-66.7) | 40.4 (39.4-42.1) |
+      | window 64 | 100k qps (79k-135k) | 169k (153k-210k) | 228k (200k-256k) |
+      | CPU per request, 64 | 4.23 us (3.75-4.52) | 5.15 (4.50-6.35) | 6.80 (6.36-7.71) |
+      | window 512 | 286k qps (269k-339k) | 258k (236k-301k) | 271k (235k-302k) |
+      | CPU per request, 512 | 4.25 us (3.78-4.60) | 4.92 (4.49-5.57) | 7.03 (6.73-8.03) |
+      | p50, one in flight | 1216 us (1208-1237) | 154 (73-179) | 76 (72-153) |
+      | p99, one in flight | 1426 us (1403-1453) | 425 (289-463) | 309 (232-311) |
+
+    - **Counters** (instrumented copies, 5 alternating runs, medians, per
+      completed request, S5 / write-through):
+      - Window 1: client poll thread 2 / 1 context switches, 31.4 / 9.8 us
+        of CPU; eventfd writes 1 / 0; blocking parks 3 / 2; writer polls
+        2 / 1. The one wake left on the client poll thread is the reply.
+      - Window 64: sends 0.077 / 1.11 (the client thread now makes one
+        send(2) per request); eventfd writes 0.038 / 0; server recvs 0.14 /
+        0.30 and reader polls 0.069 / 0.137, because requests reach the
+        server in smaller segments. CPU per thread: client 2.11 / 3.52 us,
+        client poll thread 2.43 / 1.76, server poll thread 1.01 / 2.49.
+      - Window 512: sends 0.050 / 1.10; recvs 0.081 / 0.273; CPU per thread:
+        client 2.22 / 3.29 us, client poll thread 2.30 / 1.59, server poll
+        thread 0.79 / 2.35.
+    - **Reading.** Write-through removes the client-side wake that S5's
+      note traced. At one in flight that halves the latency and cuts CPU per
+      request by 30%. At 64 it raises throughput by a third. At 512
+      throughput is within the spread of S5's, and still below the 1 ms
+      loop's median. The price is un-batched sends: one send(2) per request
+      on the caller's thread, and smaller segments at the peer, whose reader
+      then wakes and reads about twice as often. CPU per request rises by
+      32% at 64 and 43% at 512. The increase lands on the calling thread
+      (+1.1 to +1.4 us) and the server's poll thread (+1.5 to +1.6 us); the
+      client poll thread saves 0.7 us.
+    - **Recommendation (superseded by the cork measurement below): a knob,
+      on by default.** RPC traffic is mostly shallow, where write-through
+      wins on latency, CPU and throughput. A deep pipeline bound by CPU per
+      request should turn it off. A knob is an ABI row (a setter or a
+      module-scope constant). Worth measuring before fixing the default: an
+      adaptive cork, which writes through only when the previous send on the
+      connection is older than a short interval, and otherwise lets the
+      writer batch.
+  - **Decision input: the adaptive cork.** Measured 2026-09-30 on
+    `lion/s5-cork` (off `lion/s5-writethrough`; not merged). A foreign
+    `send_frame` that finds the buffer empty writes through only when the
+    connection's last send(2), by any path, is at least
+    `kTcpWriteThroughIdleUs` old (a module-level `pub const`); otherwise it
+    queues the frame and wakes the writer, as S5 does. Every write-through
+    ordering and error rule is kept. The send time is one monotonic clock
+    read after each send(2) that wrote bytes, and one more per cork
+    decision. Builds: `4c008ed` (50 us), and variants that differ only in
+    the constant, `8d0d866` (20 us) and `5afe15f` (200 us), kept as
+    `refs/bench/s5-cork-{20,200}us`. The branch head sets 20 us.
+    - **Benchmark** (`run_rpc_echo_bench.sh --compare e94dd7e bbf7fa2
+      daf3d92 8d0d866 4c008ed 5afe15f`, release, 12 alternating trials per
+      build and window, load 3-8). Medians with ranges:
+
+      | | 1 ms loop | S5 | write-through | cork 20 us | cork 50 us | cork 200 us |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | window 1, qps | 817 (809-836) | 4836 (4246-7395) | 8842 (5806-12690) | 9184 (6963-10820) | 9560 (6245-12637) | 6661 (5009-9779) |
+      | CPU/request, 1 | 64.6 us | 60.8 | 41.9 | 41.7 | 41.9 | 50.5 |
+      | window 64, qps | 108k (91k-127k) | 182k (164k-224k) | 235k (191k-256k) | 223k (211k-244k) | 226k (215k-267k) | 202k (165k-220k) |
+      | CPU/request, 64 | 4.21 us | 5.02 | 6.52 | 4.50 | 4.46 | 4.27 |
+      | window 512, qps | 269k (247k-370k) | 248k (211k-282k) | 282k (257k-298k) | 371k (348k-393k) | 370k (321k-384k) | 270k (252k-319k) |
+      | CPU/request, 512 | 4.32 us | 5.07 | 6.97 | 4.01 | 4.00 | 4.86 |
+      | p99, one in flight | 1436 us | 449 | 310 | 310 | 310 | 386 |
+      | p50 < 100 us, runs | 0 of 36 | 2 of 36 | 19 of 36 | 16 of 36 | 12 of 36 | 5 of 36 |
+
+      The one-in-flight latency pools the latency phase of all 36 runs per
+      build. Its p50 is bimodal per run, at about 72 us or 150 us (which one
+      a run gets depends on scheduling, not on the build), so the table
+      gives the number of runs in the fast mode rather than a median of
+      medians; p99 is stable.
+    - **Counters** (instrumented copies, 5 alternating runs, medians, per
+      completed request, S5 / write-through / cork 20 / cork 50 / cork 200):
+      - Window 1: write-throughs 0 / 1 / 1 / 0.996 / 0.199; eventfd writes
+        1 / 0 / 0 / 0.004 / 0.80; client poll thread CPU 25.4 / 10.1 / 9.8 /
+        10.0 / 22.6 us. At 20 and 50 us the one-in-flight gap (the round
+        trip) exceeds the interval, so the cork writes through; at 200 us it
+        mostly does not.
+      - Window 64: sends 0.078 / 1.11 / 0.136 / 0.121 / 0.087; write-throughs
+        0 / 1 / 0.020 / 0.015 / 0.001; server poll thread CPU 1.02 / 2.37 /
+        1.43 / 1.30 / 1.15 us; client thread CPU 1.94 / 3.21 / 1.57 / 1.57 /
+        1.48 us.
+      - Window 512: sends 0.054 / 1.11 / 0.043 / 0.041 / 0.058; buffer found
+        empty by a foreign send (wakes or write-throughs) 0.054 / 1 / 0.024 /
+        0.023 / 0.031; client poll thread context switches 0.057 / 0.069 /
+        0.016 / 0.017 / 0.048; client poll thread CPU 2.46 / 1.65 / 1.61 /
+        1.65 / 2.39 us.
+    - **Reading.**
+      - At one in flight the 20 and 50 us corks behave as write-through:
+        the same CPU per request, the same p99, and the fast mode about as
+        often.
+      - At depth they keep S5's batching, with about one send per 24
+        requests at 512 against write-through's one per request, and none of
+        write-through's CPU cost.
+      - At 512 they also beat S5, the old loop and write-through, with
+        disjoint ranges against S5 and write-through, at the lowest CPU per
+        request measured on this benchmark (4.0 us). The counters show the
+        mechanism but not a proof: the buffer is found empty half as often
+        as under S5, so each writer drain carries about twice as many
+        requests, and the client poll thread context-switches 3.5 times
+        less often. The
+        rare write-through at a burst's start (0.006-0.0075 per request)
+        seems to move the pipeline to that larger-batch operating point.
+      - 200 us is too long: one-in-flight requests are then mostly corked
+        (80%), and the depth gain disappears.
+      - 20 and 50 us are indistinguishable here. The shorter interval keeps
+        write-through for round trips down to 20 us, which this loopback
+        benchmark (round trips of 44 us and up) cannot show, while still
+        exceeding the 3-5 us between back-to-back pipelined sends.
+    - **Recommendation: cork, interval 20 us.** It matches write-through at
+      one in flight and the best of everything measured at depth, and needs
+      no runtime knob. Costs: a `pub const` and two private fields
+      (`send_error_`, `last_send_us_`) as ABI rows for S7, one clock read per
+      send(2) and per cork decision, and `srpc.tcp_channel` importing
+      `srpc.basetypes`. The operating-point effect at 512 is empirical;
+      re-check it with rpcbench in S8 before relying on it beyond this
+      benchmark.
 
 ## 7. Risks
 

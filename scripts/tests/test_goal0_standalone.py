@@ -14,7 +14,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUSTY_CPP_PIN = "1689f4380c25d13455cbe1f9eb8e5ff94e49861c"
+RUSTY_CPP_PIN = "a130025ef2c5503054ba397e7f5b7af9a89fdf08"
 # Every production module is now a canonical Rust provider: the inline
 # carrier inventory is EMPTY, and the negative controls below are what
 # keep an empty inventory from becoming a vacuous check.

@@ -49,7 +49,10 @@ compiler and an archiver. `build.rs` uses `CC` and `AR` when set, otherwise `cc`
 `ar`, and selects the fiber assembly for the target architecture. The native build
 currently assumes those tools produce code for the Cargo target.
 
-The root Cargo package has no production Rust dependencies. Its property tests use
+The root Cargo package's only production dependencies are the Lion runtime crates
+`lion-reactor` and `lion-executor`, path dependencies into the `third-party/lion`
+submodule built without their `mio` feature. They bring the other Lion crates and
+Verus's erased `vstd` library from Verus's git repository. Its property tests use
 `proptest` as a development dependency. The library is consumed from a checkout;
 `Cargo.toml` currently sets `publish = false`.
 
@@ -58,13 +61,16 @@ The root Cargo package has no production Rust dependencies. Its property tests u
 ```sh
 git clone https://github.com/stonysystems/srpc
 cd srpc
+git submodule update --init third-party/lion
 cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --doc
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo doc --locked --no-deps --open
 ```
 
-These commands need no submodule initialization. For an application beside the
+These commands need only the `third-party/lion` submodule. The first build
+fetches `vstd` from Verus's git repository and a few crates.io crates for its
+proc-macros; after that Cargo also works offline. For an application beside the
 checkout, create a Cargo project and add a path dependency:
 
 ```sh
@@ -700,11 +706,19 @@ current reactor for you.
 `Arc<PollThread>`. Cloning that handle shares the command sender and shutdown
 state. It does not expose the worker's reactor for use on another thread.
 
-The worker waits for I/O, handles readiness callbacks and commands, runs jobs,
-and calls its own `Reactor::run_loop(false, true)`. `Epoll::Wait` uses a 1 ms
-maximum idle wait. This keeps an idle worker checking timers frequently; it is
-not a guaranteed timer resolution or a promise of 1000 passes per second.
-Callbacks and operating-system scheduling can delay a pass.
+The worker thread runs a Lion runtime over SRPC's epoll backend. One task on
+it, the driver, handles commands, runs jobs and calls the thread's own
+`Reactor::run_loop(false, true)`. Each TCP connection on the thread is a
+reader task and a writer task over one descriptor registration, and each TCP
+listener an accept task; any other pollable registered with `add_proxy` has a
+task that waits for its descriptor and calls its readiness callbacks. The
+worker does not poll: commands, pings, event wakes and timer deadlines each
+wake the driver, a send wakes its connection's writer, and an idle worker
+sleeps until one of them does. Timers are
+millisecond-granular: the driver sleeps until the next deadline rounded up to
+a whole millisecond. A job whose `Ready()` is false is re-checked every
+millisecond while it waits, because `Job` has no wake. Callbacks and
+operating-system scheduling can still delay a wake.
 
 The handle's thread identifier is a native kernel thread ID used to avoid
 joining the worker from itself. The reactor's Rust `ThreadId` checks are a
@@ -1192,7 +1206,7 @@ or decides which fiber runs next.
 | `fd()` | `&self` | Registered descriptor |
 | `poll_mode()` | `&self` | Initial read/write interest |
 | `content_size()` | `&mut self` | Amount of buffered content |
-| `handle_read()` | `&mut self` | Process readable data; the worker currently ignores the returned boolean |
+| `handle_read()` | `&mut self` | Process readable data; the worker currently ignores the returned boolean. It may run when nothing is readable (a new registration starts readable on the Lion reactor), so it must tolerate `EAGAIN` |
 | `handle_write()` | `&mut self` | Flush output and return an interest mask or `NO_CHANGE` |
 | `handle_error()` | `&mut self` | Handle the reported error or hangup |
 | `close()` | `&mut self` | Close after the worker unregisters |
@@ -1216,10 +1230,14 @@ proxy factory, which also retains the socket registration's ownership.
 
 ### What is actually registered
 
-The TCP runtime registers connection and listener proxies. RPC `ClientConnection`
-and `ServerConnection` objects sit above the channel and do not become epoll
-registrations merely by having similarly named methods. In particular, a method
-on an RPC wrapper is not automatically a poll-loop hook.
+The TCP runtime does not register pollable proxies. Each connection is a reader
+task and a writer task on its PollThread, and each listener an accept task;
+they register the socket with the thread's Lion runtime themselves. The TCP
+proxy factories and `TcpConnection`'s pollable methods remain for the retired
+worker and its tests. RPC `ClientConnection` and `ServerConnection` objects sit
+above the channel and do not become epoll registrations merely by having
+similarly named methods. In particular, a method on an RPC wrapper is not
+automatically a poll-loop hook.
 
 Transport callbacks hand complete payload frames to RPC decoding. The worker
 owns its proxy and registration tables; channels and application handles can
@@ -1305,17 +1323,22 @@ A registration proxy retains a separate socket owner until the worker has
 unregistered it. This prevents a close/reuse race from turning an epoll operation
 into an operation on an unrelated newly opened descriptor.
 
-### Handing write interest back to the poll thread
+### Handing output to the poll thread
 
-A send from another thread can append output while the connection is registered
-for reads only. TCP records pending write interest on the connection with an
-atomic flag. The worker consumes that flag and enables `READ | WRITE` for the
-still-registered proxy. It avoids sending a delayed raw-fd update that could
-outlive the connection to which it belonged.
+A send from any thread appends the frame to the connection's outbound buffer
+under its mutex. When that append makes the buffer non-empty, it wakes the
+connection's writer task directly, through the task's waker, which is kept
+under the same mutex; appends to a non-empty buffer need no wake, since the
+writer is already draining or waiting for the socket. On the poll thread
+itself, for example a reply sent from a fast handler, the wake only queues the
+writer on that thread, and it runs after the handler's reader task. The
+writer drains until the buffer is empty or the socket reports `EAGAIN`, and
+then waits for write readiness.
 
-When output drains, `handle_write()` can return a read-only mask. Edge-triggered
-write notification should be enabled while there is output to flush, rather
-than treated as a recurring timer.
+Close and errors reach both tasks: a close from any thread wakes the writer,
+and the task that retires the connection wakes the other. A pollable
+registered with `add_proxy` still uses `check_pending_write_update()` and
+`PollThread::notify_pending_write` to ask for write interest.
 
 ### The job system
 
@@ -2660,7 +2683,7 @@ Defaults are 10 seconds between probes, a 5-second response timeout, and three c
 
 The server recognizes the reserved heartbeat RPC and returns success with an empty body. Every inbound reply calls `on_pong_received`, so ordinary response traffic also counts as activity.
 
-Automatic client scheduling remains missing. Probe logic exists in `ClientConnection::check_pending_write_update`, but the registered TCP pollable uses its own dirty-flag update and does not call that method. Enabling heartbeat settings alone emits no periodic probes and provides no silent-peer timeout. Unit tests of `HeartbeatManager` validate its state machine, not an automatic timer connection.
+Automatic client scheduling remains missing. Probe logic exists in `ClientConnection::check_pending_write_update`, but the TCP transport never calls that method. Enabling heartbeat settings alone emits no periodic probes and provides no silent-peer timeout. Unit tests of `HeartbeatManager` validate its state machine, not an automatic timer connection.
 
 Kernel TCP keepalive is independent and does apply socket options through the channel capability. On Linux these are `SO_KEEPALIVE`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, and `TCP_KEEPCNT`. Disabling keepalive clears `SO_KEEPALIVE` without resetting the tuning values.
 
