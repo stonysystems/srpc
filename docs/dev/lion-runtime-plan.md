@@ -553,7 +553,7 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
       `verus!` or `use vstd::prelude::*`.
     - Confirm its scope is per crate and not the whole graph, before Phase 0
       step 4.
-- [~] **T5. Lowering gaps in Lion's executable code.** Partly done
+- [x] **T5. Lowering gaps in Lion's executable code.** Done (2026-10-01, rusty-cpp `lion/verus-exec` `a130025e`). Partly done
   (2026-09-30, `47619027`):
   - lion-slab and lion-timer-wheel have 0 slots, compile, and give the same
     runtime output as `cargo run`.
@@ -566,7 +566,23 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     identical to the `2619d788` baseline.
   - **SRPC `lion/s5-transport` plus Lion:** 0 slots. The build reaches 201
     of 210 steps; 2 root errors remain (T5f).
-  - [ ] **T5f.**
+  - [x] **T5f.** Done as `0004f501`..`a130025e` (7 commits). SRPC
+    `lion/s5-cork` plus Lion compile with 0 errors. The integration tree's
+    battery passes 49/51; neither failure comes from the transpiler.
+    - **G5, confirmed:** the std HashMap port relocates slots bitwise, and
+      libc++'s `std::function` points into itself. `rusty::Waker` and
+      `SafeFn` now keep their callable on the heap, which changes the ABI:
+      `Waker` shrinks from 112 to 24 bytes and `SafeFn` from 64 to 16.
+    - **Async blocks** lower to coroutine lambdas, and any unlowered
+      expression kind now fails closed.
+    - `-Werror=return-stack-address` is on in `parity-test` and the
+      crate-graph tests.
+    - **Still open:** generic dispatch inside the trait's own crate does not
+      reach a tagged trait-body member, and an untyped closure returning
+      `Ok(..)` to a callable parameter deduces nothing.
+    - **gate.sh:** still RED, for the T8 reasons only. The release suite
+      passes 2845 with the same 4 failures as before. Matrix statuses are
+      identical to T5e.
     - **E1:** `SrpcEpollBackend::deregister(i32)` and its `OsBackend`
       `deregister(RawFd)` collide as C++ overloads. Dependency manifests
       carry no type-alias targets; put the alias targets in
