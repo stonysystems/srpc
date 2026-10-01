@@ -1206,7 +1206,7 @@ or decides which fiber runs next.
 | `fd()` | `&self` | Registered descriptor |
 | `poll_mode()` | `&self` | Initial read/write interest |
 | `content_size()` | `&mut self` | Amount of buffered content |
-| `handle_read()` | `&mut self` | Process readable data; the worker currently ignores the returned boolean |
+| `handle_read()` | `&mut self` | Process readable data; the worker currently ignores the returned boolean. It may run when nothing is readable (a new registration starts readable on the Lion reactor), so it must tolerate `EAGAIN` |
 | `handle_write()` | `&mut self` | Flush output and return an interest mask or `NO_CHANGE` |
 | `handle_error()` | `&mut self` | Handle the reported error or hangup |
 | `close()` | `&mut self` | Close after the worker unregisters |

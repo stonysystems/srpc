@@ -471,12 +471,24 @@ TEST_F(ReactorTest, QuorumEvent) {
     EXPECT_EQ(sp_event->n_voted_yes_.get(), 2);
 }
 
+// Adapted for S3 of docs/dev/lion-runtime-plan.md (04aebb2). This test used to
+// count handle_read calls and expect exactly one per write. On Lion a new
+// registration's AsyncFd starts with both readiness flags set (U8: Lion cannot
+// know the descriptor's state when it registers), so the S3 adapter delivers
+// one handle_read per descriptor before any data arrives, and that read finds
+// EAGAIN. The epoll loop registered EPOLLET with no initial edge and never
+// did. No contract promised the absence of such a read: an edge-triggered
+// handle_read must already tolerate EAGAIN (a short read, a drained buffer, a
+// coalesced edge), and the Rust lane behaves the same way. What the test is
+// about -- every event reaches its pollable under load -- is the byte count,
+// so it now counts bytes read, and requires at least one call per descriptor.
 TEST_F(ReactorTest, StressTest) {
     const int num_fds = 10;
     const int events_per_fd = 10;
     std::vector<std::pair<int, int>> socket_pairs;
     std::vector<rusty::Arc<TestPollable>> pollables;
     std::atomic<int> total_events{0};
+    std::atomic<int> total_bytes{0};
 
     // Create multiple socket pairs
     for (int i = 0; i < num_fds; i++) {
@@ -484,10 +496,13 @@ TEST_F(ReactorTest, StressTest) {
         auto [fd1, fd2] = socket_pairs.back();
 
         auto p = rusty::Arc<TestPollable>::new_(TestPollable(fd1, PollMode::READ));
-        p->set_read_handler([&total_events, fd1]() {
+        p->set_read_handler([&total_events, &total_bytes, fd1]() {
             total_events++;
             char buf[256];
-            read(fd1, buf, sizeof(buf));
+            ssize_t n;
+            while ((n = read(fd1, buf, sizeof(buf))) > 0) {
+                total_bytes += static_cast<int>(n);
+            }
         });
 
         {
@@ -508,9 +523,15 @@ TEST_F(ReactorTest, StressTest) {
     }
 
     // Wait for processing
-    std::this_thread::sleep_for(milliseconds(500));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (total_bytes.load() < num_fds * events_per_fd &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(milliseconds(10));
+    }
 
-    EXPECT_EQ(total_events, num_fds * events_per_fd);
+    EXPECT_EQ(total_bytes.load(), num_fds * events_per_fd);
+    // Every byte arrived in some read; a read may also find nothing.
+    EXPECT_GE(total_events.load(), num_fds);
 
     // Cleanup
     {
