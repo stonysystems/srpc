@@ -87,9 +87,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2082
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2189
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2082)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2189)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -113,14 +113,18 @@ class GateStaticContractTests(unittest.TestCase):
         expected = {
             "srpc.load_balancer": (14, 19),
             "srpc.serializable": (601, 738),
-            "srpc.reactor": (365, 386),
+            # +57 unique / +63 raw: the Lion driver, adapter and stackless
+            # forwarding (S3) and the shared readiness helpers (S5).
+            "srpc.reactor": (422, 449),
             "srpc.server": (86, 98),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
             "srpc.channel": (14, 21),
             # Four epoll-control helpers now lower from canonical Rust.
             # Two C++ ABI aliases and the initializer remain separately pinned.
-            "srpc.epoll_wrapper": (48, 51),  # +22 alias-free rows: the Lion OS backend (plan S2)
+            # +22 alias-free rows: the Lion OS backend (plan S2); +5: its
+            # OsBackend/OsInterrupt forwarding impl (plan S1).
+            "srpc.epoll_wrapper": (53, 56),
             "srpc.pollable_proxy": (4, 7),
             "srpc.callbacks": (27, 28),
             "srpc.inmemory_channel": (78, 85),
@@ -131,6 +135,8 @@ class GateStaticContractTests(unittest.TestCase):
             "srpc.debugging": (9, 10),
             "srpc.heartbeat": (25, 26),
             "srpc.any_message": (10, 11),
+            # The Lion transport tasks, write-through and the cork (S5).
+            "srpc.tcp_channel": (216, 236),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):
@@ -403,7 +409,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2082)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2189)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -584,7 +590,9 @@ class GateContractTests(unittest.TestCase):
         expected = {
             "srpc.load_balancer": (14, 19),
             "srpc.serializable": (601, 738),
-            "srpc.reactor": (365, 386),
+            # +57 unique / +63 raw: the Lion driver, adapter and stackless
+            # forwarding (S3) and the shared readiness helpers (S5).
+            "srpc.reactor": (422, 449),
             "srpc.server": (86, 98),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
@@ -600,7 +608,9 @@ class GateContractTests(unittest.TestCase):
             "srpc.channel": (14, 21),
             # Four epoll-control helpers now lower from canonical Rust.
             # Two C++ ABI aliases and the initializer remain separately pinned.
-            "srpc.epoll_wrapper": (48, 51),  # +22 alias-free rows: the Lion OS backend (plan S2)
+            # +22 alias-free rows: the Lion OS backend (plan S2); +5: its
+            # OsBackend/OsInterrupt forwarding impl (plan S1).
+            "srpc.epoll_wrapper": (53, 56),
             "srpc.pollable_proxy": (4, 7),
             "srpc.callbacks": (27, 28),
             "srpc.inmemory_channel": (78, 85),
@@ -611,6 +621,8 @@ class GateContractTests(unittest.TestCase):
             "srpc.debugging": (9, 10),
             "srpc.heartbeat": (25, 26),
             "srpc.any_message": (10, 11),
+            # The Lion transport tasks, write-through and the cork (S5).
+            "srpc.tcp_channel": (216, 236),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):

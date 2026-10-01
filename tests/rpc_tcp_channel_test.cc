@@ -63,7 +63,12 @@ namespace {
 // rusty::Option<Arc<..>> is 16 bytes where the bare OwnedFd was 4 (+4 pad), so
 // every field after fd_ moves +8 and sizeof goes 344 -> 352.  These values are
 // measured from the generated module (undefined-template probe), not derived.
-static_assert(sizeof(TcpConnection) == 352);
+// Re-pinned for the Lion transport (docs/dev/lion-runtime-plan.md S5): 352 ->
+// 400.  21ce10a appended writer_ (UnsafeCell<Option<Waker>>, the writer task's
+// waker, 32 bytes with rusty-cpp a130025e's heap-held Waker callable), and
+// daf3d92/4c008ed appended send_error_ and last_send_us_ for write-through and
+// the cork.  The fields before writer_ do not move.
+static_assert(sizeof(TcpConnection) == 400);
 static_assert(alignof(TcpConnection) == 8);
 static_assert(rusty::is_send<TcpConnection>::value);
 static_assert(rusty::is_sync<TcpConnection>::value);
@@ -79,6 +84,9 @@ static_assert(offsetof(TcpConnection, poll_thread_) == 168);
 static_assert(offsetof(TcpConnection, on_frame_) == 184);
 static_assert(offsetof(TcpConnection, on_closed_) == 240);
 static_assert(offsetof(TcpConnection, on_error_) == 296);
+static_assert(offsetof(TcpConnection, writer_) == 352);
+static_assert(offsetof(TcpConnection, send_error_) == 384);
+static_assert(offsetof(TcpConnection, last_send_us_) == 392);
 
 // Re-pinned with TcpConnection above: listener_ became
 // RefCell<Option<Arc<LegacyTcpListener>>> (the listener's descriptor lease),
