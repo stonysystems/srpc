@@ -158,13 +158,13 @@ scripts/run_microbench.sh                          # current tree
 scripts/run_microbench.sh --compare <refA> <refB>  # A/B, alternating, same sitting
 ```
 
-The compare mode is the one that answers questions: it builds each ref in a detached worktree, copies
-*today's* `bench/` into both so the harness is held constant, and interleaves the runs. **It does not work
-on Lion-era refs yet:** a detached worktree leaves `third-party/lion` empty, so Cargo cannot resolve
-`lion-executor` (`cargo metadata` exits 101). It needs the gitlink extraction `run_rpc_echo_bench.sh`
-does. Absolute ns/op is machine- and thermal-dependent; only the back-to-back delta means anything. A
-cautionary tale lives in `docs/verification.md`: a "+12% regression" sat in that file for a while on the
-strength of an uncommitted harness, and vanished the moment a committed one re-took it.
+The compare mode is the one that answers questions: like `run_rpc_echo_bench.sh`, it builds each ref from
+`git archive` plus the Lion gitlink that ref records, so pre-Lion and Lion-era refs both build. It puts
+*today's* `bench/` in place of the ref's own, checking the copy before it builds, so the harness is
+held constant; then it interleaves the runs. Absolute ns/op is machine- and thermal-dependent; only the
+back-to-back delta means anything. A cautionary tale lives in `docs/verification.md`: a "+12% regression"
+sat in that file for a while on the strength of an uncommitted harness, and vanished the moment a
+committed one re-took it.
 
 **Individual gates.** The source gate checks the test inventory, canonical inventory, compiler contracts,
 native kernel and ABI-binding ownership, canonical Rust bodies, the Cargo dependency allowlist, negative

@@ -2617,9 +2617,7 @@ a configurable worker pool inside the current `PollThread` type.
 
 The Rust book describes the separate checked-in `bench/` leaf-codec
 benchmark. It does not reproduce the external Rust TCP driver used for the
-tables below. The `run_microbench.sh --compare` copy behavior can leave an
-older `bench/` active when that directory already exists at a compared ref;
-check which benchmark source each build uses.
+tables below.
 
 ### Historical C++ throughput, 2026-08-29
 

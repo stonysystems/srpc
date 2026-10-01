@@ -2987,13 +2987,12 @@ The helper also has a comparison mode:
 scripts/run_microbench.sh --compare <commit-a> <commit-b>
 ```
 
-It creates detached worktrees, builds each revision and alternates runs. Its
-copy command has a limitation: when a revision already contains `bench/`, it
-can create `bench/bench/` and leave the old benchmark active. Inspect the
-benchmark files actually built on each side before claiming that a comparison
-used identical code. Keep the compiler, optimization settings, machine load
-and benchmark source consistent; report the spread across runs with the
-difference.
+It extracts each revision with `git archive`, plus the Lion submodule at the
+commit that revision records, replaces the revision's own `bench/` with the
+current one, and alternates runs. Before building each side it checks that the
+copied benchmark files match the current `bench/` and prints their digest. Keep
+the compiler, optimization settings and machine load consistent; report the
+spread across runs with the difference.
 
 The C++ companion describes the maintained `rpcbench` target and preserves the
 2026-08-29 and 2026-08-31 throughput tables. Those historical Rust TCP results
