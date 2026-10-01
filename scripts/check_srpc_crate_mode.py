@@ -48,6 +48,15 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
     r"in scope [^:\n]+: \[[^\]\n]*\](?:; cycle path: [^\n]*)?$",
     re.MULTILINE,
 )
+# The one other allowlisted form is executable code, not a marker: Rust's
+# `std::io::ErrorKind::Unsupported` lowers to this exact qualified C++
+# enumerator. Lion's executor returns it when built without its `mio`
+# feature (third-party/lion/lion-executor/src/lib.rs, the no-default-backend
+# error SRPC's builds always take; plan S1). Only this fully qualified token is
+# removed before the scan, so a bare `Unsupported`, an `UNSUPPORTED:` comment,
+# or any other spelling still fails.
+BENIGN_GENERATED_IDENTIFIERS = ("rusty::io::Error::Kind::Unsupported",)
+
 # REVIEWED ABI RESPELLING (goal0-on-main convergence, 5 symbols, 1:1):
 # - 4 symbols (QuorumEvent ctor, ClientConnection ctor, Server ctor,
 #   RpcServiceContext::new_) re-spell their hash containers under upstream
@@ -751,9 +760,16 @@ EXPECTED_IMPORTS = {
         'srpc.serializable',
         'srpc.debugging',
     ],
+    # S5 (21ce10a): the transport tasks hold an Rc and hand sockets over
+    # through a OneTimeJob (srpc.misc); the write-through cork (95057e3)
+    # reads the clock through srpc.basetypes. The Lion re-exports are pinned
+    # in EXPECTED_DEPENDENCY_REEXPORTS.
     "srpc.tcp_channel": [
+        "rc_port",
+        "srpc.basetypes",
         "srpc.channel",
         "srpc.frame_codec",
+        "srpc.misc",
         "srpc.pollable_proxy",
         "srpc.reactor",
     ],
@@ -897,6 +913,498 @@ IMPORTER_USE_MARKERS = {
     "srpc.server": "srpc::kDefaultDrainTimeoutMs",
     "srpc.client": "srpc::CLIENT_INTERNAL_HEARTBEAT_RPC_ID",
 }
+
+
+# ---------------------------------------------------------------------------
+# Dependency providers: the generated Lion crates.
+#
+# docs/dev/lion-runtime-plan.md D5/S1/S7: libsrpc.a now holds "the 37 SRPC
+# providers plus the generated Lion providers". The Lion providers are NOT
+# canonical SRPC modules: they are Lion's pinned, unmodified sources under the
+# third-party/lion gitlink, emitted by `--verus-exec --crate-graph` as one
+# named module per dependency crate at <output>/<package>/<module>.cppm, in
+# `namespace <module>`. They are a separately inventoried class: none of the
+# 37-module tables above (ABI_SPECS, EXPECTED_IMPORTS, the digests, the
+# importer markers) and none of their totals include them. This inventory
+# changes only with a Lion pin bump or a transpiler bump; CMakeLists.txt's
+# SRPC_LION_PROVIDERS must list the same modules in the same order.
+# ---------------------------------------------------------------------------
+CRATE_GRAPH_MANIFEST = "crate-graph.json"
+DEFAULT_VERUS_ERASE_HELPER = (
+    "third-party/rusty-cpp/target/release/rusty-cpp-verus-erase"
+)
+# The transpiler arguments that select the Lion lane. Every crate-mode
+# invocation (CMake, this gate's own fallback, the contract tests) passes
+# these plus `--verus-erase-helper <path>`.
+LION_CRATE_MODE_ARGUMENTS = ("--verus-exec", "--crate-graph")
+
+
+@dataclass(frozen=True)
+class DependencyProvider:
+    """One generated dependency crate module, as crate-graph.json lists it."""
+
+    package: str
+    module: str
+    # The dependency crates this module re-exports (`export import`), which
+    # is crate-graph.json's `imports` list.
+    imports: tuple[str, ...]
+
+    @property
+    def cppm(self) -> str:
+        return f"{self.package}/{self.module}.cppm"
+
+
+# crate-graph.json's `crates`, in its order (dependencies first). Measured
+# from `--verus-exec --crate-graph` output at Lion 3496113 / rusty-cpp
+# dc6e7558. lion-executor-spec emits a provider (its executable remainder);
+# the other *-spec crates do not.
+DEPENDENCY_PROVIDERS: tuple[DependencyProvider, ...] = (
+    DependencyProvider("lion-executor-spec", "lion_executor_spec", ()),
+    DependencyProvider("lion-slab", "lion_slab", ()),
+    DependencyProvider("lion-timer-wheel", "lion_timer_wheel", ()),
+    DependencyProvider(
+        "lion-reactor", "lion_reactor", ("lion_slab", "lion_timer_wheel")
+    ),
+    DependencyProvider(
+        "lion-executor",
+        "lion_executor",
+        ("lion_executor_spec", "lion_reactor", "lion_slab"),
+    ),
+)
+# crate-graph.json's `ghost_only` (crates erased to nothing) and `unused`
+# (graph members no emitted crate names) lists, in order.
+DEPENDENCY_GHOST_ONLY: tuple[str, ...] = ("lion-framework-spec",)
+DEPENDENCY_UNUSED: tuple[str, ...] = ("lion-utility-spec", "lion-reactor-spec")
+# Each dependency provider's exact private imports (runtime ports only; a
+# dependency provider never imports an srpc module).
+DEPENDENCY_PRIVATE_IMPORTS: dict[str, list[str]] = {
+    "lion_executor_spec": [],
+    "lion_slab": ["std_port"],
+    "lion_timer_wheel": ["vec_port.vec", "std_port"],
+    "lion_reactor": ["vec_port.vec", "std_port"],
+    "lion_executor": ["vec_port.vec", "std_port"],
+}
+# The canonical children that re-export dependency providers. The transpiler
+# re-exports (`export import`) every dependency crate a child names, rather
+# than importing it privately; that is the measured contract here. It also
+# keeps the Lion types in those children's signatures nameable by importers.
+#   srpc.epoll_wrapper: `impl OsBackend for SrpcEpollBackend` (S1, eedc960).
+#   srpc.reactor: the Lion-driven PollThread (S3, 04aebb2) and the shared
+#     AsyncFd readiness helpers (S5, 9d587bd).
+#   srpc.tcp_channel: the reader/writer/accept tasks (S5, 21ce10a).
+EXPECTED_DEPENDENCY_REEXPORTS: dict[str, list[str]] = {
+    "srpc.epoll_wrapper": ["lion_reactor"],
+    "srpc.reactor": ["lion_executor", "lion_reactor"],
+    "srpc.tcp_channel": ["lion_executor", "lion_reactor"],
+}
+# The dependency providers SRPC's own children import directly. The combined
+# importer must import each of these exactly once and use it.
+DEPENDENCY_IMPORTER_USE_MARKERS: dict[str, str] = {
+    "lion_reactor": "lion_reactor::Instant::now()",
+    "lion_executor": "lion_executor::RuntimeBuilder::new_()",
+}
+# Each dependency provider's exact strong symbols, measured with
+# `nm --defined-only --demangle` (the same filter as the canonical ABI_SPECS:
+# uppercase, not U/V/W, owned by the module, plus the unattached ones
+# dependency_module_symbols names). The gate compares both the independently
+# compiled object and the production archive against this table. Template
+# instantiations are weak and excluded, so Lion's generic slab, timer wheel
+# and executor internals contribute only their non-template entry points.
+#
+# Measured at Lion 3496113 / rusty-cpp dc6e7558 from the objects CMake built
+# for these modules in srpc's file set (all five compile at this pin; only
+# srpc.epoll_wrapper and srpc.reactor are blocked, by T5f's E1/R2):
+#   lion_executor_spec 1, lion_slab 1, lion_timer_wheel 25, lion_reactor 190,
+#   lion_executor 157 = 374. lion_reactor and lion_executor each include three
+#   unattached std::hash specializations (see dependency_module_symbols).
+# A transpiler or Lion bump re-measures this whole table.
+DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
+    "lion_executor_spec": frozenset({
+        ('T', 'lion_executor_spec::events::Tick@lion_executor_spec(rusty::Option<std::__1::tuple<>>)'),
+    }),
+    "lion_slab": frozenset({
+        ('R', 'lion_slab::slab::SLAB_CAPACITY@lion_slab'),
+    }),
+    "lion_timer_wheel": frozenset({
+        ('R', 'lion_timer_wheel::wheel::NUM_LEVELS@lion_timer_wheel'),
+        ('R', 'lion_timer_wheel::wheel::WHEEL_BITS@lion_timer_wheel'),
+        ('R', 'lion_timer_wheel::wheel::WHEEL_SIZE@lion_timer_wheel'),
+        ('T', 'lion_timer_wheel::helpers::wrapping_sub_u64@lion_timer_wheel(unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::advance_to(unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::get_deadline(unsigned long) const'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::insert(unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::invalidate_min(unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::is_empty() const'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::level_slot(unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::merge_min(rusty::Option<unsigned long>, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::new_()'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::next_deadline() const'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::remove(unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::scan_level3_min() const'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::scan_level_min(unsigned long, rusty::Option<unsigned long>) const'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::scan_wheel_min() const'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::slot_drain(unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::slot_pop(unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::slot_push(unsigned long, unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::slot_swap_remove(unsigned long, unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::try_pop_expired(unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::wheel_insert_inner(unsigned long, unsigned long, unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::TimerWheel@lion_timer_wheel::wheel_remove_inner(unsigned long)'),
+        ('T', 'lion_timer_wheel::wheel::WheelPos@lion_timer_wheel::clone() const'),
+    }),
+    "lion_reactor": frozenset({
+        ('D', 'typeinfo for lion_reactor::os::OsBackend@lion_reactor'),
+        ('D', 'typeinfo for lion_reactor::os::OsInterrupt@lion_reactor'),
+        ('D', 'vtable for lion_reactor::os::OsBackend@lion_reactor'),
+        ('D', 'vtable for lion_reactor::os::OsInterrupt@lion_reactor'),
+        ('R', 'lion_reactor::readiness::READABLE@lion_reactor'),
+        ('R', 'lion_reactor::readiness::WRITABLE@lion_reactor'),
+        ('R', 'typeinfo name for lion_reactor::os::OsBackend@lion_reactor'),
+        ('R', 'typeinfo name for lion_reactor::os::OsInterrupt@lion_reactor'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(int, lion_reactor::types::resource_id::ResourceId@lion_reactor, unsigned long, rusty::PhantomData<std::__1::tuple<> const*>)'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(lion_reactor::async_fd::AsyncFd@lion_reactor&&)'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::as_raw_fd() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::check_reactor() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::new_(int)'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::operator=(lion_reactor::async_fd::AsyncFd@lion_reactor&&)'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_read_ready(rusty::Context&) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_ready(lion_reactor::async_fd::Direction@lion_reactor, rusty::Context&) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_write_ready(rusty::Context&) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::readable() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::rusty_mark_forgotten() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::writable() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::~AsyncFd()'),
+        ('T', 'lion_reactor::async_fd::AsyncFdReadyGuard@lion_reactor::fd() const'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::cached_now()'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::deregister_io_resource(lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::source::Source@lion_reactor&) const'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::deregister_timer(lion_reactor::types::resource_id::ResourceId@lion_reactor) const'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::new_()'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::register_io_resource(lion_reactor::types::source::Source@lion_reactor&, lion_reactor::types::interest::Interest@lion_reactor) const'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::register_timer(lion_reactor::types::time::Instant@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor) const'),
+        ('T', 'lion_reactor::handle::ReactorHandle@lion_reactor::set_waker(lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::interest::Interest@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor) const'),
+        ('T', 'lion_reactor::handle::clear_cached_now@lion_reactor()'),
+        ('T', 'lion_reactor::handle::store_cached_now@lion_reactor(unsigned long)'),
+        ('T', 'lion_reactor::os::OsBackend@lion_reactor::~OsBackend()'),
+        ('T', 'lion_reactor::os::OsEvent@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::os::OsEvent@lion_reactor::default_()'),
+        ('T', 'lion_reactor::os::OsEvent@lion_reactor::rusty_debug_string() const'),
+        ('T', 'lion_reactor::os::OsInterrupt@lion_reactor::~OsInterrupt()'),
+        ('T', 'lion_reactor::os::operator<<@lion_reactor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_reactor::os::OsEvent@lion_reactor const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::alloc_resource_id()'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::assemble(lion_reactor::types::poll::Poll@lion_reactor, lion_reactor::types::io_event_queue::IoEventQueue@lion_reactor, lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::backend_setup(lion_reactor::types::poll::Poll@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::deregister_io_begin_action(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::deregister_io_end_action(lion_reactor::types::resource_id::ResourceId@lion_reactor, std::__1::variant<lion_reactor::types::io_result::IoResult_Ok@lion_reactor<std::__1::tuple<>>, lion_reactor::types::io_result::IoResult_Err@lion_reactor<std::__1::tuple<>>> const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::deregister_io_resource(lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::source::Source@lion_reactor&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::deregister_io_source_action(lion_reactor::types::source::Source@lion_reactor&, lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::deregister_timer(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::deregister_timer_begin_action(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::enter()'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::flush_pending_deregister()'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::get_current_time_action()'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::io_event_ready_action(lion_reactor::types::io_event::IoEvent@lion_reactor const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::is_entered_on_current_thread()'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::log_get_current_time_action(lion_reactor::types::time::Instant@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::next_deadline() const'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::park(rusty::Option<lion_reactor::types::time::Duration@lion_reactor>)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::park_begin_action(rusty::Option<lion_reactor::types::time::Duration@lion_reactor>)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::park_end_action(rusty::Option<lion_reactor::types::time::Duration@lion_reactor>, std::__1::variant<lion_reactor::types::io_result::IoResult_Ok@lion_reactor<std::__1::tuple<>>, lion_reactor::types::io_result::IoResult_Err@lion_reactor<std::__1::tuple<>>> const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::poll_events_action(rusty::Option<lion_reactor::types::time::Duration@lion_reactor>)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::process_io_events(rusty::port::vec::Vec@vec_port.vec<lion_reactor::types::io_event::IoEvent@lion_reactor, rusty::alloc::Global> const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::publish_cached_now(lion_reactor::types::time::Instant@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_io_begin_action(lion_reactor::types::source::Source@lion_reactor const&, lion_reactor::types::interest::Interest@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_io_end_action(lion_reactor::types::source::Source@lion_reactor const&, lion_reactor::types::interest::Interest@lion_reactor, std::__1::variant<lion_reactor::types::io_result::IoResult_Ok@lion_reactor<lion_reactor::types::resource_id::ResourceId@lion_reactor>, lion_reactor::types::io_result::IoResult_Err@lion_reactor<lion_reactor::types::resource_id::ResourceId@lion_reactor>> const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_io_resource(lion_reactor::types::source::Source@lion_reactor&, lion_reactor::types::interest::Interest@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_io_source_action(lion_reactor::types::source::Source@lion_reactor&, lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::interest::Interest@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_timer(lion_reactor::types::time::Instant@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_timer_begin_action(lion_reactor::types::time::Instant@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::register_timer_end_action(lion_reactor::types::time::Instant@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor const&, std::__1::variant<lion_reactor::types::io_result::IoResult_Ok@lion_reactor<lion_reactor::types::resource_id::ResourceId@lion_reactor>, lion_reactor::types::io_result::IoResult_Err@lion_reactor<lion_reactor::types::resource_id::ResourceId@lion_reactor>> const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::set_waker(lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::interest::Interest@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::set_waker_begin_action(lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::interest::Interest@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::set_waker_end_action(lion_reactor::types::resource_id::ResourceId@lion_reactor, lion_reactor::types::interest::Interest@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor const&)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::try_pop_expired_timer(lion_reactor::types::time::Instant@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::wake_expired_timers(lion_reactor::types::time::Instant@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::wake_task_action(lion_reactor::types::waker::Waker@lion_reactor const&, lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::with_backend(rusty::Box<lion_reactor::os::OsBackend@lion_reactor, rusty::alloc::Global>)'),
+        ('T', 'lion_reactor::reactor::Reactor@lion_reactor::with_poll(lion_reactor::types::poll::Poll@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::ReactorGuard@lion_reactor::ReactorGuard(lion_reactor::reactor::ReactorGuard@lion_reactor&&)'),
+        ('T', 'lion_reactor::reactor::ReactorGuard@lion_reactor::ReactorGuard(unsigned long)'),
+        ('T', 'lion_reactor::reactor::ReactorGuard@lion_reactor::operator=(lion_reactor::reactor::ReactorGuard@lion_reactor&&)'),
+        ('T', 'lion_reactor::reactor::ReactorGuard@lion_reactor::rusty_mark_forgotten() const'),
+        ('T', 'lion_reactor::reactor::ReactorGuard@lion_reactor::~ReactorGuard()'),
+        ('T', 'lion_reactor::reactor::enter::current_reactor_epoch@lion_reactor()'),
+        ('T', 'lion_reactor::reactor::ext::collect_io_events@lion_reactor(std::__1::span<lion_reactor::os::OsEvent@lion_reactor const, 18446744073709551615ul>)'),
+        ('T', 'lion_reactor::reactor::ext::decode_token_raw@lion_reactor(unsigned long)'),
+        ('T', 'lion_reactor::reactor::ext::encode_token_raw@lion_reactor(unsigned long)'),
+        ('T', 'lion_reactor::reactor::new_::os_handles@lion_reactor(rusty::Box<lion_reactor::os::OsBackend@lion_reactor, rusty::alloc::Global>)'),
+        ('T', 'lion_reactor::reactor::park::mark_io_readable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::reactor::park::mark_io_writable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::clear_all@lion_reactor()'),
+        ('T', 'lion_reactor::readiness::clear_readable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::clear_writable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::init_readiness@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::is_readable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::is_writable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::live_entries@lion_reactor()'),
+        ('T', 'lion_reactor::readiness::mark_readable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::mark_writable@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::readiness::remove_readiness@lion_reactor(lion_reactor::types::resource_id::ResourceId@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::contains(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::get_read_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::get_slot(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::get_slot_mut(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::get_timer_entry(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::get_write_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::is_empty_timers() const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::new_()'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_get_read_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_get_timer_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_get_write_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_insert_io(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_insert_timer(unsigned long, lion_reactor::types::timer_entry::TimerEntry@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_remove(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_set_read_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::p_set_write_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::replace_timer_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::set_read_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::set_write_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::take_timer_waker(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_get_read_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_get_write_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_insert_io_slot(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_insert_timer_slot(unsigned long, lion_reactor::types::timer_entry::TimerEntry@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_remove_io_slot(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_remove_timer_slot(unsigned long)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_set_read_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_set_write_waker(unsigned long, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slab::ResourceSlab@lion_reactor::v_take_timer_waker(unsigned long) const'),
+        ('T', 'lion_reactor::resource_slot::Io@lion_reactor(rusty::Option<lion_reactor::types::waker::Waker@lion_reactor>, rusty::Option<lion_reactor::types::waker::Waker@lion_reactor>)'),
+        ('T', 'lion_reactor::resource_slot::Timer@lion_reactor(lion_reactor::types::timer_entry::TimerEntry@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::clone_read_waker() const'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::clone_timer_waker() const'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::clone_write_waker() const'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::is_io() const'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::is_timer() const'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::new_io()'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::new_timer(lion_reactor::types::timer_entry::TimerEntry@lion_reactor, lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::with_read_waker(lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::resource_slot_wrapper::ResourceSlotWrapper@lion_reactor::with_write_waker(lion_reactor::types::waker::Waker@lion_reactor)'),
+        ('T', 'lion_reactor::types::interest::Interest@lion_reactor::READABLE()'),
+        ('T', 'lion_reactor::types::interest::Interest@lion_reactor::READABLE_WRITABLE()'),
+        ('T', 'lion_reactor::types::interest::Interest@lion_reactor::WRITABLE()'),
+        ('T', 'lion_reactor::types::interest::Interest@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::interest::Interest@lion_reactor::is_readable() const'),
+        ('T', 'lion_reactor::types::interest::Interest@lion_reactor::is_writable() const'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor::reset() const'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor::wake() const'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandleInner@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandleInner@lion_reactor::new_(rusty::Arc<lion_reactor::os::OsInterrupt@lion_reactor>)'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandleInner@lion_reactor::reset() const'),
+        ('T', 'lion_reactor::types::interrupt_handle::InterruptHandleInner@lion_reactor::wake() const'),
+        ('T', 'lion_reactor::types::io_event_queue::IoEventQueue@lion_reactor::with_capacity(unsigned long)'),
+        ('T', 'lion_reactor::types::io_result::IoError@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::io_result::IoError@lion_reactor::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_reactor::types::io_result::IoError@lion_reactor::into_io_error()'),
+        ('T', 'lion_reactor::types::io_result::IoError@lion_reactor::resource_id_overflow()'),
+        ('T', 'lion_reactor::types::io_result::rusty_from_impl@lion_reactor(std::__1::type_identity<rusty::io::Error>, lion_reactor::types::io_result::IoError@lion_reactor)'),
+        ('T', 'lion_reactor::types::poll::Poll@lion_reactor::new_(rusty::Box<lion_reactor::os::OsBackend@lion_reactor, rusty::alloc::Global>)'),
+        ('T', 'lion_reactor::types::resource_id::ResourceId@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::resource_id::ResourceId@lion_reactor::rusty_debug_string() const'),
+        ('T', 'lion_reactor::types::resource_id::operator<<@lion_reactor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_reactor::types::resource_id::ResourceId@lion_reactor const&)'),
+        ('T', 'lion_reactor::types::source::Source@lion_reactor::fd() const'),
+        ('T', 'lion_reactor::types::source::Source@lion_reactor::new_(int)'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::as_millis() const'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::from(rusty::time::Duration)'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::from_millis(unsigned long)'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::from_secs(unsigned long)'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::from_std(rusty::time::Duration)'),
+        ('T', 'lion_reactor::types::time::Duration@lion_reactor::rusty_debug_string() const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::elapsed() const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::now()'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::operator+(lion_reactor::types::time::Duration@lion_reactor) const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::operator+(rusty::time::Duration) const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::operator+=(rusty::time::Duration)'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::operator-(lion_reactor::types::time::Duration@lion_reactor) const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::operator-(rusty::time::Duration) const'),
+        ('T', 'lion_reactor::types::time::Instant@lion_reactor::rusty_debug_string() const'),
+        ('T', 'lion_reactor::types::time::operator<<@lion_reactor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_reactor::types::time::Duration@lion_reactor const&)'),
+        ('T', 'lion_reactor::types::time::operator<<@lion_reactor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_reactor::types::time::Instant@lion_reactor const&)'),
+        ('T', 'lion_reactor::types::timer_entry::TimerEntry@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::timer_entry::TimerEntry@lion_reactor::cmp(lion_reactor::types::timer_entry::TimerEntry@lion_reactor const&) const'),
+        ('T', 'lion_reactor::types::timer_entry::TimerEntry@lion_reactor::operator<=>(lion_reactor::types::timer_entry::TimerEntry@lion_reactor const&) const'),
+        ('T', 'lion_reactor::types::timer_entry::TimerEntry@lion_reactor::operator==(lion_reactor::types::timer_entry::TimerEntry@lion_reactor const&) const'),
+        ('T', 'lion_reactor::types::waker::Waker@lion_reactor::clone() const'),
+        ('T', 'lion_reactor::types::waker::Waker@lion_reactor::from_std(rusty::Waker)'),
+        ('T', 'std::__1::hash<lion_reactor::types::resource_id::ResourceId@lion_reactor>::operator()(lion_reactor::types::resource_id::ResourceId@lion_reactor const&) const'),
+        ('T', 'std::__1::hash<lion_reactor::types::time::Duration@lion_reactor>::operator()(lion_reactor::types::time::Duration@lion_reactor const&) const'),
+        ('T', 'std::__1::hash<lion_reactor::types::time::Instant@lion_reactor>::operator()(lion_reactor::types::time::Instant@lion_reactor const&) const'),
+    }),
+    "lion_executor": frozenset({
+        ('R', 'lion_executor::types::reactor::IDLE_PARK_MS@lion_executor'),
+        ('T', 'lion_executor::ExecutorHandle@lion_executor::clone() const'),
+        ('T', 'lion_executor::Runtime@lion_executor::handle() const'),
+        ('T', 'lion_executor::Runtime@lion_executor::new_()'),
+        ('T', 'lion_executor::Runtime@lion_executor::run_tick(unsigned long) const'),
+        ('T', 'lion_executor::Runtime@lion_executor::tick() const'),
+        ('T', 'lion_executor::Runtime@lion_executor::tick_with_timeout(rusty::time::Duration) const'),
+        ('T', 'lion_executor::Runtime@lion_executor::with_config(lion_executor::config::RuntimeConfig@lion_executor, rusty::Option<rusty::Box<lion_reactor::os::OsBackend@lion_reactor, rusty::alloc::Global>>)'),
+        ('T', 'lion_executor::RuntimeBuilder@lion_executor::build()'),
+        ('T', 'lion_executor::RuntimeBuilder@lion_executor::default_()'),
+        ('T', 'lion_executor::RuntimeBuilder@lion_executor::event_interval(unsigned long)'),
+        ('T', 'lion_executor::RuntimeBuilder@lion_executor::new_()'),
+        ('T', 'lion_executor::RuntimeBuilder@lion_executor::os_backend(rusty::Box<lion_reactor::os::OsBackend@lion_reactor, rusty::alloc::Global>)'),
+        ('T', 'lion_executor::ThreadBinding@lion_executor::ThreadBinding(lion_executor::ThreadBinding@lion_executor&&)'),
+        ('T', 'lion_executor::ThreadBinding@lion_executor::ThreadBinding(unsigned long, rusty::Arc<lion_executor::tls::CrossThreadQueue@lion_executor>)'),
+        ('T', 'lion_executor::ThreadBinding@lion_executor::operator=(lion_executor::ThreadBinding@lion_executor&&)'),
+        ('T', 'lion_executor::ThreadBinding@lion_executor::rusty_mark_forgotten() const'),
+        ('T', 'lion_executor::ThreadBinding@lion_executor::~ThreadBinding()'),
+        ('T', 'lion_executor::blocking::BlockingPool@lion_executor::new_(unsigned long)'),
+        ('T', 'lion_executor::collections::tid_ledger::TidLedger@lion_executor::contains(lion_executor::types::task_id::TaskId@lion_executor) const'),
+        ('T', 'lion_executor::collections::tid_ledger::TidLedger@lion_executor::mark(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::collections::tid_ledger::TidLedger@lion_executor::new_()'),
+        ('T', 'lion_executor::config::RuntimeConfig@lion_executor::clone() const'),
+        ('T', 'lion_executor::config::RuntimeConfig@lion_executor::default_()'),
+        ('T', 'lion_executor::config::RuntimeConfig@lion_executor::rusty_debug_string() const'),
+        ('T', 'lion_executor::config::operator<<@lion_executor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_executor::config::RuntimeConfig@lion_executor const&)'),
+        ('T', 'lion_executor::default_reactor@lion_executor()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::drain_deferred_into_local()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::drain_reactor_ready_into_local()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::drain_task_ready_into_local()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::enter()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::filter_and_enqueue(rusty::port::vec::Vec@vec_port.vec<lion_executor::types::task_id::TaskId@lion_executor, rusty::alloc::Global>)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::has_deferred_action() const'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::has_reactor_ready_action() const'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::has_task_ready_action() const'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::log_drain_deferred_action(rusty::port::vec::Vec@vec_port.vec<lion_executor::types::task_id::TaskId@lion_executor, rusty::alloc::Global> const&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::log_drain_reactor_wake_action(rusty::port::vec::Vec@vec_port.vec<lion_executor::types::task_id::TaskId@lion_executor, rusty::alloc::Global> const&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::log_drain_task_wake_action(rusty::port::vec::Vec@vec_port.vec<lion_executor::types::task_id::TaskId@lion_executor, rusty::alloc::Global> const&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::log_poll_task_action(lion_executor::types::task_id::TaskId@lion_executor, rusty::Option<lion_executor::types::task::Task@lion_executor> const&, lion_executor_spec::types::PollResult@lion_executor_spec<std::__1::tuple<>> const&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::log_pop_injection_action(rusty::Option<lion_executor::types::task::Task@lion_executor> const&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::new_(lion_reactor::reactor::Reactor@lion_reactor, lion_executor::collections::mpsc_queue_tests::MpscReceiver@lion_executor<lion_executor::types::task::Task@lion_executor>, lion_executor::config::RuntimeConfig@lion_executor)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::next_task()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::park()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::park_action(bool)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::poll_future_raw(lion_executor::types::task_id::TaskId@lion_executor, rusty::Option<lion_executor::types::task::Task@lion_executor>)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::poll_loop(unsigned long, unsigned long&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::poll_task(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::poll_task_action(lion_executor::types::task_id::TaskId@lion_executor, rusty::Option<lion_executor::types::task::Task@lion_executor>)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::poll_task_invalid_action(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::pop_injection()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::pop_injection_action()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::reset_and_drain_cross_thread_action() const'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::take_block_on_yielded_action() const'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::take_deferred_from_tls()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::take_reactor_ready_from_tls()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::take_task_ready_from_tls()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::tick()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::tick_begin_action()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::tick_end_action()'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::try_recv_raw(lion_executor::collections::mpsc_queue_tests::MpscReceiver@lion_executor<lion_executor::types::task::Task@lion_executor> const&)'),
+        ('T', 'lion_executor::executor::Executor@lion_executor::wake_deferred()'),
+        ('T', 'lion_executor::executor::ext::poll_task_contained@lion_executor(lion_executor::types::task_id::TaskId@lion_executor, lion_executor::types::task::Task@lion_executor&)'),
+        ('T', 'lion_executor::executor::poll_task::clear_task_notified@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::handle::InnerHandle@lion_executor::clone() const'),
+        ('T', 'lion_executor::handle::InnerHandle@lion_executor::new_(lion_executor::collections::mpsc_queue_tests::MpscSender@lion_executor<lion_executor::types::task::Task@lion_executor>, lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor)'),
+        ('T', 'lion_executor::handle::InnerHandle@lion_executor::runtime_id() const'),
+        ('T', 'lion_executor::main@lion_executor()'),
+        ('T', 'lion_executor::new_reactor@lion_executor(rusty::Option<rusty::Box<lion_reactor::os::OsBackend@lion_reactor, rusty::alloc::Global>>)'),
+        ('T', 'lion_executor::runtime_is_live_on_this_thread@lion_executor()'),
+        ('T', 'lion_executor::tls::CrossThreadQueue@lion_executor::new_()'),
+        ('T', 'lion_executor::tls::CrossThreadQueue@lion_executor::push(lion_executor::types::task_id::TaskId@lion_executor) const'),
+        ('T', 'lion_executor::tls::CrossThreadQueue@lion_executor::take_all() const'),
+        ('T', 'lion_executor::tls::CurrentTaskGuard@lion_executor::CurrentTaskGuard(lion_executor::tls::CurrentTaskGuard@lion_executor&&)'),
+        ('T', 'lion_executor::tls::CurrentTaskGuard@lion_executor::enter(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::CurrentTaskGuard@lion_executor::operator=(lion_executor::tls::CurrentTaskGuard@lion_executor&&)'),
+        ('T', 'lion_executor::tls::CurrentTaskGuard@lion_executor::rusty_mark_forgotten() const'),
+        ('T', 'lion_executor::tls::CurrentTaskGuard@lion_executor::~CurrentTaskGuard()'),
+        ('T', 'lion_executor::tls::clear_current_task@lion_executor()'),
+        ('T', 'lion_executor::tls::clear_notified@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::defer_current@lion_executor()'),
+        ('T', 'lion_executor::tls::drain_cross_thread@lion_executor()'),
+        ('T', 'lion_executor::tls::drain_deferred_into@lion_executor(lion_executor::collections::vec_deque::VecDeque@lion_executor<lion_executor::types::task_id::TaskId@lion_executor>&)'),
+        ('T', 'lion_executor::tls::drain_reactor_ready_into@lion_executor(lion_executor::collections::vec_deque::VecDeque@lion_executor<lion_executor::types::task_id::TaskId@lion_executor>&)'),
+        ('T', 'lion_executor::tls::drain_task_ready_into@lion_executor(lion_executor::collections::vec_deque::VecDeque@lion_executor<lion_executor::types::task_id::TaskId@lion_executor>&)'),
+        ('T', 'lion_executor::tls::get_cross_thread_ctx@lion_executor()'),
+        ('T', 'lion_executor::tls::get_current_task@lion_executor()'),
+        ('T', 'lion_executor::tls::has_cross_thread_ctx@lion_executor()'),
+        ('T', 'lion_executor::tls::has_deferred@lion_executor()'),
+        ('T', 'lion_executor::tls::has_reactor_ready@lion_executor()'),
+        ('T', 'lion_executor::tls::has_task_ready@lion_executor()'),
+        ('T', 'lion_executor::tls::push_deferred@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::push_reactor_ready@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::push_task_ready@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::release_runtime_thread_state@lion_executor(rusty::Arc<lion_executor::tls::CrossThreadQueue@lion_executor> const&)'),
+        ('T', 'lion_executor::tls::reset_interrupt@lion_executor()'),
+        ('T', 'lion_executor::tls::set_block_on_yielded@lion_executor(bool)'),
+        ('T', 'lion_executor::tls::set_cross_thread_ctx@lion_executor(rusty::Arc<lion_executor::tls::CrossThreadQueue@lion_executor>, lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor, rusty::thread::ThreadId)'),
+        ('T', 'lion_executor::tls::set_current_task@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::set_notified@lion_executor(lion_executor::types::task_id::TaskId@lion_executor)'),
+        ('T', 'lion_executor::tls::take_block_on_yielded@lion_executor()'),
+        ('T', 'lion_executor::tls::take_deferred@lion_executor()'),
+        ('T', 'lion_executor::tls::take_reactor_ready@lion_executor()'),
+        ('T', 'lion_executor::tls::take_task_ready@lion_executor()'),
+        ('T', 'lion_executor::types::boxed_future::BoxedFuture@lion_executor::poll(rusty::Context&)'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::as_millis() const'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::clone() const'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::from(lion_reactor::types::time::Duration@lion_reactor)'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::from_millis(unsigned long)'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::from_secs(unsigned long)'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::into_reactor() const'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::rusty_debug_string() const'),
+        ('T', 'lion_executor::types::duration::Duration@lion_executor::zero()'),
+        ('T', 'lion_executor::types::duration::operator<<@lion_executor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_executor::types::duration::Duration@lion_executor const&)'),
+        ('T', 'lion_executor::types::duration::rusty_from_impl@lion_executor(std::__1::type_identity<lion_reactor::types::time::Duration@lion_reactor>, lion_executor::types::duration::Duration@lion_executor)'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::clone() const'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::duration_since(lion_executor::types::instant::Instant@lion_executor const&) const'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::elapsed() const'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::from(lion_reactor::types::time::Instant@lion_reactor)'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::less_than(lion_executor::types::instant::Instant@lion_executor const&) const'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::now()'),
+        ('T', 'lion_executor::types::instant::Instant@lion_executor::rusty_debug_string() const'),
+        ('T', 'lion_executor::types::instant::operator<<@lion_executor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_executor::types::instant::Instant@lion_executor const&)'),
+        ('T', 'lion_executor::types::join_handle::Cancelled@lion_executor()'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::cancelled()'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::into_panic()'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::is_cancelled() const'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::is_panic() const'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::panic(rusty::any_types::BoxAny)'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::panic_message() const'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::rusty_debug_fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::rusty_debug_string() const'),
+        ('T', 'lion_executor::types::join_handle::JoinError@lion_executor::try_into_panic()'),
+        ('T', 'lion_executor::types::join_handle::Panic@lion_executor(rusty::Mutex<rusty::any_types::BoxAny>)'),
+        ('T', 'lion_executor::types::join_handle::rusty_from_impl@lion_executor(std::__1::type_identity<rusty::io::Error>, lion_executor::types::join_handle::JoinError@lion_executor)'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::enter()'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::flush_pending_deregister()'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::idle_park_ms() const'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::new_(lion_reactor::reactor::Reactor@lion_reactor)'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::next_deadline()'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::park(rusty::Option<lion_executor::types::duration::Duration@lion_executor>)'),
+        ('T', 'lion_executor::types::reactor::Reactor@lion_executor::set_idle_park_ms(unsigned long)'),
+        ('T', 'lion_executor::types::task::Task@lion_executor::id() const'),
+        ('T', 'lion_executor::types::task::Task@lion_executor::new_(lion_executor::types::task_id::TaskId@lion_executor, lion_executor::types::boxed_future::BoxedFuture@lion_executor)'),
+        ('T', 'lion_executor::types::task::Task@lion_executor::poll(rusty::Context&)'),
+        ('T', 'lion_executor::types::task_id::TaskId@lion_executor::clone() const'),
+        ('T', 'lion_executor::types::task_id::TaskId@lion_executor::rusty_debug_string() const'),
+        ('T', 'lion_executor::types::task_id::operator<<@lion_executor(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, lion_executor::types::task_id::TaskId@lion_executor const&)'),
+        ('T', 'lion_executor::types::waker::ExecutorWaker@lion_executor::new_(lion_executor::types::task_id::TaskId@lion_executor, lion_executor::types::waker::WakeSource@lion_executor, bool, rusty::Arc<lion_executor::tls::CrossThreadQueue@lion_executor>, lion_reactor::types::interrupt_handle::InterruptHandle@lion_reactor, rusty::thread::ThreadId)'),
+        ('T', 'lion_executor::types::waker::ExecutorWaker@lion_executor::wake(rusty::Arc<lion_executor::types::waker::ExecutorWaker@lion_executor>)'),
+        ('T', 'lion_executor::types::waker::ExecutorWaker@lion_executor::wake_by_ref(rusty::Arc<lion_executor::types::waker::ExecutorWaker@lion_executor> const&)'),
+        ('T', 'lion_executor::types::waker::ExecutorWaker@lion_executor::wake_impl() const'),
+        ('T', 'lion_executor::types::waker::create_reactor_waker_for_current@lion_executor()'),
+        ('T', 'lion_executor::types::waker::create_waker@lion_executor(lion_executor::types::task_id::TaskId@lion_executor, lion_executor::types::waker::WakeSource@lion_executor, bool)'),
+        ('T', 'std::__1::hash<lion_executor::types::duration::Duration@lion_executor>::operator()(lion_executor::types::duration::Duration@lion_executor const&) const'),
+        ('T', 'std::__1::hash<lion_executor::types::instant::Instant@lion_executor>::operator()(lion_executor::types::instant::Instant@lion_executor const&) const'),
+        ('T', 'std::__1::hash<lion_executor::types::task_id::TaskId@lion_executor>::operator()(lion_executor::types::task_id::TaskId@lion_executor const&) const'),
+    }),
+}
+EXPECTED_TOTAL_DEPENDENCY_SYMBOLS = 374
 
 
 @dataclass(frozen=True)
@@ -5220,6 +5728,12 @@ def verify_pinned_toolchain(root: Path, transpiler: Path) -> None:
     if dirty:
         raise GateError("rusty-cpp submodule has tracked local changes")
     verify_transpiler_build_info(root, transpiler)
+    # The Verus erasure the transpiler vendors must be the one Cargo.lock
+    # resolves for the Lion crates (plan T1/S1); see extract_srpc_rust.py.
+    try:
+        extraction.verify_verus_erasure_coupling(root, transpiler)
+    except extraction.ExtractionError as exc:
+        raise GateError(str(exc)) from exc
 
 
 def require_extraction_check(root: Path, transpiler: Path) -> None:
@@ -5349,6 +5863,10 @@ def read_generated(path: Path, description: str) -> str:
     # skipped text -- including a differently worded by-value-cycle marker --
     # still fails the gate.
     placeholder_region = BENIGN_GENERATED_DIAGNOSTIC.sub("", placeholder_region)
+    for identifier in BENIGN_GENERATED_IDENTIFIERS:
+        placeholder_region = re.sub(
+            rf"(?<![\w:]){re.escape(identifier)}(?!\w)", "", placeholder_region
+        )
     placeholder = PLACEHOLDER.search(placeholder_region)
     if placeholder is not None:
         raise GateError(
@@ -5359,22 +5877,104 @@ def read_generated(path: Path, description: str) -> str:
 
 
 def require_exact_module_imports(
-    text: str, module_name: str, expected: list[str]
+    text: str,
+    module_name: str,
+    expected: list[str],
+    expected_reexports: list[str] | None = None,
 ) -> None:
-    """Require the exact private named-module dependencies of a child."""
+    """Require the exact private named-module dependencies of a child.
 
+    A canonical child may re-export only dependency-provider (Lion) modules,
+    exactly as EXPECTED_DEPENDENCY_REEXPORTS pins them; it never re-exports
+    an srpc module or a runtime port.
+    """
+
+    if expected_reexports is None:
+        expected_reexports = EXPECTED_DEPENDENCY_REEXPORTS.get(module_name, [])
     matches = re.findall(
         r"^(export )?import ([^;\n]+);[ \t]*$",
         text,
         flags=re.MULTILINE,
     )
-    actual = [imported for _, imported in matches]
+    private = [imported for prefix, imported in matches if not prefix]
     exported = [imported for prefix, imported in matches if prefix]
-    if actual != expected or exported:
+    if private != expected or exported != expected_reexports:
         raise GateError(
             f"generated {module_name} module private imports must be exactly "
-            f"{expected!r}; got {actual!r}, exported={exported!r}"
+            f"{expected!r} and its re-exports exactly {expected_reexports!r}; "
+            f"got {private!r}, exported={exported!r}"
         )
+
+
+def require_dependency_providers(output: Path) -> None:
+    """Census and screen the generated dependency (Lion) providers.
+
+    crate-graph.json must name exactly the inventoried providers, in order,
+    with their re-exports, ghost-only and unused crates. Each provider gets the
+    same placeholder ratchet and zero-hand-slot requirement as a canonical
+    child, its exact import lists, and its own named module and namespace.
+    """
+
+    graph_path = output / CRATE_GRAPH_MANIFEST
+    try:
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GateError(f"cannot read generated {graph_path}: {exc}") from exc
+    expected_graph = {
+        "crates": [
+            {
+                "cppm": provider.cppm,
+                "imports": list(provider.imports),
+                "module": provider.module,
+                "package": provider.package,
+            }
+            for provider in DEPENDENCY_PROVIDERS
+        ],
+        "ghost_only": list(DEPENDENCY_GHOST_ONLY),
+        "unused": list(DEPENDENCY_UNUSED),
+    }
+    if graph != expected_graph:
+        raise GateError(
+            "generated crate-graph.json differs from the dependency-provider "
+            f"inventory: expected {expected_graph!r}, got {graph!r}"
+        )
+    known = {provider.module for provider in DEPENDENCY_PROVIDERS}
+    if set(DEPENDENCY_PRIVATE_IMPORTS) != known:
+        raise GateError(
+            "dependency-provider private-import ratchet does not equal the "
+            "dependency-provider inventory"
+        )
+    for provider in DEPENDENCY_PROVIDERS:
+        text = read_generated(
+            output / provider.cppm, f"dependency provider {provider.module}"
+        )
+        require_zero_hand_slots(output / provider.package / "rusty_hand_slots.md")
+        for fragment in (
+            f"export module {provider.module};",
+            f"namespace {provider.module} {{",
+        ):
+            if fragment not in text:
+                raise GateError(
+                    f"generated dependency provider {provider.module} is "
+                    f"missing required surface: {fragment}"
+                )
+        require_exact_module_imports(
+            text,
+            provider.module,
+            DEPENDENCY_PRIVATE_IMPORTS[provider.module],
+            list(provider.imports),
+        )
+        if re.search(r"^(?:export )?import srpc\b", text, re.MULTILINE):
+            raise GateError(
+                f"dependency provider {provider.module} imports an srpc module"
+            )
+    for module_name, reexports in EXPECTED_DEPENDENCY_REEXPORTS.items():
+        unknown = sorted(set(reexports) - known)
+        if unknown:
+            raise GateError(
+                f"{module_name} re-export ratchet names non-provider module(s): "
+                + ", ".join(unknown)
+            )
 
 
 def require_cpp_surfaces(
@@ -5382,6 +5982,10 @@ def require_cpp_surfaces(
 ) -> None:
     expected_files = {f"{module.cpp_module}.cppm" for module in modules}
     expected_files.add("srpc.cppm")
+    # The canonical providers and the partial root sit at the top level; the
+    # dependency providers each sit in their package directory. Census the two
+    # classes separately so neither can stand in for the other.
+    expected_files.update(provider.cppm for provider in DEPENDENCY_PROVIDERS)
     actual_files = {
         path.relative_to(output).as_posix()
         for path in output.rglob("*.cppm")
@@ -5392,6 +5996,7 @@ def require_cpp_surfaces(
             "generated C++ module census mismatch: expected "
             f"{sorted(expected_files)!r}, got {sorted(actual_files)!r}"
         )
+    require_dependency_providers(output)
 
     runtime_facade_output = output / "rusty"
     if runtime_facade_output.exists():
@@ -6463,6 +7068,9 @@ import srpc.tcp_channel;
 import srpc.reactor;
 import srpc.server;
 import srpc.client;
+// The dependency providers SRPC's children re-export (plan S1/S7).
+import lion_reactor;
+import lion_executor;
 
 static std::int32_t rand_raw_value = 0;
 static std::uint32_t rand_raw_draws = 0;
@@ -10025,6 +10633,28 @@ int main() {
             return 253;
         }
     }
+    {
+        // The Lion dependency providers (plan S1/S7): Lion's executor builds
+        // a runtime over SRPC's OS backend through the cross-crate OsBackend
+        // trait object, as PollThread does, and Lion's reactor clock keeps
+        // its arithmetic.
+        auto created = srpc::SrpcEpollBackend::new_();
+        if (!created.is_ok()) {
+            return 254;
+        }
+        rusty::Box<lion_reactor::OsBackend> lion_backend =
+            rusty::Box<lion_reactor::OsBackend>::new_(created.unwrap());
+        auto lion_runtime = lion_executor::RuntimeBuilder::new_()
+                                .os_backend(std::move(lion_backend))
+                                .build();
+        const lion_reactor::Instant lion_start = lion_reactor::Instant::now();
+        const lion_reactor::Instant lion_later =
+            lion_start + lion_reactor::Duration::from_millis(5);
+        if (!lion_runtime.is_ok() || !(lion_start < lion_later) ||
+            lion_later - lion_reactor::Duration::from_millis(5) != lion_start) {
+            return 254;
+        }
+    }
     auto callback_manager = srpc::CallbackManager::new_();
     if (callback_manager.has_callbacks() ||
         callback_manager.callback_count() != 0) {
@@ -10097,6 +10727,46 @@ def require_importer_coverage(modules: list[extraction.ModuleEntry]) -> None:
         raise GateError(
             "combined importer lacks concrete canonical module use(s): "
             + ", ".join(missing_uses)
+        )
+
+    # The dependency providers SRPC's children re-export are imported directly
+    # too, exactly once each, and used (plan S7).
+    directly_used = {
+        module
+        for reexports in EXPECTED_DEPENDENCY_REEXPORTS.values()
+        for module in reexports
+    }
+    if directly_used != set(DEPENDENCY_IMPORTER_USE_MARKERS):
+        raise GateError(
+            "combined-importer dependency use ratchet must name exactly the "
+            "dependency providers SRPC's children re-export: "
+            f"{sorted(directly_used)!r}"
+        )
+    dependency_names = {provider.module for provider in DEPENDENCY_PROVIDERS}
+    dependency_imports = Counter(
+        name
+        for name in re.findall(r"^import ([^;\n]+);[ \t]*$", source, re.MULTILINE)
+        if name in dependency_names
+    )
+    wrong = sorted(
+        module
+        for module in directly_used
+        if dependency_imports[module] != 1
+    )
+    if wrong:
+        raise GateError(
+            "combined importer must directly import every re-exported "
+            f"dependency provider exactly once: {wrong!r}"
+        )
+    missing_dependency_uses = sorted(
+        module
+        for module, marker in DEPENDENCY_IMPORTER_USE_MARKERS.items()
+        if marker not in source
+    )
+    if missing_dependency_uses:
+        raise GateError(
+            "combined importer lacks concrete dependency-provider use(s): "
+            + ", ".join(missing_dependency_uses)
         )
 
 
@@ -10271,7 +10941,7 @@ def resolve_configured_module_map(
                 elif field.startswith("-fmodule-output="):
                     raw_path = field.removeprefix("-fmodule-output=")
                     module_name = Path(raw_path).stem
-                    if not module_name.startswith("srpc."):
+                    if not is_provider_module_name(module_name):
                         continue
                 else:
                     continue
@@ -10334,7 +11004,7 @@ def resolve_configured_module_dependencies(
                     assignment = field.removeprefix("-fmodule-file=")
                     if "=" in assignment:
                         imported.add(assignment.split("=", 1)[0])
-            if output_name is None or not output_name.startswith("srpc."):
+            if output_name is None or not is_provider_module_name(output_name):
                 continue
             previous = dependencies.get(output_name)
             if previous is not None and previous != imported:
@@ -10346,6 +11016,14 @@ def resolve_configured_module_dependencies(
     if raw_build_roots and not dependencies:
         raise GateError("configured module-map roots contain no srpc provider maps")
     return dependencies
+
+
+def is_provider_module_name(name: str) -> bool:
+    """A module this gate compiles: a canonical child or a dependency provider."""
+
+    return name.startswith("srpc.") or name in {
+        provider.module for provider in DEPENDENCY_PROVIDERS
+    }
 
 
 def module_file_flags(
@@ -10466,6 +11144,25 @@ def check_generated_output(
         prefix=".srpc-crate-mode-compile-", dir=output.parent
     ) as temporary:
         work = Path(temporary)
+        # Dependency providers first, in crate-graph order: they import no
+        # srpc module, and the canonical children that re-export them need
+        # their BMIs.
+        dependency_objects: list[Path] = []
+        for provider in DEPENDENCY_PROVIDERS:
+            dependency_objects.append(
+                compile_module(
+                    clang,
+                    root,
+                    include,
+                    output / provider.package,
+                    work,
+                    provider.module,
+                    cxx_flags,
+                    prebuilt_module_dirs,
+                    configured_module_map,
+                    configured_module_dependencies,
+                )
+            )
         generated_object_by_name: dict[str, Path] = {}
         for module in generated_module_order(
             output, modules, configured_module_dependencies
@@ -10537,10 +11234,11 @@ def check_generated_output(
             root,
         )
 
-        generated_link_inputs = [*generated_objects]
+        generated_link_inputs = [*dependency_objects, *generated_objects]
         # The archive supplies the shared native kernels. Every generated
-        # module object precedes it, so the linker cannot substitute a
-        # production module definition for an independently compiled one.
+        # module object -- dependency providers included -- precedes it, so
+        # the linker cannot substitute a production module definition for an
+        # independently compiled one.
         if production is not None:
             generated_link_inputs.append(production)
         generated_link_inputs.extend(runtime_libraries)
@@ -10627,6 +11325,10 @@ def check_generated_output(
                     extra=platform_symbols,
                 )
 
+        require_dependency_provider_symbols(
+            nm, root, dependency_objects, production
+        )
+
         if generated_symbol_count != EXPECTED_TOTAL_PROVIDER_SYMBOLS:
             raise GateError(
                 "crate-generated provider ABI must contain exactly "
@@ -10648,6 +11350,101 @@ def check_generated_output(
             )
 
 
+def dependency_module_symbols(
+    nm: Path, root: Path, binary: Path, module_name: str
+) -> set[tuple[str, str]]:
+    """A dependency provider's strong symbols: module-owned, plus unattached.
+
+    Besides its module-attached definitions, a Lion provider defines a few
+    strong symbols attached to no module -- the explicit `std::hash<...>`
+    specializations rusty-cpp emits for its derive(Hash) types. They are
+    pinned too, recognised by naming one of this module's entities, so an
+    unreviewed strong definition cannot ride in unattached. Each object's own
+    `initializer for module` entry is not part of the pinned set.
+    """
+
+    symbols = module_symbols(nm, root, binary, module_name)
+    output = run([str(nm), "--defined-only", "--demangle", str(binary)], root)
+    for line in output.splitlines():
+        match = NM_LINE.match(line)
+        if match is None:
+            continue
+        kind, symbol = match.groups()
+        if not kind.isupper() or kind in {"U", "V", "W"}:
+            continue
+        if symbol.startswith("initializer for module "):
+            continue
+        if symbol_owner_module(symbol) is None and re.search(
+            rf"@{re.escape(module_name)}(?![\w.])", symbol
+        ):
+            symbols.add((kind, symbol))
+    return symbols
+
+
+def require_dependency_provider_symbols(
+    nm: Path,
+    root: Path,
+    dependency_objects: list[Path],
+    production: Path | None,
+) -> None:
+    """Pin each dependency provider's exact strong ABI, separately.
+
+    Same rule as a canonical child's: the independently compiled object and
+    the production archive must own exactly the measured set. The totals are
+    the dependency class's own and never enter
+    EXPECTED_TOTAL_PROVIDER_SYMBOLS.
+    """
+
+    if set(DEPENDENCY_ABI) != {p.module for p in DEPENDENCY_PROVIDERS}:
+        raise GateError(
+            "dependency-provider ABI ratchet does not equal the "
+            "dependency-provider inventory"
+        )
+    generated_total = 0
+    production_total = 0
+    for provider, generated_object in zip(
+        DEPENDENCY_PROVIDERS, dependency_objects, strict=True
+    ):
+        expected = set(DEPENDENCY_ABI[provider.module])
+        lanes = [("crate-generated object", generated_object)]
+        if production is not None:
+            lanes.append(("production library", production))
+        for label, binary in lanes:
+            symbols = dependency_module_symbols(nm, root, binary, provider.module)
+            if label == "crate-generated object":
+                generated_total += len(symbols)
+            else:
+                production_total += len(symbols)
+            if symbols != expected:
+                details = [
+                    f"{label} does not define the exact {len(expected)}-symbol "
+                    f"{provider.module} dependency-provider ABI"
+                ]
+                if expected - symbols:
+                    details.append(
+                        "missing:\n" + format_symbols(expected - symbols)
+                    )
+                if symbols - expected:
+                    details.append(
+                        "unexpected:\n" + format_symbols(symbols - expected)
+                    )
+                raise GateError("\n".join(details))
+    if generated_total != EXPECTED_TOTAL_DEPENDENCY_SYMBOLS:
+        raise GateError(
+            "crate-generated dependency providers must contain exactly "
+            f"{EXPECTED_TOTAL_DEPENDENCY_SYMBOLS} unique strong symbols; "
+            f"got {generated_total}"
+        )
+    if production is not None and (
+        production_total != EXPECTED_TOTAL_DEPENDENCY_SYMBOLS
+    ):
+        raise GateError(
+            "production dependency providers must contain exactly "
+            f"{EXPECTED_TOTAL_DEPENDENCY_SYMBOLS} unique strong symbols; "
+            f"got {production_total}"
+        )
+
+
 def check(args: argparse.Namespace) -> None:
     root = repository_root()
     # Crate mode validates local runtime-provided dependencies relative to the
@@ -10656,6 +11453,11 @@ def check(args: argparse.Namespace) -> None:
     # working directory.
     crate_manifest = (root / "Cargo.toml").resolve()
     transpiler = executable(root, args.transpiler, "rusty-cpp transpiler")
+    verus_erase_helper = executable(
+        root,
+        getattr(args, "verus_erase_helper", None) or DEFAULT_VERUS_ERASE_HELPER,
+        "rusty-cpp verus-erase helper",
+    )
     verify_pinned_toolchain(root, transpiler)
     require_extraction_check(root, transpiler)
     modules = load_owned_modules(root)
@@ -10714,6 +11516,19 @@ def check(args: argparse.Namespace) -> None:
                 "configured CMake dependency map is missing canonical modules: "
                 + ", ".join(missing_dependency_closures)
             )
+        # The dependency providers compile in srpc's own file set (plan T4),
+        # so CMake must have configured each of them there as well.
+        missing_providers = sorted(
+            provider.module
+            for provider in DEPENDENCY_PROVIDERS
+            if provider.module not in configured_module_map
+            or provider.module not in configured_module_dependencies
+        )
+        if missing_providers:
+            raise GateError(
+                "configured CMake BMI map is missing dependency providers: "
+                + ", ".join(missing_providers)
+            )
 
     generated_raw = getattr(args, "generated_dir", None)
     if generated_raw:
@@ -10759,6 +11574,9 @@ def check(args: argparse.Namespace) -> None:
                     str(root / TYPE_MAP),
                     "--cpp-module-index",
                     str(root / CPP_MODULE_INDEX),
+                    *LION_CRATE_MODE_ARGUMENTS,
+                    "--verus-erase-helper",
+                    str(verus_erase_helper),
                 ],
                 root,
             )
@@ -10779,6 +11597,12 @@ def check(args: argparse.Namespace) -> None:
 
     symbol_count = EXPECTED_TOTAL_PROVIDER_SYMBOLS
     production_label = " and production library" if production is not None else ""
+    print(
+        f"checked {len(DEPENDENCY_PROVIDERS)} Lion dependency providers "
+        f"({', '.join(p.module for p in DEPENDENCY_PROVIDERS)}; "
+        f"{EXPECTED_TOTAL_DEPENDENCY_SYMBOLS} exact strong symbols, inventoried "
+        "separately from the canonical providers)"
+    )
     print(
         f"checked whole srpc crate ({len(modules) + 1} modules compiled, "
         "partial root compile-only, 0 hand slots), combined importer against generated "
@@ -10871,6 +11695,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--transpiler",
         default=os.environ.get("RUSTY_CPP_TRANSPILER", DEFAULT_TRANSPILER),
+    )
+    parser.add_argument(
+        "--verus-erase-helper",
+        default=os.environ.get("RUSTY_CPP_VERUS_ERASE", DEFAULT_VERUS_ERASE_HELPER),
+        help=(
+            "the separately built rusty-cpp-verus-erase helper that "
+            "--verus-exec runs (plan T1b)"
+        ),
     )
     parser.add_argument("--clang", default=os.environ.get("CXX", "clang++"))
     parser.add_argument("--nm", default=os.environ.get("NM", "nm"))
