@@ -559,8 +559,32 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     runtime output as `cargo run`.
   - lion-reactor has 0 slots and compiles.
   - SRPC `lion/s3-core` plus Lion transpiles with 0 slots.
-  - **Remaining (T5e):** lion-executor has 0 slots but **24 C++ compile
-    errors**, in these classes:
+  - **T5e done (2026-09-30, `lion/verus-exec` `dc6e7558`, 19 commits):**
+    lion-executor compiles. A C++ program that runs `spawn` and `spawn_local`
+    tasks and a reactor timer over a mock `OsBackend` prints exactly what the
+    Rust build prints. Unit tests: 2556/0. The parity-matrix failures are
+    identical to the `2619d788` baseline.
+  - **SRPC `lion/s5-transport` plus Lion:** 0 slots. The build reaches 201
+    of 210 steps; 2 root errors remain (T5f).
+  - [ ] **T5f.**
+    - **E1:** `SrpcEpollBackend::deregister(i32)` and its `OsBackend`
+      `deregister(RawFd)` collide as C++ overloads. Dependency manifests
+      carry no type-alias targets; put the alias targets in
+      `ufcs-traits.json`.
+    - **R2:** `AsyncFd`'s `ready.try_io(|_fd| ..)` cannot deduce `R`, and its
+      payload is bound through `std::as_const`.
+    - **Gate hole (must fail closed):** an `async` block lowers to
+      `unreachable_panic` while reporting 0 slots.
+    - **Backlog** (fix if SRPC or Lion hits it):
+      - `Pin::new(&mut x)` and `Pin::new_unchecked` spellings;
+      - `x.as_ref()` on an `Option` binding `auto&` to a temporary;
+      - a lambda return type inferred from a literal arm;
+      - designated initializers out of declaration order;
+      - an associated-type forward declaration mismatch.
+    - The main checkout's `.rusty-modules-cache` is stale against the merged
+      headers. `gate.sh --with-cache` has not been run since T7 (see T8).
+  - **Original T5e scope (now done):** lion-executor had 0 slots but **24 C++
+    compile errors**, in these classes:
     - backward inference of a `let` bound to an `if`/`match` with early
       returns;
     - dependency method signatures missing from the manifests (Duration
