@@ -575,6 +575,21 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
       payload is bound through `std::as_const`.
     - **Gate hole (must fail closed):** an `async` block lowers to
       `unreachable_panic` while reporting 0 slots.
+    - **G3 (serious; found by S1's C++ half):** every Lion I/O registration
+      fails at run time.
+      - The lambda emitted for `LocalKey::with` is
+        `-> decltype(auto)` and returns `std::move(local)`, a dangling
+        reference (Lion `Reactor::enter`, generated `lion_reactor.cppm` ~7028).
+      - Clang's `-Wreturn-stack-address` catches it, but SRPC's `-w` hides it.
+      - Gate idea: compile with `-Werror=return-stack-address`.
+    - **G4:** `std::task::Waker` is missing from the auto-trait table
+      (`predicates.rs`). As a result `PollThread`, `Client` and `ClientPool`
+      lose `Send`/`Sync` in C++.
+    - **G5 (suspected):** `free(): invalid pointer` when a `Waker` stored in
+      Lion's `ResourceSlab` (a std `HashMap` since U1) is destroyed. It may be a
+      byte-copied `std::function`.
+    - **Untriaged:** in C++, `StressTest` sees 110 read callbacks for 100
+      writes.
     - **Backlog** (fix if SRPC or Lion hits it):
       - `Pin::new(&mut x)` and `Pin::new_unchecked` spellings;
       - `x.as_ref()` on an `Option` binding `auto&` to a temporary;
