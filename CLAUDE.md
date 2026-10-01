@@ -630,11 +630,13 @@ build), U1b (Lion's container speed), and rusty-cpp's T6 and T8.
 
 [translation-parity-audit.md](docs/translation-parity-audit.md) records the pre-repair baseline and its
 original findings. Its source line numbers, counts, and removed facade paths refer to the audited
-revision. [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) describes the facade-removal
-implementation and API migration contracts; its owners table and some native-kernel prose predate Lion,
-so this file and the plan win where they disagree.
+revision. [canonical-rust-runtime.md](docs/canonical-rust-runtime.md) describes the ownership split
+between Lion and canonical Rust, the native kernels, and the facade-removal and API migration
+contracts; its validation tables are historical, for the trees they name. This file and the plan win
+where they disagree.
 [facade-and-runtime-remaining.md](docs/dev/facade-and-runtime-remaining.md) records the facade
-retirement; its "no production Rust dependencies" status predates the D5 allowlist.
+retirement and its 2026-09-13 acceptance; a dated note there records the D5 allowlist that replaced
+its "no production Rust dependencies" status.
 
 `RUST_CANARY.md` and `reactor/CANONICAL_CHECKPOINT.md` contain older inventories and compiler blockers.
 `docs/srpc-book.md` documents the current native Rust APIs; `docs/srpc-cpp-book.md` covers generated
