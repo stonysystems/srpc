@@ -404,6 +404,14 @@ were worked around in the source -- see each target below.
   person who took it. Reproduce this one with
   `scripts/run_microbench.sh --compare 68dfaf1 c213501`.
 
+  Until `cdc5e3e`, `--compare` copied today's `bench/` with `cp -r`, which
+  nests the copy at `bench/bench` in a ref that already has `bench/` and builds
+  that ref's own harness instead. The re-measurement above was not affected:
+  `bench/` first appears in `1bd9906`, neither `68dfaf1` nor `c213501` has it,
+  so the copy landed at `bench/` and both sides built the copied harness. It is
+  the only `run_microbench.sh --compare` result recorded in `docs/` or in a
+  commit message.
+
   The C++ lane, which is what ships, remains unmeasured at this resolution, and
   rpcbench cannot close that gap: a sub-nanosecond leaf effect is ~0.05% of a
   request at the qps it reports, far under its trial spread.
