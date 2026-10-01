@@ -2532,8 +2532,10 @@ srpc::sp_reactor_th_.with([](auto& slot) { *slot.borrow_mut() = rusty::None; });
 ```
 
 Application code should not clear a live reactor's thread-local slots.
-Cross-thread stackless wakeups submit a synchronized wake ticket; completion
-still runs on the owning reactor.
+A cross-thread stackless wakeup goes through the thread's Lion runtime on a
+`PollThread` (its cross-thread queue and the epoll backend's eventfd) and
+through a synchronized wake ticket on any other thread; completion still runs
+on the owning thread.
 
 ### Shutdown and native synchronization
 
@@ -2692,7 +2694,10 @@ allocation and vector growth. A 64-byte initial serialization-sink capacity
 was reported to improve the C++ eight-thread server by 6.5% and Rust cells
 by 4% to 8%. These are observations from that revision and profiling session,
 not measured explanations for current performance. The sequential TCP result
-was attributed to the worker's roughly one-millisecond polling cadence.
+was attributed to the worker's roughly one-millisecond polling cadence. That
+cadence belonged to the pre-Lion worker loop, since deleted. The current poll
+thread is woken by each source of work; only a job whose `Ready()` is false is
+re-checked on a one-millisecond timer.
 
 A further mode comparison used eight client threads and 1,000 outstanding
 requests per thread:

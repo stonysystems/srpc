@@ -237,7 +237,7 @@ The source layout groups responsibilities without creating separate Rust crates.
 | --- | --- |
 | `base/` | Numeric and timing helpers, logging, diagnostics and synchronization helpers |
 | `misc/` | Serialization, payload containers, statistics and randomness |
-| `reactor/` | Epoll polling, stackful fibers, events, fiber futures and standard-future scheduling |
+| `reactor/` | The `PollThread` driver and the epoll backend its Lion runtime runs on, stackful fibers, events, fiber futures and standard-future scheduling |
 | `rpc/` | Services, clients, transports, wire framing, request policies and connection state |
 
 `Client`, `ClientConnection`, `ClientPool` and the RPC `Future` are all in
@@ -258,16 +258,19 @@ flowchart TD
     RPC --> TCP["TCP transport"]
     RPC --> Memory["In-memory transport"]
     Memory --> Inline["Peer callback on the sending thread"]
-    TCP --> Poll["PollThread and epoll"]
+    TCP --> Poll["PollThread: Lion runtime over epoll"]
     Poll --> Reactor["Thread-local Reactor"]
     Reactor --> Fiber["Fibers and standard futures"]
     Poll --> Native["Native C/assembly kernel"]
     Fiber --> Native
 ```
 
-A `PollThread` owns a worker thread that services commands and I/O. Each worker has
-its own thread-local reactor. Commands cross that boundary through synchronized
-queues; the reactor's fibers and events do not move to the submitting thread.
+A `PollThread` owns a worker thread that services commands and I/O. That thread
+runs a Lion runtime over sRPC's epoll backend: the executor, I/O reactor and
+timer wheel come from the pinned `lion-executor` and `lion-reactor` crates
+(Chapter 4). Each worker has its own thread-local reactor. Commands cross that
+boundary through synchronized queues; the reactor's fibers and events do not
+move to the submitting thread.
 
 A server freezes service registration before dispatch. Its shared service context
 owns boxed `Service` implementations, whose `Send + Sync` bounds and shared dispatch
@@ -345,8 +348,11 @@ canonical code must validate both consumers as described in [CLAUDE.md](../CLAUD
 
 A fiber lets a handler suspend in the middle of an ordinary function and resume
 with its local variables intact. sRPC uses stackful fibers for handlers that need
-to wait for another RPC. Each fiber has its own stack, but fibers on one reactor
-share one operating-system thread and run cooperatively.
+to wait on an sRPC event, a fiber sleep or a `FiberChannel` receive. Waiting for
+the reply to another RPC is not one of these: the client `Future` blocks the OS
+thread even inside a fiber (see "Where fibers come from in the RPC path"). Each
+fiber has its own stack, but fibers on one reactor share one operating-system
+thread and run cooperatively.
 
 `srpc::reactor::{Fiber, Reactor}` contains the scheduler and fiber handles.
 `srpc::fiber::this_fiber` provides operations on the currently running fiber.
@@ -398,9 +404,10 @@ fn main() {
 ```
 
 Cooperative scheduling does not relax Rust's aliasing rules. Do not keep an
-exclusive borrow of shared state across a call that can suspend, including an
-RPC wait. A retained `RefMut` will make a competing borrow panic; constructing
-another mutable reference with a raw pointer can instead cause undefined behavior.
+exclusive borrow of shared state across a call that can suspend, such as an
+event wait or a fiber sleep. A retained `RefMut` will make a competing borrow
+panic; constructing another mutable reference with a raw pointer can instead
+cause undefined behavior.
 
 ### The fiber API
 
@@ -500,10 +507,21 @@ or arrange for waiting fibers to resume and return before tearing down the owner
 ### Where fibers come from in the RPC path
 
 A service registers an ordinary handler with `Server::reg_rpc`. Dispatch then
-starts a fiber for that request, so the handler can make a nested RPC and wait
-cooperatively. A handler registered with `reg_fast_rpc` runs inline in the
-transport's frame callback. With TCP, that callback runs on the poll thread.
-A fast handler must return promptly or start work that can complete later.
+starts a fiber for that request, so the handler can suspend on sRPC events and
+fiber sleeps while other work on its thread proceeds. A handler registered with
+`reg_fast_rpc` runs inline in the transport's frame callback. With TCP, that
+callback runs on the poll thread. A fast handler must return promptly or start
+work that can complete later.
+
+A fiber handler cannot wait cooperatively for a nested RPC. The client
+`Future`'s `wait`, `get_error_code`, `get_reply` and `wait_with_options` block
+the OS thread on a condition variable, inside a fiber or not, so nothing else on
+that poll thread runs until the wait returns. With TCP, if the nested call's
+`Client` uses the handler's own `PollThread`, both the request's send and the
+reply's delivery need that blocked thread, so the wait can only end at its
+timeout, one second by default, with error 110. A client on another `PollThread`
+can complete the call, but the handler's poll thread stays blocked for the whole
+round trip. Arrange asynchronous completion instead, as Chapter 14 describes.
 
 ### Implementation: the C engine and the assembly
 
@@ -584,16 +602,21 @@ fn main() {
 ```
 
 Spawn polls once inline. If that poll completes, the completion callback runs
-inside the spawn call and no parked task remains. Otherwise the reactor retains
-the task and polls it again when its waker fires. A wake during the initial poll
-is retained, as this example requires. The callback runs after releasing the
+inside the spawn call and no parked task remains. Otherwise the task is kept and
+polled again when its waker fires. On a thread with no `PollThread`, as in this
+example, the reactor retains it, and a wake during the initial poll is retained
+too, as this example requires. On a `PollThread`, the task becomes a task on
+that thread's Lion runtime instead. The callback runs after releasing the
 reactor's mutable borrow of the completed task, so it can submit more work.
 
 Spawn and future polling belong to the owner thread. A cloned standard `Waker`
-can cross threads: the wake records a request in synchronized storage, and the
-owner drains that queue during `run_loop`. It does not move the future or the
-reactor to the waking thread. Copy `cx.waker()` with `clone()` when registering a
-notification; never retain a reference to the temporary `Context`.
+can cross threads. On a thread with no `PollThread`, the wake records a request
+in synchronized storage, and the owner drains that queue during `run_loop`. On a
+`PollThread`, the wake goes to the thread's Lion runtime, whose cross-thread
+queue and the epoll backend's eventfd bring it back to that thread. Neither
+moves the future or the reactor to the waking thread. Copy `cx.waker()` with
+`clone()` when registering a notification; never retain a reference to the
+temporary `Context`.
 
 sRPC does not supply a ready-made standard `Future` adapter for its events.
 A future's `poll` must return promptly instead of using a stackful event wait.
@@ -1089,11 +1112,11 @@ next `run_loop` pass tests the armed event, and a ready one resumes its waiter
 there. `FiberChannel` pings from its frame and close callbacks this way.
 
 The owner must call `run_loop` to serve pings and deadlines and resume ready
-fibers. The poll worker does this on each pass. A manually driven reactor must
-do it explicitly, including the deadline check for timed waits. An event waited
-on a thread other than the one that created it, which only C++ can do, cannot
-use its owner's queue and is still re-tested on every pass of the waiting
-thread.
+fibers. A poll thread's driver does this each time it is woken. A manually
+driven reactor must do it explicitly, including the deadline check for timed
+waits. An event waited on a thread other than the one that created it, which
+only C++ can do, cannot use its owner's queue and is still re-tested on every
+pass of the waiting thread.
 
 ### Rules and gotchas
 
@@ -1308,13 +1331,17 @@ descriptor.
 
 A send from any thread appends the frame to the connection's outbound buffer
 under its mutex. When that append makes the buffer non-empty, it wakes the
-connection's writer task directly, through the task's waker, which is kept
-under the same mutex; appends to a non-empty buffer need no wake, since the
-writer is already draining or waiting for the socket. On the poll thread
-itself, for example a reply sent from a fast handler, the wake only queues the
-writer on that thread, and it runs after the handler's reader task. The
-writer drains until the buffer is empty or the socket reports `EAGAIN`, and
-then waits for write readiness.
+connection's writer task directly, through the task's waker, which is kept under
+the same mutex; appends to a non-empty buffer need no wake, since the writer is
+already draining or waiting for the socket. One case skips the writer: a send
+from a thread other than the connection's poll thread that finds the buffer
+empty, on a connection whose last `send(2)` is at least `kTcpWriteThroughIdleUs`
+(20 microseconds) old, writes the frame itself under the same mutex and wakes
+the writer only for bytes the socket did not take. On the poll thread itself,
+for example a reply sent from a fast handler, the wake only queues the writer on
+that thread, and it runs after the handler's reader task. The writer drains
+until the buffer is empty or the socket reports `EAGAIN`, and then waits for
+write readiness.
 
 Close and errors reach both tasks: a close from any thread wakes the writer,
 and the task that retires the connection wakes the other. A pollable
@@ -2877,11 +2904,14 @@ it must not assume that callbacks always run on a poll worker.
 
 ### Cross-thread completion and shutdown
 
-A standard Rust `Waker` for a reactor task may cross threads. Waking submits a
-ticket through a synchronized queue. The owning reactor drains that queue and
-polls the task; the waker does not transfer the reactor or execute the future on
-the waking thread. Reactor teardown closes wake admission, and later wakes do
-nothing.
+A standard Rust `Waker` for a stackless task may cross threads. On a thread with
+no `PollThread`, waking submits a ticket through the reactor's synchronized
+queue; on a `PollThread`, it pushes the task onto the thread's Lion runtime's
+cross-thread queue and wakes that thread through the epoll backend's eventfd.
+Either way the owning thread polls the task; the waker does not transfer the
+reactor or execute the future on the waking thread. Reactor teardown closes wake
+admission, and `PollThread` shutdown drops the tasks left on its runtime; later
+wakes run nothing.
 
 Use an ordinary channel to ask the server's owner to stop. `Server::do_shutdown`
 and `wait_for_shutdown` contain a mutex/condition-variable handshake, but they
