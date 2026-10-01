@@ -40,7 +40,6 @@
     "tests/rpc_docs_symbols_test.cc": "test_rpc_docs_symbols"
   },
   "support": {
-    "tests/pollworker_fd_reuse_test.cc": "test_reactor_extended",
     "tests/runtime_imports.cc": "srpc_runtime_imports"
   },
   "benchmark": {

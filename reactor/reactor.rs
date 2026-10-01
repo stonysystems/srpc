@@ -39,7 +39,7 @@ use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 
 use crate::basetypes::Time;
-use crate::epoll_wrapper::{Epoll, PollMode, PollReady, Pollable, SrpcEpollBackend};
+use crate::epoll_wrapper::{PollMode, SrpcEpollBackend};
 use crate::misc::Job;
 use crate::pollable_proxy::{PollableBase, PollableProxy};
 use crate::logging::{log_line, Log};
@@ -57,10 +57,7 @@ pub type FiberTaskFn = Option<Box<dyn FnMut(&mut fiber_yield_t)>>;
 pub type StacklessPollFn = Option<Box<dyn FnMut(&mut Context<'_>) -> bool>>;
 pub type TaskVoid = Pin<Box<dyn Future<Output = ()>>>;
 pub type PollCmdReceiver = std::sync::mpsc::Receiver<PollCommand>;
-pub type FdPollableMap = HashMap<i32, PollableProxy>;
-pub type FdModeMap = HashMap<i32, i32>;
 pub type FdSet = HashSet<i32>;
-pub type JobSet = std::collections::BTreeMap<usize, Arc<dyn Job>>;
 pub type PollJoinSlot = std::sync::Mutex<Option<std::thread::JoinHandle<()>>>;
 // The tuple alias keeps the historical std::pair callback element profile.
 pub type QuorumDangling = (u16, i64);
@@ -994,11 +991,6 @@ struct PollDriverWake {
     // The driver task's Lion waker; None before its first poll and after it
     // has finished.
     waker: std::sync::Mutex<Option<Waker>>,
-    // Descriptors whose registration may have a write pending, queued by
-    // PollThread::notify_pending_write off the poll thread.  S3's TCP send
-    // latch used it; since S5 the TCP writer task is woken directly and no
-    // production code calls notify_pending_write.
-    write_ready: std::sync::Mutex<Vec<i32>>,
 }
 
 // Wake the driver unless a wake is already pending.  Any thread.
@@ -2185,7 +2177,6 @@ pub struct Reactor {
     pub server_id_: Cell<i32>,
     pub all_events_: RefCell<VecDeque<Arc<dyn EventPollable>>>,
     pub waiting_events_: RefCell<VecDeque<Arc<dyn EventPollable>>>,
-    pub timeout_events_: RefCell<VecDeque<Arc<dyn EventPollable>>>,
     pub composite_events_: RefCell<VecDeque<Arc<dyn EventPollable>>>,
     pub fibers_: RefCell<BTreeMap<usize, Rc<Fiber>>>,
     pub available_fibers_: RefCell<Vec<Rc<Fiber>>>,
@@ -2220,7 +2211,6 @@ impl Reactor {
             server_id_: Default::default(),
             all_events_: Default::default(),
             waiting_events_: Default::default(),
-            timeout_events_: Default::default(),
             composite_events_: Default::default(),
             fibers_: RefCell::new(BTreeMap::<usize, Rc<Fiber>>::new()),
             available_fibers_: Default::default(),
@@ -2693,8 +2683,7 @@ impl Reactor {
     // write) still completes, at its deadline.  Only the entry that sets
     // TIMEOUT hands that event over, once: dispatch de-duplicates READY
     // events through DONE, but TIMEOUT is sticky and is not de-duplicated.
-    // timeout_events_ is no longer used; the field stays because the Reactor
-    // layout is pinned.
+    // (The timeout_events_ queue that scan read was retired in S7b.)
     pub fn check_timeout(&self, ready_events: &mut VecDeque<Arc<dyn EventPollable>>) {
         let expired: Vec<EventDeadline> = event_deadline_take_expired::<()>(self);
         for entry in expired.iter() {
@@ -2968,47 +2957,10 @@ pub enum PollCommand {
     Shutdown,
 }
 
-thread_local! {
-    pub static g_current_poll_worker: Cell<*mut PollThreadWorker> =
-        const { Cell::new(core::ptr::null_mut()) };
-}
-
-#[repr(C)]
-pub struct PollThreadWorker {
-    pub receiver_: PollCmdReceiver,
-    pub poll_: Epoll,
-    pub fd_to_pollable_: FdPollableMap,
-    pub mode_: FdModeMap,
-    pub pending_remove_: FdSet,
-    pub jobs_: JobSet,
-    pub stop_: bool,
-}
-
-impl PollThreadWorker {
-    // Factory: worker wrapped in Rc<RefCell<>> for its thread.
-    pub fn create(receiver: PollCmdReceiver) -> Rc<RefCell<PollThreadWorker>> {
-        pollworker_create(receiver)
-    }
-
-    // Main polling loop — epoll events + channel commands.  Retired: since
-    // S3 a PollThread runs a Lion runtime and its driver task instead
-    // (pollthread_run).  Kept, with the pollworker_* helpers it reaches,
-    // until S7 deletes it with the rest of the 1 ms loop.
-    pub fn poll_loop(&mut self) {
-        pollworker_poll_loop(self)
-    }
-
-    // Direct mode update (bypasses the channel; poll-thread only).
-    pub fn update_mode(&mut self, poll: &mut dyn Pollable, new_mode: i32) {
-        pollworker_update_mode(self, poll, new_mode)
-    }
-}
-
-// True on a thread whose PollThread loop is running: the Lion driver of S3,
-// or the retired epoll worker (PollThreadWorker::poll_loop).
+// True on a thread whose PollThread is running: inside its Lion driver, a
+// job, a fiber the driver resumes, or one of its runtime's tasks.
 pub fn pollworker_is_on_poll_thread() -> bool {
-    g_current_poll_worker.with(|worker| !worker.get().is_null())
-        || poll_driver_th_.with(|driver| !driver.get().is_null())
+    poll_driver_th_.with(|driver| !driver.get().is_null())
 }
 
 // One OS thread running one Lion runtime (S3 of docs/dev/lion-runtime-plan.md).
@@ -3086,10 +3038,6 @@ impl PollThread {
         poll_driver_wake(&self.driver_);
     }
 
-    pub fn remove(&self, poll: &mut dyn Pollable) {
-        self.remove_fd(poll.fd());
-    }
-
     /// Unregister the caller's current descriptor asynchronously.
     /// The caller must keep that descriptor owned until command processing
     /// completes, for example by retaining it through worker shutdown.
@@ -3125,45 +3073,6 @@ impl PollThread {
         let _dropped_when_worker_gone =
             self.sender_.send(PollCommand::AddJob { job });
         poll_driver_wake(&self.driver_);
-    }
-
-    /// Tell the registration of `fd` that its pollable may have output to
-    /// write (S3).  It re-reads its own pending-write latch
-    /// (check_pending_write_update) when woken, so a stale descriptor wakes
-    /// at most an unrelated registration, which finds its latch clear.
-    /// Callable from any thread; on the poll thread itself the registration
-    /// is woken directly, elsewhere through the driver.  No production caller
-    /// since S5: TCP connections no longer register as pollables.
-    pub fn notify_pending_write(&self, fd: i32) {
-        if fd < 0 {
-            return;
-        }
-        if poll_driver_wake_fd_here(&self.driver_, fd) {
-            return;
-        }
-        // Each descriptor is queued once per drain, so a sender that outruns
-        // the poll thread does not grow the queue.  It holds one entry per
-        // connection with output waiting, so the scan is short.
-        let first: bool = {
-            let mut queue = self.driver_.write_ready.lock().unwrap();
-            let was_empty: bool = (*queue).is_empty();
-            let mut queued: bool = false;
-            let mut i: usize = 0usize;
-            while i < (*queue).len() {
-                if (*queue)[i] == fd {
-                    queued = true;
-                    break;
-                }
-                i += 1usize;
-            }
-            if !queued {
-                (*queue).push(fd);
-            }
-            was_empty
-        };
-        if first {
-            poll_driver_wake(&self.driver_);
-        }
     }
 
     /// Whether the calling thread is this PollThread's own thread while its
@@ -4298,193 +4207,6 @@ pub fn reactor_spawn_stackless_task_impl(self_: &Reactor, mut task: TaskVoid) {
     }
 }
 
-fn pollworker_make(receiver: PollCmdReceiver) -> PollThreadWorker {
-    PollThreadWorker {
-        receiver_: receiver,
-        poll_: Epoll::new(),
-        fd_to_pollable_: Default::default(),
-        mode_: Default::default(),
-        pending_remove_: Default::default(),
-        jobs_: Default::default(),
-        stop_: false,
-    }
-}
-
-fn pollworker_create(receiver: PollCmdReceiver) -> Rc<RefCell<PollThreadWorker>> {
-    let mut worker = pollworker_make(receiver);
-    Rc::new(RefCell::new(worker))
-}
-
-fn pollworker_snapshot_fds(w: &mut PollThreadWorker) -> Vec<i32> {
-    let mut fds: Vec<i32> = Vec::new();
-    let mut ks = w.fd_to_pollable_.keys();
-    for fd in ks {
-        fds.push(*fd);
-    }
-    fds
-}
-
-// MEASURED allow — see the `borrowed_box` note on `pollable_proxy_fd`.
-#[allow(clippy::borrowed_box)]
-fn pollworker_poll_loop(w: &mut PollThreadWorker) {
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Starting poll loop".to_string());
-    while !w.stop_ {
-        pollworker_trigger_job(w);
-
-        // Wait for events (epoll_wait with short timeout). Dispatch
-        // through proxy storage by fd; no Pollable* userdata assumptions.
-        // Collect the readiness batch first so the callback does not retain a
-        // mutable borrow of `poll_` while dispatch re-enters the worker.
-        let mut ready_batch: Vec<(i32, i32)> = Vec::new();
-        w.poll_.Wait(|fd: i32, ready_events: i32| {
-            ready_batch.push((fd, ready_events));
-        });
-        for (fd, ready_events) in ready_batch {
-            let mut write_mode: Option<i32> = None;
-            // The re-annotating `let p: &mut Box<dyn PollableBase> = p;` below
-            // is load-bearing, not style — here and at every other if-let over
-            // `fd_to_pollable_` in this file.  An if-let payload carries no
-            // annotation, and the emitter does not model `HashMap::get_mut`'s
-            // return type, so a bare `p` lowers to `decltype(auto)`; the
-            // auto-deref Rust performs (`Box<dyn PollableBase>` ->
-            // `dyn PollableBase`) is then not reproduced and the generated
-            // `p.handle_read()` fails to compile against
-            // `rusty::Box<PollableBase>`.  Restating the type hands the emitter
-            // back the `rusty::Box<PollableBase>&` binding it needs.
-            let opt = w.fd_to_pollable_.get_mut(&fd);
-            if let Some(p) = opt {
-                let p: &mut Box<dyn PollableBase> = p;
-                if (ready_events & PollReady::READABLE) != 0i32 {
-                    p.handle_read();
-                }
-                if (ready_events & PollReady::WRITABLE) != 0i32 {
-                    let new_mode = p.handle_write();
-                    if new_mode != PollMode::NO_CHANGE {
-                        write_mode = Some(new_mode);
-                    }
-                }
-            }
-            if let Some(new_mode) = write_mode {
-                pollworker_do_update_mode(w, fd, new_mode);
-            }
-            if (ready_events & PollReady::ERROR) != 0i32 {
-                let err_opt = w.fd_to_pollable_.get_mut(&fd);
-                if let Some(p) = err_opt {
-                    let p: &mut Box<dyn PollableBase> = p;
-                    p.handle_error();
-                }
-            }
-        }
-
-        // Process commands from the channel (non-blocking try_recv).
-        pollworker_process_commands(w);
-        pollworker_trigger_job(w);
-        // Process deferred removals.
-        pollworker_process_pending_removals(w);
-        pollworker_trigger_job(w);
-        let reactor = Reactor::get_reactor();
-        (*reactor).run_loop(false, true);
-
-        // One key snapshot serves both sweeps below: neither of them
-        // adds an fd to fd_to_pollable_ (do_update_mode only touches
-        // mode_/poll_), so the key set cannot grow in between.
-        let fds = pollworker_snapshot_fds(w);
-
-        // Check for pending write updates (set by end_reply() during
-        // fiber execution). Reads a pollable's interior-mutable
-        // pending_write_update_ flag through the shared Arc; no cast.
-        let mut i: usize = 0;
-        while i < fds.len() {
-            let fd = fds[i];
-            let opt = w.fd_to_pollable_.get_mut(&fd);
-            if let Some(p) = opt {
-                let p: &mut Box<dyn PollableBase> = p;
-                if p.check_pending_write_update() {
-                    pollworker_do_update_mode(w, fd, PollMode::READ | PollMode::WRITE);
-                }
-            }
-            i += 1;
-        }
-
-        // Check for pollables closed by handle_error() and remove them.
-        // This prevents fd reuse issues when an old connection is closed
-        // but not removed. Collect first, mutate second — close() can
-        // re-enter, so the scan must not be mutating as it goes.
-        let mut closed_fds: Vec<i32> = Vec::new();
-        let mut j: usize = 0;
-        while j < fds.len() {
-            let fd = fds[j];
-            let opt = w.fd_to_pollable_.get(&fd);
-            if let Some(p) = opt {
-                let p: &Box<dyn PollableBase> = p;
-                if p.is_closed() {
-                    closed_fds.push(fd);
-                }
-            }
-            j += 1;
-        }
-        let mut n: usize = 0;
-        while n < closed_fds.len() {
-            let fd = closed_fds[n];
-            // Detach before the callout, retain the proxy lease through DEL,
-            // then invoke close without a live map borrow.
-            pollworker_do_close_pollable(w, fd);
-            n += 1;
-        }
-    }
-
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Exited while loop (stop_=true), starting cleanup".to_string());
-    // Shutdown cleanup — unregister all remaining pollables. Only the
-    // keys matter here, so the proxies are never touched.
-    let rest = pollworker_snapshot_fds(w);
-    let mut k: usize = 0;
-    while k < rest.len() {
-        let fd = rest[k];
-        if w.mode_.contains_key(&fd) {
-            w.poll_.Remove(fd);
-        }
-        k += 1;
-    }
-    w.fd_to_pollable_.clear();
-    w.mode_.clear();
-    w.pending_remove_.clear();
-    reactor_log_line(Log::DEBUG, 0i32, core::ptr::null(), "[poll_loop] Cleanup complete, poll_loop exiting".to_string());
-}
-
-fn pollworker_process_commands(self_: &mut PollThreadWorker) {
-    loop {
-        let result = self_.receiver_.try_recv();
-        if result.is_err() {
-            // Empty or disconnected -- either way, stop draining.
-            break;
-        }
-        let cmd = result.unwrap();
-        match cmd {
-            PollCommand::AddPollable { pollable } => {
-                pollworker_do_add_pollable(self_, pollable);
-            }
-            PollCommand::RemovePollable { fd } => {
-                pollworker_do_remove_pollable(self_, fd);
-            }
-            PollCommand::ClosePollable { fd } => {
-                pollworker_do_close_pollable(self_, fd);
-            }
-            PollCommand::UpdateMode { fd, new_mode } => {
-                pollworker_do_update_mode(self_, fd, new_mode);
-            }
-            PollCommand::AddJob { job } => {
-                pollworker_do_add_job(self_, job);
-            }
-            PollCommand::RemoveJob { job } => {
-                pollworker_do_remove_job(self_, job);
-            }
-            PollCommand::Shutdown => {
-                self_.stop_ = true;
-            }
-        }
-    }
-}
-
 fn job_ready(job: &Arc<dyn Job>) -> bool {
     let job_ptr: *const dyn Job = Arc::as_ptr(job);
     let job_mut: *mut dyn Job = job_ptr as *mut dyn Job;
@@ -4500,129 +4222,9 @@ fn job_spawn_work(job: &Arc<dyn Job>) {
     });
 }
 
-// The C++ BTreeMap uses an explicit new_ factory and has no default constructor.
-#[allow(clippy::mem_replace_with_default)]
-fn pollworker_trigger_job(w: &mut PollThreadWorker) {
-    let jobs_exec = core::mem::replace(&mut w.jobs_, JobSet::new());
-    for job in jobs_exec.values() {
-        if job_ready(job) {
-            // Ready jobs ran (or are running) — do NOT re-add them.
-            job_spawn_work(job);
-        } else {
-            // Not ready yet — check again on the next pass.
-            w.jobs_.insert(job_identity(job), job.clone());
-        }
-    }
-}
-
-// Preserve the shared Box reference across HashMap lookup; see the measured
-// lowering requirement on pollable_proxy_fd below.
-#[allow(clippy::borrowed_box)]
-fn pollworker_do_add_pollable(w: &mut PollThreadWorker, poll: PollableProxy) {
-    let fd = pollable_proxy_fd(&poll);
-    let poll_mode = pollable_proxy_mode(&poll);
-
-    // The proxy owns its descriptor through every epoll operation, including
-    // close racing this check. A queued registration already logically closed
-    // needs no epoll entry; dropping the proxy releases its descriptor lease.
-    //
-    // The `&Box<dyn PollableBase>` rebind is a measured lowering requirement,
-    // the same one `old` needs below. The emitter writes `->` for a receiver
-    // whose declared type is literally `&Box<..>`; a by-value receiver of the
-    // alias type `PollableProxy` lowered to `poll.is_closed()` on a
-    // `rusty::Box<PollableBase>` -- "no member named 'is_closed'" -- and the
-    // srpc.reactor module failed to compile. The fn-level `borrowed_box`
-    // allow above covers this rebind too.
-    let poll_ref: &Box<dyn PollableBase> = &poll;
-    if fd < 0 || poll_ref.is_closed() {
-        return;
-    }
-    if w.fd_to_pollable_.contains_key(&fd) {
-        let old = w.fd_to_pollable_.get(&fd).unwrap();
-        let old: &Box<dyn PollableBase> = old;
-        if !old.is_closed() {
-            return;
-        }
-        // Retire the closed registration before admitting a replacement,
-        // including any removal queued for the old connection.
-        pollworker_do_close_pollable(w, fd);
-    }
-    w.fd_to_pollable_.insert(fd, poll);
-    w.mode_.insert(fd, poll_mode);
-    // A failed registration still owns its descriptor until this proxy drops.
-    if w.poll_.Add(fd, poll_mode) != 0 {
-        w.fd_to_pollable_.remove(&fd);
-        w.mode_.remove(&fd);
-    }
-}
-
-fn pollworker_do_remove_pollable(w: &mut PollThreadWorker, fd: i32) {
-    if !w.fd_to_pollable_.contains_key(&fd) {
-        return;
-    }
-    // Deferred: actual removal happens after epoll_wait.
-    w.pending_remove_.insert(fd);
-}
-
-fn pollworker_do_close_pollable(w: &mut PollThreadWorker, fd: i32) {
-    w.pending_remove_.remove(&fd);
-    let retired = w.fd_to_pollable_.remove(&fd);
-    if let Some(mut poll) = retired {
-        if w.mode_.contains_key(&fd) {
-            w.poll_.Remove(fd);
-        }
-        w.mode_.remove(&fd);
-        // Own the retired proxy across its callout. A close callback may
-        // reenter the worker after the old registration has been removed.
-        let poll: &mut Box<dyn PollableBase> = &mut poll;
-        poll.close();
-    }
-}
-
-fn pollworker_do_update_mode(w: &mut PollThreadWorker, fd: i32, new_mode: i32) {
-    if !w.fd_to_pollable_.contains_key(&fd) {
-        return;
-    }
-    let mode_opt = w.mode_.get(&fd);
-    if mode_opt.is_none() {
-        return;
-    }
-    let old_mode = *mode_opt.unwrap();
-    w.mode_.insert(fd, new_mode);
-    if new_mode != old_mode {
-        w.poll_.Update(fd, new_mode, old_mode);
-    }
-}
-
 #[allow(unsafe_code)]
 fn job_identity(job: &Arc<dyn Job>) -> usize {
     Arc::as_ptr(job) as *const () as usize
-}
-
-fn pollworker_do_add_job(w: &mut PollThreadWorker, job: Arc<dyn Job>) {
-    w.jobs_.insert(job_identity(&job), job);
-}
-
-fn pollworker_do_remove_job(w: &mut PollThreadWorker, job: Arc<dyn Job>) {
-    w.jobs_.remove(&job_identity(&job));
-}
-
-fn pollworker_process_pending_removals(w: &mut PollThreadWorker) {
-    // take-to-Vec kernel: the HashSet rejects the rusty::iter shim.
-    let remove_fds = pollworker_take_removals(w);
-    let mut i: usize = 0;
-    while i < remove_fds.len() {
-        let fd = remove_fds[i];
-        if w.fd_to_pollable_.contains_key(&fd) {
-            // fd not reused (still in the mode map) => unregister.
-            if w.mode_.contains_key(&fd) {
-                w.poll_.Remove(fd);
-            }
-            w.fd_to_pollable_.remove(&fd);
-            w.mode_.remove(&fd);
-        }
-        i += 1;
-    }
 }
 
 // MEASURED allow (clippy::borrowed_box).  `&Box<dyn PollableBase>` is the
@@ -4639,18 +4241,6 @@ fn pollable_proxy_fd(p: &PollableProxy) -> i32 {
     b.fd()
 }
 
-fn pollworker_take_removals(w: &mut PollThreadWorker) -> Vec<i32> {
-    // The HashSet port has no drain(); take the whole set (leaves an
-    // empty one behind — same net effect as the old iterate-then-clear)
-    // and copy the fds out through iter().
-    let taken = core::mem::take(&mut w.pending_remove_);
-    let mut v: Vec<i32> = Vec::new();
-    for fd in taken.iter() {
-        v.push(*fd);
-    }
-    v
-}
-
 // MEASURED allow — see the `borrowed_box` note on `pollable_proxy_fd`.
 #[allow(clippy::borrowed_box)]
 fn pollable_proxy_mode(p: &PollableProxy) -> i32 {
@@ -4658,27 +4248,11 @@ fn pollable_proxy_mode(p: &PollableProxy) -> i32 {
     b.poll_mode()
 }
 
-fn pollworker_close_proxy_of(w: &mut PollThreadWorker, fd: i32) {
-    // The map port's non-const get() returns Option<V&>; the &mut-typed
-    // Box binding keeps the mutable overload selected so close()'s
-    // non-const dispatch compiles.
-    let proxy_opt = w.fd_to_pollable_.get_mut(&fd);
-    if let Some(p) = proxy_opt {
-        let p: &mut Box<dyn PollableBase> = p;
-        p.close();
-    }
-}
-
-fn pollworker_update_mode(w: &mut PollThreadWorker, poll: &mut dyn Pollable, new_mode: i32) {
-    pollworker_do_update_mode(w, poll.fd(), new_mode);
-}
-
 fn pollthread_create() -> Arc<PollThread> {
     let (sender, receiver) = std::sync::mpsc::channel::<PollCommand>();
     let wake: Arc<PollDriverWake> = Arc::new(PollDriverWake {
         pending: AtomicBool::new(false),
         waker: std::sync::Mutex::new(None),
-        write_ready: std::sync::Mutex::new(Vec::new()),
     });
     let seed = PollThread {
         sender_: sender,
@@ -4724,20 +4298,21 @@ fn pollthread_drop(pt: &PollThread) {
 //
 // * The driver (PollDriverTask) does the owner-side work that run_loop does
 //   on a thread with no loop.  Woken through PollDriverWake, it drains the
-//   command channel, applies deferred removals, wakes registrations with a
-//   pending write, runs ready jobs, and calls run_loop(false, true) -- the
+//   command channel, applies deferred removals, runs ready jobs, and calls
+//   run_loop(false, true) -- the
 //   same drain a thread with no loop runs -- which serves pings, the ready
 //   queue and expired deadlines and resumes fibers.  Then it sleeps on a Lion
 //   timer until event_next_deadline_us, rounded up to whole milliseconds
 //   (Lion's clock), or until woken.  Resumption stays in that drain, never in
 //   set(); Fiber::create_run and continue_fiber stay synchronous.
 //
-// * Each registered pollable gets a transport task (PollFdTask) that waits on
-//   its descriptor through Lion's AsyncFd and calls handle_read and
+// * Each pollable registered with add_proxy gets a task (PollFdTask) that
+//   waits on its descriptor through Lion's AsyncFd and calls handle_read and
 //   handle_write, as the epoll loop's dispatch did.  This was S3's interim
 //   adapter for TCP.  Since S5 the TCP connections and listeners run their
 //   own reader, writer and accept tasks (srpc.tcp_channel), and no production
-//   pollable remains; the adapter serves only add_proxy's other callers.
+//   pollable remains; S7b kept the adapter because add_proxy is the public
+//   extension API for custom pollables, documented in both books.
 //
 // * Stackless tasks spawned on the thread run as Lion spawn_local tasks (see
 //   reactor_spawn_stackless_task_with_result).
@@ -4751,8 +4326,9 @@ fn pollthread_drop(pt: &PollThread) {
 // (PollTaskUnwindAbort), which is what the thread's catch-all
 // (spawn_abort_on_panic) did before Lion's tasks started catching panics.
 //
-// The retired epoll loop (PollThreadWorker::poll_loop and its pollworker_*
-// helpers) is no longer run by PollThread; S7 deletes it.
+// The epoll loop this replaced (PollThreadWorker and its pollworker_*
+// helpers) was deleted in S7b; the comments below still name the rules it had
+// where the driver keeps them.
 
 // The driver of this thread's PollThread, while it runs; null elsewhere.
 thread_local! {
@@ -4766,9 +4342,9 @@ struct PollDriver {
     wake: Arc<PollDriverWake>,
     receiver: PollCmdReceiver,
     // Jobs waiting to run, in submission order, one entry per job (identity
-    // is the Arc address, as in JobSet).  The epoll worker's JobSet ran them
-    // in address order; callers rely on submission order (a close job queued
-    // before a later job runs first).
+    // is the Arc address).  The epoll worker's job set ran them in address
+    // order; callers rely on submission order (a close job queued before a
+    // later job runs first).
     jobs: RefCell<Vec<Arc<dyn Job>>>,
     // One registration per descriptor, as fd_to_pollable_ was.
     fds: RefCell<HashMap<i32, Rc<PollFdEntry>>>,
@@ -4781,10 +4357,6 @@ struct PollDriver {
     // Whether the driver task is being polled.  Its own drain covers what the
     // owner-side hooks would wake it for, so they skip the wake then.
     running: Cell<bool>,
-    // The descriptor whose transport task is inside handle_read, or -1.  That
-    // task reads its pending-write latch as soon as handle_read returns, so
-    // a reply sent from inside it (a fast handler's) needs no wake.
-    reading_fd: Cell<i32>,
     // The Lion timer the driver sleeps on, and the event deadline it was
     // armed for (u64::MAX when none).
     timer: RefCell<Option<lion_reactor::ResourceId>>,
@@ -4841,7 +4413,6 @@ fn pollthread_run(receiver: PollCmdReceiver, wake: Arc<PollDriverWake>) {
         stop: Cell::new(false),
         accepting: Cell::new(true),
         running: Cell::new(false),
-        reading_fd: Cell::new(-1),
         timer: RefCell::new(None),
         armed_us: Cell::new(u64::MAX),
     });
@@ -4974,36 +4545,6 @@ fn poll_driver_is_current(wake: &Arc<PollDriverWake>) -> bool {
     driver.accepting.get() && Arc::ptr_eq(&driver.wake, wake)
 }
 
-// On the poll thread that owns `wake`, wake the registration of `fd` and
-// return true.  Elsewhere return false.
-fn poll_driver_wake_fd_here(wake: &Arc<PollDriverWake>, fd: i32) -> bool {
-    let local: *const PollDriver = poll_driver_th_.with(|slot| slot.get());
-    if local.is_null() {
-        return false;
-    }
-    let driver: &PollDriver = unsafe { &*local };
-    if !Arc::ptr_eq(&driver.wake, wake) {
-        return false;
-    }
-    // A task inside handle_read, and an fd with no registration yet (its
-    // AddPollable is still queued), need nothing: both read the latch next.
-    if driver.reading_fd.get() != fd {
-        poll_driver_wake_fd(driver, fd);
-    }
-    true
-}
-
-fn poll_driver_wake_fd(driver: &PollDriver, fd: i32) {
-    let entry: Option<Rc<PollFdEntry>> = {
-        let fds_guard = driver.fds.borrow();
-        (*fds_guard).get(&fd).cloned()
-    };
-    if let Some(entry) = entry {
-        let entry: Rc<PollFdEntry> = entry;
-        poll_fd_entry_wake(&entry);
-    }
-}
-
 fn poll_fd_entry_wake(entry: &PollFdEntry) {
     let waker: Option<Waker> = {
         let guard = entry.waker.borrow();
@@ -5043,7 +4584,6 @@ fn poll_driver_poll(driver: &Rc<PollDriver>, cx: &mut Context<'_>) -> Poll<()> {
         driver.wake.pending.swap(false, std::sync::atomic::Ordering::AcqRel);
         poll_driver_process_commands(driver);
         poll_driver_apply_removals(driver);
-        poll_driver_wake_writers(driver);
         poll_driver_trigger_jobs(driver);
         (*reactor).run_loop(false, true);
         if driver.stop.get() {
@@ -5272,17 +4812,6 @@ fn poll_driver_apply_removals(driver: &PollDriver) {
     }
 }
 
-// Wake the registrations that other threads reported a pending write for.
-fn poll_driver_wake_writers(driver: &PollDriver) {
-    let fds: Vec<i32> = {
-        let mut queue = driver.wake.write_ready.lock().unwrap();
-        core::mem::take(&mut *queue)
-    };
-    for fd in fds.iter() {
-        poll_driver_wake_fd(driver, *fd);
-    }
-}
-
 // Queue a job unless the same job (by identity) is already queued.  The scan
 // is over the jobs waiting on this thread, normally none or a few.
 fn poll_driver_add_job(driver: &PollDriver, job: Arc<dyn Job>) {
@@ -5386,7 +4915,7 @@ fn poll_fd_entry_retire(entry: &PollFdEntry, close: bool) {
     }
 }
 
-// The transport task of one registration (the interim adapter).  Unpin, so
+// The task of one add_proxy registration (the pollable adapter).  Unpin, so
 // poll can reach its fields through get_mut.
 struct PollFdTask {
     driver: Rc<PollDriver>,
@@ -5410,24 +4939,27 @@ impl Future for PollFdTask {
 // asks for writes and the socket takes them.
 //
 // Readiness is Lion's AsyncFd flag per direction, which only a park sets and
-// only an observed WouldBlock clears.  The pollables drain internally and do
-// not report EAGAIN, so the adapter maps their results onto the flags:
-// * A read edge is consumed before handle_read runs.  TcpConnection reads
-//   until a short read or EAGAIN and TcpListener accepts until EAGAIN, so
-//   data that arrives after the read raises a new edge, as it did under
-//   EPOLLET.  S5's reader task will consume only on a real WouldBlock.
+// only an observed WouldBlock clears.  A pollable drains internally and does
+// not report EAGAIN, so the adapter maps its results onto the flags, under
+// the EPOLLET contract the epoll loop gave pollables:
+// * A read edge is consumed before handle_read runs.  A pollable must read
+//   until EAGAIN or a short read (accept until EAGAIN), so data that arrives
+//   after its read raises a new edge.
 // * The write flag is consumed only when handle_write returns NO_CHANGE,
-//   which TcpConnection does only after send(2) hit EAGAIN.  A drained
-//   buffer returns READ; the socket is still writable, so the flag stays set
-//   and the next pending write goes out at once.
+//   which a pollable returns only after send(2) hit EAGAIN (TCP's retired
+//   pollable did).  Any other mode means the socket is still writable, so
+//   the flag stays set and the next pending write goes out at once.
 // ERR and HUP wake both directions in Lion, so a failed or hung-up socket is
 // seen by handle_read (recv fails or reads EOF) rather than handle_error,
 // which the adapter does not call.
 // The pending-write latch is read here after every handle_read (a fast
-// handler's reply is written in the same poll) and whenever the task is
-// woken: notify_pending_write wakes it, which replaces the epoll loop's sweep
-// of every registration.  (TCP's send_frame did so until S5.)  A pollable found
-// closed is retired and closed, as that loop's closed sweep did.
+// handler's reply is written in the same poll) and whenever the task is woken
+// for another reason.  Nothing wakes the task for the latch alone: a pollable
+// that wants write interest from another thread asks for it with
+// PollThread::update_mode.  (The epoll loop swept every registration's latch
+// each pass; S3's notify_pending_write replaced that sweep for TCP, and went
+// with TCP's pollable surface in S7b.)  A pollable found closed is retired and
+// closed, as that loop's closed sweep did.
 fn poll_fd_task_poll(driver: &PollDriver, entry: &Rc<PollFdEntry>, cx: &mut Context<'_>) -> Poll<()> {
     // Publish the waker before reading any state it may be woken for.
     {
@@ -5444,9 +4976,7 @@ fn poll_fd_task_poll(driver: &PollDriver, entry: &Rc<PollFdEntry>, cx: &mut Cont
         return Poll::Ready(());
     }
     if (entry.mode.get() & PollMode::READ) != 0 && poll_fd_take_ready(entry, cx, false) {
-        driver.reading_fd.set(entry.fd);
         poll_fd_entry_handle_read(entry);
-        driver.reading_fd.set(-1);
     }
     if poll_fd_entry_is_closed(entry) {
         poll_fd_task_retire(driver, entry);
@@ -5538,8 +5068,8 @@ pub fn lion_fd_poll_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>
 /// returned EAGAIN, in the same poll: no park lies between that EAGAIN and
 /// the clear, so the clear consumes exactly the readiness the EAGAIN
 /// disproved (U8 invariant 2), and the next transition raises a new edge.
-/// (The interim pollable adapter also calls it before handle_read, whose
-/// pollables drain to EAGAIN or a short read under EPOLLET rules.)
+/// (The pollable adapter also calls it before handle_read, whose pollables
+/// drain to EAGAIN or a short read under EPOLLET rules.)
 pub fn lion_fd_consume_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
     let polled = if write {
         async_fd.poll_write_ready(cx)
@@ -5909,10 +5439,6 @@ fn quorum_event_is_slow(_qe: &QuorumEvent) -> bool {
     r.slow_.set(false);
     result
 }
-
-#[cfg(test)]
-#[path = "../tests/helpers/pollworker_fd_reuse.rs"]
-mod pollworker_fd_reuse_tests;
 
 #[cfg(test)]
 #[path = "../tests/helpers/event_wake_state.rs"]

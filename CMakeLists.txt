@@ -1264,15 +1264,6 @@ if(SRPC_RUNTIME_BATTERY_AVAILABLE)
         endif()
     endforeach()
 
-    # A test-only reactor implementation unit can exercise private canonical
-    # worker operations without adding production exports or duplicating them.
-    set(_fd_reuse_source ${CMAKE_CURRENT_SOURCE_DIR}/tests/pollworker_fd_reuse_test.cc)
-    target_sources(test_reactor_extended PRIVATE ${_fd_reuse_source})
-    set_source_files_properties(${_fd_reuse_source} PROPERTIES
-        CXX_SCAN_FOR_MODULES OFF
-        COMPILE_OPTIONS "@${SRPC_BATTERY_MODMAP}"
-        OBJECT_DEPENDS "${SRPC_BATTERY_MODMAP}")
-
     # The documentation guard checks both the Rust guide and C++ companion.
     # Absolute source paths also work when CTest runs from the build tree.
     target_compile_definitions(test_rpc_docs_symbols PRIVATE
