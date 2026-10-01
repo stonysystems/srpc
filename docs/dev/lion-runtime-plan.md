@@ -702,15 +702,13 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     - A `RefCell` reachable from two threads means a `Send`/`Sync` claim is
       wrong somewhere. Find the claim, and fix the ownership rather than the
       symptom.
-- [ ] **S1. Lion as pinned dependency crates, and the gate policy.** The
+- [x] **S1. Lion as pinned dependency crates, and the gate policy.** The
   Rust-lane half is done on `lion/s1-rust` (rebased onto `e94dd7e`) as
   `965376c` (Lion pin `aa5bebe` -> `3496113`), `2085e7c` (dependencies and
   the allowlist gate), `eedc960` (the forwarding `OsBackend` impl) and
   `53c5c4a` (the `verify-lion` lane); its results are at the end of this
-  item. The C++ half is in place on `lion/integrate` (`9a74fd1` pin bump,
-  `e004152` CMake, `47313d2` gate, `f49f456` battery tests) but cannot
-  build or run until rusty-cpp fixes T5f's E1 and R2 and the further gaps
-  recorded in *Result, C++ half* at the end of this item.
+  item. The C++ half is done on `lion/integrate` under rusty-cpp `a130025e`;
+  see *Result, C++ half* at the end of this item.
   - **Submodule and dependencies.** Add the `third-party/lion` submodule. Add
     path dependencies on `lion-executor` and `lion-reactor` with
     `default-features = false`; `lion-slab`, `lion-timer-wheel` and the
@@ -816,156 +814,169 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
           `lion_batch_` field, and the Lion imports;
         - S2's derive revert (S7);
         - the CLAUDE.md edits above.
-  - **Result, C++ half (2026-09-30, `lion/integrate`).** Everything SRPC
-    owns is in place; the library does not build yet. What blocks it is
-    rusty-cpp's: T5f's E1 and R2, and further gaps (G3, G4, and a suspected
-    G5, below) that diagnostic builds found behind them.
-    - **Pin.** rusty-cpp `1689f438` -> `dc6e7558` (T1-T4, T5e), in its own
-      commit (`9a74fd1`).
-    - **CMake** (`e004152`). The `rusty-cpp-verus-erase` helper is built by
-      its own `cargo build --locked -p verus-erase` target, never together
-      with the transpiler (T1b), and has a fingerprint edge like the
-      transpiler's. Generation runs with `--verus-exec --crate-graph
-      --verus-erase-helper` and depends on Lion's sources. The five
-      generated Lion providers (`SRPC_LION_PROVIDERS`, in `crate-graph.json`
-      order: `lion_executor_spec`, `lion_slab`, `lion_timer_wheel`,
-      `lion_reactor`, `lion_executor`) compile in srpc's own file set, so
-      they share its BMIs and land in `libsrpc.a`. They stay out of
-      `SRPC_MODULE_SRC`, so the 37-provider checks are unchanged.
-      `lion-framework-spec` is ghost-only; `lion-utility-spec` and
-      `lion-reactor-spec` are unused.
-    - **Gate** (`47313d2`). `check_srpc_crate_mode.py` inventories the Lion
-      providers as their own class: `crate-graph.json` exactly, the
-      placeholder ratchet and zero hand slots per provider, exact imports,
-      and each provider's strong symbols in both the fresh object and the
-      archive (`DEPENDENCY_ABI`, 374 at this pin: 1 + 1 + 25 + 190 + 157,
-      including six `std::hash` specializations the providers define). The
-      table was measured from CMake's `-O2` objects; the gate's fresh-lane
-      flags (no `-O`) compile the same five modules to the identical 374.
-      Canonical children may `export import` only the pinned Lion modules
-      (`epoll_wrapper` -> `lion_reactor`; `reactor` and `tcp_channel` ->
-      both); the transpiler re-exports every dependency crate a child names.
-      `srpc.tcp_channel` now also imports `rc_port`, `srpc.basetypes` and
-      `srpc.misc`. The importer imports `lion_reactor` and `lion_executor`
-      and builds a Lion runtime over `SrpcEpollBackend`. The T1 version
-      coupling runs in the source gate: `--verus-build-info` must name the
-      commit every Verus git package in `Cargo.lock` resolves to, and
-      `Cargo.lock`'s `verus_builtin_macros` version.
-    - **Placeholder policy decision.** `lion_executor` contains
-      `rusty::io::Error::Kind::Unsupported`, the C++ spelling of
-      `std::io::ErrorKind::Unsupported`, which it returns without the `mio`
-      feature. The case-insensitive `UNSUPPORTED` ratchet matched it. That
-      one fully qualified token is allowlisted; nothing else is.
-    - **New host prerequisite.** The helper's `verus_syn` and
-      `verus_prettyplease` come from Verus's git repository, so a cold
-      machine needs a networked `cargo fetch` in `third-party/rusty-cpp`
-      once, like the Lion closure's warm git cache. CLAUDE.md should say so
-      (the owner's edit, with the S1 ones above).
-    - **Measured on this tree.** cargo 406 passed / 0 failed / 1 ignored;
-      `test_goal0_contracts.py` 28 OK, none skipped; the standalone tests 7
-      OK; `extract_srpc_rust.py --check` exit 0. The real build compiles the
-      five Lion providers and 29 of the 37 SRPC providers. Its only errors
-      are E1's two in `srpc.epoll_wrapper`, which leave the 8 modules that
-      import it, and so the library, unbuilt.
-    - **Diagnostic builds (never committed; numbers are not pins).** With
-      E1 and R2 hand-patched in the generated output of a scratch build
-      (E1: drop the colliding trait-impl `deregister(RawFd)`; R2: call
-      `try_io<rusty::Unit>` on a non-const guard):
-      - all 37 SRPC providers, the five Lion providers and the root compile
-        with SRPC's flags, with 0 errors;
-      - the dual-compile gate's fresh lane compiles them all against the
-        configured BMIs, and the importer, Lion block included, fails only
-        on static_asserts: `PollThread`'s layout and G4;
-      - the battery builds except `test_rpc_tcp_channel` (its layout pins),
-        and `ctest -L runtime_battery` passes 28 of 35: six failures
-        (`test_reactor`, `test_rpc_pollthread_proxy_storage`,
-        `test_rpc_transport_matrix`, `test_rpc_metrics`,
-        `test_runtime_parity`, `srpc_runtime_parity`) log or show G3, and
-        `test_rpc_tcp_channel` did not build.
-    - **G3, a runtime gap: Lion's reactor epoch is read through a dangling
-      reference.** In C++ every Lion I/O registration fails with
-      "AsyncFd::new called on a thread with no Lion reactor", so no
-      PollThread transport or pollable ever registers.
-      - Lion's `Reactor::enter` (`lion-reactor/src/reactor/enter.rs`) takes
-        the next epoch in `NEXT_EPOCH.with(|n| { let e = n.get();
-        n.set(e + 1); e })`. The emitter lowers the closure to a
-        `-> decltype(auto)` lambda ending `return std::move(e);`. It returns
-        `uint64_t&&` bound to its own local, and `LocalKey::with`
-        (`decltype(auto)`) forwards the dangling reference.
-      - Measured: after a runtime is built, `CURRENT_REACTOR` is set but
-        `current_reactor_epoch()` is `None`, because the epoch read 0.
-        A 20-line reproduction of the lowered shape reads garbage at `-O2`
-        and the right values at `-O0`.
-      - Clang warns (`-Wreturn-stack-address`); SRPC's `-w` hides it.
-        Built with that warning on and without `-w`, the 43 generated units
-        (37 SRPC, 5 Lion, the root) give exactly one: this lambda
-        (`lion_reactor.cppm:7028` at this pin).
-      - The fix belongs in rusty-cpp: a closure whose tail is a local must
-        return it by value. Lion and SRPC need no change. rusty-cpp's own
-        gate could build its parity matrix with
-        `-Werror=return-stack-address` (T8).
-    - **Behind G3 (diagnostic build, E1, R2 and G3 hand-patched).**
-      `ctest -L runtime_battery` passes 32 of 35, including
-      `test_runtime_parity` and `srpc_runtime_parity`, and both adapted
-      battery tests. The first failure of each remaining suite:
-      - `test_rpc_transport_matrix` aborts in
-        `StackfulHandlerAllowsSameServiceDispatch` with `free(): invalid
-        pointer`. The frame is Lion's `ResourceSlab::p_set_read_waker`
-        (`lion-reactor/src/resource_slab.rs:186-188`; generated
-        `lion_reactor.cppm:6843`) destroying a `ResourceSlotWrapper` whose
-        `Waker` (`rusty::Waker`, a `std::function`) frees a pointer malloc
-        does not own. A bitwise relocation of the `std::function` through
-        the slab's remove/insert would do exactly this; that is a hypothesis
-        for rusty-cpp (G5), not yet confirmed.
-      - `test_reactor`'s `StressTest` counts 110 `handle_read` calls for 100
-        one-byte writes over 10 descriptors. Not yet triaged: S3's adapter
-        may deliver one extra read edge per descriptor by design, or the C++
-        lane may differ from the Rust one. The Rust lane asserts no
-        per-write `handle_read` count, so it cannot tell.
-      - `test_rpc_tcp_channel` does not build only because of its layout
-        pins; a scratch copy with the measured values passes 22 of 22.
-    - **G4, an auto-trait gap: `std::task::Waker` is not known to be
-      Send + Sync.** The emitter's auto-trait table
-      (`transpiler/src/codegen/predicates.rs`) has no `Waker`, so S3's
-      `PollDriverWake` (a `Mutex<Option<Waker>>`) gets no
-      `is_send`/`is_sync`, and neither does `PollThread`, which holds it in
-      an `Arc`. `Client`, `ClientConnection` and `ClientPool` therefore lose
-      the Send/Sync that S0b established and the importer pins. rustc derives
-      them (Waker is Send + Sync unconditionally); the fix is one table row
-      in rusty-cpp, not an `unsafe impl` in SRPC.
-    - **ABI preview (diagnostic objects; to be re-measured on T5f's
-      output).** 2082 -> 2189 strong symbols, all in three modules:
-      - `srpc.epoll_wrapper` +5 (48 -> 53; raw 51 -> 56): the
-        `OsBackend`/`OsInterrupt` forwarding impl (`eedc960`): `register_`,
-        `reregister` and `wait` over Lion's types, `lion_os_event` and
-        `srpc_interest`. E1's fix may respell these rows.
-      - `srpc.reactor` +57 (365 -> 422; raw 386 -> 449): the Lion driver and
-        adapter (`04aebb2`: `PollDriverTask`, `PollFdTask`,
-        `poll_driver_*`, `poll_fd_*`, `pollthread_run`, the stackless
-        forwarding to Lion, `PollThread::notify_pending_write`), and the
-        shared readiness helpers and unwind guard (`9d587bd`:
-        `lion_fd_poll_ready`, `lion_fd_consume_ready`,
-        `PollTaskUnwindAbort`, `PollThread::is_current_thread`).
-        `PollThread`'s fieldwise constructor is respelled for `driver_`.
-      - `srpc.tcp_channel` +45 (171 -> 216; raw 185 -> 236): the reader,
-        writer and accept tasks (`21ce10a`), write-through (`daf3d92`), the
-        cork (`4c008ed`) and `kTcpWriteThroughIdleUs` (`95057e3`).
-      - Layout: `sizeof(PollThread)` 112 -> 136 (`remove_count_` 100 ->
-        116, `driver_` at 120); `sizeof(TcpConnection)` 352 -> 496 and its
-        alignment 8 -> 16, with `writer_` at 352, `send_error_` at 480 and
-        `last_send_us_` at 488. `Client`, `ClientConnection`, `Future`,
-        `ServerConnection`, `TcpListener` and `TcpFactory` are unchanged.
-    - **Battery adaptations.** `test_reactor.cc`'s shutdown-cleanup test and
-      `rpc_tcp_channel_test.cc`'s pending-write-latch test pinned behaviour
-      S3 and S5 removed; each now states the new contract (`f49f456`). `rpc_tcp_channel_test.cc`'s layout pins wait for the re-pin.
-    - **Still owed, once rusty-cpp fixes E1, R2, G3, G4 and G5:** the pin
-      bump; triage of the `StressTest` count; a fresh-object re-pin of
-      `ABI_SPECS`, `RAW_ABI_ALIASES`,
-      `EXPECTED_TOTAL_PROVIDER_SYMBOLS`, the reactor's reviewed additions,
-      the importer's and `rpc_tcp_channel_test.cc`'s layout pins and
-      `test_goal0_contracts.py`'s totals; a re-measure of `DEPENDENCY_ABI`;
-      then the full gate, `ctest -L srpc`, `srpc_runtime_parity` and the
-      three sanitizer batteries.
+  - **Result, C++ half (done 2026-10-01, `lion/integrate`).** SRPC with Lion
+    builds, passes both gates and the whole battery in the C++ lane, under
+    rusty-cpp `a130025e`.
+    - **Commits.** `9a74fd1` and `5bc322a` pin bumps (`1689f438` ->
+      `dc6e7558` -> `a130025e`); `e004152` CMake; `47313d2` gate; `f49f456`
+      battery adaptations; `246c496` ABI re-pin; `c20e65d` StressTest;
+      `479386d` T7 follow-up.
+    - **CMake.** The `rusty-cpp-verus-erase` helper is built by its own
+      `cargo build --locked -p verus-erase` target, never together with the
+      transpiler (T1b), with a fingerprint edge like the transpiler's.
+      Generation runs with `--verus-exec --crate-graph --verus-erase-helper`
+      and depends on Lion's sources. The five generated Lion providers
+      (`SRPC_LION_PROVIDERS`, in `crate-graph.json` order:
+      `lion_executor_spec`, `lion_slab`, `lion_timer_wheel`, `lion_reactor`,
+      `lion_executor`) compile in srpc's own file set, so they share its BMIs
+      and land in `libsrpc.a`. They stay out of `SRPC_MODULE_SRC`, so the
+      37-provider checks are unchanged. `lion-framework-spec` is ghost-only;
+      `lion-utility-spec` and `lion-reactor-spec` are unused.
+    - **Gate.** `check_srpc_crate_mode.py` inventories the Lion providers as
+      their own class: `crate-graph.json` exactly, the placeholder ratchet and
+      zero hand slots per provider, exact imports, and each provider's strong
+      symbols in both the fresh object and the archive (`DEPENDENCY_ABI`, 374:
+      1 + 1 + 25 + 190 + 157, including six `std::hash` specializations the
+      providers define; identical at `dc6e7558` and `a130025e`, and in the
+      `-O2` and fresh lanes). Canonical children may `export import` only the
+      pinned Lion modules (`epoll_wrapper` -> `lion_reactor`; `reactor` and
+      `tcp_channel` -> both). The importer imports `lion_reactor` and
+      `lion_executor` and builds a Lion runtime over `SrpcEpollBackend`. The
+      T1 version coupling runs in the source gate: `--verus-build-info` must
+      name the commit every Verus git package in `Cargo.lock` resolves to,
+      and `Cargo.lock`'s `verus_builtin_macros` version.
+    - **ABI re-pin** (fresh objects, `a130025e`): 2082 -> 2189 strong
+      provider symbols, 108 rows added, 1 respelled, none removed.
+      - `srpc.epoll_wrapper` +5 (raw 51 -> 56): the `OsBackend`/`OsInterrupt`
+        forwarding (`eedc960`). Its trait `deregister(RawFd)` collapses into
+        the inherent `deregister(int)` (T5f E1) and adds no row.
+      - `srpc.reactor` +57 (raw 386 -> 449): the Lion driver, the interim
+        pollable adapter and the stackless forwarding (`04aebb2`), and the
+        readiness helpers, unwind guard and `PollThread::is_current_thread`
+        (`9d587bd`), all listed as reviewed reactor additions. `PollThread`'s
+        fieldwise constructor is respelled for `driver_`.
+      - `srpc.tcp_channel` +45 (raw 185 -> 236): the transport tasks
+        (`21ce10a`), write-through (`daf3d92`), the cork (`4c008ed`) and
+        `kTcpWriteThroughIdleUs` (`95057e3`).
+      - Layout: `sizeof(PollThread)` 112 -> 136. `rusty::thread::JoinHandle`
+        gained its `Thread` handle (rusty-cpp `beb47135`), so `join_handle_`
+        grows by 16 and `remove_count_` moves 100 -> 116; `driver_` sits at
+        120. `sizeof(TcpConnection)` 352 -> 400, still 8-aligned: `writer_`
+        at 352 (32 bytes with `a130025e`'s heap-held `Waker` callable),
+        `send_error_` at 384, `last_send_us_` at 392. `Client`,
+        `ClientConnection`, `Future`, `ServerConnection`, `TcpListener` and
+        `TcpFactory` do not move. The importer's Send/Sync asserts on
+        `Client`, `ClientConnection` and `ClientPool` hold with no
+        `unsafe impl`.
+    - **Battery adaptations** (each with a note in the test):
+      - `test_reactor.cc` `DestructorCleanupWithoutExplicitRemove`: the epoll
+        loop's `epoll_remove_count` no longer runs. The test proves every
+        registration live (a byte from each peer reaches its pollable), then
+        that shutdown releases every registration without closing a pollable.
+      - `rpc_tcp_channel_test.cc` `SendFrameQueuesWithoutThePendingWriteLatch`
+        (was `CheckPendingWriteUpdateLatchesAndClears`): `send_frame` wakes
+        the writer task and never sets the latch. On a connection with no
+        PollThread the frame stays queued and the latch reads clear.
+      - `test_reactor.cc` `StressTest` counted 110 `handle_read` calls for 100
+        writes. A new registration's `AsyncFd` starts readable (U8), so the
+        S3 adapter delivers one empty read per descriptor; the epoll loop's
+        `EPOLLET` registration had no initial edge. The expectation was
+        wrong, not the adapter: an edge-triggered `handle_read` must tolerate
+        `EAGAIN`, nothing promised otherwise, and the Rust lane does the same.
+        The test now counts bytes (all 100) and at least one call per
+        descriptor; the book's `PollableBase` table says `handle_read` may
+        find nothing.
+    - **T7 follow-up.** The transpiler pin has carried T7's relocating reads
+      (`400cb4d1`) since `dc6e7558`. The ASan battery passes 35 of 35 with
+      none of the five fiber suppressions in `scripts/lsan_suppressions.txt`
+      and no leak report (LSan is live on this host: a deliberate 24-byte
+      leak is reported), so all five are dropped and the file records why.
+      `event_deadline_remove_key`'s move-out workaround is back to a plain
+      `BTreeMap::remove` (a generic function; no ABI row).
+    - **Acceptance, measured on the committed tree:**
+      - `RUSTFLAGS=-Dwarnings cargo test --locked --workspace --all-targets`:
+        406 passed, 0 failed, 1 ignored.
+      - Configure exit 0; `cmake --build build --parallel 16` exit 0, both
+        gates included (the dual-compile gate: 5 Lion providers with 374
+        symbols, 38 modules compiled, 0 hand slots, 2189 provider symbols,
+        the importer run against fresh objects and `libsrpc.a`).
+      - `ctest -L srpc` 51/51, `srpc_runtime_parity` included.
+      - Sanitizer batteries: address 35/35 (no suppressions), undefined
+        35/35, thread 34/35. The TSan failure is `test_rpc_transport_matrix`,
+        deterministic (20 of 20 runs): a reported race on Lion's
+        `Instant::now()` `START`. It is a false positive of rusty-cpp's
+        `OnceCell::get_or_init`, which relies on `std::call_once`'s release
+        inside the uninstrumented `libc++.so`: a 20-line reproduction reports
+        the same race, and an acquire fast path on `initialized_`
+        (`if (initialized_.load(acquire)) return *as_ptr();`) in a scratch
+        copy of `include/rusty/once.hpp` removes it. That fix is rusty-cpp's
+        (G6); SRPC adds no TSan suppression for it.
+      - rpcbench, a first look for S8 (`scripts/run_rpcbench.sh`, default
+        modes, 3 trials, two interleaved rounds, host load 3.5-4.1),
+        median and range of 6 trials:
+
+        | mode | `lion/integrate` | old loop + S0b (`s0b-after`) | main checkout `build/rpcbench` (2026-09-07) |
+        | --- | --- | --- | --- |
+        | fast | 1166k (1153k-1185k) | 1143k (1106k-1195k) | 1256k (1215k-1284k), 1 of 6 trials failed |
+        | fiber | 650k (645k-656k) | 660k (649k-675k) | 718k (710k-730k) |
+        | defer | 636k (628k-638k) | 663k (646k-670k) | 709k (690k-724k) |
+        | async | 743k (739k-759k) | 720k (712k-735k) | 982k (964k-1011k) |
+
+        `s0b-after` is the S0b measurement's "after" binary, identified by its
+        scratch directory name and date (2026-09-26), not rebuilt here.
+        Against the old 1 ms loop with the same S0b client: fast and fiber
+        are within each other's range, async is about 3% higher and defer
+        about 4% lower, both outside the ranges. The 2026-09-07 binary is
+        faster in every mode, but it predates S0b's synchronized `Client`
+        (its one failed trial is consistent with the pre-S0b race, which
+        failed 4 of 80 short runs; the runner keeps no server log to confirm
+        it) and more than three weeks of
+        other changes, so that gap is not Lion's until S8 builds `e94dd7e`
+        (the last pre-Lion tree) and measures it the same way.
+    - **How it got here: gaps the C++ half found at `dc6e7558`, fixed in
+      T5f (`a130025e`).** E1 (`SrpcEpollBackend::deregister` overload
+      collision) and R2 (`AsyncFd` `try_io` deduction) were known. Diagnostic
+      builds with those two hand-patched (never committed) found three more:
+      - G3: Lion's `Reactor::enter` took the next epoch in a
+        `NEXT_EPOCH.with(..)` closure that the emitter lowered to a
+        `-> decltype(auto)` lambda ending `return std::move(e);`, a dangling
+        `uint64_t&&`. The epoch read 0, so every `AsyncFd` registration
+        failed with "no Lion reactor". Clang's `-Wreturn-stack-address`
+        (hidden by SRPC's `-w`) flagged it, the only such warning in the 43
+        generated units. rusty-cpp's own gate could build with
+        `-Werror=return-stack-address`.
+      - G4: the emitter's auto-trait table had no `std::task::Waker`, so
+        `PollThread` and the client types lost Send/Sync in C++.
+      - G5: `free(): invalid pointer` destroying a `Waker` moved bitwise
+        through Lion's resource slab; T5f now keeps the callable on the heap.
+    - **Policy decisions recorded here.** `lion_executor` contains
+      `rusty::io::Error::Kind::Unsupported` (the C++ spelling of
+      `std::io::ErrorKind::Unsupported`, returned without the `mio` feature),
+      which the case-insensitive `UNSUPPORTED` ratchet matched; that one fully
+      qualified token is allowlisted. The helper's `verus_syn` and
+      `verus_prettyplease` come from Verus's git repository, so a cold machine
+      needs one networked `cargo fetch` in `third-party/rusty-cpp`; CLAUDE.md
+      should say so (the owner's edit, with the S1 ones above).
+    - **Left for S7b** (dead code, now pinned ABI):
+      - the S3 adapter's `PollFdTask`/`poll_fd_*`/`poll_driver_*` pollable
+        path and `PollThread::notify_pending_write` once `add_proxy` is
+        retired or reduced;
+      - TCP's pollable surface (`TcpPollableShim`, `TcpListenerPollableShim`,
+        their factories, `pending_write_update_`, `check_pending_write_update`,
+        `handle_write`/`handle_error`), the epoll loop
+        (`PollThreadWorker`, `Epoll`, `epoll_*_impl`, `epoll_remove_count`)
+        and `JobSet`; `pollworker_fd_reuse_test.cc` and the C++ pollable
+        tests go with them or move to the `AsyncFd` contract;
+      - the book still says `handle_error` handles a reported hangup; since
+        S3 a failed socket reaches `handle_read` instead;
+      - S2's `derive` workaround on `SrpcInterest`/`SrpcOsEvent` (the pinned
+        emitter no longer reports `derive(Copy)` as a slot in Lion's types,
+        so the revert should now be possible; it changes their ABI rows).
+    - **Left for rusty-cpp:** G6, the TSan false positive above (an acquire
+      fast path in `OnceCell::get_or_init`). Until it lands, the thread
+      battery is 34/35.
+    - **Left for S8:** the full rpcbench comparison against a fresh build of
+      `e94dd7e`, including `fast_vec`, and the microbenchmark compare.
 - [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
   `SrpcEpollBackend` meets the contract below, and its results are at the
   end of this item. S1's Rust half added the forwarding
@@ -1056,8 +1067,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
 - [ ] **S3. Core swap.** The Rust-lane half is done on `lion/s3-core` as
   `04aebb2` (the swap and its tests), `5d2b20d` (a skipped self-wake) and
   `e879b61` (an RPC echo benchmark); its results are at the end of this
-  item. The C++ half builds on S1's (`lion/integrate`); its status, an ABI
-  preview and the runtime gap that blocks it are in S1's *Result, C++ half*.
+  item. The C++ half is done with S1's on `lion/integrate`: its ABI re-pin
+  and battery adaptations are in S1's *Result, C++ half*.
   - `PollThread` becomes one OS thread running one Lion runtime.
   - Stackless tasks go to Lion `spawn_local`.
   - Foreign wakes go through the Lion waker.
@@ -1504,8 +1515,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   `9d587bd` (the readiness helpers made shareable), `21ce10a` (the transport
   tasks and their tests), `d55d625` (a benchmark runner for three builds)
   and `b39e66a` (a host requirement of one test); its results are at the end
-  of this item. The C++ half builds on S1's (`lion/integrate`); its status
-  and an ABI preview are in S1's *Result, C++ half*.
+  of this item. The C++ half is done with S1's on `lion/integrate`: its ABI
+  re-pin and battery adaptations are in S1's *Result, C++ half*.
   - The `TcpConnection`/`TcpListener` pollable shims become per-connection
     async read and write tasks, registered with Lion's reactor.
   - `send_frame` from a foreign thread wakes the writer task. That replaces the
@@ -1774,7 +1785,12 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - With Lion underneath, `Future` can implement `std::future::Future`, and
     `wait()` can yield when it is called inside a fiber.
   - Fix the doc contradiction regardless of whether this scope is taken.
-- [ ] **S7. Retire and re-pin.**
+- [ ] **S7. Retire and re-pin.** Partly done with S1's C++ half
+  (`lion/integrate`, see its *Result*): the dependency-provider inventory,
+  the importer's Lion imports, `EXPECTED_IMPORTS`, and the ABI and layout
+  re-pin for S1/S3/S5 as they stand. What remains is S7b: delete the dead
+  code (S1's *Left for S7b* list), revert S2's `derive` workaround, and
+  re-pin again after the deletions.
   - **Delete** the 1 ms loop, the linear timeout scan, the disk reactor, the
     `epoll_wrapper` `Pollable` remnants and the ticket ingress.
   - **Revert S2's `derive` workaround.** `SrpcInterest` and `SrpcOsEvent`
