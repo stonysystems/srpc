@@ -2296,6 +2296,48 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
     - **Side finding:** SRPC's own SipHash lookup of `rpc_to_service:
       HashMap<i32, usize>` on every request is 3-6.6% of server CPU in both C
       and D.
+  - **Result, Mako build (2026-10-01).** A scratch clone of Mako
+    (`apas/mako` at `378fc281d`; the live checkout was not touched) with
+    `src/srpc` replaced by SRPC `ecc2598`, Lion `3496113` and rusty-cpp
+    `0d3b990f` configures and builds (exit 0 and 0; a clean rebuild in a
+    fresh build directory: 739 steps, 0 errors). `libsrpc.a` holds the 37
+    SRPC and 5 Lion providers, with 0 hand-attention slots, and all 43
+    generated `.cppm` files are byte-identical to SRPC's own build at the same
+    pins. Mako's 24 single-process tests pass (24/24, as at baseline),
+    including `test_mako_nontxn_distributed`, whose 8 cases run over TCP on a
+    Lion PollThread. The Cargo lane run from Mako's tree gives 398 passed, 0
+    failed, 1 ignored. Patches: scratchpad `s8-patches/`.
+    - **Build glue (Mako side, expected):** `src/srpc-cmake/CMakeLists.txt`
+      takes the native sources from `scripts/native-kernel-sources.txt`,
+      builds `rusty-cpp-verus-erase`, passes `--verus-exec --crate-graph
+      --verus-erase-helper`, and adds the 5 Lion providers and
+      `crate-graph.json`; `src/srpc/third-party/lion` becomes a checked-out
+      submodule; both rusty-cpp pins move to `0d3b990f`. Not ported: Mako's
+      forked gate scripts are pre-Lion, so the source gate was taken off the
+      production path and the dual-compile gate out of `ALL`, and
+      `ci/ci.sh:283` still names `srpc_goal0_dual_compile`. Mako's
+      `.gitignore` (`*.json`) silently drops four SRPC inventory files on
+      `git add src/srpc`.
+    - **Source compatibility:** four breaks, all from SRPC commits between
+      Mako's vendored `683c506` and `99f625d`, none from the Lion work:
+      `d6553b4` deleted the `serializable*.hpp` shims (now `import
+      srpc.serializable;`); `624c083` made `Service::__dispatch__` const;
+      `fff9d72` made generated handlers const (18 overrides, plus one
+      `mutable bool` that needs review: `ServerControlServiceImpl::
+      sig_handler_set_`); `c8635d4` moved reactor thread-locals to
+      `thread_local!` (`raft/frame.cc:106,150` now use `.with`).
+    - **Foreign-thread `set()` sites (unchanged; the EventPing decision):**
+      `~RaftServer` sets `ready_for_replication_` from the shutdown thread
+      (`raft/server.cc:1829`) while HeartbeatLoop waits on it with a timeout
+      (`:1322`) on the poll thread. It now wakes at that deadline: 5 ms in
+      production, and 100 ms under RAFT_TEST, which equals the destructor's
+      own 100 ms sleep (`:1861`). `raft/commo.cc:30/52` sets, from a
+      poll-thread callback, an event created on the leadership-monitor
+      thread that nobody waits on. Both write the event's non-atomic state
+      from a non-owner thread, as they did before S4. The Raft and Paxos
+      vote and reply paths are same-thread. Mako has no `Pollable`, `Epoll`
+      or `Job` subclass, and it relies on synchronous `create_run`, which
+      S4 kept.
 
 ## 7. Risks
 
