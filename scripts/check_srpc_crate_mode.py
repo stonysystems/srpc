@@ -24,7 +24,7 @@ DEFAULT_TRANSPILER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-transpiler"
 )
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "a130025ef2c5503054ba397e7f5b7af9a89fdf08"
+REQUIRED_RUSTY_CPP_COMMIT = "0d3b990f516fee37e3bceca237418036f9a0bcfe"
 EXTRACTION_DRIVER = "scripts/extract_srpc_rust.py"
 EXTRACTION_MANIFEST = "rust-modules.toml"
 MODULE_PREAMBLE = "module-preambles.toml"
@@ -956,6 +956,7 @@ EXPECTED_IMPORTS = {
 # Advisory only (see require_cpp_surfaces). Refreshed from the rusty-cpp
 # a130025e output of the Lion-runtime tree after S7b (epoll_wrapper, reactor
 # and tcp_channel changed), so the report shows only drift after it.
+# Byte-identical at 0d3b990f, whose transpiler sources are a130025e's.
 EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.basetypes": '2c21d1094d927ee17e658f250f126cf174c385ba187cf9073027e025da815714',
     "srpc.callback_wrapper": '1e43e6fc2dc7f4b501b231d2e9a4069c04970e0fd887bdf408cc020fbbfde1f6',
@@ -1081,7 +1082,7 @@ class DependencyProvider:
 
 # crate-graph.json's `crates`, in its order (dependencies first). Measured
 # from `--verus-exec --crate-graph` output at Lion 3496113 / rusty-cpp
-# dc6e7558, and unchanged at a130025e. lion-executor-spec emits a provider (its executable remainder);
+# dc6e7558, and unchanged at a130025e and 0d3b990f. lion-executor-spec emits a provider (its executable remainder);
 # the other *-spec crates do not.
 DEPENDENCY_PROVIDERS: tuple[DependencyProvider, ...] = (
     DependencyProvider("lion-executor-spec", "lion_executor_spec", ()),
@@ -1138,7 +1139,8 @@ DEPENDENCY_IMPORTER_USE_MARKERS: dict[str, str] = {
 #
 # Measured at Lion 3496113 / rusty-cpp dc6e7558 from the objects CMake built
 # for these modules in srpc's file set, and re-measured unchanged at
-# a130025e (T5f's fixes moved no Lion symbol):
+# a130025e (T5f's fixes moved no Lion symbol) and at 0d3b990f (G6 changed
+# only rusty/once.hpp, whose OnceCell members are inline):
 #   lion_executor_spec 1, lion_slab 1, lion_timer_wheel 25, lion_reactor 190,
 #   lion_executor 157 = 374. lion_reactor and lion_executor each include three
 #   unattached std::hash specializations (see dependency_module_symbols).
