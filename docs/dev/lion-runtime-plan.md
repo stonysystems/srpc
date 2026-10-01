@@ -770,6 +770,14 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     identical with and without T7.
   - Decide with the owner what "green" means for the pin bump. Options: fix
     the matrix, or record the pre-existing failures as the known baseline.
+  - **Re-measured at `7e0c201f` (T6, 2026-10-01):** `cd transpiler && cargo
+    test --release` gives 2,859 passed, 3 failed, 23 ignored. The 3 are the
+    known ones (the fake-rustc test, `cpp_name_crate_mode_rejects_opaque_
+    expansion_before_output`, and the parity-matrix dry run that needs
+    `strpat`), identical at `0d3b990f`. `either_parity_harness` now passes.
+    The full parity matrix was not re-run. Pins `a130025e`, `0d3b990f` and
+    `7e0c201f` were taken on this recorded baseline; the owner's decision
+    is still open.
 
 - **Side benefit, not in scope.** Once T1–T3 exist, SRPC's own canonical
   modules could carry in-body Verus proofs in `verus!{}` form. That lifts the
