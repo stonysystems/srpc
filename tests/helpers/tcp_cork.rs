@@ -69,6 +69,13 @@ fn read_frame(stream: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
     Ok(payload)
 }
 
+// The bytes still queued in the outbound buffer (the retired pollable
+// content_size counted these plus the undecoded inbound bytes, which the
+// cork's sends never touch).
+fn queued_bytes(conn: &TcpConnection) -> usize {
+    conn.outbound_.lock().unwrap().len()
+}
+
 fn send(conn: &TcpConnection, payload: &[u8]) -> ChannelError {
     let frame = ChannelFrame { payload: payload.as_ptr(), size: payload.len() };
     // SAFETY: the frame points at the live payload for this call.
@@ -111,7 +118,7 @@ fn a_burst_inside_the_cork_interval_is_batched() {
         assert_eq!(send(&conn, &payloads[0]), ChannelError::None);
         let first_send_us: u64 = conn.last_send_us_.load(Ordering::Relaxed);
         assert!(first_send_us != 0, "the first frame's send(2) recorded no send time");
-        assert_eq!(conn.content_size(), 0, "the idle connection's first frame was not written through");
+        assert_eq!(queued_bytes(&conn), 0, "the idle connection's first frame was not written through");
         // Each later frame's cork decision read the clock before `now` below,
         // so a frame whose call returned inside the interval was decided
         // inside it, and must have been queued.
@@ -123,7 +130,7 @@ fn a_burst_inside_the_cork_interval_is_batched() {
             burst_end_us = crate::basetypes::Time::now(true);
             if burst_end_us < first_send_us + kTcpWriteThroughIdleUs {
                 queued_so_far += 4 + payload.len();
-                assert_eq!(conn.content_size(), queued_so_far, "a frame inside the interval was written through");
+                assert_eq!(queued_bytes(&conn), queued_so_far, "a frame inside the interval was written through");
             } else {
                 inside = false;
             }
@@ -132,7 +139,7 @@ fn a_burst_inside_the_cork_interval_is_batched() {
         assert_eq!(read_frame(&mut peer).unwrap(), payloads[0]);
         let queued: usize = payloads[1..].iter().map(|p| 4 + p.len()).sum();
         if inside {
-            assert_eq!(conn.content_size(), queued, "a frame inside the interval was written through");
+            assert_eq!(queued_bytes(&conn), queued, "a frame inside the interval was written through");
             peer.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
             let mut probe = [0u8; 1];
             assert!(peer.read(&mut probe).is_err(), "a corked frame reached the peer before the writer ran");
