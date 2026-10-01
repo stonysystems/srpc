@@ -528,13 +528,28 @@ TEST_F(TcpConnectionTest, PollModeIncludesWriteWhenOutboundPending) {
     EXPECT_EQ(conn().poll_mode(), PollMode::READ);
 }
 
-TEST_F(TcpConnectionTest, CheckPendingWriteUpdateLatchesAndClears) {
+// Adapted for S5 of docs/dev/lion-runtime-plan.md (21ce10a). This test used to
+// pin that send_frame set the pending-write latch, which the old poll loop
+// (and S3's adapter) swept to find connections with queued bytes. On Lion a
+// connection is a reader task and a writer task over one AsyncFd, and
+// send_frame wakes the writer directly on the buffer's empty->non-empty edge
+// (TcpConnection::writer_); it no longer touches the latch, and the latch has
+// no remaining setter (S7 deletes it). The contract kept here is the part
+// that still holds for a connection with no PollThread, and so no writer:
+// the frame stays queued -- it is not written through, which only a foreign
+// sender to a PollThread-owned connection does -- and the retired latch reads
+// clear, so no sweep ever mistakes it for pending work. The writer-wake
+// contract itself is covered in the Rust lane (tests/tcp_transport_rust.rs:
+// a_foreign_send_wakes_the_writer_promptly and
+// sends_from_many_foreign_threads_keep_each_senders_order).
+TEST_F(TcpConnectionTest, SendFrameQueuesWithoutThePendingWriteLatch) {
     EXPECT_FALSE(conn().check_pending_write_update());
 
     const std::uint8_t b[1] = {0x01};
-    mut_conn().send_frame({b, 1});
-    EXPECT_TRUE(conn().check_pending_write_update());
-    EXPECT_FALSE(conn().check_pending_write_update());  // Latched: cleared on read.
+    EXPECT_EQ(mut_conn().send_frame({b, 1}), ChannelError::None);
+    EXPECT_FALSE(conn().check_pending_write_update());
+    EXPECT_EQ(mut_conn().content_size(), 5u);  // 4-byte header + 1 payload byte.
+    EXPECT_EQ(conn().poll_mode(), PollMode::READ | PollMode::WRITE);
 }
 
 TEST_F(TcpConnectionTest, ContentSizeReportsBufferedBytes) {
