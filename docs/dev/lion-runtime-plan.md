@@ -2,7 +2,13 @@
 
 Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 
-**Status: PROPOSED, revision 2 (2026-09-26).** Nothing below is implemented.
+**Status: IMPLEMENTED (2026-10-01), revision 2.** SRPC runs on Lion in both
+lanes on branch `lion-runtime`. S0–S5 and S7 are done; S8 records the
+acceptance; S6 (optional) was not taken; U1b is not needed for SRPC (§3).
+rusty-cpp's T6 and T8 are tracked in §4. Everything is local: no SRPC,
+rusty-cpp or Lion branch has been pushed. The text below keeps the plan as it
+was written; each item's result notes record what was actually done.
+The rest of this header is the original proposal (2026-09-26).
 
 Revision 2 changes the route at the owner's direction. rusty-cpp learns to
 transpile the **executable code inside `verus! { }` blocks**, and to discard
@@ -209,7 +215,17 @@ These are properties Lion lacks today that an RPC server needs.
     - **Where the speed goes:** about half the loss is SipHash. An unverified
       multiplicative id hasher reached 1.19–1.49 M ops/s. The rest is the cost
       of a hash map against direct vector indexing.
-  - [ ] **U1b. Recover container speed (decide at S8, using SRPC's rpcbench).**
+  - [~] **U1b. Recover container speed (decide at S8, using SRPC's rpcbench).**
+    **Not needed for SRPC (S8, 2026-10-01).** SRPC registers no Lion timers in
+    steady state: gdb breakpoint counts on `register_timer`/`deregister_timer`
+    over ~2M requests per rpcbench run were 0 in fiber, defer and async modes,
+    on server and client. A Rust echo run counts 0 per request at windows 1,
+    64 and 512, against a positive control of 48 registrations for 48 fiber
+    sleeps. Lion's id-keyed hash operations per request are 37, 2.0 and 0.6
+    at those windows, about 1.4%, 0.7% and 0.2% of CPU per request at 16 ns
+    per SipHash operation. In the C++ rpcbench server, Lion's hash-table code
+    is at most 0.13% of CPU. Revisit only if client timeouts move onto Lion
+    timers. The options below stand for that case.
     - **Option 1: generational ids** `(index, gen)`. This is the design Lion's
       own comments name (`alloc_verified.rs`). It gives vector indexing with
       memory proportional to the peak number of live entries. It needs
@@ -1115,7 +1131,9 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       battery is 34/35. Landed as rusty-cpp `0d3b990f`, which S7b pins.
     - **Left for S8:** the full rpcbench comparison against a fresh build of
       `e94dd7e`, including `fast_vec`, and the microbenchmark compare.
-- [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
+- [x] **S2. OS backend.** Done in both lanes: the C++ lowering landed with
+  S1's C++ half (`lion/integrate`, merged as `3312dda`) and the `derive`
+  workaround was reverted in S7b (`0970f45`). The Lion-independent part is done as `3afd1fe`:
   `SrpcEpollBackend` meets the contract below, and its results are at the
   end of this item. S1's Rust half added the forwarding
   `impl lion_reactor::os::OsBackend` as `eedc960`; its C++ lowering waits
@@ -1202,7 +1220,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
         100. `MioBackend` ignores the capacity.
       - Token 0 is refused with EINVAL.
       - In C++ the method is `register_`.
-- [ ] **S3. Core swap.** The Rust-lane half is done on `lion/s3-core` as
+- [x] **S3. Core swap.** Done in both lanes (C++ half merged as `3312dda`;
+  the old poll loop deleted in S7b, `0970f45`). The Rust-lane half is done on `lion/s3-core` as
   `04aebb2` (the swap and its tests), `5d2b20d` (a skipped self-wake) and
   `e879b61` (an RPC echo benchmark); its results are at the end of this
   item. The C++ half is done with S1's on `lion/integrate`: its ABI re-pin
@@ -1374,7 +1393,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       `notify_pending_write`. `EventPingIngress` and `StacklessWakeIngress`
       gain a private field. The driver, the adapter and the forwarding add
       private types and functions. S7 re-pins.
-- [ ] **S4. Fibers re-hosted on Lion.** The inventory was done on
+- [x] **S4. Fibers re-hosted on Lion.** Done in both lanes (merged as
+  `3312dda`, accepted with S1's C++ half and S7b). The inventory was done on
   2026-09-26 (read-only, from the source, the C++ battery and Mako). Its
   findings drive the order below. Conversion steps 0–5 are done on the
   existing reactor (2026-09-27). No event waited on its owner thread is
@@ -1953,6 +1973,16 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - With Lion underneath, `Future` can implement `std::future::Future`, and
     `wait()` can yield when it is called inside a fiber.
   - Fix the doc contradiction regardless of whether this scope is taken.
+    **Done (2026-10-01, `cdca425`):** the books now say a nested RPC wait
+    blocks the poll thread.
+  - **Not taken in this migration.** A finding from reading the code (no
+    test exercises it): a fiber handler's nested RPC through a client whose
+    connection lives on the *same* PollThread can only end at its timeout.
+    The wait blocks the thread on a Condvar, and the request, sent from the
+    connection's own PollThread, is not a foreign send, so it is queued for
+    that thread's writer task, which cannot run. Pre-Lion the 1 ms loop was
+    blocked the same way. With the client on another PollThread the call
+    completes, but the handler's thread stays blocked for the round trip.
 - [x] **S7. Retire and re-pin.** Done (2026-10-01): S1's C++ half and S7b
   (see *Result, S7b* below). Partly done with S1's C++ half
   (`lion/integrate`, see its *Result*): the dependency-provider inventory,
@@ -2202,6 +2232,70 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       `srpc.basetypes`. The operating-point effect at 512 is empirical;
       re-check it with rpcbench in S8 before relying on it beyond this
       benchmark.
+  - **Result, performance (2026-10-01).** Builds: the Sep-7 main-checkout
+    binary; `c8f5305` built fresh; A = `99f625d` (this plan's baseline);
+    B = `7f0012c`; C = `e94dd7e` (the last pre-Lion tree); D = `0970f45`
+    (S7b). rpcbench defaults (`-n 10 -b 10 -e 2 -o 1000 -w 16 -t 8`, `-v 64`
+    for fast_vec), interleaved, build order rotated per trial, 6 trials per
+    cell, load1 3.3-5.3. Medians (min-max), qps:
+
+    | mode | Sep-7 | `c8f5305` | A | B | C | D |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | fast | 1266k (1217-1319) | 1254k (1225-1286) | 1126k (1061-1135) | 1138k (1127-1149) | 1116k (1094-1136) | 1155k (1137-1193) |
+    | fiber | 729k (708-748) | 721k (699-739) | 684k (660-690) | 664k (641-675) | 656k (646-680) | 651k (633-659) |
+    | defer | 702k (686-722) | 708k (675-718) | 661k (647-668) | 656k (631-674) | 650k (645-667) | 634k (625-640) |
+    | async | 969k (965-989) | 963k (950-986) | 729k (712-750) | 719k (700-739) | 740k (712-752) | 751k (735-759) |
+    | fast_vec | 369k (144-389) | 375k (364-380) | 323k (290-352) | 307k (299-316) | 378k (372-387) | 373k (367-382) |
+
+    - **Lion costs nothing measurable except in defer mode.** D against C:
+      fast +3.5%, async +1.5%, fiber and fast_vec within the spread, defer
+      -2.5% (C to D only; disjoint ranges in this sitting, touching by 1k in
+      an 8-trial recheck). The defer cost is about 0.07 us more server CPU
+      per request, spread over many sites (largest: `cfree` +0.019 us, mutex
+      lock +0.010, `Rc<Fiber>` assignment +0.008); Lion's own code is 0.3-0.6%
+      of the server's CPU. No local fix was found worth making.
+    - **D wins fast mode by keeping the server busy.** D's poll thread runs at
+      100% with 0.004-0.011 context switches per 1000 requests; the old 1 ms
+      loop left it about 86% busy.
+    - **The Sep-7 binary's lead is real and pre-Lion.** It matches a fresh
+      `c8f5305`; the loss lies inside `c8f5305..99f625d` (Sep 11-13), in two
+      steps, bisected with async and fast modes:
+      1. **`624c083`** ("canonical Rust owns the runtime"): client CPU per
+         request roughly doubles (0.78 to 1.49 us). Extra mutex lock/unlock
+         pairs (+0.27 us), monotonic clock reads from the circuit breaker,
+         heartbeat and `clientconn_monotonic_ms_now` (+0.15 us),
+         circuit-breaker admission and recording (+0.19 us), and an
+         `Arc<ChannelConnectionBase>` clone and drop per frame in
+         `bind_channel_direct`/`decode_response_for_binding`. The server is
+         starved, not slower: fast -5 to -7%, async -3 to -8%.
+      2. **Between `8a094ff` and `2a79014`**: async server CPU per request
+         +29% (1.01 to 1.30 us), async -15 to -18%. The commits in between
+         do not build in the C++ lane, so this is located by profile: 76% of
+         the extra time is in symbols introduced by **`90144bd`** ("standard
+         pinned futures and owned wakers"): `StacklessWakeTarget`,
+         `Waker::from_arc` (two heap-capturing `std::function`s),
+         `rusty::async_detail::resume` and their teardown, paid on every
+         async spawn although `async_nop` completes on its first poll. The
+         rusty-cpp pin moves four times in this window too.
+      - Fix candidates, not implemented (they predate this migration, so
+        fixing them is the owner's call): no fresh `Arc` target and waker
+        when a stackless task's first poll completes; a cheaper generated
+        `Waker`; fewer locks and clock reads on the client request path.
+    - **Failed trials** are all the client aborting with "RefCell<T>: already
+      borrowed", the race S0b fixed: Sep-7 1 of 30, A 2 of 54, and 9 among
+      pre-S0b bisect points; B, C and D 0 of 106 each.
+    - **Microbenchmark** (`99f625d` against `0970f45`, today's harness in
+      both, 3 alternating rounds): every codec leaf is within its own
+      round-to-round spread (`write_header` 2.56 to 2.52 ns; `dump64` -3.2%
+      to +7.3%; `load64` -2.8% to +4%). The codec leaves did not move.
+    - **Rust echo** (`run_rpc_echo_bench.sh --compare e94dd7e 0970f45`, 12
+      alternating trials): window 1, 811 to 8684 qps; one-in-flight p50/p99,
+      1214/1453 us to 75/309 us; window 64, 102k to 227k; window 512, 267k
+      to 370k qps at 4.47 to 4.23 us CPU per request. These match the cork
+      measurement above, so they survived S7b and the G6 pin bump.
+    - **Side finding:** SRPC's own SipHash lookup of `rpc_to_service:
+      HashMap<i32, usize>` on every request is 3-6.6% of server CPU in both C
+      and D.
 
 ## 7. Risks
 
