@@ -1750,12 +1750,11 @@ fn event_deadline_sweep<WakeDomain>(state: &EventWakeState) {
     state.deadline_sweep_at.set(live * 2usize + 64usize);
 }
 
-// Remove `key` and return its entries.  The entries are taken out first, and
-// only the empty Vec left behind goes through BTreeMap::remove: the C++
-// lowering of the pinned rusty-cpp btree port copies a removed value and never
-// destroys the original (measured with a counting value type: one extra live
-// copy per remove, and LeakSanitizer reports the Vec's buffer).  An empty Vec
-// owns no allocation, so the stray copy leaks nothing.
+// Remove `key`, which the caller found present, and return its entries.  A
+// plain BTreeMap::remove: the btree port's C++ remove used to copy the value
+// out and never destroy the original, so this took the entries out first and
+// removed only an empty Vec.  rusty-cpp 400cb4d1 (plan T7) made the port's
+// reads relocate, and the workaround is gone.
 // MEASURED allow — see the `extra_unused_type_parameters` note on
 // `stackless_wake_owners_slot`.
 #[allow(clippy::extra_unused_type_parameters)]
@@ -1763,12 +1762,7 @@ fn event_deadline_remove_key<WakeDomain>(
     map_guard: &mut RefMut<BTreeMap<u64, Vec<EventDeadline>>>,
     key: u64,
 ) -> Vec<EventDeadline> {
-    let taken: Vec<EventDeadline> = {
-        let slot: &mut Vec<EventDeadline> = map_guard.get_mut(&key).unwrap();
-        core::mem::take(slot)
-    };
-    map_guard.remove(&key);
-    taken
+    map_guard.remove(&key).unwrap()
 }
 
 // The earliest pending deadline of `reactor`'s deadline map, in
