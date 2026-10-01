@@ -677,6 +677,16 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
       its `retain` calls is on a `Vec` or `VecDeque`.
     - Under libstdc++, `std::string` keys break when btree moves slots. SRPC
       builds with libc++ and is not exposed.
+- [x] **T9 (G6). TSan false positive in `OnceCell` (found by S1's C++ half,
+  2026-10-01).** Fixed as rusty-cpp `0d3b990f`.
+  - **Cause:** libc++'s `std::call_once` does its release inside the
+    uninstrumented `libc++.so`, so TSan saw no ordering for readers that took
+    the fast path. The symptom was a reported race on Lion's
+    `OnceLock<Instant>` start time.
+  - **Fix:** `Once`, `OnceCell` and `OnceLock` publish through their own
+    acquire/release flag. The fast path is also cheaper.
+  - **Measured:** the repro is clean in 10 of 10 TSan runs, and the old header
+    races in 5 of 5. rusty-cpp's ctest passes 76/76 with the new TSan fixture.
 - [ ] **T8. rusty-cpp's own gate must be green before the pin bump.** Measured
   at `758a6a86`/`72e66871`, `gate.sh --with-cache` is RED for reasons that
   predate this work:
