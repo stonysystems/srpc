@@ -171,7 +171,7 @@ intentional source and ABI changes; callers must rebuild against the generated i
 | Removed entry points | Migration and preserved behavior |
 | --- | --- |
 | `Client::set_valid` | This method did nothing. Use `connect`, `close`, and the connection-state queries to change or inspect the actual lifecycle. |
-| `ClientConnection::fd`, `content_size`, `poll_mode`, `handle_read`, `handle_write` | These were constant-returning compatibility hooks after TCP polling moved to `TcpConnection`. The canonical transport still performs descriptor polling, buffering, reads, and writes through its `Pollable` implementation. RPC clients should use the channel/request APIs. |
+| `ClientConnection::fd`, `content_size`, `poll_mode`, `handle_read`, `handle_write` | These were constant-returning compatibility hooks after TCP polling moved to `TcpConnection`. The canonical transport performs descriptor polling, buffering, reads, and writes in its reader and writer tasks on the PollThread (`rpc/tcp_channel.rs`). RPC clients should use the channel/request APIs. |
 | `ClientConnection::apply_keepalive_options` | The unused empty hook is removed. Keepalive configuration now reaches the real TCP socket through `Client::set_keepalive` and `ChannelConnectionBase::set_keepalive`, as described below. |
 | `clientconn_fiber_channel_ptr`, `sconn_proxy_ptr` | Unlocked raw-pointer access to replaceable channel slots is removed. Connection operations retain shared ownership through each call. `clientconn_run_recv_loop` snapshots its channel owner; `clientconn_recv_job_entry` now receives an owned `Arc<Box<FiberChannel>>` explicitly. |
 | `FiberChannel::on_inbound_frame`, `on_inbound_closed`, `signal_pending_recv`, `wait_for_signal` | Their raw-receiver callback/wait plumbing is replaced by owned queue/closed state and an owner-local waiter. Public `recv_frame`, `send_frame`, and `close` remain and take shared receivers. |
@@ -236,7 +236,7 @@ before teardown; the later close still delivers its callback and permits callbac
 The Rust runtime tests link the actual native kernels. They exercise timer suspension, stackful
 handler overlap, owner-thread wake completion, real TCP success/failure, callback reentry, concurrent
 close, and retained wake lifetime. Useful focused tests include `rpc_runtime_rust`,
-`stackless_wake_pollthread_rust`, `task_waker_rust`, `fiber_channel_rust`, `epoll_wrapper_rust`,
+`stackless_wake_pollthread_rust`, `task_waker_rust`, `fiber_channel_rust`, `epoll_backend_rust`, `tcp_transport_rust`,
 `server_concurrency_rust`, `manager_concurrency_rust`, `client_replay_rust`,
 `client_runtime_ownership_rust`, `tcp_keepalive_rust`, and `pollthread_remove_count_rust`. The client concurrency tests cover cloned
 channel ownership and synchronized future state. Serialization tests require recovered payloads and
