@@ -1,11 +1,17 @@
 // Rust-lane RPC echo benchmark: one fast-handler RPC over TCP between two
 // PollThreads in one process, through the public Server/Client API.
 //
-// rpcbench (tests/rpcbench.cc) is the C++-lane benchmark, and it cannot run
-// while the C++ lane does not build. This measures the same shape in the Rust
-// lane: a fast handler that runs inline on the server's poll thread and
-// replies, and a client that issues requests from its own thread and waits on
-// the reply future, so both poll threads' wake paths are on the critical path.
+// rpcbench (tests/rpcbench.cc) is the C++-lane benchmark: it needs the C++
+// build, and it covers the dispatch modes. This one needs only Cargo and
+// measures one shape: a fast handler that runs inline in the server poll
+// thread's TCP reader task and replies, and a client that issues requests from
+// its own thread and waits on the reply future's condition variable. Both
+// PollThreads run Lion runtimes over SrpcEpollBackend, so both poll threads'
+// wake paths are on the critical path: the server's reader and writer tasks
+// and the client's reader task. A request leaves through the TCP cork: the
+// client's thread writes it through when the connection has been idle for
+// kTcpWriteThroughIdleUs (rpc/tcp_channel.rs), and otherwise queues it for the
+// client poll thread's writer task.
 //
 // Two measurements per run, each on a fresh server and client:
 //   * latency    -- one request outstanding at a time; per-request round trip
