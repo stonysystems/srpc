@@ -653,7 +653,9 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
   holding `RefCell`s, statics, `dyn Future + Send` boxes (already supported),
   and closures. Each gets a general fix with a codegen fixture, never a
   Lion-specific special case.
-- [ ] **T6. Tests in rusty-cpp.**
+- [x] **T6. Tests in rusty-cpp.** Done (2026-10-01) as rusty-cpp
+  `lion/t6-tests` (`cdb384b8`..`7e0c201f`); see *Result* at the end of this
+  item. SRPC pins `7e0c201f`.
   - **Differential erasure.** This proves the vendored pass is the one rustc
     runs. For every `verus!` block in Lion@pin, compare the transpiler's post-T1
     output with the corresponding items in `cargo expand` output.
@@ -667,6 +669,54 @@ proofs or ghost state, and **fails closed** on anything it cannot classify.
     for insert, remove, advance and fire. This is the existing command. Its
     stages run the Rust `cargo test` baseline, transpile, compile the C++, and
     run it (`docs/rusty-cpp-transpiler.md:3105-3120`).
+  - **Result (2026-10-01).**
+    - **Differential erasure** (`3ce419e8`, `transpiler/src/verus_differential_tests.rs`):
+      - **Method:** the real stage-1 `erase_source` runs on a snapshot of all eight
+        Lion crates at `3496113` (`transpiler/tests/fixtures/lion/`, with
+        Lion's license), and its output is compared item by item, both
+        ways, with `cargo expand --lib` of the same crates. The expansion
+        is resolved from SRPC's `Cargo.lock` (Verus `db81a74`, and
+        `regen.sh` refuses any other resolution); the test fails if the
+        snapshot's Verus revision differs from the vendored pass's.
+      - **Result:** 0 mismatches. Of 161 items in 116 `verus!` blocks, 136
+        (84.5%) compare exactly, 19 more compare exactly once their
+        `#[derive]` is set aside (96.3%), and 6 impls compare
+        partially. The derives are checked separately: each must have its
+        `#[automatically_derived]` impl. In the partial impls, members
+        using `matches!` or `unreachable!`, which rustc expands, are
+        checked by kind, name and signature.
+      - **`verus_keep_ghost` items:** the 23 that the driver cfg removes are
+        checked to be absent on both sides.
+      - **Negative controls** are committed as tests. A helper rebuilt with
+        `EraseGhost::Erase` instead of `EraseAll` gives 1,192 mismatches.
+      - **Snapshot size:** it adds about 1.16 MB to rusty-cpp. Trimming it to
+        lion-slab and lion-timer-wheel, and checking the rest against a live
+        checkout through `RUSTY_CPP_LION_FIXTURE`, is the owner's call.
+    - **Codegen fixtures** (`899b0fa6`, `tests/verus_exec_fixtures.rs`): 44
+      fixtures through the real binary.
+      - 10 rule fixtures, for T1, the driver cfg, T2 rules 1-6 and T3, each
+        checking the C++ and passing `clang++ -fsyntax-only`, except two
+        with recorded reasons.
+      - 34 fail-closed fixtures covering 30 diagnostics.
+      - An inventory check makes every rule and diagnostic have a fixture.
+    - **A fail-closed bug found by the fixtures** (`cdb384b8`): T2 rule 1 emptied a
+      lone `View`/`DeepView` bound in an `impl` or `dyn` type into
+      invalid Rust. The run then failed by accident at codegen's re-parse
+      instead of in the residue audit. Neither Lion nor SRPC has that
+      shape.
+    - **Lion parity** (`7e0c201f`, `tests/lion_parity.rs`). `parity-test`
+      cannot run Lion's crates: it transpiles `cargo expand` output with
+      `--verus-exec` off, so stage D fails with `module 'vstd' not found`.
+      - **Stopgap:** the test transpiles a harness crate with `--crate-graph
+        --verus-exec` and compiles it with `parity-test`'s stage-D flags. It
+        runs 4 lion-slab cases (insert, remove, `get_mut`, `values()`) and 5
+        lion-timer-wheel cases (all four levels, remove, firing order,
+        cascading advances, reschedule). All 9 values equal rustc's.
+      - **Proposed, not landed:** a `--verus-exec` mode for `parity-test`
+        itself.
+    - **rusty-cpp's own test lane** (`cargo test --release`, final tree):
+      2,859 passed, 3 failed, 23 ignored. The 3 failures are T8's known
+      ones and fail identically at `0d3b990f`.
 - [x] **T7. A leak in rusty-cpp's btree port (found in S4, 2026-09-27).**
   Fixed as rusty-cpp `lion/t7-btree-leak` `72e66871` (based on `758a6a86`).
   Cherry-pick it onto `lion/verus-exec` once T4/T5 is done.
