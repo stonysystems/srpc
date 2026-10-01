@@ -7,16 +7,6 @@
 extern "C" {
 #endif
 
-struct srpc_poll_event {
-    uint32_t events;
-    int32_t fd;
-};
-
-int32_t srpc_epoll_open(void);
-int32_t srpc_epoll_ctl(int32_t poll_fd, int32_t operation, int32_t fd, uint32_t flags);
-/* output points to capacity writable, aligned srpc_poll_event records. */
-int32_t srpc_epoll_wait(int32_t poll_fd, void *output, int32_t capacity, int32_t timeout_ms);
-
 /* Token seam for the OS backend. Every function performs one system call and
  * returns its result, or -errno on failure; retries, EAGAIN handling and the
  * meaning of tokens and flags belong to canonical Rust. */

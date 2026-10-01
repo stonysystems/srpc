@@ -1271,7 +1271,6 @@ class PollThread {
     static rusty::Arc<PollThread> create(); // spawns exactly one OS thread
 
     void add_proxy(PollableProxy poll) const;
-    void remove(Pollable& poll) const;
     void remove_fd(int32_t fd) const;
     void request_close(int32_t fd) const;
     void update_mode(int32_t fd, int32_t new_mode) const;
@@ -1280,12 +1279,10 @@ class PollThread {
 };
 ```
 
-`PollableProxy` is `rusty::Box<PollableBase>` from `srpc.pollable_proxy`; the `Pollable`
-that `remove` takes comes from `srpc.epoll_wrapper`, one of the modules trimmed out of the
-umbrella.
+`PollableProxy` is `rusty::Box<PollableBase>` from `srpc.pollable_proxy`.
 
 Registration, removal, close, mode-update and job methods post commands through
-an mpsc channel to the worker. They return before the worker applies the command.
+an mpsc channel to the poll thread. They return before its driver applies the command.
 If the send fails, `update_mode` logs
 `PollThread::update_mode: send failed! Channel disconnected?` at ERROR;
 the other methods discard that failure.
@@ -1803,9 +1800,10 @@ but a completed or cancelled task will not resume again.
 
 The generated reactor thread-local storage follows canonical `thread_local!`
 state. Each thread calling `Reactor::get_reactor()` gets its own scheduler.
-`PollThread` is the shared command handle; `PollThreadWorker` owns the actual
-poll loop and local reactor. `run_loop(false, true)` drives ready tasks, events,
-and deadlines on the owner thread. It does not perform socket polling by itself.
+`PollThread` is the shared command handle; its worker thread runs the Lion runtime
+whose driver task owns the poll loop and drives that thread's local reactor.
+`run_loop(false, true)` drives ready tasks, events, and deadlines on the owner thread.
+It does not perform socket polling by itself.
 
 The common scheduling details, event queues, timer limitations, and fiber reuse
 rules are in the [Rust reactor chapter](srpc-book.md#4-the-reactor-pattern).
@@ -1846,7 +1844,7 @@ mechanism for it.
 ### Polling interfaces in C++
 
 `srpc.hpp` includes reactor and pollable-proxy declarations but omits the
-`srpc.epoll_wrapper` module. Naming `Epoll`, `PollMode`, `PollReady`, or `Pollable`
+`srpc.epoll_wrapper` module. Naming `PollMode`, `PollReady`, or `SrpcEpollBackend`
 requires an explicit import. This file-scope include fragment is illustrative;
 the consumer also needs the project's configured module map and compiler flags.
 
@@ -1855,9 +1853,13 @@ the consumer also needs the project's configured module map and compiler flags.
 import srpc.epoll_wrapper;
 ```
 
-The worker stores `PollableProxy`, emitted as `rusty::Box<PollableBase>`, and
-calls its nine virtual operations. Implementing the older `Pollable` interface
-alone does not make an object a worker registration.
+A poll thread stores each `add_proxy` registration as a `PollableProxy`, emitted as
+`rusty::Box<PollableBase>`, and runs a task per registration that calls its
+`handle_read`, `handle_write`, `check_pending_write_update`, `is_closed` and `close`
+operations. It never calls `handle_error`: an error or hang-up wakes the read side,
+so `handle_read` sees it as a failed `recv` or end of file. The TCP transport does
+not register through this interface; its connections and listeners run their own
+reader, writer and accept tasks.
 
 #### Typed shared adapters
 
@@ -1869,8 +1871,8 @@ extension trait for downstream Rust implementations.
 
 The shared owner must retain its registered native descriptor. A logical close
 that drops or replaces a descriptor slot needs a separate registration lease,
-which the TCP-specific proxy factories provide. An `Arc` to the transport
-object alone does not guarantee the interior descriptor remains alive.
+as the TCP transport tasks keep one. An `Arc` to the transport object alone does
+not guarantee the interior descriptor remains alive.
 
 #### Jobs
 

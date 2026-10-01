@@ -17,14 +17,6 @@
       "sha256": "bedf6ce6b278e3826c6b846f0d9f463a0c398f944d3c2358d62226e38a47999b",
       "reason": "In-memory sends deliver synchronously and retain no pending output buffer to flush."
     },
-    "rpc/tcp_channel.rs:srpc.tcp_channel::TcpListener as inherent ::content_size": {
-      "sha256": "6375e67415cecb35654a1a915096b7c9c2606fba35e0cd7c3db836698e79c019",
-      "reason": "A listening socket accepts connections; it has no application output buffer or pending write interest."
-    },
-    "rpc/tcp_channel.rs:srpc.tcp_channel::TcpListener as inherent ::check_pending_write_update": {
-      "sha256": "5a470db6d4daf51fac7b45d88c47b8b6ce2a137e24361f5224dd6e8eaaa49ac1",
-      "reason": "A listening socket accepts connections; it has no application output buffer or pending write interest."
-    },
     "reactor/reactor.rs:srpc.reactor::BoxEvent < Type > as inherent < Type : Clone + Default + 'static >::is_composite_event": {
       "sha256": "62fc0a6362c491d2f37371c53175f79e560793a687b64b08af80fa23ef9dd09b",
       "reason": "The concrete event type fixes whether this event combines child events."

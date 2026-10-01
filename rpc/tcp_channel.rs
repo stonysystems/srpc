@@ -32,7 +32,6 @@ use crate::channel::{
 };
 use crate::frame_codec::{FrameDecodeStatus, FrameHeader, FrameStreamReader, FrameView};
 use crate::misc::OneTimeJob;
-use crate::pollable_proxy::{PollableBase, PollableProxy};
 
 
 type TcpOutBuf = Vec<u8>;
@@ -69,9 +68,6 @@ const TCP_ERR_OPERATION_NOT_PERMITTED: i32 = 1;
 const TCP_ERR_BROKEN_PIPE: i32 = 32;
 const TCP_ERR_TIMED_OUT: i32 = 110;
 const TCP_ERR_WOULD_BLOCK: i32 = TCP_ERR_AGAIN;
-const TCP_POLL_READ: i32 = 1;
-const TCP_POLL_WRITE: i32 = 2;
-const TCP_POLL_NO_CHANGE: i32 = -1;
 // Derived from the decoder's bound so the two can never drift: a frame this
 // side is willing to send must be one the peer's decoder will accept.
 const TCP_MAX_FRAME_PAYLOAD_SIZE: usize = crate::frame_codec::kMaxFramePayloadSize as usize;
@@ -100,10 +96,10 @@ extern "C" {
 }
 
 pub struct TcpConnection {
-    // The outbound mutex gates the descriptor slot. Pollable registrations
-    // clone its owner before enqueue and retain it through epoll removal.
+    // The outbound mutex gates the descriptor slot. The transport tasks clone
+    // its owner when they start and keep that lease until they retire.
     // Logical close clears this slot and shuts down the socket immediately;
-    // the last registration lease releases the actual descriptor.
+    // the last lease releases the actual descriptor.
     fd_: UnsafeCell<Option<Arc<LegacyOwnedFd>>>,
     peer_address_: String,
     outbound_high_water_: usize,
@@ -111,9 +107,6 @@ pub struct TcpConnection {
     inbound_: RefCell<FrameStreamReader>,
     closed_: AtomicBool,
     on_closed_fired_: AtomicBool,
-    // The retired pollable shim's latch (check_pending_write_update).  Since
-    // S5 nothing sets it: send_frame wakes the writer task instead.
-    pending_write_update_: AtomicBool,
     poll_thread_: Option<Arc<PollThread>>,
     on_frame_: std::sync::Mutex<OnFrameCallback>,
     on_closed_: std::sync::Mutex<OnClosedCallback>,
@@ -139,14 +132,13 @@ pub struct TcpConnection {
 // after publication, atomic, or protected by an existing mutex:
 //
 // * `fd_`, `writer_` and `outbound_` are protected by `outbound_`;
-// * `inbound_` is poll-worker-owned and every access (including the safe
-//   `content_size` observer) is protected by `on_frame_`;
+// * `inbound_` is owned by the connection's reader task, the one decoder,
+//   and every access is protected by `on_frame_`;
 // * callbacks are protected by their corresponding mutexes; and
 // * `poll_thread_` is installed through `&mut self` before the Arc is shared.
 //
-// The sole mutating inbound entry point is unsafe and documents the reactor's
-// single-poll-worker precondition, so safe Rust cannot create two competing
-// decoder operations.
+// Only the reader task mutates the inbound decoder, and no public method
+// reaches it, so safe Rust cannot create two competing decoder operations.
 unsafe impl Send for TcpConnection {}
 unsafe impl Sync for TcpConnection {}
 
@@ -167,7 +159,6 @@ impl TcpConnection {
             inbound_: RefCell::new(FrameStreamReader::new()),
             closed_: AtomicBool::new(false),
             on_closed_fired_: AtomicBool::new(false),
-            pending_write_update_: AtomicBool::new(false),
             poll_thread_: None,
             on_frame_: std::sync::Mutex::<OnFrameCallback>::new(Default::default()),
             on_closed_: std::sync::Mutex::<OnClosedCallback>::new(Default::default()),
@@ -249,51 +240,9 @@ impl TcpConnection {
         tcpconn_fd_locked(self)
     }
 
-    // READ always; WRITE only while the outbound buffer is non-empty.
-    pub fn poll_mode(&self) -> i32 {
-        let mut mode: i32 = TCP_POLL_READ;
-        let guard = self.outbound_.lock().unwrap();
-        if !(*guard).is_empty() {
-            mode |= TCP_POLL_WRITE;
-        }
-        mode
-    }
-
-    pub fn content_size(&self) -> usize {
-        let inbound_size = {
-            let _gate = self.on_frame_.lock().unwrap();
-            self.inbound_.borrow().buffered_bytes()
-        };
-        let guard = self.outbound_.lock().unwrap();
-        (*guard).len() + inbound_size
-    }
-
-    /// Drive this connection's receive decoder.
-    ///
-    /// # Safety
-    ///
-    /// The caller must be this connection's registered poll worker, and no
-    /// other call to `handle_read` may overlap it.  The reactor satisfies this
-    /// contract by serializing pollable callbacks on one worker.
-    pub unsafe fn handle_read(&self) -> bool {
-        unsafe { tcpconn_handle_read(self) }
-    }
-
-    pub fn handle_write(&self) -> i32 {
-        tcpconn_handle_write(self)
-    }
-
-    pub fn handle_error(&self) {
-        tcpconn_handle_error(self)
-    }
-
-    pub fn check_pending_write_update(&self) -> bool {
-        self.pending_write_update_.swap(false, Ordering::AcqRel)
-    }
-
-    // Retained for the historical C++ surface. Production creation uses the
-    // atomic new_registered path so the poll thread is installed before the
-    // Arc is shared.
+    // Retained for the historical C++ surface. Production creation (the
+    // factory's connect and the accept driver) installs the poll thread on
+    // the owned value, before the Arc is shared and the transport attached.
     pub fn set_poll_thread(&mut self, pt: Arc<PollThread>) {
         self.poll_thread_ = Some(pt);
     }
@@ -334,73 +283,8 @@ impl ChannelConnectionBase for TcpChannelShim {
     }
 }
 
-struct TcpPollableShim {
-    conn_: Arc<TcpConnection>,
-    fd_lease_: Option<Arc<LegacyOwnedFd>>,
-}
-
-#[cfg_attr(any(), cpp_inherit)]
-impl PollableBase for TcpPollableShim {
-    fn fd(&self) -> i32 {
-        match self.fd_lease_.as_ref() {
-            // Measured lowering requirement -- the same rule reactor.rs's
-            // `old` and `poll_ref` rebinds satisfy. The emitter writes `->`
-            // only when the receiver's DECLARED type is literally `&Arc<..>`
-            // or `&Box<..>`; it keeps that through a typed local (see the
-            // `retired` binding in tcpconn_close) and loses it through an
-            // untyped `.as_ref()` match arm, which lowered this call to
-            // `owner.as_raw_fd()` on a `rusty::Arc<OwnedFd>` -- "no member
-            // named 'as_raw_fd'" -- and srpc.tcp_channel failed to compile.
-            // Four more arms below carry the same one-line rebind.
-            Some(owner) => {
-                let owner: &Arc<LegacyOwnedFd> = owner;
-                owner.as_raw_fd()
-            }
-            None => -1,
-        }
-    }
-    fn poll_mode(&self) -> i32 {
-        self.conn_.poll_mode()
-    }
-    fn content_size(&mut self) -> usize {
-        self.conn_.content_size()
-    }
-    fn handle_read(&mut self) -> bool {
-        // SAFETY: Pollable callbacks are serialized by the owning poll worker.
-        unsafe { self.conn_.handle_read() }
-    }
-    fn handle_write(&mut self) -> i32 {
-        self.conn_.handle_write()
-    }
-    fn handle_error(&mut self) {
-        self.conn_.handle_error()
-    }
-    fn close(&mut self) {
-        self.conn_.close()
-    }
-    fn check_pending_write_update(&self) -> bool {
-        self.conn_.check_pending_write_update()
-    }
-    fn is_closed(&self) -> bool {
-        self.conn_.is_closed()
-    }
-}
-
 pub fn make_tcp_connection_channel_proxy(conn: Arc<TcpConnection>) -> ChannelConnectionProxy {
     Box::new(TcpChannelShim { conn_: conn })
-}
-
-// The pollable registration of a connection, as the epoll loop and S3's
-// interim adapter drove it.  Since S5 no production path registers a
-// connection this way (its PollThread runs transport tasks instead); it stays
-// public, with the shim, for the retired worker's tests until S7.
-pub fn make_tcp_connection_pollable_proxy(conn: Arc<TcpConnection>) -> PollableProxy {
-    let fd_lease: Option<Arc<LegacyOwnedFd>> = {
-        let _gate = conn.outbound_.lock().unwrap();
-        // SAFETY: the outbound gate serializes this clone with logical close.
-        unsafe { (&*conn.fd_.get()).clone() }
-    };
-    Box::new(TcpPollableShim { conn_: conn, fd_lease_: fd_lease })
 }
 
 fn io_kind_to_channel_error(kind: LegacyIoErrorKind) -> ChannelError {
@@ -450,11 +334,12 @@ fn io_kind_to_channel_error(kind: LegacyIoErrorKind) -> ChannelError {
 }
 
 pub struct TcpListener {
-    // The poll worker reads the listener while user threads may close it.
+    // The accept task reads the listener while user threads may close it.
     // Mutex/atomics make that ownership boundary explicit and remove the
     // historical RefCell/Cell cross-thread race.
-    // `on_accept_` gates both cells. Registrations retain a cloned listener
-    // owner until unregister, so close cannot race epoll through a reused fd.
+    // `on_accept_` gates both cells. The accept task retains a cloned
+    // listener owner until it retires, so close cannot race the reactor
+    // through a reused fd.
     // Callback invocation always occurs after the gate has been released.
     listener_: RefCell<Option<Arc<LegacyTcpListener>>>,
     bound_address_: RefCell<String>,
@@ -462,7 +347,7 @@ pub struct TcpListener {
     listened_: AtomicBool,
     // Reuses the historical padding bytes between the one-byte latches and
     // `poll_thread_`.  This is the owner latch for the whole accept driver,
-    // not just its callback window: at most one `handle_read` may accept or
+    // not just its callback window: at most one accept driver may accept or
     // invoke `on_accept_` at a time.  `close` waits for that owner unless it
     // is called reentrantly by the owner itself.
     accept_callback_thread_: AtomicU32,
@@ -565,8 +450,8 @@ impl TcpListener {
         ChannelError::None
     }
 
-    // Stop accepting immediately and release the listener slot. A pollable
-    // registration keeps the descriptor live only until it unregisters.
+    // Stop accepting immediately and release the listener slot. The accept
+    // task's lease keeps the descriptor live only until the task retires.
     pub fn close(&self) {
         // This store and the post-CAS `closed_` recheck are sequentially
         // consistent with the owner CAS/load pair.  That rules out the
@@ -591,7 +476,7 @@ impl TcpListener {
             }
         }
         // An accept callback may itself call close(); that call must not wait
-        // for its own `handle_read` invocation to return. Other threads wait
+        // for its own accept-driver invocation to return. Other threads wait
         // until the whole accept-driver scope clears its Linux TID.
         let current_thread = unsafe { srpc_tcp_current_thread_id() };
         while {
@@ -626,37 +511,20 @@ impl TcpListener {
         let _lifecycle_gate = self.on_accept_.lock().unwrap();
         let g = self.listener_.borrow();
         match g.as_ref() {
-            // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
+            // Measured lowering requirement (the same rule reactor.rs's `old`
+            // and `poll_ref` rebinds satisfy): the emitter writes `->` only
+            // when the receiver's DECLARED type is literally `&Arc<..>` or
+            // `&Box<..>`.  It keeps that through a typed local and loses it
+            // through an untyped `.as_ref()` match arm, which lowered this
+            // call to `owner.as_raw_fd()` on a `rusty::Arc<..>` -- "no member
+            // named 'as_raw_fd'" -- and srpc.tcp_channel failed to compile.
+            // The other "typed rebind" sites in this file follow the same rule.
             Some(owner) => {
                 let owner: &Arc<LegacyTcpListener> = owner;
                 owner.as_raw_fd()
             }
             None => -1,
         }
-    }
-
-    pub fn poll_mode(&self) -> i32 {
-        TCP_POLL_READ
-    }
-
-    pub fn content_size(&self) -> usize {
-        0usize
-    }
-
-    pub fn handle_read(&self) -> bool {
-        tcplistener_handle_read(self)
-    }
-
-    pub fn handle_write(&self) -> i32 {
-        TCP_POLL_NO_CHANGE
-    }
-
-    pub fn handle_error(&self) {
-        tcplistener_handle_error(self)
-    }
-
-    pub fn check_pending_write_update(&self) -> bool {
-        false
     }
 
     pub fn set_poll_thread(&mut self, pt: Arc<PollThread>) {
@@ -700,65 +568,9 @@ unsafe impl ChannelListenerBase for TcpListenerChannelShim {
     }
 }
 
-struct TcpListenerPollableShim {
-    listener_: Arc<TcpListener>,
-    fd_lease_: Option<Arc<LegacyTcpListener>>,
-}
-
-#[cfg_attr(any(), cpp_inherit)]
-impl PollableBase for TcpListenerPollableShim {
-    fn fd(&self) -> i32 {
-        match self.fd_lease_.as_ref() {
-            // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
-            Some(owner) => {
-                let owner: &Arc<LegacyTcpListener> = owner;
-                owner.as_raw_fd()
-            }
-            None => -1,
-        }
-    }
-    fn poll_mode(&self) -> i32 {
-        self.listener_.poll_mode()
-    }
-    fn content_size(&mut self) -> usize {
-        self.listener_.content_size()
-    }
-    fn handle_read(&mut self) -> bool {
-        self.listener_.handle_read()
-    }
-    fn handle_write(&mut self) -> i32 {
-        self.listener_.handle_write()
-    }
-    fn handle_error(&mut self) {
-        self.listener_.handle_error()
-    }
-    fn close(&mut self) {
-        self.listener_.close()
-    }
-    fn check_pending_write_update(&self) -> bool {
-        self.listener_.check_pending_write_update()
-    }
-    fn is_closed(&self) -> bool {
-        self.listener_.is_closed()
-    }
-}
-
 pub fn make_tcp_listener_channel_proxy(listener: Arc<TcpListener>) -> ChannelListenerProxy {
     Box::new(TcpListenerChannelShim {
         listener_: listener,
-    })
-}
-
-// As make_tcp_connection_pollable_proxy: unused by production since S5.
-pub fn make_tcp_listener_pollable_proxy(listener: Arc<TcpListener>) -> PollableProxy {
-    let fd_lease: Option<Arc<LegacyTcpListener>> = {
-        let _gate = listener.on_accept_.lock().unwrap();
-        let slot = listener.listener_.borrow();
-        (*slot).clone()
-    };
-    Box::new(TcpListenerPollableShim {
-        listener_: listener,
-        fd_lease_: fd_lease,
     })
 }
 
@@ -876,8 +688,8 @@ fn tcpconn_drain_outbound_locked(conn: &TcpConnection, buf: &mut TcpOutBuf) -> C
     tcpconn_trim_sent(buf, offset);
     // WouldBlock whenever send(2) stopped on EAGAIN, even after partial
     // progress: the writer task then consumes its write readiness and waits
-    // for the next edge.  (handle_write and flush treat a partial drain the
-    // same either way.)
+    // for the next edge.  (flush treats a partial drain the same either
+    // way.)
     if blocked {
         return ChannelError::WouldBlock;
     }
@@ -1098,7 +910,7 @@ fn tcpconn_fd_locked(conn: &TcpConnection) -> i32 {
     // SAFETY: this helper is called only inside the outbound gate.
     let slot = unsafe { &*conn.fd_.get() };
     match slot.as_ref() {
-        // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
+        // Typed rebind: measured lowering requirement, see TcpListener::fd.
         Some(owner) => {
             let owner: &Arc<LegacyOwnedFd> = owner;
             owner.as_raw_fd()
@@ -1145,50 +957,9 @@ fn tcpconn_reset_fd(conn: &TcpConnection) {
     }
 }
 
-/// # Safety
-///
-/// Calls for one connection must be serialized by its poll worker.
-unsafe fn tcpconn_handle_read(conn: &TcpConnection) -> bool {
-    if conn.closed_.load(Ordering::Acquire) {
-        return false;
-    }
-    let mut any_progress = false;
-    let mut draining = true;
-    while draining {
-        let scratch = tcpconn_scratch();
-        let io = tcpconn_recv_bytes(conn, scratch);
-        if io.count > 0 {
-            tcpconn_append_inbound(conn, io.count as usize);
-            any_progress = true;
-            if (io.count as usize) < kRecvScratchBytes {
-                draining = false;
-            }
-        } else if io.count == 0 {
-            // Peer closed cleanly: no on_error, just the close latch.
-            tcpconn_peer_closed(conn);
-            return false;
-        } else {
-            let err = io.error;
-            if err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK {
-                draining = false;
-            } else if err == TCP_ERR_INTERRUPTED {
-                // retry — loop continues
-            } else {
-                let ch = tcpconn_errno_to_channel_error(err);
-                tcpconn_fail(conn, ch, "socket receive failed");
-                return false;
-            }
-        }
-    }
-    if !tcpconn_deliver_frames(conn) {
-        return false;
-    }
-    any_progress
-}
-
 // Decode and deliver every complete buffered frame to on_frame, in order.
 // False when the inbound stream is malformed: the connection is then failed
-// and closed.  Shared by handle_read and the reader task (S5).
+// and closed.  Called by the reader task (S5).
 fn tcpconn_deliver_frames(conn: &TcpConnection) -> bool {
     // Foreign-enum variants hoisted into UNTYPED `let`s: dropping the
     // expected type routes them through ordinary PATH emission, so the
@@ -1275,17 +1046,6 @@ struct TcpIoResult {
     error: i32,
 }
 
-fn tcpconn_recv_bytes(conn: &TcpConnection, s: *mut RecvScratch) -> TcpIoResult {
-    let _fd_gate = conn.outbound_.lock().unwrap();
-    // SAFETY: `outbound_` serializes every descriptor access/mutation.
-    let fd = tcpconn_fd_locked(conn);
-    if fd < 0 {
-        return TcpIoResult { count: 0, error: 0 };
-    }
-    // The descriptor remains owned while the mutex guard is held.
-    tcpconn_recv_fd(fd, s)
-}
-
 // One recv(2) of up to a scratch buffer from `fd`, which the caller keeps
 // open (the outbound gate, or a transport task's descriptor lease).
 fn tcpconn_recv_fd(fd: i32, s: *mut RecvScratch) -> TcpIoResult {
@@ -1321,47 +1081,6 @@ fn tcpconn_reset_inbound(conn: &TcpConnection) {
     let _gate = conn.on_frame_.lock().unwrap();
     let mut guard = conn.inbound_.borrow_mut();
     guard.reset();
-}
-
-fn tcpconn_handle_write(conn: &TcpConnection) -> i32 {
-    if conn.closed_.load(Ordering::Acquire) {
-        return TCP_POLL_NO_CHANGE;
-    }
-    let result: ChannelError;
-    {
-        let mut guard = conn.outbound_.lock().unwrap();
-        if (*guard).is_empty() {
-            return TCP_POLL_READ;
-        }
-        result = tcpconn_drain_outbound_locked(conn, &mut *guard);
-        if result == ChannelError::None {
-            if (*guard).is_empty() {
-                return TCP_POLL_READ;
-            }
-            return TCP_POLL_NO_CHANGE;
-        }
-        if result == ChannelError::WouldBlock {
-            return TCP_POLL_NO_CHANGE;
-        }
-    }
-    tcpconn_fail(conn, result, "outbound write failed");
-    TCP_POLL_READ
-}
-
-fn tcpconn_handle_error(conn: &TcpConnection) {
-    if conn.closed_.load(Ordering::Acquire) {
-        return;
-    }
-    {
-        let callback = {
-            let guard = conn.on_error_.lock().unwrap();
-            (*guard).clone()
-        };
-        if callback.has_value() {
-            callback.callable()(ChannelError::Internal, "epoll/poll signaled error");
-        }
-    }
-    tcpconn_close(conn);
 }
 
 fn tcpconn_send_bytes(conn: &TcpConnection, buf: &mut TcpOutBuf, offset: usize) -> TcpIoResult {
@@ -1464,7 +1183,7 @@ impl Drop for TcpListenerHandleReadScope {
     fn drop(&mut self) {
         if self.acquired_ {
             // SAFETY: the listener remains borrowed for the full synchronous
-            // `handle_read` invocation containing this scope guard.
+            // accept-driver invocation containing this scope guard.
             unsafe {
                 (*self.owner_thread_).store(0, Ordering::Release);
             }
@@ -1494,12 +1213,8 @@ fn tcplistener_close_accepted(s: &mut AcceptStep) {
     }
 }
 
-fn tcplistener_handle_read(lst: &TcpListener) -> bool {
-    let mut drained: bool = false;
-    tcplistener_accept_until_blocked(lst, &mut drained)
-}
-
-// The accept driver of handle_read.  `drained` is set when it stopped because
+// The accept driver the accept task runs on each read edge (the retired
+// pollable `handle_read` ran it too).  `drained` is set when it stopped because
 // accept(2) reported EAGAIN, the only evidence that lets the accept task
 // consume its read readiness (S5).
 fn tcplistener_accept_until_blocked(lst: &TcpListener, drained: &mut bool) -> bool {
@@ -1544,7 +1259,7 @@ fn tcplistener_accept_until_blocked(lst: &TcpListener, drained: &mut bool) -> bo
             if callback.has_value() {
                 // Close either set the latch before the whole-driver owner
                 // was installed (and is observed above/here) or sees the
-                // active owner TID and waits for this handle_read to return.
+                // active owner TID and waits for this driver to return.
                 // Thus the callback cannot begin after a concurrent close
                 // has returned.
                 if lst.closed_.load(Ordering::Acquire) {
@@ -1603,7 +1318,7 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
         return 0;
     }
     let listener_guard = lst.listener_.borrow();
-    // Typed local: measured lowering requirement, see TcpPollableShim::fd.
+    // Typed local: measured lowering requirement, see TcpListener::fd.
     let listener: &Arc<LegacyTcpListener> = match listener_guard.as_ref() {
         Some(owner) => owner,
         None => return 0,
@@ -1665,22 +1380,6 @@ fn tcplistener_accept_step(lst: &TcpListener, out: *mut AcceptStep) -> i32 {
     out.connection = Some(conn.clone());
     out.proxy = Some(make_tcp_connection_channel_proxy(conn));
     1
-}
-
-fn tcplistener_handle_error(listener: &TcpListener) {
-    if listener.closed_.load(Ordering::Acquire) {
-        return;
-    }
-    {
-        let callback = {
-            let guard = listener.on_error_.lock().unwrap();
-            (*guard).clone()
-        };
-        if callback.has_value() {
-            callback.callable()(ChannelError::Internal, "epoll/poll signaled error");
-        }
-    }
-    listener.close();
 }
 
 fn connect_errno_to_channel_error(err: i32) -> ChannelError {
@@ -1864,7 +1563,7 @@ pub fn tcp_factory_make_listener(self_: &TcpFactory) -> Option<ChannelListenerPr
 // one waiter per direction (U8):
 //
 // * The reader waits for read readiness, reads into the FrameStreamReader and
-//   delivers every complete frame to on_frame, as handle_read does: fast RPCs
+//   delivers every complete frame to on_frame: fast RPCs
 //   still run inline here, fiber RPCs start their fiber here, and stackless
 //   RPCs make their first poll here.  It reads until recv(2) reports EAGAIN,
 //   the only evidence that consumes readiness: a short read delivers and then
@@ -1878,13 +1577,13 @@ pub fn tcp_factory_make_listener(self_: &TcpFactory) -> Option<ChannelListenerPr
 //   on this thread's own ready queue, so it runs in the same tick, and one
 //   drain carries every reply that poll produced.
 //
-// A listener is one accept task, which runs handle_read's accept driver on
+// A listener is one accept task, which runs the accept driver on
 // each read edge and consumes the readiness only when accept(2) reported
 // EAGAIN.  close() needs no waker for it: shutting a listening socket down
 // moves it to CLOSE, which the kernel reports as a hang-up edge, and Lion
 // wakes the task's read wait for it.
 //
-// Close and error semantics are those of the pollable adapter.  A task that
+// Close and error semantics are those the retired pollable shims had.  A task that
 // finds the connection closed (by any thread's close, a failed flush, or its
 // own EOF or error path) retires the transport: it closes the connection
 // (idempotent; on_closed fires once), drops the AsyncFd and then the
@@ -1953,7 +1652,7 @@ fn tcpconn_start_transport(conn: Arc<TcpConnection>) {
         return;
     }
     let lease: Arc<LegacyOwnedFd> = lease.unwrap();
-    // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
+    // Typed rebind: measured lowering requirement, see TcpListener::fd.
     let fd: i32 = {
         let owner: &Arc<LegacyOwnedFd> = &lease;
         owner.as_raw_fd()
@@ -1991,7 +1690,7 @@ fn tcp_transport_is_retired(t: &TcpTransport) -> bool {
 fn tcp_transport_fd(t: &TcpTransport) -> i32 {
     let lease_guard = t.lease_.borrow();
     match (*lease_guard).as_ref() {
-        // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
+        // Typed rebind: measured lowering requirement, see TcpListener::fd.
         Some(owner) => {
             let owner: &Arc<LegacyOwnedFd> = owner;
             owner.as_raw_fd()
@@ -2100,8 +1799,7 @@ fn tcp_reader_poll(t: &TcpTransport, cx: &mut Context<'_>) -> Poll<()> {
         if io.count > 0 {
             tcpconn_append_inbound(conn, io.count as usize);
             if (io.count as usize) == kRecvScratchBytes && reads < budget {
-                // More is probably queued: read it before decoding, as
-                // handle_read does.
+                // More is probably queued: read it before decoding.
                 undelivered = true;
                 continue;
             }
@@ -2119,7 +1817,7 @@ fn tcp_reader_poll(t: &TcpTransport, cx: &mut Context<'_>) -> Poll<()> {
         }
         if io.count == 0 {
             // EOF.  Deliver the frames received whole before it, then close
-            // as handle_read does: no on_error, and on_closed(None).
+            // cleanly: no on_error, and on_closed(None).
             if undelivered && !tcp_reader_deliver(t) {
                 return Poll::Ready(());
             }
@@ -2324,7 +2022,7 @@ fn tcplistener_start_accept(listener: Arc<TcpListener>) {
         return;
     }
     let lease: Arc<LegacyTcpListener> = lease.unwrap();
-    // Typed rebind: measured lowering requirement, see TcpPollableShim::fd.
+    // Typed rebind: measured lowering requirement, see TcpListener::fd.
     let fd: i32 = {
         let owner: &Arc<LegacyTcpListener> = &lease;
         owner.as_raw_fd()
@@ -2403,7 +2101,7 @@ fn tcp_accept_poll(task: &mut TcpAcceptTask, cx: &mut Context<'_>) -> Poll<()> {
         }
         if !drained {
             // Stopped before EAGAIN (interrupted, an aborted connection, or
-            // another caller inside handle_read): the readiness stays set,
+            // another accept driver still running): the readiness stays set,
             // so come back after the thread's other tasks.
             cx.waker().wake_by_ref();
             return Poll::Pending;

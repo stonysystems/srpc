@@ -1094,7 +1094,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       `verus_prettyplease` come from Verus's git repository, so a cold machine
       needs one networked `cargo fetch` in `third-party/rusty-cpp`; CLAUDE.md
       should say so (the owner's edit, with the S1 ones above).
-    - **Left for S7b** (dead code, now pinned ABI):
+    - **Left for S7b** (dead code, now pinned ABI; done, see S7's
+      *Result, S7b*):
       - the S3 adapter's `PollFdTask`/`poll_fd_*`/`poll_driver_*` pollable
         path and `PollThread::notify_pending_write` once `add_proxy` is
         retired or reduced;
@@ -1111,7 +1112,7 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
         so the revert should now be possible; it changes their ABI rows).
     - **Left for rusty-cpp:** G6, the TSan false positive above (an acquire
       fast path in `OnceCell::get_or_init`). Until it lands, the thread
-      battery is 34/35.
+      battery is 34/35. Landed as rusty-cpp `0d3b990f`, which S7b pins.
     - **Left for S8:** the full rpcbench comparison against a fresh build of
       `e94dd7e`, including `fast_vec`, and the microbenchmark compare.
 - [ ] **S2. OS backend.** The Lion-independent part is done as `3afd1fe`:
@@ -1952,7 +1953,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - With Lion underneath, `Future` can implement `std::future::Future`, and
     `wait()` can yield when it is called inside a fiber.
   - Fix the doc contradiction regardless of whether this scope is taken.
-- [ ] **S7. Retire and re-pin.** Partly done with S1's C++ half
+- [x] **S7. Retire and re-pin.** Done (2026-10-01): S1's C++ half and S7b
+  (see *Result, S7b* below). Partly done with S1's C++ half
   (`lion/integrate`, see its *Result*): the dependency-provider inventory,
   the importer's Lion imports, `EXPECTED_IMPORTS`, and the ABI and layout
   re-pin for S1/S3/S5 as they stand. What remains is S7b: delete the dead
@@ -1976,6 +1978,86 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
   - **Update the other tables:** `EXPECTED_IMPORTS`, `IMPORTER_USE_MARKERS`,
     `module-preambles.toml`, `cpp-module-index.toml` and
     `tests/test-inventory.json`.
+  - **Result, S7b (done 2026-10-01, `lion/s7b`).** The pre-Lion loop and
+    TCP's pollable surface are deleted, S2's derive workaround is reverted,
+    and the ABI is re-pinned, at rusty-cpp `0d3b990f` (G6).
+    - **Commits.** `fb07f51` reactor, `1a1a44a` tcp_channel, `b4d0eb0`
+      epoll_wrapper, `d81de59` C++ tests, `205870d` gate, `3a9fb05` books,
+      `057b46d` the rusty-cpp bump to `0d3b990f`, then this note.
+    - **Deleted.** `PollThreadWorker` and its 16 `pollworker_*` helpers,
+      `g_current_poll_worker`, `JobSet`/`FdPollableMap`/`FdModeMap`,
+      `PollThread::remove`, the pending-write path
+      (`PollThread::notify_pending_write`, `PollDriverWake::write_ready`,
+      `poll_driver_wake_fd(_here)`, `poll_driver_wake_writers`,
+      `PollDriver::reading_fd`) and `Reactor::timeout_events_`; TCP's
+      pollable shims, both pollable-proxy factories, the pollable methods of
+      `TcpConnection` and `TcpListener` with their bodies,
+      `pending_write_update_` and `TCP_POLL_*`; `Epoll`, its `epoll_*` helpers,
+      `EpollWaitEvent`, `epoll_remove_count` and the `Pollable` trait; the
+      native `srpc_epoll_open`/`_ctl`/`_wait` and `struct srpc_poll_event`
+      (`native-kernels.json` re-pinned). `pollworker_is_on_poll_thread()`
+      keeps its name and now reads the driver's TLS slot.
+    - **Kept, with evidence** (this answers S5's "S7 decides"):
+      - `add_proxy`, `PollableBase` and the adapter that runs it: the
+        documented extension API for custom pollables in both books, used by
+        SRPC's own tests in both lanes. Mako, outside its vendored SRPC,
+        calls only `PollThread::create`/`add`/`shutdown`. Its comments now
+        call it the `add_proxy` adapter, not an interim one.
+      - `waiting_events_` and `composite_events_`: live for a wait taken on a
+        thread other than the event's creator (C++ only).
+      - The disk reactor and the stackless wake-ticket ingress, though the
+        list above names them: neither is dead because of Lion. The ticket
+        ingress serves threads with no PollThread and directly registered
+        pollers. The disk reactor is public and documented, with no user
+        outside SRPC's own tests; deleting it is an API removal, left for the
+        owner.
+    - **Derive revert.** `SrpcInterest`/`SrpcOsEvent` carry plain derives
+      again. The generated structs gain `clone`, `default_`,
+      `rusty_debug_string` and `operator<<` rows (`operator==` is defaulted
+      and emits none); the crate still transpiles with 0 hand slots.
+    - **ABI.** 2189 -> 2107 provider symbols, measured from fresh objects:
+      epoll_wrapper 53 -> 46 (-15, +8), reactor 422 -> 398 (Reactor's
+      fieldwise constructor respelled without `timeout_events_`), tcp_channel
+      216 -> 165. `srpc.tcp_channel` no longer imports
+      `srpc.pollable_proxy`. Four entries leave
+      `REACTOR_INCUMBENT_ORACLE_ADDITIONS` (53 remain). All 50 layout pins on
+      the touched types re-measure unchanged (`TcpConnection` stays 400: its
+      latch sat in padding); C++ `sizeof(Reactor)` is 464. At `0d3b990f` the
+      37 generated SRPC modules are byte-identical to `a130025e`'s, and the
+      Lion providers keep their 374 symbols.
+    - **Tests.** Rust 406 -> 398: three `epoll_wrapper_rust` tests and the five
+      fd-reuse tests that drove the deleted worker. tcp_channel_rust drives
+      listeners on a real PollThread. The C++ `rpc_tcp_channel_test` has a
+      socketpair fixture and an attached one over `TcpFactory`, the C++
+      lane's first frame-level check of the S5 tasks (22 -> 19 cases).
+      `pollworker_fd_reuse_test.cc` is deleted with its CMake block. Two
+      adapter branches now have no direct test: `poll_driver_add` retiring a
+      closed registration for a reused fd, and `poll_driver_close`
+      cancelling a queued removal. Only a custom pollable that closes its own
+      fd under a live registration reaches them, which the contract forbids.
+    - **Books.** The polling chapters describe the driver, the adapter and the
+      epoll backend; `handle_error` is documented as never called (an error
+      or hang-up reaches `handle_read`).
+    - **CLAUDE.md, for the owner** (measured, not edited):
+      `cfg_attr(not(any()), derive(...))` is 21 at `3312dda` and 19 after
+      S7b, so CLAUDE.md's 19 is right again. Its `cfg_attr(any(), ...)` total
+      of 29 is stale independently of S7b: non-comment attributes are 61 at
+      `3312dda` and 58 after, because it does not list `cpp_inherit` (21 ->
+      19), `cpp_native_type` (9) or `cpp_declaration` (2);
+      `cpp_no_fieldwise_ctor` drops 3 -> 2 with `Epoll`.
+    - **Acceptance** (at `0d3b990f`, the tree of the bump commit). cargo test
+      `-Dwarnings` 398 passed / 0 failed / 1 ignored; configure 0; build 0
+      with both gates (374 Lion and 2107 provider symbols, 0 hand slots, no
+      advisory digest drift); `ctest -L srpc` 51/51 with
+      `srpc_runtime_parity`. Sanitizer batteries: address 35/35, undefined
+      35/35, thread 35/35. G6 is fixed: `test_rpc_transport_matrix` passed
+      20 of 20 runs under TSan, where it had failed 20 of 20. The series at
+      `a130025e` measured the same (398/0/1, 2107, 51/51).
+    - **Found, not fixed.** `ClientConnection::check_pending_write_update`,
+      the only sender of heartbeat probes, has had no caller since before
+      S7b (the book already says probes are not scheduled). The ignored
+      `incumbent_concrete_layouts_are_pinned` Rust test is stale beyond
+      `Reactor` (it pins `PollThread` at 104; C++ measures 136).
 - [ ] **S8. Acceptance.**
   - The full gate, and all `-L srpc` CTests.
   - `srpc_runtime_parity`: review its `EXPECTED` keys for fiber sleep order

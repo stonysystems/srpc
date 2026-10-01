@@ -88,7 +88,6 @@ fn timers_join_no_scanned_queue() {
     let reactor = Reactor::get_reactor();
     let waiting = reactor.waiting_events_.borrow().len();
     let composite = reactor.composite_events_.borrow().len();
-    let timeout_queue = reactor.timeout_events_.borrow().len();
     let base = event_wake_report::<()>();
 
     let resumed = counter();
@@ -119,7 +118,6 @@ fn timers_join_no_scanned_queue() {
     assert_eq!(resumed.get(), 0);
     assert_eq!(reactor.waiting_events_.borrow().len(), waiting);
     assert_eq!(reactor.composite_events_.borrow().len(), composite);
-    assert_eq!(reactor.timeout_events_.borrow().len(), timeout_queue);
     // The TimeoutEvent has two entries: its own deadline from creation, and
     // its wait's; the NeverEvent and the IntEvent one each.
     assert_eq!(event_wake_report::<()>().live_deadlines, base.live_deadlines + 4);

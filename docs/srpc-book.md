@@ -616,9 +616,10 @@ stack reuse; they are not synchronized cross-thread metrics.
 ## 4. The reactor pattern
 
 sRPC separates scheduling from I/O ownership. `Reactor` schedules local fibers,
-events, and standard futures. `PollThreadWorker` owns epoll registrations, jobs,
-and the I/O loop. `PollThread` is a shareable handle that sends commands to that
-worker. All three live in `srpc::reactor`.
+events, and standard futures. Each `PollThread` runs one worker OS thread whose
+Lion runtime owns descriptor registrations, jobs, and the I/O loop; the
+`PollThread` value is a shareable handle that sends commands to that thread. Both
+live in `srpc::reactor`.
 
 ### The reactor
 
@@ -700,7 +701,7 @@ boxed callback type and has the same immediate-entry behavior. Prefer
 `Fiber::create_run` for ordinary use. It constructs the callback and selects the
 current reactor for you.
 
-### PollThread and PollThreadWorker
+### PollThread and its worker thread
 
 `PollThread::create()` starts a native Rust worker thread and returns
 `Arc<PollThread>`. Cloning that handle shares the command sender and shutdown
@@ -1113,18 +1114,20 @@ event alive; it does not authorize cross-thread mutation.
 
 ## 6. I/O layer: polling and connections
 
-The poll worker owns each registration until it has unregistered the descriptor.
-Its `Box<dyn PollableBase>` proxy can share a transport's synchronized state, but
-must retain the native descriptor for the registration's whole lifetime. This
-separation lets application code close a connection logically without racing
-an in-progress epoll operation against descriptor reuse.
+A poll thread owns each registration until it has unregistered the descriptor.
+A `Box<dyn PollableBase>` proxy registered with `add_proxy` can share a
+transport's synchronized state, but must retain the native descriptor for the
+registration's whole lifetime; the TCP transport's tasks hold a descriptor lease
+for the same reason. This separation lets application code close a connection
+logically without racing an in-progress epoll operation against descriptor reuse.
 
 | Source | Responsibility |
 |--------|----------------|
-| `reactor/epoll_wrapper.rs` | `srpc::epoll_wrapper`, including `Epoll`, `PollMode`, `PollReady`, and `Pollable` |
-| `reactor/srpc_epoll.c` | Linux epoll syscalls and event-record marshalling |
+| `reactor/epoll_wrapper.rs` | `srpc::epoll_wrapper`: `PollMode`, `PollReady`, and `SrpcEpollBackend`, the Lion runtime's epoll backend |
+| `reactor/srpc_epoll.c` | One Linux epoll or eventfd syscall per function, for that backend |
 | `rpc/pollable_proxy.rs` | `srpc::pollable_proxy::{PollableBase, PollableProxy}` and internal adapters |
-| `reactor/reactor.rs` | Poll-thread commands, worker state, loop, and job scheduling |
+| `reactor/reactor.rs` | Poll-thread commands, the Lion driver task, the pollable adapter, and job scheduling |
+| `rpc/tcp_channel.rs` | The TCP reader, writer, and accept tasks |
 | `base/misc.rs` | `srpc::misc::{Job, OneTimeJob}` |
 
 Most applications use `Client` and `Server` and let their TCP channels register
@@ -1151,54 +1154,40 @@ aarch64, which also have the required fiber context-switch assembly.
 | `PollReady::ERROR` | `0x4` | Error, hangup, or peer half-close notification |
 
 Interest and readiness are separate sets of bits. A write handler can return a
-new interest mask or `NO_CHANGE`; the worker updates epoll only when needed.
+new interest mask or `NO_CHANGE`; `PollReady` names readiness bits for custom
+code and is not passed to `PollableBase` handlers.
 
-### The Epoll wrapper
+### The epoll backend
 
-`Epoll::new()` eagerly creates an owned epoll descriptor. It is released on drop.
-The public method names retain their capitalization.
+`SrpcEpollBackend` is the operating-system backend of the Lion runtime each
+poll thread runs; it implements Lion's `OsBackend` contract over Linux epoll.
+Applications do not call it directly. Its rules matter to anyone writing a
+pollable, because they are the rules readiness arrives under.
 
-| Method | Arguments and behavior |
-|--------|------------------------|
-| `Add(fd, mode)` | Register a descriptor; returns an `i32` result |
-| `Remove(fd)` | Attempt unregistration; ignores the syscall result and returns zero |
-| `Update(fd, mode, old_mode)` | Replace interest; the current implementation ignores `old_mode` |
-| `Wait(on_ready)` | Perform one wait and invoke an `FnMut(i32, i32)` callback for each fd/readiness pair |
+Every registration is edge-triggered and always asks for `EPOLLRDHUP`, plus
+`EPOLLIN` for read interest and `EPOLLOUT` for write interest. The kernel stores
+Lion's registration token in the event's user data, not the descriptor number,
+and a wait reports at most 100 events. Readiness maps as in mio: `EPOLLIN` or
+`EPOLLPRI` is readable, `EPOLLOUT` writable, and an error or hang-up wakes both
+directions. A cross-thread wake is an eventfd registered under a reserved token
+that a wait drains and never reports. `EINTR` ends a wait with no events.
 
-`Wait` uses a fixed array of 100 events and a 1 ms timeout. It maps `EPOLLIN` to
-`READABLE`, `EPOLLOUT` to `WRITABLE`, and `EPOLLERR`, `EPOLLHUP`, or `EPOLLRDHUP`
-to `ERROR`. A failed or interrupted `epoll_wait` produces no callbacks for that
-pass. There is no dedicated EINTR retry inside `Wait`; the worker's next loop
-iteration calls it again.
-
-Registrations use edge-triggered epoll. `Add` always requests `EPOLLIN` and
-`EPOLLRDHUP`, plus `EPOLLOUT` when the supplied mode includes write interest.
-`Update` includes read and write interest according to its new mask. Custom
-nonblocking transports must consume readiness correctly, normally reading or
-writing until `WouldBlock` rather than assuming another edge will arrive while
-work remains.
-
-The wrapper has specific recovery rules. On `EEXIST`, `Add` deletes the old
-registration and retries once. An `EBADF` add returns `-1`; other unsuccessful
-adds assert. `Update` treats `ENOENT` and `EBADF` as a registration that has
-already disappeared, and otherwise asserts success. Creation failure also
-asserts. These APIs do not provide a general `io::Result` error-reporting layer.
-
-The epoll user data contains an integer fd, not a pointer to a transport object.
-Callbacks look up that fd in the worker's current map. The map and native socket
-ownership must still be correct: an integer fd can be reused after close.
+Because registrations are edge-triggered, a nonblocking transport must consume
+readiness: read or write until `WouldBlock` rather than assuming another edge
+will arrive while work remains.
 
 ### The native epoll boundary
 
-Canonical Rust chooses interest flags, handles registration recovery, and
-converts readiness into worker callbacks. `reactor/srpc_epoll.c` performs the
-individual Linux syscalls and copies the platform event records into the fixed
-layout declared by `reactor/srpc_epoll.h`. No native C code owns a reactor queue
-or decides which fiber runs next.
+Canonical Rust chooses interest flags and the reserved token, maps kernel
+events to Lion's readiness, and decides what `EINTR` and `EAGAIN` mean.
+`reactor/srpc_epoll.c` makes one system call per function and returns its result
+or `-errno`; a wait copies each event's token and flags into caller arrays, as
+declared in `reactor/srpc_epoll.h`. No native C code owns a reactor queue or
+decides which fiber runs next.
 
-### Pollable, PollableBase, and the proxy
+### PollableBase and the proxy
 
-`PollableBase: Send` is the trait the worker actually dispatches through.
+`PollableBase: Send` is the trait a poll thread dispatches `add_proxy` registrations through.
 `PollableProxy` is its owned type alias, `Box<dyn PollableBase>`.
 
 | Method | Receiver | Purpose |
@@ -1206,16 +1195,12 @@ or decides which fiber runs next.
 | `fd()` | `&self` | Registered descriptor |
 | `poll_mode()` | `&self` | Initial read/write interest |
 | `content_size()` | `&mut self` | Amount of buffered content |
-| `handle_read()` | `&mut self` | Process readable data; the worker currently ignores the returned boolean. It may run when nothing is readable (a new registration starts readable on the Lion reactor), so it must tolerate `EAGAIN` |
-| `handle_write()` | `&mut self` | Flush output and return an interest mask or `NO_CHANGE` |
-| `handle_error()` | `&mut self` | Handle the reported error or hangup |
-| `close()` | `&mut self` | Close after the worker unregisters |
-| `check_pending_write_update()` | `&self` | Consume a pending request for write interest |
-| `is_closed()` | `&self` | Report logical closure |
-
-`srpc::epoll_wrapper::Pollable` declares the same operations and remains accepted
-by compatibility methods such as `PollThread::remove`. The worker's registrations
-use `PollableBase`, so implementing `Pollable` alone does not register a transport.
+| `handle_read()` | `&mut self` | Drain readable data until `EAGAIN`; the poll thread ignores the returned boolean. It may run when nothing is readable (a new registration starts readable on the Lion reactor), so it must tolerate `EAGAIN`. An error or hang-up also arrives here, as a failed `recv` or end of file |
+| `handle_write()` | `&mut self` | Flush output and return an interest mask, or `NO_CHANGE` once `send` reported `EAGAIN` |
+| `handle_error()` | `&mut self` | Not called by the poll thread: an error or hang-up wakes the read side, so `handle_read` sees it |
+| `close()` | `&mut self` | Close after the poll thread unregisters |
+| `check_pending_write_update()` | `&self` | Report and consume a pending request for write interest; read after each `handle_read` and on every other wake of the registration |
+| `is_closed()` | `&self` | Report logical closure; a closed registration is unregistered, closed, and dropped |
 
 For an external Rust transport, implement `PollableBase` and transfer a boxed
 implementation to `add_proxy`. Its `Send` bound permits that transfer. The proxy
@@ -1225,33 +1210,31 @@ operation can replace or drop the object's interior socket owner.
 
 `make_pollable_proxy_from_typed_arc` uses the private `PollableSharedTarget`
 trait. It is an internal adapter rather than an extensible downstream Rust trait.
-Use a direct `PollableBase` implementation or the TCP transport's dedicated
-proxy factory, which also retains the socket registration's ownership.
+Use a direct `PollableBase` implementation.
 
 ### What is actually registered
 
 The TCP runtime does not register pollable proxies. Each connection is a reader
 task and a writer task on its PollThread, and each listener an accept task;
-they register the socket with the thread's Lion runtime themselves. The TCP
-proxy factories and `TcpConnection`'s pollable methods remain for the retired
-worker and its tests. RPC `ClientConnection` and `ServerConnection` objects sit
+they register the socket with the thread's Lion runtime themselves, so the
+only registrations `add_proxy` sees are an application's own pollables. RPC
+`ClientConnection` and `ServerConnection` objects sit
 above the channel and do not become epoll registrations merely by having
 similarly named methods. In particular, a method on an RPC wrapper is not
 automatically a poll-loop hook.
 
-Transport callbacks hand complete payload frames to RPC decoding. The worker
-owns its proxy and registration tables; channels and application handles can
-also own synchronized references to the underlying connection state.
+Transport callbacks hand complete payload frames to RPC decoding. The poll
+thread owns its proxy and registration tables; channels and application handles
+can also own synchronized references to the underlying connection state.
 
 ### PollThread: the cross-thread handle
 
 Clone `Arc<PollThread>` to send commands from another thread. The handle's public
-operations enqueue work; they do not directly edit the worker's tables.
+operations enqueue work; they do not directly edit the poll thread's tables.
 
 | Operation | Effect |
 |-----------|--------|
-| `add_proxy(proxy)` | Transfer an owned pollable proxy to the worker |
-| `remove(&mut pollable)` | Read its fd and request unregistration |
+| `add_proxy(proxy)` | Transfer an owned pollable proxy to the poll thread |
 | `remove_fd(fd)` | Request unregistration without calling `close()` |
 | `request_close(fd)` | Request unregistration followed by proxy `close()` |
 | `update_mode(fd, mask)` | Request a change to an existing registration |
@@ -1273,32 +1256,29 @@ error, while `update_mode` logs a disconnected channel. Submission is therefore
 not an acknowledgment that work completed. Use an explicit reply channel when
 the caller needs one, as in the job example below.
 
-### PollThreadWorker and the loop
+### The driver and the pollable adapter
 
-The worker owns an epoll descriptor, an fd-to-proxy map, the current interest
-map, a pending-removal set, and pending jobs keyed by object identity. Its
-thread-local current-worker slot lets transport code recognize execution on
-the owning worker. Callers should use `pollworker_is_on_poll_thread()` rather
-than accessing that internal pointer.
+The worker thread builds its Lion runtime and runs one driver task on it until
+shutdown. Each time it is woken, by a command, a ping, an event wake or a timer,
+the driver:
 
-One normal pass proceeds in this order.
+1. Drains the command channel.
+2. Applies the removals that batch requested.
+3. Runs ready jobs.
+4. Drives the local reactor with `run_loop(false, true)`.
+5. Sleeps on a Lion timer until the next event deadline, or until woken.
 
-1. Run ready jobs.
-2. Wait for epoll readiness and collect fd/bit pairs.
-3. Dispatch read, write, and error handlers, looking up each fd again as needed.
-4. Drain the command channel.
-5. Run ready jobs again.
-6. Apply deferred removals.
-7. Run ready jobs a third time.
-8. Drive the local reactor with `run_loop(false, true)`.
-9. Consume pending write-interest flags and update epoll.
-10. Sweep closed registrations, unregistering before closing and dropping them.
-
-Callbacks can request closure, so the worker retains ownership while it detaches
-and unregisters a proxy. On loop exit it unregisters the remaining descriptors
-and drops the maps. It does not explicitly invoke every remaining proxy's
-`close()` method during that final cleanup; ordinary ownership drops release
-whatever resources have no remaining owners.
+Each `add_proxy` registration gets its own task, which waits on the descriptor
+through Lion's `AsyncFd`. On a read edge it consumes the edge and calls
+`handle_read`; then it reads `check_pending_write_update()`, and while the mode
+includes write interest and the socket is writable it calls `handle_write`,
+keeping the write edge until `handle_write` returns `NO_CHANGE`. A registration
+found closed after either handler leaves the table and is unregistered, then
+closed, then dropped. On shutdown every remaining registration is unregistered
+and dropped without `close()`; ordinary ownership drops release whatever
+resources have no remaining owners. `pollworker_is_on_poll_thread()` reports
+whether the caller runs on a thread whose poll thread is running: in its driver,
+a job, a fiber it resumes, or one of its tasks.
 
 ### The command channel
 
@@ -1308,20 +1288,21 @@ whatever resources have no remaining owners.
 |---------|---------------|
 | `AddPollable` | Reject an invalid or closed incoming proxy and a duplicate live registration; retire a closed old registration before adding a replacement |
 | `RemovePollable` | Put the fd in the deferred-removal set |
-| `ClosePollable` | Detach, cancel pending removal, unregister, erase interest, then call `close()` |
-| `UpdateMode` | Ignore absent registrations; update epoll only when the mode changes |
+| `ClosePollable` | Detach, cancel pending removal, unregister, then call `close()` |
+| `UpdateMode` | Ignore absent registrations; record the mode and wake the registration's task |
 | `AddJob` / `RemoveJob` | Insert or remove the job by shared object identity |
 | `Shutdown` | Set the worker's stop flag |
 
-`RemovePollable` defers map changes until the removal phase. A remove request
+`RemovePollable` defers map changes until the command batch has drained. A remove request
 that refers to no current registration still counts as admitted if its command
 was accepted. `RemoveJob` exists in the command enum, but `PollThread` has no
 corresponding convenience method.
 
 TCP logical close shuts down the socket and clears the connection's fd slot.
-A registration proxy retains a separate socket owner until the worker has
-unregistered it. This prevents a close/reuse race from turning an epoll operation
-into an operation on an unrelated newly opened descriptor.
+The connection's transport tasks retain a separate socket owner until they have
+unregistered it, as an `add_proxy` proxy must. This prevents a close/reuse race
+from turning an epoll operation into an operation on an unrelated newly opened
+descriptor.
 
 ### Handing output to the poll thread
 
@@ -1337,8 +1318,10 @@ then waits for write readiness.
 
 Close and errors reach both tasks: a close from any thread wakes the writer,
 and the task that retires the connection wakes the other. A pollable
-registered with `add_proxy` still uses `check_pending_write_update()` and
-`PollThread::notify_pending_write` to ask for write interest.
+registered with `add_proxy` asks for write interest from `handle_write`'s
+result or `check_pending_write_update()` when its task runs; nothing wakes the
+task for the latter alone, so from another thread it asks with
+`PollThread::update_mode`.
 
 ### The job system
 
