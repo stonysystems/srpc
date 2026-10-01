@@ -203,7 +203,37 @@ BENIGN_GENERATED_IDENTIFIERS = ("rusty::io::Error::Kind::Unsupported",)
 #     kTcpWriteThroughIdleUs constant (95057e3).
 # Raw entries: epoll_wrapper 51 -> 56, reactor 386 -> 449 (six new
 # constructor/destructor aliases), tcp_channel 185 -> 236 (six).
-EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2189
+# 2189 -> 2107: S7b retires the pre-Lion epoll loop and TCP's pollable
+# surface, none of which a PollThread runs any more; measured from fresh
+# objects at rusty-cpp a130025e. 90 rows removed, 8 added, 1 respelled.
+#   srpc.epoll_wrapper -7 (53 -> 46): -15 for the fd-keyed Epoll wrapper
+#     (new_/fd/Add/Remove/Update and epoll_open/add_impl/remove_impl/
+#     update_impl), EpollWaitEvent::default_, the epoll_remove_count
+#     instrumentation's epoll_bump_remove_count, and the Pollable trait
+#     (vtable, typeinfo, typeinfo name, destructor); +8 from returning
+#     SrpcInterest and SrpcOsEvent to plain derives now that the pinned
+#     transpiler lowers derive(Copy) (T5): clone, default_,
+#     rusty_debug_string and operator<< for each. No external caller:
+#     Mako never names these, and SRPC's own users were the removed loop
+#     and tests.
+#   srpc.reactor -24 (422 -> 398): PollThreadWorker (create, poll_loop,
+#     update_mode) and its 17 pollworker_* helpers, PollThread::remove
+#     (which took the retired Pollable), and the S3 pending-write path
+#     (PollThread::notify_pending_write, poll_driver_wake_fd,
+#     poll_driver_wake_fd_here, poll_driver_wake_writers). Reactor's
+#     fieldwise constructor is respelled without timeout_events_ (row
+#     replacement).
+#   srpc.tcp_channel -51 (216 -> 165): TcpPollableShim and
+#     TcpListenerPollableShim (vtables, typeinfo, constructors and their nine
+#     methods each), make_tcp_{connection,listener}_pollable_proxy,
+#     TcpConnection's and TcpListener's six pollable methods each, their
+#     tcpconn_handle_{read,write,error}/tcpconn_recv_bytes/
+#     tcplistener_handle_{read,error} bodies, and the TCP_POLL_* constants.
+#     The transport tasks (S5) replaced all of it.
+# Raw entries: epoll_wrapper 56 -> 47 (Pollable's two destructor aliases
+# gone), reactor 449 -> 425, tcp_channel 236 -> 181 (four shim constructor
+# aliases gone).
+EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2107
 
 # ---------------------------------------------------------------------------
 # srpc.reactor: surviving historical additions plus current canonical helpers.
@@ -254,7 +284,14 @@ EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2189
 #   - S5 (9d587bd), shared with the transport: lion_fd_poll_ready,
 #     lion_fd_consume_ready, the PollTaskUnwindAbort guard and
 #     PollThread::is_current_thread.
-# Most of the S3 adapter is dead since S5 and leaves with S7b.
+# S7b removed PollThread::notify_pending_write and the three helpers that
+# woke registrations for it (poll_driver_wake_fd, poll_driver_wake_fd_here,
+# poll_driver_wake_writers); 53 remain. The rest of the S3 adapter stays: it
+# runs add_proxy, the public extension API for custom pollables. S7b also
+# removes incumbent symbols on purpose -- the retired epoll loop's
+# PollThreadWorker, its pollworker_* helpers and PollThread::remove -- whose
+# rows left ABI_SPECS (see EXPECTED_TOTAL_PROVIDER_SYMBOLS); this table
+# records additions only.
 # REACTOR_INCUMBENT_ORACLE_ADDITIONS is enforced, not decorative: the gate
 # requires every entry to be a real, currently-owned srpc.reactor symbol
 # (require_reactor_oracle_additions), so a stale entry is an error, and a
@@ -269,7 +306,6 @@ REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
         ('T', 'srpc::PollTaskUnwindAbort@srpc.reactor::rusty_mark_forgotten() const'),
         ('T', 'srpc::PollTaskUnwindAbort@srpc.reactor::~PollTaskUnwindAbort()'),
         ('T', 'srpc::PollThread@srpc.reactor::is_current_thread() const'),
-        ('T', 'srpc::PollThread@srpc.reactor::notify_pending_write(int) const'),
         ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::StacklessLionVoidTask(rusty::Task<void>, rusty::Arc<srpc::StacklessLionWake@srpc.reactor>, bool)'),
         ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::StacklessLionVoidTask(srpc::StacklessLionVoidTask@srpc.reactor&&)'),
         ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::operator=(srpc::StacklessLionVoidTask@srpc.reactor&&)'),
@@ -299,11 +335,8 @@ REACTOR_INCUMBENT_ORACLE_ADDITIONS = frozenset(
         ('T', 'srpc::poll_driver_update_mode@srpc.reactor(srpc::PollDriver@srpc.reactor const&, int, int)'),
         ('T', 'srpc::poll_driver_wake@srpc.reactor(srpc::PollDriverWake@srpc.reactor const&)'),
         ('T', 'srpc::poll_driver_wake_bound@srpc.reactor(rusty::Mutex<rusty::Option<rusty::Arc<srpc::PollDriverWake@srpc.reactor>>> const&)'),
-        ('T', 'srpc::poll_driver_wake_fd@srpc.reactor(srpc::PollDriver@srpc.reactor const&, int)'),
-        ('T', 'srpc::poll_driver_wake_fd_here@srpc.reactor(rusty::Arc<srpc::PollDriverWake@srpc.reactor> const&, int)'),
         ('T', 'srpc::poll_driver_wake_of@srpc.reactor(srpc::Reactor@srpc.reactor const&)'),
         ('T', 'srpc::poll_driver_wake_owner@srpc.reactor()'),
-        ('T', 'srpc::poll_driver_wake_writers@srpc.reactor(srpc::PollDriver@srpc.reactor const&)'),
         ('T', 'srpc::poll_fd_entry_handle_read@srpc.reactor(srpc::PollFdEntry@srpc.reactor const&)'),
         ('T', 'srpc::poll_fd_entry_handle_write@srpc.reactor(srpc::PollFdEntry@srpc.reactor const&)'),
         ('T', 'srpc::poll_fd_entry_is_closed@srpc.reactor(srpc::PollFdEntry@srpc.reactor const&)'),
@@ -852,14 +885,14 @@ EXPECTED_IMPORTS = {
     # S5 (21ce10a): the transport tasks hold an Rc and hand sockets over
     # through a OneTimeJob (srpc.misc); the write-through cork (95057e3)
     # reads the clock through srpc.basetypes. The Lion re-exports are pinned
-    # in EXPECTED_DEPENDENCY_REEXPORTS.
+    # in EXPECTED_DEPENDENCY_REEXPORTS. S7b dropped srpc.pollable_proxy with
+    # TCP's pollable shims and proxy factories (measured).
     "srpc.tcp_channel": [
         "rc_port",
         "srpc.basetypes",
         "srpc.channel",
         "srpc.frame_codec",
         "srpc.misc",
-        "srpc.pollable_proxy",
         "srpc.reactor",
     ],
     # Measured ordered private imports from the generated reactor provider.
@@ -921,8 +954,8 @@ EXPECTED_IMPORTS = {
 }
 
 # Advisory only (see require_cpp_surfaces). Refreshed from the rusty-cpp
-# a130025e output of the Lion-runtime tree, so the report shows only drift
-# after it.
+# a130025e output of the Lion-runtime tree after S7b (epoll_wrapper, reactor
+# and tcp_channel changed), so the report shows only drift after it.
 EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.basetypes": '2c21d1094d927ee17e658f250f126cf174c385ba187cf9073027e025da815714',
     "srpc.callback_wrapper": '1e43e6fc2dc7f4b501b231d2e9a4069c04970e0fd887bdf408cc020fbbfde1f6',
@@ -949,7 +982,7 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.fiber": '48ad7bbc9166a86a19d2e30af4b5a8625b0c339087c6e1da5efcefe64d42aed5',
     "srpc.misc": '04b35eb2161e64e20c5ee75c77648467168dfdf7e5a49573f7a0776595d25c5c',
     "srpc.channel": 'bf36773fe9f48def1e3841a56657cf5b40848a58b16eb3f2940fb3d0ca0fded9',
-    "srpc.epoll_wrapper": '958f0e8c824d5f870c54eb609c528a20b28e7a7906d2acb3a8cc50089b0571cc',
+    "srpc.epoll_wrapper": '3cb0f246e3cfdcf93dd1a91950691888fcdc5d820ba4651dd6363187f4a9fecc',
     "srpc.pollable_proxy": 'd266d0ed1d299bb47d74448e1186017c195004e633fe29b206d387b8416d1b49',
     "srpc.callbacks": 'f57b51d8eb0bd19f0730af94ed1d18a3e6032479bf47b4c231a853a4f973b4cd',
     "srpc.inmemory_channel": '86f94b48c7b37abaee2028a838bfc0a471cfa06e6c98306f668e72ae168714c6',
@@ -957,11 +990,11 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.threading": '8e1314597c52613be00f92173a2afbaa57483e214959426898a6b4514e3ac13b',
     "srpc.debugging": 'd076ecd139b73d23fde38e49f341e6c317afae47761152921c15b1613aa08db2',
     "srpc.any_message": 'd500eff960ccf596c130eef447f2b8d124373066fe3bd58400eb14f9d69e8eb3',
-    "srpc.tcp_channel": '9950004b0ce2abcc62cd515d5f60d13f56883630a6ab54009e6b0a0d4a29838a',
+    "srpc.tcp_channel": 'f9fbec41d77e428b4162d86b54ac371fe84fd13cc80b2113129ae38d2f5c46a9',
     # Re-authored with the clippy-gate work (measured ABI-neutral: same 324 raw /
     # 301 unique demangled strong symbols, same 29-row layout).  Digest drift is
     # advisory; this keeps the advisory list honest rather than permanently noisy.
-    "srpc.reactor": '2c77e0443e709e7490d230b9e7677403ddeb012d2abe248d11b94ff424568198',
+    "srpc.reactor": '2527368a88ee0f72d4fd137b58ad16ad50205e96bd23f28ecb085043d809ff77',
     "srpc.server": '774e5803e4499cfa92942804001b7bf137416ba1199cfb7f4a217822358ae4bf',
     "srpc.client": 'd9f806460b687f8c87467b88ba989a77ef78a8ac9e00e1a9f5a526d9ef91b313',
 }
@@ -991,7 +1024,7 @@ IMPORTER_USE_MARKERS = {
     "srpc.fiber": "srpc::this_fiber::get_id",
     "srpc.misc": "srpc::OneTimeJob",
     "srpc.channel": "srpc::ChannelFrame",
-    "srpc.epoll_wrapper": "srpc::Epoll",
+    "srpc.epoll_wrapper": "srpc::SrpcEpollBackend",
     "srpc.pollable_proxy": "srpc::PollableProxy",
     "srpc.callbacks": "srpc::CallbackManager",
     "srpc.inmemory_channel": "srpc::InMemorySwitchboard",
@@ -3568,14 +3601,6 @@ ABI_SPECS = {
     "srpc.epoll_wrapper": AbiSpec(
         surface=frozenset(
             {
-                "export class Pollable;",
-                "export struct Epoll;",
-                "export extern rusty::sync::atomic::AtomicI32 epoll_remove_count;",
-                "export void epoll_bump_remove_count();",
-                "export int32_t epoll_open();",
-                "int32_t Add(int32_t fd, int32_t poll_mode);",
-                "int32_t Remove(int32_t fd);",
-                "int32_t Update(int32_t fd, int32_t new_mode, int32_t old_mode);",
                 "export struct SrpcInterest;",
                 "export struct SrpcOsEvent;",
                 "export struct SrpcEpollInterrupt;",
@@ -3595,8 +3620,6 @@ ABI_SPECS = {
         ),
         symbols=frozenset(
             {
-                ('D', 'typeinfo for srpc::Pollable@srpc.epoll_wrapper'),
-                ('D', 'vtable for srpc::Pollable@srpc.epoll_wrapper'),
                 ('R', 'srpc::LINUX_EPOLLERR@srpc.epoll_wrapper'),
                 ('R', 'srpc::LINUX_EPOLLHUP@srpc.epoll_wrapper'),
                 ('R', 'srpc::LINUX_EPOLLIN@srpc.epoll_wrapper'),
@@ -3608,19 +3631,6 @@ ABI_SPECS = {
                 ('R', 'srpc::PollReady::ERROR@srpc.epoll_wrapper'),
                 ('R', 'srpc::PollReady::READABLE@srpc.epoll_wrapper'),
                 ('R', 'srpc::PollReady::WRITABLE@srpc.epoll_wrapper'),
-                ('R', 'typeinfo name for srpc::Pollable@srpc.epoll_wrapper'),
-                ('T', 'srpc::Epoll@srpc.epoll_wrapper::Add(int, int)'),
-                ('T', 'srpc::Epoll@srpc.epoll_wrapper::Remove(int)'),
-                ('T', 'srpc::Epoll@srpc.epoll_wrapper::Update(int, int, int)'),
-                ('T', 'srpc::Epoll@srpc.epoll_wrapper::fd() const'),
-                ('T', 'srpc::Epoll@srpc.epoll_wrapper::new_()'),
-                ('T', 'srpc::EpollWaitEvent@srpc.epoll_wrapper::default_()'),
-                ('T', 'srpc::Pollable@srpc.epoll_wrapper::~Pollable()'),
-                ('T', 'srpc::epoll_add_impl@srpc.epoll_wrapper(int, int, int)'),
-                ('T', 'srpc::epoll_bump_remove_count@srpc.epoll_wrapper()'),
-                ('T', 'srpc::epoll_open@srpc.epoll_wrapper()'),
-                ('T', 'srpc::epoll_remove_impl@srpc.epoll_wrapper(int, int)'),
-                ('T', 'srpc::epoll_update_impl@srpc.epoll_wrapper(int, int, int, int)'),
                 # The Lion OS backend (plan S2); see the 2060 -> 2082 note.
                 ('R', 'srpc::EPOLL_BATCH_CAPACITY@srpc.epoll_wrapper'),
                 ('R', 'srpc::EPOLL_ERR_AGAIN@srpc.epoll_wrapper'),
@@ -3649,6 +3659,14 @@ ABI_SPECS = {
                 ('T', 'srpc::SrpcEpollBackend@srpc.epoll_wrapper::wait(rusty::port::vec::Vec@vec_port.vec<lion_reactor::os::OsEvent@lion_reactor, rusty::alloc::Global>&, rusty::Option<rusty::time::Duration>)'),
                 ('T', 'srpc::lion_os_event@srpc.epoll_wrapper(srpc::SrpcOsEvent@srpc.epoll_wrapper const&)'),
                 ('T', 'srpc::srpc_interest@srpc.epoll_wrapper(lion_reactor::types::interest::Interest@lion_reactor)'),
+                ('T', 'srpc::SrpcInterest@srpc.epoll_wrapper::clone() const'),
+                ('T', 'srpc::SrpcInterest@srpc.epoll_wrapper::default_()'),
+                ('T', 'srpc::SrpcInterest@srpc.epoll_wrapper::rusty_debug_string() const'),
+                ('T', 'srpc::SrpcOsEvent@srpc.epoll_wrapper::clone() const'),
+                ('T', 'srpc::SrpcOsEvent@srpc.epoll_wrapper::default_()'),
+                ('T', 'srpc::SrpcOsEvent@srpc.epoll_wrapper::rusty_debug_string() const'),
+                ('T', 'srpc::operator<<@srpc.epoll_wrapper(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, srpc::SrpcInterest@srpc.epoll_wrapper const&)'),
+                ('T', 'srpc::operator<<@srpc.epoll_wrapper(std::__1::basic_ostream<char, std::__1::char_traits<char>>&, srpc::SrpcOsEvent@srpc.epoll_wrapper const&)'),
             }
         ),
     ),
@@ -3948,7 +3966,6 @@ ABI_SPECS = {
                 'export struct Reactor {',
                 'export class EventPollable;',
                 'export struct PollThread {',
-                'export struct PollThreadWorker {',
                 'export struct Fiber {',
                 'export struct IntEvent : public EventPollable {',
                 'export struct TimeoutEvent : public EventPollable {',
@@ -3957,9 +3974,6 @@ ABI_SPECS = {
                 'export struct WaitAll : public EventPollable {',
                 'export struct EventState {',
                 'export void reactor_spawn_stackless_task_impl(const Reactor& self_, rusty::Task<void> task);',
-                'void remove(Pollable& poll) const;',
-                'void update_mode(Pollable& poll, int32_t new_mode);',
-                'void pollworker_update_mode(PollThreadWorker& w, Pollable& poll, int32_t new_mode);',
             }
         ),
         symbols=frozenset({
@@ -4145,17 +4159,13 @@ ABI_SPECS = {
             ('T', 'srpc::PollThread@srpc.reactor::create()'),
             ('T', 'srpc::PollThread@srpc.reactor::get_remove_count() const'),
             ('T', 'srpc::PollThread@srpc.reactor::operator=(srpc::PollThread@srpc.reactor&&)'),
-            ('T', 'srpc::PollThread@srpc.reactor::remove(srpc::Pollable@srpc.epoll_wrapper&) const'),
             ('T', 'srpc::PollThread@srpc.reactor::remove_fd(int) const'),
             ('T', 'srpc::PollThread@srpc.reactor::request_close(int) const'),
             ('T', 'srpc::PollThread@srpc.reactor::rusty_mark_forgotten() const'),
             ('T', 'srpc::PollThread@srpc.reactor::shutdown() const'),
             ('T', 'srpc::PollThread@srpc.reactor::update_mode(int, int) const'),
             ('T', 'srpc::PollThread@srpc.reactor::~PollThread()'),
-            ('T', 'srpc::PollThreadWorker@srpc.reactor::create(rusty::sync::mpsc::Receiver<std::__1::variant<srpc::PollCommand_AddPollable@srpc.reactor, srpc::PollCommand_RemovePollable@srpc.reactor, srpc::PollCommand_ClosePollable@srpc.reactor, srpc::PollCommand_UpdateMode@srpc.reactor, srpc::PollCommand_AddJob@srpc.reactor, srpc::PollCommand_RemoveJob@srpc.reactor, srpc::PollCommand_Shutdown@srpc.reactor>>)'),
-            ('T', 'srpc::PollThreadWorker@srpc.reactor::poll_loop()'),
-            ('T', 'srpc::PollThreadWorker@srpc.reactor::update_mode(srpc::Pollable@srpc.epoll_wrapper&, int)'),
-            ('T', 'srpc::Reactor@srpc.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<srpc::StacklessTaskEntry@srpc.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)'),
+            ('T', 'srpc::Reactor@srpc.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<srpc::StacklessTaskEntry@srpc.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)'),
             ('T', 'srpc::Reactor@srpc.reactor::check_timeout(rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>&) const'),
             ('T', 'srpc::Reactor@srpc.reactor::continue_fiber(rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global> const&) const'),
             ('T', 'srpc::Reactor@srpc.reactor::create_run_fiber(rusty::Function<void ()>) const'),
@@ -4277,23 +4287,7 @@ ABI_SPECS = {
             ('T', 'srpc::pollable_proxy_mode@srpc.reactor(rusty::Box<srpc::PollableBase@srpc.pollable_proxy, rusty::alloc::Global> const&)'),
             ('T', 'srpc::pollthread_create@srpc.reactor()'),
             ('T', 'srpc::pollthread_drop@srpc.reactor(srpc::PollThread@srpc.reactor const&)'),
-            ('T', 'srpc::pollworker_close_proxy_of@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, int)'),
-            ('T', 'srpc::pollworker_create@srpc.reactor(rusty::sync::mpsc::Receiver<std::__1::variant<srpc::PollCommand_AddPollable@srpc.reactor, srpc::PollCommand_RemovePollable@srpc.reactor, srpc::PollCommand_ClosePollable@srpc.reactor, srpc::PollCommand_UpdateMode@srpc.reactor, srpc::PollCommand_AddJob@srpc.reactor, srpc::PollCommand_RemoveJob@srpc.reactor, srpc::PollCommand_Shutdown@srpc.reactor>>)'),
-            ('T', 'srpc::pollworker_do_add_job@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, rusty::Arc<srpc::Job@srpc.misc>)'),
-            ('T', 'srpc::pollworker_do_add_pollable@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, rusty::Box<srpc::PollableBase@srpc.pollable_proxy, rusty::alloc::Global>)'),
-            ('T', 'srpc::pollworker_do_close_pollable@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, int)'),
-            ('T', 'srpc::pollworker_do_remove_job@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, rusty::Arc<srpc::Job@srpc.misc>)'),
-            ('T', 'srpc::pollworker_do_remove_pollable@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, int)'),
-            ('T', 'srpc::pollworker_do_update_mode@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, int, int)'),
             ('T', 'srpc::pollworker_is_on_poll_thread@srpc.reactor()'),
-            ('T', 'srpc::pollworker_make@srpc.reactor(rusty::sync::mpsc::Receiver<std::__1::variant<srpc::PollCommand_AddPollable@srpc.reactor, srpc::PollCommand_RemovePollable@srpc.reactor, srpc::PollCommand_ClosePollable@srpc.reactor, srpc::PollCommand_UpdateMode@srpc.reactor, srpc::PollCommand_AddJob@srpc.reactor, srpc::PollCommand_RemoveJob@srpc.reactor, srpc::PollCommand_Shutdown@srpc.reactor>>)'),
-            ('T', 'srpc::pollworker_poll_loop@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&)'),
-            ('T', 'srpc::pollworker_process_commands@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&)'),
-            ('T', 'srpc::pollworker_process_pending_removals@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&)'),
-            ('T', 'srpc::pollworker_snapshot_fds@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&)'),
-            ('T', 'srpc::pollworker_take_removals@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&)'),
-            ('T', 'srpc::pollworker_trigger_job@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&)'),
-            ('T', 'srpc::pollworker_update_mode@srpc.reactor(srpc::PollThreadWorker@srpc.reactor&, srpc::Pollable@srpc.epoll_wrapper&, int)'),
             ('T', 'srpc::reactor_create_run_fiber_at_impl@srpc.reactor(srpc::Reactor@srpc.reactor const&, rusty::Function<void ()>, char const*, long)'),
             ('T', 'srpc::reactor_create_run_fiber_impl@srpc.reactor(srpc::Reactor@srpc.reactor const&, rusty::Function<void ()>)'),
             ('T', 'srpc::reactor_dec_active_fibers@srpc.reactor()'),
@@ -4336,7 +4330,6 @@ ABI_SPECS = {
                 ('T', 'srpc::PollTaskUnwindAbort@srpc.reactor::~PollTaskUnwindAbort()'),
                 ('T', 'srpc::PollThread@srpc.reactor::PollThread(rusty::sync::mpsc::Sender<std::__1::variant<srpc::PollCommand_AddPollable@srpc.reactor, srpc::PollCommand_RemovePollable@srpc.reactor, srpc::PollCommand_ClosePollable@srpc.reactor, srpc::PollCommand_UpdateMode@srpc.reactor, srpc::PollCommand_AddJob@srpc.reactor, srpc::PollCommand_RemoveJob@srpc.reactor, srpc::PollCommand_Shutdown@srpc.reactor>>, rusty::Mutex<rusty::Option<rusty::thread::JoinHandle<std::__1::tuple<>>>>, rusty::sync::atomic::detail::Atomic<unsigned long>, rusty::sync::atomic::detail::Atomic<bool>, rusty::sync::atomic::detail::Atomic<int>, rusty::Arc<srpc::PollDriverWake@srpc.reactor>)'),
                 ('T', 'srpc::PollThread@srpc.reactor::is_current_thread() const'),
-                ('T', 'srpc::PollThread@srpc.reactor::notify_pending_write(int) const'),
                 ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::StacklessLionVoidTask(rusty::Task<void>, rusty::Arc<srpc::StacklessLionWake@srpc.reactor>, bool)'),
                 ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::StacklessLionVoidTask(srpc::StacklessLionVoidTask@srpc.reactor&&)'),
                 ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::operator=(srpc::StacklessLionVoidTask@srpc.reactor&&)'),
@@ -4366,11 +4359,8 @@ ABI_SPECS = {
                 ('T', 'srpc::poll_driver_update_mode@srpc.reactor(srpc::PollDriver@srpc.reactor const&, int, int)'),
                 ('T', 'srpc::poll_driver_wake@srpc.reactor(srpc::PollDriverWake@srpc.reactor const&)'),
                 ('T', 'srpc::poll_driver_wake_bound@srpc.reactor(rusty::Mutex<rusty::Option<rusty::Arc<srpc::PollDriverWake@srpc.reactor>>> const&)'),
-                ('T', 'srpc::poll_driver_wake_fd@srpc.reactor(srpc::PollDriver@srpc.reactor const&, int)'),
-                ('T', 'srpc::poll_driver_wake_fd_here@srpc.reactor(rusty::Arc<srpc::PollDriverWake@srpc.reactor> const&, int)'),
                 ('T', 'srpc::poll_driver_wake_of@srpc.reactor(srpc::Reactor@srpc.reactor const&)'),
                 ('T', 'srpc::poll_driver_wake_owner@srpc.reactor()'),
-                ('T', 'srpc::poll_driver_wake_writers@srpc.reactor(srpc::PollDriver@srpc.reactor const&)'),
                 ('T', 'srpc::poll_fd_entry_handle_read@srpc.reactor(srpc::PollFdEntry@srpc.reactor const&)'),
                 ('T', 'srpc::poll_fd_entry_handle_write@srpc.reactor(srpc::PollFdEntry@srpc.reactor const&)'),
                 ('T', 'srpc::poll_fd_entry_is_closed@srpc.reactor(srpc::PollFdEntry@srpc.reactor const&)'),
@@ -4517,13 +4507,9 @@ ABI_SPECS = {
             ('D', 'typeinfo for srpc::TcpChannelShim@srpc.tcp_channel'),
             ('D', 'typeinfo for srpc::TcpFactoryShim@srpc.tcp_channel'),
             ('D', 'typeinfo for srpc::TcpListenerChannelShim@srpc.tcp_channel'),
-            ('D', 'typeinfo for srpc::TcpListenerPollableShim@srpc.tcp_channel'),
-            ('D', 'typeinfo for srpc::TcpPollableShim@srpc.tcp_channel'),
             ('D', 'vtable for srpc::TcpChannelShim@srpc.tcp_channel'),
             ('D', 'vtable for srpc::TcpFactoryShim@srpc.tcp_channel'),
             ('D', 'vtable for srpc::TcpListenerChannelShim@srpc.tcp_channel'),
-            ('D', 'vtable for srpc::TcpListenerPollableShim@srpc.tcp_channel'),
-            ('D', 'vtable for srpc::TcpPollableShim@srpc.tcp_channel'),
             ('R', 'srpc::TCP_ERR_ACCES@srpc.tcp_channel'),
             ('R', 'srpc::TCP_ERR_ADDR_IN_USE@srpc.tcp_channel'),
             ('R', 'srpc::TCP_ERR_ADDR_NOT_AVAILABLE@srpc.tcp_channel'),
@@ -4541,16 +4527,11 @@ ABI_SPECS = {
             ('R', 'srpc::TCP_ERR_TIMED_OUT@srpc.tcp_channel'),
             ('R', 'srpc::TCP_ERR_WOULD_BLOCK@srpc.tcp_channel'),
             ('R', 'srpc::TCP_MAX_FRAME_PAYLOAD_SIZE@srpc.tcp_channel'),
-            ('R', 'srpc::TCP_POLL_NO_CHANGE@srpc.tcp_channel'),
-            ('R', 'srpc::TCP_POLL_READ@srpc.tcp_channel'),
-            ('R', 'srpc::TCP_POLL_WRITE@srpc.tcp_channel'),
             ('R', 'srpc::kRecvScratchBytes@srpc.tcp_channel'),
             ('R', 'srpc::kTcpConnectionOutboundHighWaterDefault@srpc.tcp_channel'),
             ('R', 'typeinfo name for srpc::TcpChannelShim@srpc.tcp_channel'),
             ('R', 'typeinfo name for srpc::TcpFactoryShim@srpc.tcp_channel'),
             ('R', 'typeinfo name for srpc::TcpListenerChannelShim@srpc.tcp_channel'),
-            ('R', 'typeinfo name for srpc::TcpListenerPollableShim@srpc.tcp_channel'),
-            ('R', 'typeinfo name for srpc::TcpPollableShim@srpc.tcp_channel'),
             ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)'),
             ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(srpc::TcpChannelShim@srpc.tcp_channel&&)'),
             ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::close() const'),
@@ -4562,18 +4543,12 @@ ABI_SPECS = {
             ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::set_on_closed(srpc::detail::CallbackWrapper@srpc.callback_wrapper<rusty::Function<void (srpc::ChannelError@srpc.channel) const>>)'),
             ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::set_on_error(srpc::detail::CallbackWrapper@srpc.callback_wrapper<rusty::Function<void (srpc::ChannelError@srpc.channel, std::__1::basic_string_view<char, std::__1::char_traits<char>>) const>>)'),
             ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::set_on_frame(srpc::detail::CallbackWrapper@srpc.callback_wrapper<rusty::Function<void (srpc::ChannelFrame@srpc.channel const&) const>>)'),
-            ('T', 'srpc::TcpConnection@srpc.tcp_channel::check_pending_write_update() const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::close() const'),
-            ('T', 'srpc::TcpConnection@srpc.tcp_channel::content_size() const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::fd() const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::flush() const'),
-            ('T', 'srpc::TcpConnection@srpc.tcp_channel::handle_error() const'),
-            ('T', 'srpc::TcpConnection@srpc.tcp_channel::handle_read() const'),
-            ('T', 'srpc::TcpConnection@srpc.tcp_channel::handle_write() const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::is_closed() const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::new_(int, rusty::String)'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::peer_address() const'),
-            ('T', 'srpc::TcpConnection@srpc.tcp_channel::poll_mode() const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::send_frame(srpc::ChannelFrame@srpc.channel const&) const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::set_keepalive(bool, int, int, int) const'),
             ('T', 'srpc::TcpConnection@srpc.tcp_channel::set_on_closed(srpc::detail::CallbackWrapper@srpc.callback_wrapper<rusty::Function<void (srpc::ChannelError@srpc.channel) const>>) const'),
@@ -4591,18 +4566,12 @@ ABI_SPECS = {
             ('T', 'srpc::TcpFactoryShim@srpc.tcp_channel::backend_name() const'),
             ('T', 'srpc::TcpFactoryShim@srpc.tcp_channel::connect(std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
             ('T', 'srpc::TcpFactoryShim@srpc.tcp_channel::make_listener()'),
-            ('T', 'srpc::TcpListener@srpc.tcp_channel::check_pending_write_update() const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::close() const'),
-            ('T', 'srpc::TcpListener@srpc.tcp_channel::content_size() const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::fd() const'),
-            ('T', 'srpc::TcpListener@srpc.tcp_channel::handle_error() const'),
-            ('T', 'srpc::TcpListener@srpc.tcp_channel::handle_read() const'),
-            ('T', 'srpc::TcpListener@srpc.tcp_channel::handle_write() const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::is_closed() const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::listen(std::__1::basic_string_view<char, std::__1::char_traits<char>>) const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::local_address() const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::new_()'),
-            ('T', 'srpc::TcpListener@srpc.tcp_channel::poll_mode() const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::set_on_accept(srpc::detail::CallbackWrapper@srpc.callback_wrapper<rusty::Function<void (rusty::Box<srpc::ChannelConnectionBase@srpc.channel, rusty::alloc::Global>) const>>) const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::set_on_error(srpc::detail::CallbackWrapper@srpc.callback_wrapper<rusty::Function<void (srpc::ChannelError@srpc.channel, std::__1::basic_string_view<char, std::__1::char_traits<char>>) const>>) const'),
             ('T', 'srpc::TcpListener@srpc.tcp_channel::set_poll_thread(rusty::Arc<srpc::PollThread@srpc.reactor>)'),
@@ -4622,35 +4591,11 @@ ABI_SPECS = {
             ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::operator=(srpc::TcpListenerHandleReadScope@srpc.tcp_channel&&)'),
             ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::rusty_mark_forgotten() const'),
             ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::~TcpListenerHandleReadScope()'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::TcpListenerPollableShim(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::TcpListenerPollableShim(srpc::TcpListenerPollableShim@srpc.tcp_channel&&)'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::check_pending_write_update() const'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::close()'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::content_size()'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::fd() const'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::handle_error()'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::handle_read()'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::handle_write()'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::is_closed() const'),
-            ('T', 'srpc::TcpListenerPollableShim@srpc.tcp_channel::poll_mode() const'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::TcpPollableShim(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>)'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::TcpPollableShim(srpc::TcpPollableShim@srpc.tcp_channel&&)'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::check_pending_write_update() const'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::close()'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::content_size()'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::fd() const'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::handle_error()'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::handle_read()'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::handle_write()'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::is_closed() const'),
-            ('T', 'srpc::TcpPollableShim@srpc.tcp_channel::poll_mode() const'),
             ('T', 'srpc::connect_errno_to_channel_error@srpc.tcp_channel(int)'),
             ('T', 'srpc::io_kind_to_channel_error@srpc.tcp_channel(rusty::io::Error::Kind)'),
             ('T', 'srpc::make_tcp_connection_channel_proxy@srpc.tcp_channel(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)'),
-            ('T', 'srpc::make_tcp_connection_pollable_proxy@srpc.tcp_channel(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)'),
             ('T', 'srpc::make_tcp_factory_proxy@srpc.tcp_channel(rusty::Arc<srpc::TcpFactory@srpc.tcp_channel>)'),
             ('T', 'srpc::make_tcp_listener_channel_proxy@srpc.tcp_channel(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>)'),
-            ('T', 'srpc::make_tcp_listener_pollable_proxy@srpc.tcp_channel(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>)'),
             ('T', 'srpc::set_nonblocking_fd@srpc.tcp_channel(int)'),
             ('T', 'srpc::tcp_connect_socket@srpc.tcp_channel(unsigned int, unsigned short, int, int&)'),
             ('T', 'srpc::tcp_factory_connect@srpc.tcp_channel(srpc::TcpFactory@srpc.tcp_channel const&, std::__1::basic_string_view<char, std::__1::char_traits<char>>)'),
@@ -4666,12 +4611,8 @@ ABI_SPECS = {
             ('T', 'srpc::tcpconn_errno_to_channel_error@srpc.tcp_channel(int)'),
             ('T', 'srpc::tcpconn_fd_locked@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcpconn_flush@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
-            ('T', 'srpc::tcpconn_handle_error@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
-            ('T', 'srpc::tcpconn_handle_read@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
-            ('T', 'srpc::tcpconn_handle_write@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcpconn_last_errno@srpc.tcp_channel()'),
             ('T', 'srpc::tcpconn_next_frame@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&, srpc::FrameView@srpc.frame_codec&)'),
-            ('T', 'srpc::tcpconn_recv_bytes@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&, srpc::RecvScratch@srpc.tcp_channel*)'),
             ('T', 'srpc::tcpconn_reset_fd@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcpconn_reset_inbound@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcpconn_scratch@srpc.tcp_channel()'),
@@ -4681,8 +4622,6 @@ ABI_SPECS = {
             ('T', 'srpc::tcplistener_accept_step@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&, srpc::AcceptStep@srpc.tcp_channel*)'),
             ('T', 'srpc::tcplistener_accept_step_new@srpc.tcp_channel()'),
             ('T', 'srpc::tcplistener_close_accepted@srpc.tcp_channel(srpc::AcceptStep@srpc.tcp_channel&)'),
-            ('T', 'srpc::tcplistener_handle_error@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&)'),
-            ('T', 'srpc::tcplistener_handle_read@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcplistener_is_bound@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcplistener_take_proxy@srpc.tcp_channel(srpc::AcceptStep@srpc.tcp_channel&)'),
                 ('R', 'srpc::kTcpWriteThroughIdleUs@srpc.tcp_channel'),
@@ -5059,7 +4998,7 @@ RAW_ABI_ALIASES = {
         ('T', 'srpc::PollThread@srpc.reactor::PollThread(rusty::sync::mpsc::Sender<std::__1::variant<srpc::PollCommand_AddPollable@srpc.reactor, srpc::PollCommand_RemovePollable@srpc.reactor, srpc::PollCommand_ClosePollable@srpc.reactor, srpc::PollCommand_UpdateMode@srpc.reactor, srpc::PollCommand_AddJob@srpc.reactor, srpc::PollCommand_RemoveJob@srpc.reactor, srpc::PollCommand_Shutdown@srpc.reactor>>, rusty::Mutex<rusty::Option<rusty::thread::JoinHandle<std::__1::tuple<>>>>, rusty::sync::atomic::detail::Atomic<unsigned long>, rusty::sync::atomic::detail::Atomic<bool>, rusty::sync::atomic::detail::Atomic<int>, rusty::Arc<srpc::PollDriverWake@srpc.reactor>)'),
         ('T', 'srpc::PollThread@srpc.reactor::PollThread(srpc::PollThread@srpc.reactor&&)'),
         ('T', 'srpc::PollThread@srpc.reactor::~PollThread()'),
-        ('T', 'srpc::Reactor@srpc.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<srpc::StacklessTaskEntry@srpc.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)'),
+        ('T', 'srpc::Reactor@srpc.reactor::Reactor(rusty::Cell<int>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<rusty::VecDeque<rusty::Arc<srpc::EventPollable@srpc.reactor>>>, rusty::RefCell<btree_port::btree::map::BTreeMap@btree_port.btree.map<unsigned long, rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<rusty::port::rc::Rc@rc_port<srpc::Fiber@srpc.reactor, rusty::alloc::Global>, rusty::alloc::Global>>, rusty::Cell<bool>, rusty::Cell<bool>, rusty::Cell<int>, rusty::Cell<int>, rusty::Cell<rusty::thread::ThreadId>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::Cell<long>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<srpc::StacklessTaskEntry@srpc.reactor, rusty::alloc::Global>>, rusty::RefCell<rusty::port::vec::Vec@vec_port.vec<unsigned long, rusty::alloc::Global>>, rusty::RefCell<rusty::VecDeque<unsigned long>>, rusty::marker::PhantomPinned)'),
         ('T', 'srpc::Reactor@srpc.reactor::~Reactor()'),
         ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::StacklessLionVoidTask(rusty::Task<void>, rusty::Arc<srpc::StacklessLionWake@srpc.reactor>, bool)'),
         ('T', 'srpc::StacklessLionVoidTask@srpc.reactor::StacklessLionVoidTask(srpc::StacklessLionVoidTask@srpc.reactor&&)'),
@@ -5665,61 +5604,18 @@ RAW_ABI_ALIASES = {
         ),
     ),
     "srpc.tcp_channel": (
-        (
-            'T',
-            'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(srpc::TcpChannelShim@srpc.tcp_channel&&)',
-        ),
-        (
-            'T',
-            'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)',
-        ),
-        (
-            'T',
-            'srpc::TcpFactoryShim@srpc.tcp_channel::TcpFactoryShim(srpc::TcpFactoryShim@srpc.tcp_channel&&)',
-        ),
-        (
-            'T',
-            'srpc::TcpFactoryShim@srpc.tcp_channel::TcpFactoryShim(rusty::Arc<srpc::TcpFactory@srpc.tcp_channel>)',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerChannelShim@srpc.tcp_channel::TcpListenerChannelShim(srpc::TcpListenerChannelShim@srpc.tcp_channel&&)',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerChannelShim@srpc.tcp_channel::TcpListenerChannelShim(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>)',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::TcpListenerHandleReadScope(srpc::TcpListenerHandleReadScope@srpc.tcp_channel&&)',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::TcpListenerHandleReadScope(rusty::sync::atomic::detail::Atomic<unsigned int> const*, bool)',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::~TcpListenerHandleReadScope()',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerPollableShim@srpc.tcp_channel::TcpListenerPollableShim(srpc::TcpListenerPollableShim@srpc.tcp_channel&&)',
-        ),
-        (
-            'T',
-            'srpc::TcpListenerPollableShim@srpc.tcp_channel::TcpListenerPollableShim(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)',
-        ),
-        (
-            'T',
-            'srpc::TcpPollableShim@srpc.tcp_channel::TcpPollableShim(srpc::TcpPollableShim@srpc.tcp_channel&&)',
-        ),
-        (
-            'T',
-            'srpc::TcpPollableShim@srpc.tcp_channel::TcpPollableShim(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>)',
-        ),
         ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)'),
         ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(srpc::TcpAcceptTask@srpc.tcp_channel&&)'),
         ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::~TcpAcceptTask()'),
+        ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)'),
+        ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(srpc::TcpChannelShim@srpc.tcp_channel&&)'),
+        ('T', 'srpc::TcpFactoryShim@srpc.tcp_channel::TcpFactoryShim(rusty::Arc<srpc::TcpFactory@srpc.tcp_channel>)'),
+        ('T', 'srpc::TcpFactoryShim@srpc.tcp_channel::TcpFactoryShim(srpc::TcpFactoryShim@srpc.tcp_channel&&)'),
+        ('T', 'srpc::TcpListenerChannelShim@srpc.tcp_channel::TcpListenerChannelShim(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>)'),
+        ('T', 'srpc::TcpListenerChannelShim@srpc.tcp_channel::TcpListenerChannelShim(srpc::TcpListenerChannelShim@srpc.tcp_channel&&)'),
+        ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::TcpListenerHandleReadScope(rusty::sync::atomic::detail::Atomic<unsigned int> const*, bool)'),
+        ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::TcpListenerHandleReadScope(srpc::TcpListenerHandleReadScope@srpc.tcp_channel&&)'),
+        ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::~TcpListenerHandleReadScope()'),
         ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::RefCell<rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>>, rusty::RefCell<rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>>, rusty::RefCell<rusty::Option<rusty::Waker>>)'),
         ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(srpc::TcpTransport@srpc.tcp_channel&&)'),
         ('T', 'srpc::TcpTransport@srpc.tcp_channel::~TcpTransport()'),
@@ -5753,13 +5649,6 @@ RAW_ABI_ALIASES = {
             "srpc::ChannelListenerBase@srpc.channel::~ChannelListenerBase()",
             "srpc::ChannelConnectionBase@srpc.channel::~ChannelConnectionBase()",
             "srpc::ChannelConnectionBase@srpc.channel::~ChannelConnectionBase()",
-        )
-    ),
-    "srpc.epoll_wrapper": tuple(
-        ("T", symbol)
-        for symbol in (
-            "srpc::Pollable@srpc.epoll_wrapper::~Pollable()",
-            "srpc::Pollable@srpc.epoll_wrapper::~Pollable()",
         )
     ),
     "srpc.pollable_proxy": (
@@ -7685,12 +7574,6 @@ static_assert(std::is_same_v<
               decltype(&srpc::channel_error_to_string),
               std::string_view (*)(srpc::ChannelError)>);
 
-static_assert(std::is_abstract_v<srpc::Pollable>);
-static_assert(std::is_same_v<
-              decltype(&srpc::Epoll::fd),
-              std::int32_t (srpc::Epoll::*)() const>);
-static_assert(std::is_same_v<
-              decltype(&srpc::epoll_bump_remove_count), void (*)()>);
 // The Lion OS backend (plan S2): the Lion-mirroring records and the pure
 // mapping keep their Rust shapes.
 static_assert(sizeof(srpc::SrpcInterest) == 2);
@@ -10822,14 +10705,6 @@ int main() {
         srpc::channel_error_to_string(
             static_cast<srpc::ChannelError>(-1)) != "Unknown") {
         return 240;
-    }
-    const auto remove_count_before = srpc::epoll_remove_count.load(
-        rusty::sync::atomic::Ordering::SeqCst);
-    srpc::epoll_bump_remove_count();
-    if (srpc::epoll_remove_count.load(
-            rusty::sync::atomic::Ordering::SeqCst) !=
-        remove_count_before + 1) {
-        return 241;
     }
     {
         // A signalled wait on the Lion OS backend returns promptly and does
