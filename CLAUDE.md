@@ -622,11 +622,11 @@ it or loosen the rule.
 
 [lion-runtime-plan.md](docs/dev/lion-runtime-plan.md) is the record of the move onto Lion. Its decisions
 (D1–D5), upstream prerequisites (U1–U9), transpiler track (T1–T9) and SRPC phases (S0–S8) each carry
-result notes with the measured numbers, commits and remaining items. Read the result notes, not the
-status lines: the header still reads "PROPOSED ... Nothing below is implemented", and S2–S4 are still
-marked `[ ]` although their notes record them done. Genuinely open: S6 (cooperative client waits),
-S8 (acceptance — rpcbench against the last pre-Lion tree `e94dd7e`, the microbenchmark compare, a Mako
-build), U1b (Lion's container speed), and rusty-cpp's T6 and T8.
+result notes with the measured numbers, commits and remaining items; S8's notes hold the accepted
+numbers and the performance record. The migration is done and accepted (2026-10-04). Still open: S6
+(cooperative client waits; optional, not taken, and the same-PollThread nested-RPC limitation is
+recorded there) and rusty-cpp's T8 (what its own gate must show, the owner's decision). U1b (Lion's
+container speed) was judged unnecessary for SRPC.
 
 [translation-parity-audit.md](docs/translation-parity-audit.md) records the pre-repair baseline and its
 original findings. Its source line numbers, counts, and removed facade paths refer to the audited

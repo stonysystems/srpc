@@ -2,11 +2,12 @@
 
 Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 
-**Status: IMPLEMENTED (2026-10-01), revision 2.** SRPC runs on Lion in both
-lanes on branch `lion-runtime`. S0–S5 and S7 are done; S8 records the
-acceptance; S6 (optional) was not taken; U1b is not needed for SRPC (§3).
-rusty-cpp's T6 and T8 are tracked in §4. Everything is local: no SRPC,
-rusty-cpp or Lion branch has been pushed. The text below keeps the plan as it
+**Status: DONE (accepted 2026-10-04), revision 2.** SRPC runs on Lion in both
+lanes on branch `lion-runtime`, pinned to rusty-cpp `7e0c201f` and Lion
+`3496113`. S0–S5, S7 and S8 are done, and so are T1–T7 and T9. S6 (optional)
+was not taken, and U1b is not needed for SRPC (§3). T8 is open: what
+rusty-cpp's own gate must show is the owner's decision. Everything is
+local: no SRPC, rusty-cpp or Lion branch has been pushed. The text below keeps the plan as it
 was written; each item's result notes record what was actually done.
 The rest of this header is the original proposal (2026-09-26).
 
@@ -2146,7 +2147,8 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       S7b (the book already says probes are not scheduled). The ignored
       `incumbent_concrete_layouts_are_pinned` Rust test is stale beyond
       `Reactor` (it pins `PollThread` at 104; C++ measures 136).
-- [ ] **S8. Acceptance.**
+- [x] **S8. Acceptance.** Done (2026-10-04); see *Result, final acceptance*
+  at the end of this item.
   - The full gate, and all `-L srpc` CTests.
   - `srpc_runtime_parity`: review its `EXPECTED` keys for fiber sleep order
     (R4) rather than editing them until they pass.
@@ -2396,6 +2398,42 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       vote and reply paths are same-thread. Mako has no `Pollable`, `Epoll`
       or `Job` subclass, and it relies on synchronous `create_run`, which
       S4 kept.
+  - **Result, final acceptance (2026-10-01 and 2026-10-04).**
+    - **Setup:** run on `lion/t6-pin` (`d3d2ac8`, the rusty-cpp `7e0c201f`
+      bump; tree-identical to `lion-runtime` `10e9528` except this plan) in
+      a fresh clone, with all three submodules at their gitlinks and fresh
+      build directories.
+    - **Rust lane:** `RUSTFLAGS=-Dwarnings cargo test --locked --workspace
+      --all-targets` 398 passed, 0 failed, 1 ignored; `--doc` 2 passed;
+      clippy `-D warnings` exit 0.
+    - **C++ lane:** Release configure 0, build 0 (both gates); `ctest -L
+      srpc` 51/51, with no skipped Python suites and no skipped or disabled
+      gtest cases.
+    - **ABI:** measured with the oracle's own classifiers on `libsrpc.a`:
+      2107 SRPC provider symbols, 374 Lion dependency-provider symbols
+      (1+1+25+190+157), and 0 hand-attention slots.
+    - **Generated code across the `0d3b990f` to `7e0c201f` bump:** the
+      whole-crate transpile is byte-identical in all 61 generated files.
+    - **Sanitizers** (fresh configurations, no active suppressions): ASan
+      35/35, UBSan 35/35, TSan 35/35. Verbose re-runs: ASan and UBSan
+      35/35 with no sanitizer report lines. TSan was 34/35, with
+      no ThreadSanitizer report: `test_rpc_metrics`'s
+      `RequestWithOptionsTracksRetryAttempts` failed to bind an ephemeral
+      test port (`AddressInUse`, `tests/rpc_metrics_test.cc:576`), and it
+      passed 3 of 3 single re-runs. The test calls `server->start` once
+      without the fixture's retry; 22 `ASSERT_EQ(server->start(...))`
+      sites share the pattern. This is a `tests:` follow-up, not a runtime
+      defect.
+    - **`scripts/verify_lion.sh`:** 9/9 Lion crates verified, 0 errors.
+    - **`srpc_runtime_parity` (R4):** no expectation changed since
+      `99f625d`. The `EXPECTED` table (`scripts/check_runtime_parity.py`)
+      was last touched before it. `deadline_respected` holds by design:
+      readiness is judged on SRPC's microsecond monotonic clock, and Lion's
+      millisecond timer is only a wake source, rounded up and re-armed if it
+      fires early. No test pins sub-millisecond sleep ordering;
+      `sleep_us(0)` is the only sub-millisecond sleep.
+    - **Covered elsewhere:** rpcbench, the microbenchmark compare and the
+      Mako build are in the results above, not this run.
 
 ## 7. Risks
 
