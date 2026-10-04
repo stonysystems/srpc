@@ -21,10 +21,22 @@ logs every I/O wait in Lion's ghost event log, with a proved wake-up
 guarantee (`net/tcp/{kernel,proof}.rs`). Moving SRPC onto them means SRPC's
 TCP waits join the log Lion's liveness argument is stated over.
 
-**What this buys, precisely.** The verified part is the decision `Arm <=>
-(!was_ready || would_block)` and its log. Readiness flag clearing, waker
-registration and the syscalls remain trusted glue either way. This is "TCP
-waits are in Lion's verified log", not "verified TCP".
+**What this buys, precisely (corrected by L0).** The verified part is the
+decision `Arm <=> (!was_ready || would_block)` and its log.
+
+- The log is a per-utility `IoKernel` log. No utility kernel has a
+  machine-checked link to Lion's composed liveness theorem (TCB §4), and the
+  kernel's waker is a ghost `arbitrary()`.
+- Fixing audit item 4 (store `cx.waker()`) moves TCP wakes to the TaskWake
+  queue. That is outside the composed model's io path, where `AsyncFd` and
+  `Sleep` already are (TCB §2).
+
+So SRPC gains a machine-checked suspend/complete decision, enforced by
+construction: a `Pending` without an armed waker can no longer be written.
+It gains nothing in the composed theorem's io obligation compared with
+today. Readiness flag clearing, waker registration and the syscalls remain
+trusted glue. Restoring the composed-model match is the optional **L1b**
+below.
 
 **What it costs.** Lion's stream cannot be used as it is:
 
@@ -82,7 +94,8 @@ in its reader, writer and accept tasks.
 
 ## 2. Phases
 
-- [ ] **L0. Spike (go/no-go).** In the Lion worktree (`scratchpad/lion-u`),
+- [x] **L0. Spike (go/no-go): GO** (2026-10-04, Lion `lion/tcp-spike`
+  `b746cac`, `56e0cb9`; see *Result* below). In the Lion worktree (`scratchpad/lion-u`),
   off `srpc-lion` (`3496113`):
   - Make `lion-utility`'s mio, socket2 and tokio `dep:`-optional behind its
     existing `mio` feature, with socket syscalls behind a small trait (the U6
@@ -96,6 +109,53 @@ in its reader, writer and accept tasks.
   - **Go** if the gap list is modest. **No-go, or ask the owner**, if the
     transpiler work exceeds the SRPC work, for example a std::net-shaped
     surface.
+  - **Result.**
+    - **Packaging:** a new crate, `lion-net`.
+      - It holds `kernel.rs`, `method.rs` and `proof.rs`, which are
+        byte-identical renames of `3496113`'s.
+      - It also holds a generic `TcpStream`/`TcpListener` over a
+        `SocketOps` trait: `recv`, `send` and `accept` on a raw fd. SRPC
+        supplies its C kernels through a zero-sized implementation.
+      - The stream wraps a fd it does not own, so the lease order is
+        kept.
+      - Its API is `from_raw_fd`, `poll_{read,write}_with(cx, f)`,
+        `poll_{read,write}(cx, &ops, buf)`, `poll_accept[_with]`,
+        `poll_*_ready` and `try_*_io`.
+      - Each poll observes the `AsyncFd` flag, runs the operation through
+        the ready guard (which clears only that direction, only on
+        `WouldBlock`), feeds `poll_step` the truthful facts, and on `Arm`
+        registers `cx.waker()`.
+    - **lion-utility:** mio, socket2 and tokio are `dep:`-optional behind
+      its existing `mio` feature. Its tokio-shaped `TcpStream`,
+      `TcpListener` and `UdpSocket` are thin shells over `lion-net`.
+    - **Audit items:** 1, 2, 4 and 5 are fixed, and no `unsafe impl` is
+      left in the TCP and UDP glue. Item 3 is decided for invariant 2 (only
+      `WouldBlock` clears). Each fix has a test that went red under a
+      mutation.
+    - **lion-reactor changes:** `AsyncFd` is `Send + Sync`; its guard is
+      `!Send`. The reactor epoch is process-wide, so use on the wrong
+      thread fails closed. New: `AsyncFd::{resource_id, try_read_ready,
+      try_write_ready}`.
+    - **Results:**
+      - Lion tests: lion-utility 54/0, lion-net 6/0, reactor 4, executor 5.
+      - `./ci.sh`: "All checks passed". lion-net verified 10, and the
+        negative control made it fail.
+      - An SRPC-shaped `cargo tree -e normal` has 23 packages and no
+        forbidden crate.
+    - **Transpile (rusty-cpp `7e0c201f`):** 0 hand slots and 0 compile
+      errors for `lion-net` and an SRPC-shaped probe. Packaging (b),
+      `lion-utility` without default features, gave 86 compile errors.
+      The 10 lowering gaps met (G1-G10) are all avoided on SRPC's path;
+      none is large. **L2 needs no transpiler change.**
+    - **Estimate:** L1 about 1 day (mostly done in the spike), L2 0, L3 2-4
+      days.
+- [~] **L1b. (Optional; owner's call; not in scope by default.)** Restore the
+  composed-model match:
+  - register a reactor-source waker when `cx.waker()` is the task's own,
+    and `cx.waker()` otherwise;
+  - this needs lion-executor to cache one waker per task. `poll_task_contained`
+    makes a fresh one on every poll, so `will_wake` never matches.
+  - Verified executor code; about 1-3 days.
 - [ ] **L1. Lion.**
   - Land the refactor on `srpc-lion` locally.
   - The stream and listener sit on `AsyncFd`'s protocol plus `IoKernel`, and
@@ -105,7 +165,9 @@ in its reader, writer and accept tasks.
     stream, and add regression tests for items 1 and 2.
   - Update `TCB_and_limitations.md`.
   - `./ci.sh` passes with 0 errors.
-- [ ] **L2. rusty-cpp.**
+- [~] **L2. rusty-cpp.** Not required (L0: no gap on SRPC's path). G1-G3 (a
+  return-type-only generic, `&dyn Trait` from another crate, generic dispatch
+  to an escaped method name) are worth general fixes later.
   - Fix the lowering gaps from L0.
   - Regenerate T6's Lion snapshot (`transpiler/tests/fixtures/lion/regen.sh`),
     whose per-crate counts and crate list are pinned.
