@@ -2434,6 +2434,18 @@ Each phase ends with the full pre-commit sequence from CLAUDE.md. Its
       `sleep_us(0)` is the only sub-millisecond sleep.
     - **Covered elsewhere:** rpcbench, the microbenchmark compare and the
       Mako build are in the results above, not this run.
+  - **Small follow-ups (not blocking, not done):**
+    - `tests/rpc_metrics_test.cc:576` and 21 other `ASSERT_EQ(server->start(
+      ...test_port_...))` sites start once without the fixture's bind
+      retry, so an ephemeral-port collision fails them (seen once under
+      TSan).
+    - Re-measure the `explicit_auto_deref` and other clippy pins in
+      `rpc/client.rs` against rusty-cpp `7e0c201f`; they were measured
+      against `3e1d9505`.
+    - `scripts/check_srpc_crate_mode.py:959` says the Lion digest table is
+      byte-identical at `0d3b990f`; it is also at `7e0c201f`.
+    - Scratch build trees from S8 (`mako-s8*`, `srpc-s1c/target-final`,
+      about 20 GB of local disk) were left in place.
 
 ## 7. Risks
 
