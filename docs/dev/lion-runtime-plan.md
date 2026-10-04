@@ -3,11 +3,13 @@
 Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 
 **Status: DONE (accepted 2026-10-04), revision 2.** SRPC runs on Lion in both
-lanes on branch `lion-runtime`, pinned to rusty-cpp `7e0c201f` and Lion
-`3496113`. S0–S5, S7 and S8 are done, and so are T1–T7 and T9. S6 (optional)
-was not taken, and U1b is not needed for SRPC (§3). T8 is open: what
-rusty-cpp's own gate must show is the owner's decision. Everything is
-local: no SRPC, rusty-cpp or Lion branch has been pushed. The text below keeps the plan as it
+lanes, pinned to rusty-cpp `7e0c201f` and Lion `3496113`. S0–S5, S7 and S8
+are done, and so are T1–T7 and T9. S6 (optional) was not taken, and U1b is
+not needed for SRPC (§3). T8 is set aside by the owner for now. Published
+2026-10-04: `lion-runtime` as SRPC `main`; the T-track merged into
+rusty-cpp `main` (`74d452ed`, whose second parent is the pin `7e0c201f`);
+the U-track as Lion branch `srpc-lion` (`3496113`; Lion `main` is
+unchanged). The text below keeps the plan as it
 was written; each item's result notes record what was actually done.
 The rest of this header is the original proposal (2026-09-26).
 
