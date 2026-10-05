@@ -1082,8 +1082,9 @@ class DependencyProvider:
 
 # crate-graph.json's `crates`, in its order (dependencies first). Measured
 # from `--verus-exec --crate-graph` output at Lion 3496113 / rusty-cpp
-# dc6e7558, and unchanged at a130025e and 0d3b990f. lion-executor-spec emits a provider (its executable remainder);
-# the other *-spec crates do not.
+# dc6e7558, and unchanged at a130025e and 0d3b990f, and at Lion d697b77 /
+# rusty-cpp 7e0c201f. lion-executor-spec emits a provider (its executable
+# remainder); the other *-spec crates do not.
 DEPENDENCY_PROVIDERS: tuple[DependencyProvider, ...] = (
     DependencyProvider("lion-executor-spec", "lion_executor_spec", ()),
     DependencyProvider("lion-slab", "lion_slab", ()),
@@ -1145,6 +1146,16 @@ DEPENDENCY_IMPORTER_USE_MARKERS: dict[str, str] = {
 #   lion_executor 157 = 374. lion_reactor and lion_executor each include three
 #   unattached std::hash specializations (see dependency_module_symbols).
 # A transpiler or Lion bump re-measures this whole table.
+#
+# Re-measured at Lion d697b77 (lion/net) / rusty-cpp 7e0c201f: 374 -> 379,
+# lion_reactor 190 -> 195 (+6, -1), the other providers unchanged. Lion's
+# 40a5c7a made AsyncFd Send + Sync by dropping its PhantomData<*const ()>
+# marker (the guard keeps one), so AsyncFd's fieldwise constructor is
+# respelled without it (-1/+1), and added the observation-only readiness
+# accessors lion-net's stream polls through: resource_id, try_read_ready,
+# try_write_ready and their private try_ready and guard (+5). The
+# process-wide NEXT_EPOCH atomic that replaced the per-thread counter lowers
+# to an inline variable (weak, V) and adds no strong row.
 DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
     "lion_executor_spec": frozenset({
         ('T', 'lion_executor_spec::events::Tick@lion_executor_spec(rusty::Option<std::__1::tuple<>>)'),
@@ -1188,18 +1199,23 @@ DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
         ('R', 'lion_reactor::readiness::WRITABLE@lion_reactor'),
         ('R', 'typeinfo name for lion_reactor::os::OsBackend@lion_reactor'),
         ('R', 'typeinfo name for lion_reactor::os::OsInterrupt@lion_reactor'),
-        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(int, lion_reactor::types::resource_id::ResourceId@lion_reactor, unsigned long, rusty::PhantomData<std::__1::tuple<> const*>)'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(int, lion_reactor::types::resource_id::ResourceId@lion_reactor, unsigned long)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(lion_reactor::async_fd::AsyncFd@lion_reactor&&)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::as_raw_fd() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::check_reactor() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::guard(lion_reactor::async_fd::Direction@lion_reactor) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::new_(int)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::operator=(lion_reactor::async_fd::AsyncFd@lion_reactor&&)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_read_ready(rusty::Context&) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_ready(lion_reactor::async_fd::Direction@lion_reactor, rusty::Context&) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_write_ready(rusty::Context&) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::readable() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::resource_id() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::rusty_mark_forgotten() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::try_read_ready() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::try_ready(lion_reactor::async_fd::Direction@lion_reactor) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::try_write_ready() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::writable() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::~AsyncFd()'),
         ('T', 'lion_reactor::async_fd::AsyncFdReadyGuard@lion_reactor::fd() const'),
@@ -1531,7 +1547,7 @@ DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
         ('T', 'std::__1::hash<lion_executor::types::task_id::TaskId@lion_executor>::operator()(lion_executor::types::task_id::TaskId@lion_executor const&) const'),
     }),
 }
-EXPECTED_TOTAL_DEPENDENCY_SYMBOLS = 374
+EXPECTED_TOTAL_DEPENDENCY_SYMBOLS = 379
 
 
 @dataclass(frozen=True)

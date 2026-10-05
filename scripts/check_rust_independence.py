@@ -39,6 +39,7 @@ LION_CRATES = {
     'lion-executor': 'lion-executor',
     'lion-executor-spec': 'lion-executor-spec',
     'lion-framework-spec': 'lion-framework-spec',
+    'lion-net': 'lion-net',
     'lion-reactor': 'lion-reactor',
     'lion-reactor-spec': 'lion-reactor-spec',
     'lion-slab': 'lion-slab',
