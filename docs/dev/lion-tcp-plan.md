@@ -304,7 +304,35 @@ in its reader, writer and accept tasks.
       consume-readiness poll the old reader and writer made after an
       `EAGAIN` is gone. The writer's 16-drain budget now wakes the task
       before checking writability, which costs at most one extra poll.
-- [ ] **L4. Acceptance**, one quiet run on the final SHA:
+- [x] **L4. Acceptance.** Done (2026-10-05) on `22d8e7f`, whose code
+  `e8875e0` shares; only plan docs differ.
+  - **From L3's run:**
+    - cargo 400/0/1, doctests 2/2, clippy clean;
+    - fresh configure and build exit 0, both gates; `ctest -L srpc` 51/51;
+    - ABI: SRPC 2107, Lion 407;
+    - TSan battery 35/35;
+    - `verify_lion.sh` 10/10.
+  - **L4 itself:**
+    - **Sanitizers:** ASan 35/35 and UBSan 35/35 in fresh
+      configurations. Verbose reruns had 0 `AddressSanitizer`, `runtime
+      error:` or `LeakSanitizer` lines, with no suppression entries. Probes
+      confirmed LSan and UBSan were live.
+    - **Drop order:** a gdb trace of `test_rpc_tcp_channel` shows every
+      stream and listener registering, then deregistering, then closing,
+      in that order.
+    - **Mako:** the scratch clone, refreshed to `e8875e0` with Lion
+      `d697b77` and rusty-cpp `3535f2aa`, configures and builds `all`
+      (exit 0, 0 errors) and passes 24/24. It needed no Mako source change
+      beyond S8's adaptations. Only `lion_net` was added to its
+      `SRPC_LION_PROVIDERS`. All 44 generated `.cppm` files are
+      byte-identical to SRPC's. `test_mako_nontxn_distributed`'s TCP was
+      observed on lion-net: 169 `poll_step` calls, 165 Read and 4 Accept.
+      Patches: scratchpad `l4-mako-patches/`.
+  - **Not a transport defect:**
+    `AttachedTcpConnectionTest.ForeignSendsReachThePeerInWireOrder` fails
+    only under gdb with breakpoints. Its helper `peer_read_exactly`
+    (`tests/rpc_tcp_channel_test.cc:487`) treats an `EINTR` read as end of
+    stream. It is a test follow-up.
   - the full gate and `ctest -L srpc`;
   - ASan, UBSan and TSan;
   - `verify_lion.sh`;
