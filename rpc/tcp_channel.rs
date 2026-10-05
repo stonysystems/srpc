@@ -3,8 +3,10 @@
 //! inbound decoder state; user-thread send/close operations never access it.
 //!
 //! On its PollThread each connection runs as two Lion tasks over one
-//! `AsyncFd`, a reader and a writer, and each listener as an accept task
-//! (S5 of docs/dev/lion-runtime-plan.md; see "Transport tasks" below).
+//! `lion_net::TcpStream`, a reader and a writer, and each listener as an
+//! accept task over a `lion_net::TcpListener` (S5 of
+//! docs/dev/lion-runtime-plan.md, moved onto lion-net in L3 of
+//! docs/dev/lion-tcp-plan.md; see "Transport tasks" below).
 
 #![allow(
     non_camel_case_types,
@@ -40,6 +42,11 @@ type LegacyTcpListener = std::net::TcpListener;
 type LegacySocketAddrV4 = std::net::SocketAddrV4;
 type LegacyIoErrorKind = std::io::ErrorKind;
 type PollThread = crate::reactor::PollThread;
+// Lion's stream and listener (lion-net), which the transport tasks poll.  Not
+// to be confused with this module's TcpListener (the channel listener) or the
+// std listener it binds (LegacyTcpListener).
+type LionTcpStream = lion_net::TcpStream;
+type LionTcpListener = lion_net::TcpListener;
 
 pub const kTcpConnectionOutboundHighWaterDefault: usize = 4 * 1024 * 1024; // 4 MiB
 
@@ -687,9 +694,10 @@ fn tcpconn_drain_outbound_locked(conn: &TcpConnection, buf: &mut TcpOutBuf) -> C
     }
     tcpconn_trim_sent(buf, offset);
     // WouldBlock whenever send(2) stopped on EAGAIN, even after partial
-    // progress: the writer task then consumes its write readiness and waits
-    // for the next edge.  (flush treats a partial drain the same either
-    // way.)
+    // progress, which the trim above has already recorded: the writer task
+    // hands that WouldBlock to Lion, which consumes the write readiness and
+    // waits for the next edge.  (flush treats a partial drain the same
+    // either way.)
     if blocked {
         return ChannelError::WouldBlock;
     }
@@ -1213,11 +1221,55 @@ fn tcplistener_close_accepted(s: &mut AcceptStep) {
     }
 }
 
+// One accept step through the task's Lion listener: when the listener may be
+// readable, Lion runs the step (the lifecycle gate, accept(2), the new
+// connection's set-up and the start of its transport tasks; no user callback
+// runs there, and the connection's callbacks are installed later, by
+// on_accept).  The step's EAGAIN reaches Lion as WouldBlock, so that Lion
+// consumes the readiness; every other outcome, EINTR and an aborted
+// connection included, completes the poll with the step's own code.  When
+// Lion suspends the task, `step.would_block` is set and 0 returned.  A poll
+// Lion refuses (a listener polled off its reactor's thread, never here) is
+// reported as an accept failure.
+fn tcplistener_accept_polled(
+    lst: &TcpListener,
+    lion: &mut LionTcpListener,
+    cx: &mut Context<'_>,
+    step: &mut AcceptStep,
+) -> i32 {
+    let polled: Poll<std::io::Result<i32>> = lion.poll_accept_with(cx, |_fd: i32| -> std::io::Result<i32> {
+        let rc: i32 = tcplistener_accept_step(lst, &raw mut *step);
+        if step.would_block {
+            return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+        }
+        Ok(rc)
+    });
+    match polled {
+        Poll::Pending => {
+            step.would_block = true;
+            0
+        }
+        Poll::Ready(Ok(rc)) => rc,
+        Poll::Ready(Err(_refused)) => {
+            step.ch = ChannelError::Internal;
+            -1
+        }
+    }
+}
+
 // The accept driver the accept task runs on each read edge (the retired
-// pollable `handle_read` ran it too).  `drained` is set when it stopped because
-// accept(2) reported EAGAIN, the only evidence that lets the accept task
-// consume its read readiness (S5).
-fn tcplistener_accept_until_blocked(lst: &TcpListener, drained: &mut bool) -> bool {
+// pollable `handle_read` ran it too).  Each accept step runs inside one
+// poll_accept_with of the task's Lion listener, and on_accept runs after
+// that poll returns.  `armed` is set when it stopped because Lion suspended
+// the task: the listener was not readable, or accept(2) reported EAGAIN,
+// the only evidence on which Lion consumes the read readiness.  Either way
+// the task's waker is then registered for the next connection.
+fn tcplistener_accept_until_blocked(
+    lst: &TcpListener,
+    lion: &mut LionTcpListener,
+    cx: &mut Context<'_>,
+    armed: &mut bool,
+) -> bool {
     if lst.closed_.load(Ordering::SeqCst) {
         return false;
     }
@@ -1242,7 +1294,7 @@ fn tcplistener_accept_until_blocked(lst: &TcpListener, drained: &mut bool) -> bo
             break;
         }
         let mut step = tcplistener_accept_step_new();
-        let rc = tcplistener_accept_step(lst, &raw mut step);
+        let rc = tcplistener_accept_polled(lst, lion, cx, &mut step);
         if rc == 1 {
             #[allow(unused_mut)]
             let mut accepted = tcplistener_take_proxy(&mut step);
@@ -1272,7 +1324,7 @@ fn tcplistener_accept_until_blocked(lst: &TcpListener, drained: &mut bool) -> bo
             }
         } else if rc == 0 {
             if step.would_block {
-                *drained = true;
+                *armed = true;
             }
             accepting = false;
         } else if rc == 2 {
@@ -1556,43 +1608,66 @@ pub fn tcp_factory_make_listener(self_: &TcpFactory) -> Option<ChannelListenerPr
 }
 
 // ---------------------------------------------------------------------------
-// Transport tasks (S5 of docs/dev/lion-runtime-plan.md)
+// Transport tasks (S5 of docs/dev/lion-runtime-plan.md; on lion-net since L3
+// of docs/dev/lion-tcp-plan.md)
 // ---------------------------------------------------------------------------
 //
-// On its PollThread a connection is two Lion local tasks over one AsyncFd,
-// one waiter per direction (U8):
+// On its PollThread a connection is two Lion local tasks over one
+// lion_net::TcpStream, and a listener is one accept task over a
+// lion_net::TcpListener.  Neither Lion type owns the descriptor or makes a
+// syscall of its own: each poll passes SRPC's own operation as a closure over
+// the raw fd (recv(2) and send(2) through the C kernels, and the accept step
+// above), and Lion's verified IoKernel decides from two facts whether the
+// poll completes or suspends: whether the direction was ready, and whether
+// the operation returned WouldBlock.  On a suspend Lion registers the task's
+// waker for that direction and the poll is Pending.  Beneath, readiness is
+// AsyncFd's protocol: only a WouldBlock clears a direction's flag, so every
+// closure returns WouldBlock exactly when its syscall reported EAGAIN, and
+// otherwise the syscall's own result.
 //
-// * The reader waits for read readiness, reads into the FrameStreamReader and
-//   delivers every complete frame to on_frame: fast RPCs
-//   still run inline here, fiber RPCs start their fiber here, and stackless
-//   RPCs make their first poll here.  It reads until recv(2) reports EAGAIN,
-//   the only evidence that consumes readiness: a short read delivers and then
-//   reads again, which also picks up whatever arrived meanwhile.  A poll
-//   reads at most a budget of times, then yields.
+// * The reader reads into the FrameStreamReader and delivers every complete
+//   frame to on_frame: fast RPCs still run inline here, fiber RPCs start
+//   their fiber here, and stackless RPCs make their first poll here.  It
+//   reads until Lion suspends it: a short read delivers and then reads again,
+//   which also picks up whatever arrived meanwhile.  A poll reads at most a
+//   budget of times, then yields.
 // * The writer drains the outbound buffer while the socket takes it.  It
 //   waits either on the buffer's empty->non-empty edge, which send_frame
 //   wakes from any thread through the waker published under the outbound
-//   gate (no driver hop, no latch sweep), or on write readiness after
-//   send(2) reported EAGAIN.  A reply sent inside the reader's poll wakes it
-//   on this thread's own ready queue, so it runs in the same tick, and one
-//   drain carries every reply that poll produced.
+//   gate (no driver hop, no latch sweep), or on write readiness, which Lion
+//   arms when its drain reported EAGAIN.  The drain sends until the buffer
+//   is empty or send(2) reports EAGAIN, and trims what it sent under the gate
+//   before it returns, so a WouldBlock after partial progress loses nothing.
+//   A reply sent inside the reader's poll wakes the writer on this thread's
+//   own ready queue, so it runs in the same tick, and one drain carries every
+//   reply that poll produced.
 //
-// A listener is one accept task, which runs the accept driver on
-// each read edge and consumes the readiness only when accept(2) reported
-// EAGAIN.  close() needs no waker for it: shutting a listening socket down
-// moves it to CLOSE, which the kernel reports as a hang-up edge, and Lion
-// wakes the task's read wait for it.
+// The reader and the writer share the stream through the transport's
+// RefCell, borrowed only for the length of one poll_read_with or
+// poll_write_with call.  Inside the borrow run only those closures, and they
+// run no user callback: frames are delivered to on_frame, and errors and
+// closes reported, after the borrow is released, because a handler may send,
+// close or drop the connection.  The writer's closure takes the outbound
+// gate inside the borrow; the cork (a foreign sender's write-through) takes
+// only that gate, on the raw descriptor, and never touches the stream or its
+// readiness, so the two are always taken in one order.
+//
+// A listener is one accept task, which runs the accept driver on each read
+// edge; each accept step is one poll of its Lion listener.  close() needs no
+// waker for it: shutting a listening socket down moves it to CLOSE, which the
+// kernel reports as a hang-up edge, and Lion wakes the task's read wait for
+// it.
 //
 // Close and error semantics are those the retired pollable shims had.  A task that
 // finds the connection closed (by any thread's close, a failed flush, or its
 // own EOF or error path) retires the transport: it closes the connection
-// (idempotent; on_closed fires once), drops the AsyncFd and then the
-// descriptor lease (Lion requires the fd to outlive its AsyncFd), and wakes
-// the other task, which then finishes.  close() wakes a parked writer
-// itself, and its shutdown(2) raises a hang-up edge, which Lion reports to
-// both directions.  When the PollThread shuts down, its runtime drops the
-// tasks; the registration is released without closing the connection, as
-// the epoll loop's shutdown cleanup did.
+// (idempotent; on_closed fires once), drops the stream, which deregisters the
+// descriptor, and then the descriptor lease (the stream does not own the
+// descriptor, which must outlive it), and wakes the other task, which then
+// finishes.  close() wakes a parked writer itself, and its shutdown(2) raises
+// a hang-up edge, which Lion reports to both directions.  When the PollThread
+// shuts down, its runtime drops the tasks; the registration is released
+// without closing the connection, as the epoll loop's shutdown cleanup did.
 //
 // Connections accepted by the accept task start their tasks in place; a
 // connect made on another thread, and a listen, hand over through a job.
@@ -1600,10 +1675,11 @@ pub fn tcp_factory_make_listener(self_: &TcpFactory) -> Option<ChannelListenerPr
 // A connection's registration, shared by its reader and writer tasks.
 struct TcpTransport {
     conn_: Arc<TcpConnection>,
-    // Dropped before `lease_`, explicitly (tcp_transport_release): Lion
-    // requires the descriptor to stay open until its AsyncFd is dropped, and
-    // the generated C++ destroys fields in the reverse of Rust's order.
-    async_fd_: RefCell<Option<lion_reactor::AsyncFd>>,
+    // Dropped before `lease_`, explicitly (tcp_transport_release): the stream
+    // does not own the descriptor, which must stay open until the stream has
+    // deregistered it, and the generated C++ destroys fields in the reverse
+    // of Rust's order.  Borrowed only for one stream poll (see above).
+    stream_: RefCell<Option<LionTcpStream>>,
     lease_: RefCell<Option<Arc<LegacyOwnedFd>>>,
     // The reader task's waker, for the writer's retirement to wake it.
     reader_: RefCell<Option<Waker>>,
@@ -1639,9 +1715,10 @@ fn tcpconn_attach(conn: &Arc<TcpConnection>) {
     pt.add(start_erased);
 }
 
-// On the PollThread: register the connection's descriptor with Lion and
-// spawn its reader and writer tasks.  A connection closed before this runs
-// has no descriptor left and needs nothing more.
+// On the PollThread: register the connection's descriptor with Lion (the
+// stream needs this thread's reactor) and spawn its reader and writer tasks.
+// A connection closed before this runs has no descriptor left and needs
+// nothing more.
 fn tcpconn_start_transport(conn: Arc<TcpConnection>) {
     let lease: Option<Arc<LegacyOwnedFd>> = {
         let _gate = conn.outbound_.lock().unwrap();
@@ -1657,7 +1734,7 @@ fn tcpconn_start_transport(conn: Arc<TcpConnection>) {
         let owner: &Arc<LegacyOwnedFd> = &lease;
         owner.as_raw_fd()
     };
-    let registered = lion_reactor::AsyncFd::new(fd);
+    let registered = LionTcpStream::from_raw_fd(fd);
     if registered.is_err() {
         // No Lion reactor on this thread, or the backend refused the fd: fail
         // the connection rather than leave it open and never read.
@@ -1667,7 +1744,7 @@ fn tcpconn_start_transport(conn: Arc<TcpConnection>) {
     }
     let transport: Rc<TcpTransport> = Rc::new(TcpTransport {
         conn_: conn,
-        async_fd_: RefCell::new(Some(registered.unwrap())),
+        stream_: RefCell::new(Some(registered.unwrap())),
         lease_: RefCell::new(Some(lease)),
         reader_: RefCell::new(None),
     });
@@ -1682,50 +1759,86 @@ fn tcpconn_start_transport(conn: Arc<TcpConnection>) {
 }
 
 fn tcp_transport_is_retired(t: &TcpTransport) -> bool {
-    let fd_guard = t.async_fd_.borrow();
-    (*fd_guard).is_none()
+    let stream_guard = t.stream_.borrow();
+    (*stream_guard).is_none()
 }
 
-// The leased descriptor, or -1 once released.
-fn tcp_transport_fd(t: &TcpTransport) -> i32 {
-    let lease_guard = t.lease_.borrow();
-    match (*lease_guard).as_ref() {
-        // Typed rebind: measured lowering requirement, see TcpListener::fd.
-        Some(owner) => {
-            let owner: &Arc<LegacyOwnedFd> = owner;
-            owner.as_raw_fd()
+// One read poll of the stream: when the socket may be readable, one recv(2)
+// into this thread's scratch.  The outcome as a TcpIoResult: the recv's
+// count, or -1 with its errno; EAGAIN when Lion suspended the reader (the
+// socket was not readable, or the recv reported EAGAIN and Lion consumed the
+// readiness), its waker then registered for the next read edge; and errno 0
+// when Lion refused the poll, which only a stream polled off its reactor's
+// thread or after its release meets (never here).
+fn tcp_transport_recv(t: &TcpTransport, cx: &mut Context<'_>) -> TcpIoResult {
+    let polled: Poll<std::io::Result<TcpIoResult>> = {
+        let mut stream_guard = t.stream_.borrow_mut();
+        match (*stream_guard).as_mut() {
+            Some(stream) => {
+                let stream: &mut LionTcpStream = stream;
+                stream.poll_read_with(cx, |fd: i32| -> std::io::Result<TcpIoResult> {
+                    let io: TcpIoResult = tcpconn_recv_fd(fd, tcpconn_scratch());
+                    if io.count < 0 && (io.error == TCP_ERR_AGAIN || io.error == TCP_ERR_WOULD_BLOCK) {
+                        return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+                    }
+                    Ok(io)
+                })
+            }
+            None => Poll::Ready(Ok(TcpIoResult { count: -1, error: 0 })),
         }
-        None => -1,
-    }
-}
-
-// Whether the descriptor may be ready in one direction; when not, `cx`'s
-// waker is registered for that direction's next edge.
-fn tcp_transport_ready(t: &TcpTransport, cx: &mut Context<'_>, write: bool) -> bool {
-    let fd_guard = t.async_fd_.borrow();
-    match (*fd_guard).as_ref() {
-        Some(async_fd) => crate::reactor::lion_fd_poll_ready(async_fd, cx, write),
-        None => false,
-    }
-}
-
-// Consume one direction's readiness right after its operation reported
-// EAGAIN, in the same poll (U8 invariant 2).
-fn tcp_transport_consume(t: &TcpTransport, cx: &mut Context<'_>, write: bool) {
-    let fd_guard = t.async_fd_.borrow();
-    if let Some(async_fd) = (*fd_guard).as_ref() {
-        let _consumed: bool = crate::reactor::lion_fd_consume_ready(async_fd, cx, write);
-    }
-}
-
-// Deregister the descriptor from Lion, then release the lease, in that order,
-// and forget the writer's waker so a late send_frame finds none.  Idempotent.
-fn tcp_transport_release(t: &TcpTransport) {
-    let async_fd: Option<lion_reactor::AsyncFd> = {
-        let mut fd_guard = t.async_fd_.borrow_mut();
-        (*fd_guard).take()
     };
-    drop(async_fd);
+    match polled {
+        Poll::Pending => TcpIoResult { count: -1, error: TCP_ERR_AGAIN },
+        Poll::Ready(Ok(io)) => io,
+        Poll::Ready(Err(_refused)) => TcpIoResult { count: -1, error: 0 },
+    }
+}
+
+// One write poll of the stream: when the socket may be writable, drain the
+// outbound buffer under the gate (tcp_writer_drain).  WouldBlock when Lion
+// suspended the writer (the socket was not writable, or send(2) reported
+// EAGAIN, after sending what it could, and Lion consumed the readiness), its
+// waker then registered for the next write edge; otherwise the drain's own
+// result, which is never WouldBlock.  `closed` reports a connection closed
+// under the gate, or a retired transport.  A poll Lion refuses (only off its
+// reactor's thread or after release, never here) is Internal.
+fn tcp_transport_drain(t: &TcpTransport, cx: &mut Context<'_>, closed: &mut bool) -> ChannelError {
+    let conn: &TcpConnection = &t.conn_;
+    let polled: Poll<std::io::Result<ChannelError>> = {
+        let mut stream_guard = t.stream_.borrow_mut();
+        match (*stream_guard).as_mut() {
+            Some(stream) => {
+                let stream: &mut LionTcpStream = stream;
+                stream.poll_write_with(cx, |_fd: i32| -> std::io::Result<ChannelError> {
+                    let result: ChannelError = tcp_writer_drain(conn, &mut *closed);
+                    if result == ChannelError::WouldBlock {
+                        return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+                    }
+                    Ok(result)
+                })
+            }
+            None => {
+                *closed = true;
+                Poll::Ready(Ok(ChannelError::None))
+            }
+        }
+    };
+    match polled {
+        Poll::Pending => ChannelError::WouldBlock,
+        Poll::Ready(Ok(result)) => result,
+        Poll::Ready(Err(_refused)) => ChannelError::Internal,
+    }
+}
+
+// Deregister the descriptor from Lion (drop the stream), then release the
+// lease, in that order, and forget the writer's waker so a late send_frame
+// finds none.  Idempotent.  Never called inside a stream poll.
+fn tcp_transport_release(t: &TcpTransport) {
+    let stream: Option<LionTcpStream> = {
+        let mut stream_guard = t.stream_.borrow_mut();
+        (*stream_guard).take()
+    };
+    drop(stream);
     let lease: Option<Arc<LegacyOwnedFd>> = {
         let mut lease_guard = t.lease_.borrow_mut();
         (*lease_guard).take()
@@ -1784,17 +1897,24 @@ fn tcp_reader_poll(t: &TcpTransport, cx: &mut Context<'_>) -> Poll<()> {
         let mut reader_guard = t.reader_.borrow_mut();
         *reader_guard = Some(cx.waker().clone());
     }
-    let fd: i32 = tcp_transport_fd(t);
     // Reads per poll before the reader yields to the thread's other tasks.
     let budget: u32 = 16u32;
     let mut reads: u32 = 0u32;
     // Whether full reads appended bytes that are not yet delivered.
     let mut undelivered: bool = false;
     loop {
-        if !tcp_transport_ready(t, cx, false) {
+        // The stream is borrowed only inside this call; everything below,
+        // on_frame included, runs after it has returned.
+        let io: TcpIoResult = tcp_transport_recv(t, cx);
+        let err: i32 = io.error;
+        if io.count < 0 && (err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK) {
+            // Lion suspended the reader, its waker registered for the next
+            // read edge: deliver what full reads left behind, then wait.
+            if undelivered && !tcp_reader_deliver(t) {
+                return Poll::Ready(());
+            }
             return Poll::Pending;
         }
-        let io = tcpconn_recv_fd(fd, tcpconn_scratch());
         reads += 1u32;
         if io.count > 0 {
             tcpconn_append_inbound(conn, io.count as usize);
@@ -1831,19 +1951,6 @@ fn tcp_reader_poll(t: &TcpTransport, cx: &mut Context<'_>) -> Poll<()> {
             }
             tcp_reader_finish(t);
             return Poll::Ready(());
-        }
-        let err: i32 = io.error;
-        if err == TCP_ERR_AGAIN || err == TCP_ERR_WOULD_BLOCK {
-            // recv(2) disproved the readiness: consume it now, in the poll
-            // that saw the EAGAIN (U8), then deliver and wait for an edge.
-            tcp_transport_consume(t, cx, false);
-            if undelivered {
-                undelivered = false;
-                if !tcp_reader_deliver(t) {
-                    return Poll::Ready(());
-                }
-            }
-            continue;
         }
         if err == TCP_ERR_INTERRUPTED {
             continue;
@@ -1913,27 +2020,23 @@ fn tcp_writer_poll(t: &TcpTransport, cx: &mut Context<'_>) -> Poll<()> {
             // Waiting for the buffer's empty->non-empty edge.
             return Poll::Pending;
         }
-        if !tcp_transport_ready(t, cx, true) {
-            // Waiting for write readiness.
-            return Poll::Pending;
-        }
         if drains >= budget {
-            // Still writable, so nothing else would wake this task.
+            // The last drain emptied the buffer without an EAGAIN, so the
+            // readiness is still set and nothing else would wake this task.
             cx.waker().wake_by_ref();
             return Poll::Pending;
         }
         drains += 1u32;
         let mut closed_now: bool = false;
-        let result: ChannelError = tcp_writer_drain(conn, &mut closed_now);
+        let result: ChannelError = tcp_transport_drain(t, cx, &mut closed_now);
         if closed_now {
             tcp_writer_finish(t);
             return Poll::Ready(());
         }
         if result == ChannelError::WouldBlock {
-            // send(2) disproved the readiness: consume it now (U8); the next
-            // round waits for the next write edge.
-            tcp_transport_consume(t, cx, true);
-            continue;
+            // Lion suspended the writer, its waker registered for the next
+            // write edge.
+            return Poll::Pending;
         }
         if result != ChannelError::None {
             tcpconn_fail(conn, result, "outbound write failed");
@@ -1960,7 +2063,8 @@ fn tcp_writer_park(conn: &TcpConnection, waker: &Waker, closed: &mut bool) -> bo
 
 // Under the outbound gate: write what the socket takes.  The closed check
 // shares the gate with the send, so a concurrent close never turns into a
-// spurious write error; `closed` reports it instead.
+// spurious write error; `closed` reports it instead.  Runs inside the
+// writer's stream poll (tcp_transport_drain), and calls no callback.
 fn tcp_writer_drain(conn: &TcpConnection, closed: &mut bool) -> ChannelError {
     let mut guard = conn.outbound_.lock().unwrap();
     if conn.closed_.load(Ordering::Acquire) {
@@ -2027,7 +2131,7 @@ fn tcplistener_start_accept(listener: Arc<TcpListener>) {
         let owner: &Arc<LegacyTcpListener> = &lease;
         owner.as_raw_fd()
     };
-    let registered = lion_reactor::AsyncFd::new(fd);
+    let registered = LionTcpListener::from_raw_fd(fd);
     if registered.is_err() {
         drop(lease);
         let callback = {
@@ -2042,7 +2146,7 @@ fn tcplistener_start_accept(listener: Arc<TcpListener>) {
     }
     let task = TcpAcceptTask {
         listener_: listener,
-        async_fd_: Some(registered.unwrap()),
+        lion_: Some(registered.unwrap()),
         lease_: Some(lease),
     };
     let handle: lion_executor::JoinHandle<()> = lion_executor::spawn_local(task);
@@ -2052,8 +2156,9 @@ fn tcplistener_start_accept(listener: Arc<TcpListener>) {
 // The accept task.  Unpin, so poll can reach its fields through get_mut.
 struct TcpAcceptTask {
     listener_: Arc<TcpListener>,
-    // Dropped before `lease_`, explicitly (tcp_accept_release).
-    async_fd_: Option<lion_reactor::AsyncFd>,
+    // Dropped before `lease_`, explicitly (tcp_accept_release): the Lion
+    // listener does not own the descriptor either.
+    lion_: Option<LionTcpListener>,
     lease_: Option<Arc<LegacyTcpListener>>,
 }
 
@@ -2076,7 +2181,7 @@ impl Drop for TcpAcceptTask {
 }
 
 fn tcp_accept_poll(task: &mut TcpAcceptTask, cx: &mut Context<'_>) -> Poll<()> {
-    if task.async_fd_.is_none() {
+    if task.lion_.is_none() {
         return Poll::Ready(());
     }
     let listener: Arc<TcpListener> = task.listener_.clone();
@@ -2085,39 +2190,30 @@ fn tcp_accept_poll(task: &mut TcpAcceptTask, cx: &mut Context<'_>) -> Poll<()> {
         tcp_accept_release(task);
         return Poll::Ready(());
     }
-    loop {
-        let ready: bool = match task.async_fd_.as_ref() {
-            Some(async_fd) => crate::reactor::lion_fd_poll_ready(async_fd, cx, false),
-            None => false,
-        };
-        if !ready {
-            return Poll::Pending;
-        }
-        let mut drained: bool = false;
-        tcplistener_accept_until_blocked(lst, &mut drained);
-        if lst.closed_.load(Ordering::SeqCst) {
-            tcp_accept_release(task);
-            return Poll::Ready(());
-        }
-        if !drained {
-            // Stopped before EAGAIN (interrupted, an aborted connection, or
-            // another accept driver still running): the readiness stays set,
-            // so come back after the thread's other tasks.
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        }
-        // accept(2) disproved the readiness: consume it now (U8).
-        if let Some(async_fd) = task.async_fd_.as_ref() {
-            let _consumed: bool = crate::reactor::lion_fd_consume_ready(async_fd, cx, false);
-        }
+    let mut armed: bool = false;
+    if let Some(lion) = task.lion_.as_mut() {
+        let lion: &mut LionTcpListener = lion;
+        tcplistener_accept_until_blocked(lst, lion, cx, &mut armed);
     }
+    if lst.closed_.load(Ordering::SeqCst) {
+        tcp_accept_release(task);
+        return Poll::Ready(());
+    }
+    if !armed {
+        // Stopped before Lion suspended the task (interrupted, an aborted
+        // connection, or another accept driver still running): the readiness
+        // stays set, so come back after the thread's other tasks.
+        cx.waker().wake_by_ref();
+    }
+    // Otherwise Lion registered the waker for the next connection.
+    Poll::Pending
 }
 
-// Deregister the descriptor from Lion, then release the lease, in that order.
-// Idempotent.
+// Deregister the descriptor from Lion (drop the Lion listener), then release
+// the lease, in that order.  Idempotent.
 fn tcp_accept_release(task: &mut TcpAcceptTask) {
-    let async_fd: Option<lion_reactor::AsyncFd> = task.async_fd_.take();
-    drop(async_fd);
+    let lion: Option<LionTcpListener> = task.lion_.take();
+    drop(lion);
     let lease: Option<Arc<LegacyTcpListener>> = task.lease_.take();
     drop(lease);
 }

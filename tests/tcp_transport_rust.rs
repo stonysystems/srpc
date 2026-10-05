@@ -1,7 +1,9 @@
 // The TCP transport as Lion tasks (S5 of docs/dev/lion-runtime-plan.md): on
 // its PollThread a connection is a reader task and a writer task over one
-// AsyncFd, and a listener is an accept task. send_frame wakes the writer
-// directly, from any thread, on the outbound buffer's empty->non-empty edge.
+// lion_net::TcpStream, and a listener is an accept task over a
+// lion_net::TcpListener (L3 of docs/dev/lion-tcp-plan.md). send_frame wakes
+// the writer directly, from any thread, on the outbound buffer's
+// empty->non-empty edge.
 //
 // These tests drive real PollThreads and real loopback sockets. A raw
 // std::net peer plays the other end where a test needs to control it
@@ -1288,6 +1290,186 @@ fn a_reset_met_by_a_foreign_sender_is_reported_as_a_send_failure() {
         let threads = callback_threads.lock().unwrap().clone();
         assert!(!threads.contains(&std::thread::current().id()), "a callback ran on the sending thread");
         proxy.close();
+    }
+    pt.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// One stream, two tasks, and callbacks outside the stream's borrow (L3)
+
+// A handler that replies to its frame, flushes, and then closes and drops
+// its connection, inline in the reader's poll. The reader borrows the shared
+// stream only inside its poll_read_with call and delivers frames after it
+// returns, so the retirement that follows the close (which takes the stream
+// out of its RefCell to deregister it) runs with no borrow outstanding.
+// Delivering inside the borrow would panic there, and a panic in a
+// poll-thread task aborts the process. Odd rounds send a frame several times
+// the 64 KiB read scratch, delivered only after a run of full reads. (The
+// flush sends the reply on the raw descriptor before the close: a close
+// discards output the writer has not sent yet.)
+#[test]
+fn a_handler_that_closes_its_connection_inside_on_frame_retires_the_transport() {
+    let _serial = serial();
+    let pt = PollThread::create();
+    let mut listener = TcpFactory::new(pt.clone()).make_listener().unwrap();
+    type Seen = Arc<Mutex<Vec<(Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicBool>)>>>;
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    listener.set_on_accept(OnAcceptCallback::from_callable(Box::new(
+        move |connection: NullableChannelConnectionProxy| {
+            let mut proxy = connection.unwrap();
+            let slot: ProxySlot = Arc::new(Mutex::new(None));
+            let own = slot.clone();
+            let frames = Arc::new(AtomicUsize::new(0));
+            let frame_count = frames.clone();
+            let dropped = Arc::new(AtomicBool::new(false));
+            let flag = DropFlag(dropped.clone());
+            proxy.set_on_frame(OnFrameCallback::from_callable(Box::new(move |frame: &ChannelFrame| {
+                let _keep = &flag;
+                frame_count.fetch_add(1, Ordering::SeqCst);
+                // Taken, so the proxy is dropped here, inside the callback.
+                let taken = own.lock().unwrap().take();
+                if let Some(proxy) = taken {
+                    let reply = frame_payload(frame).len().to_ne_bytes();
+                    assert_eq!(send(&proxy, &reply), ChannelError::None);
+                    proxy.flush();
+                    proxy.close();
+                    drop(proxy);
+                }
+            })));
+            let closes = Arc::new(AtomicUsize::new(0));
+            let close_count = closes.clone();
+            proxy.set_on_closed(OnClosedCallback::from_callable(Box::new(move |_reason: ChannelError| {
+                close_count.fetch_add(1, Ordering::SeqCst);
+            })));
+            *slot.lock().unwrap() = Some(proxy);
+            sink.lock().unwrap().push((frames, closes, dropped));
+        },
+    )));
+    assert_eq!(listener.listen("127.0.0.1:0"), ChannelError::None);
+    let address = listener.local_address();
+    for round in 0..20usize {
+        let mut peer = TcpStream::connect(&address).unwrap();
+        let size = if round % 2 == 1 { (256 << 10) + round } else { 100 + round };
+        // One frame: the server reads all of it before the handler runs, so
+        // the close leaves no unread byte behind (which would turn it into a
+        // reset).
+        peer.write_all(&encode(&pattern(round, size))).unwrap();
+        peer.set_read_timeout(Some(LIMIT)).unwrap();
+        assert_eq!(read_frame(&mut peer).unwrap(), size.to_ne_bytes(), "round {round}: the reply");
+        let mut rest = Vec::new();
+        assert_eq!(peer.read_to_end(&mut rest).unwrap(), 0, "round {round}: the peer did not see the close");
+        assert!(
+            eventually(LIMIT, || {
+                let entries = seen.lock().unwrap();
+                entries.len() == round + 1 && entries[round].2.load(Ordering::Acquire)
+            }),
+            "round {round}: the transport outlived a close made inside on_frame"
+        );
+        let entries = seen.lock().unwrap();
+        let (frames, closes, _) = &entries[round];
+        assert_eq!(frames.load(Ordering::SeqCst), 1, "round {round}: frames delivered");
+        assert_eq!(closes.load(Ordering::SeqCst), 1, "round {round}: on_closed");
+    }
+    listener.close();
+    drop(listener);
+    pt.shutdown();
+}
+
+// The reader and the writer share one stream, each waiting on its own
+// direction (Lion keeps one waker per direction). The peer stops reading and
+// keeps writing frames the server echoes inline: the server's writer fills
+// both sockets' small buffers and waits for write readiness, with megabytes
+// still queued, while the reader goes on reading the peer's frames. Then the
+// peer reads, and the writer, woken by write edges while the reader is
+// parked on its own, sends every echo whole and in order. A task that polled
+// the other's direction would replace the other's waker: with either the
+// writer's drain or the reader's recv polled through the wrong direction,
+// the echoes stop (both measured).
+#[test]
+fn the_reader_and_the_writer_share_one_stream_in_both_directions() {
+    let _serial = serial();
+    const SOL_SOCKET: i32 = 1;
+    const SO_SNDBUF: i32 = 7;
+    const SO_RCVBUF: i32 = 8;
+    const FIONREAD: u64 = 0x541B;
+    extern "C" {
+        fn ioctl(fd: i32, request: u64, ...) -> i32;
+    }
+    const FRAMES: usize = 48;
+    const FRAME_BYTES: usize = 64 << 10;
+    let pt = PollThread::create();
+    let mut listener = Arc::new(TcpListener::new());
+    Arc::get_mut(&mut listener).unwrap().set_poll_thread(pt.clone());
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let kept: Arc<Mutex<Vec<ProxySlot>>> = Arc::new(Mutex::new(Vec::new()));
+    let (delivered_count, refused_count, keep) = (delivered.clone(), refused.clone(), kept.clone());
+    listener.set_on_accept(CallbackWrapper::from_callable(Box::new(move |proxy: NullableChannelConnectionProxy| {
+        let mut proxy = proxy.unwrap();
+        let slot: ProxySlot = Arc::new(Mutex::new(None));
+        let echo = slot.clone();
+        let (delivered_count, refused_count) = (delivered_count.clone(), refused_count.clone());
+        proxy.set_on_frame(OnFrameCallback::from_callable(Box::new(move |frame: &ChannelFrame| {
+            delivered_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(proxy) = echo.lock().unwrap().as_ref() {
+                if unsafe { proxy.send_frame(frame) } != ChannelError::None {
+                    refused_count.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        })));
+        *slot.lock().unwrap() = Some(proxy);
+        keep.lock().unwrap().push(slot);
+    })));
+    let mut shim = make_tcp_listener_channel_proxy(listener.clone());
+    assert_eq!(shim.listen("127.0.0.1:0"), ChannelError::None);
+    // Accepted sockets inherit the listener's small send buffer.
+    let small: i32 = 32 << 10;
+    assert_eq!(unsafe { setsockopt(listener.fd(), SOL_SOCKET, SO_SNDBUF, (&raw const small).cast(), 4) }, 0);
+    let peer = TcpStream::connect(listener.local_address()).unwrap();
+    assert_eq!(unsafe { setsockopt(peer.as_raw_fd(), SOL_SOCKET, SO_RCVBUF, (&raw const small).cast(), 4) }, 0);
+    let payloads: Vec<Vec<u8>> = (0..FRAMES).map(|i| pattern(100 + i, FRAME_BYTES)).collect();
+    let mut writer_peer = peer.try_clone().unwrap();
+    let outgoing = payloads.clone();
+    let (wrote_tx, wrote_rx) = mpsc::channel::<()>();
+    let writer = std::thread::spawn(move || {
+        for payload in &outgoing {
+            writer_peer.write_all(&encode(payload)).unwrap();
+        }
+        wrote_tx.send(()).unwrap();
+    });
+    wrote_rx
+        .recv_timeout(LIMIT)
+        .expect("the peer's writes stalled: the reader stopped while the writer waited");
+    assert!(
+        eventually(LIMIT, || delivered.load(Ordering::SeqCst) == FRAMES),
+        "the reader delivered {} of {FRAMES} frames while the writer waited",
+        delivered.load(Ordering::SeqCst)
+    );
+    // The peer has read nothing, and holds far less than the echoes: the rest
+    // is queued on the server, behind a writer waiting for write readiness.
+    let echoed_bytes: usize = FRAMES * (4 + FRAME_BYTES);
+    let mut queued_at_peer: i32 = 0;
+    assert_eq!(unsafe { ioctl(peer.as_raw_fd(), FIONREAD, &raw mut queued_at_peer) }, 0);
+    assert!(
+        (queued_at_peer as usize) < echoed_bytes / 2,
+        "{queued_at_peer} of {echoed_bytes} echoed bytes already reached the peer: the writer never waited"
+    );
+    println!("shared stream: {queued_at_peer} of {echoed_bytes} echoed bytes at the peer while the writer waited");
+    let mut reader_peer = peer;
+    reader_peer.set_read_timeout(Some(LIMIT)).unwrap();
+    for (i, payload) in payloads.iter().enumerate() {
+        let got = read_frame(&mut reader_peer).expect("an echo never arrived: the writer was not woken");
+        assert!(got == *payload, "echo {i} differs");
+    }
+    writer.join().unwrap();
+    assert_eq!(refused.load(Ordering::SeqCst), 0, "an echo was refused at the high-water mark");
+    listener.close();
+    drop(shim);
+    for slot in kept.lock().unwrap().drain(..) {
+        if let Some(proxy) = slot.lock().unwrap().take() {
+            proxy.close();
+        }
     }
     pt.shutdown();
 }

@@ -3078,8 +3078,8 @@ impl PollThread {
     /// Whether the calling thread is this PollThread's own thread while its
     /// Lion runtime runs: inside its driver, a fiber the driver resumes, a job,
     /// or one of the runtime's tasks.  State that must live on the runtime (a
-    /// Lion `AsyncFd`, a `spawn_local` task) can then be created in place
-    /// rather than through a job.
+    /// Lion `TcpStream` or `AsyncFd` registration, a `spawn_local` task) can
+    /// then be created in place rather than through a job.
     pub fn is_current_thread(&self) -> bool {
         poll_driver_is_current(&self.driver_)
     }
@@ -4310,9 +4310,12 @@ fn pollthread_drop(pt: &PollThread) {
 //   waits on its descriptor through Lion's AsyncFd and calls handle_read and
 //   handle_write, as the epoll loop's dispatch did.  This was S3's interim
 //   adapter for TCP.  Since S5 the TCP connections and listeners run their
-//   own reader, writer and accept tasks (srpc.tcp_channel), and no production
-//   pollable remains; S7b kept the adapter because add_proxy is the public
-//   extension API for custom pollables, documented in both books.
+//   own reader, writer and accept tasks (srpc.tcp_channel; over lion-net's
+//   TcpStream and TcpListener since L3 of docs/dev/lion-tcp-plan.md), and no
+//   production pollable remains; S7b kept the adapter because add_proxy is
+//   the public extension API for custom pollables, documented in both books.
+//   It stays on AsyncFd: a pollable is any descriptor, not a TCP stream, and
+//   it drains inside handle_read without reporting EAGAIN to the adapter.
 //
 // * Stackless tasks spawned on the thread run as Lion spawn_local tasks (see
 //   reactor_spawn_stackless_task_with_result).
@@ -5034,16 +5037,21 @@ fn poll_fd_take_ready(entry: &PollFdEntry, cx: &mut Context<'_>, write: bool) ->
     lion_fd_consume_ready(async_fd, cx, write)
 }
 
-/// Whether `async_fd` may be ready in one direction (read, or write when
-/// `write`).  When it is not, `cx`'s waker is registered for that
-/// direction's next edge and false is returned.  Call on the poll thread that
-/// registered the descriptor.
-///
-/// A true result obliges the caller to act: perform the operation, and when
-/// it reports EAGAIN, call `lion_fd_consume_ready` in the same poll; or wake
-/// its own task before returning Pending.  Otherwise no waker is registered
-/// and nothing wakes the task (the AsyncFd protocol of U8).
-pub fn lion_fd_poll_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
+// Whether `async_fd` may be ready in one direction (read, or write when
+// `write`).  When it is not, `cx`'s waker is registered for that direction's
+// next edge and false is returned.  Call on the poll thread that registered
+// the descriptor.
+//
+// A true result obliges the caller to act: perform the operation, and when
+// it reports EAGAIN, call `lion_fd_consume_ready` in the same poll; or wake
+// its own task before returning Pending.  Otherwise no waker is registered
+// and nothing wakes the task (the AsyncFd protocol of U8).
+//
+// This and lion_fd_consume_ready were public while S5's TCP transport shared
+// them; since L3 the transport polls lion-net's stream and listener, which
+// keep this protocol themselves, and the add_proxy adapter is their only
+// user.
+fn lion_fd_poll_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
     let polled = if write {
         async_fd.poll_write_ready(cx)
     } else {
@@ -5060,17 +5068,19 @@ pub fn lion_fd_poll_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>
     }
 }
 
-/// Consume one direction's readiness: true if it was ready, and the flag is
-/// then clear until the next edge.  The guard's try_io is the only way to
-/// clear it, and clears only on WouldBlock, which the empty operation reports.
-///
-/// Call it only right after the caller's own operation on the descriptor
-/// returned EAGAIN, in the same poll: no park lies between that EAGAIN and
-/// the clear, so the clear consumes exactly the readiness the EAGAIN
-/// disproved (U8 invariant 2), and the next transition raises a new edge.
-/// (The pollable adapter also calls it before handle_read, whose pollables
-/// drain to EAGAIN or a short read under EPOLLET rules.)
-pub fn lion_fd_consume_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
+// Consume one direction's readiness: true if it was ready, and the flag is
+// then clear until the next edge.  The guard's try_io is the only way to
+// clear it, and clears only on WouldBlock, which the empty operation reports.
+//
+// Call it only right after the caller's own operation on the descriptor
+// returned EAGAIN, in the same poll: no park lies between that EAGAIN and
+// the clear, so the clear consumes exactly the readiness the EAGAIN
+// disproved (U8 invariant 2), and the next transition raises a new edge.
+// The adapter's pollables drain internally and never report EAGAIN to it, so
+// it calls this on the EPOLLET contract's evidence instead: before
+// handle_read, whose pollables drain to EAGAIN or a short read, and after a
+// handle_write that returned NO_CHANGE (see poll_fd_task_poll).
+fn lion_fd_consume_ready(async_fd: &lion_reactor::AsyncFd, cx: &mut Context<'_>, write: bool) -> bool {
     let polled = if write {
         async_fd.poll_write_ready(cx)
     } else {

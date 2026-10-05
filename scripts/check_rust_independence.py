@@ -3,8 +3,9 @@
 and the pinned Lion crates.
 
 The production dependency policy is an exact allowlist (docs/dev/lion-runtime-plan.md,
-D5 and S1). srpc's normal dependencies are exactly `lion-reactor` and `lion-executor`,
-as path dependencies into the third-party/lion gitlink with `default-features = false`.
+D5 and S1). srpc's normal dependencies are exactly `lion-reactor`, `lion-executor` and
+`lion-net` (docs/dev/lion-tcp-plan.md, L3), as path dependencies into the third-party/lion
+gitlink with `default-features = false`.
 Their resolved closure may contain only:
 
 * the Lion path crates named in LION_CRATES, each at its directory under the gitlink;
@@ -32,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 LION_GITLINK = Path('third-party/lion')
 # srpc's direct normal dependencies: exactly these, as path deps into the gitlink.
-LION_DIRECT = ('lion-executor', 'lion-reactor')
+LION_DIRECT = ('lion-executor', 'lion-net', 'lion-reactor')
 # Every Lion package the closure may contain, and its directory under the gitlink.
 # A Lion pin bump that adds, removes or moves a crate fails here and needs review.
 LION_CRATES = {

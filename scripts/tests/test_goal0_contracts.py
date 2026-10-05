@@ -141,7 +141,8 @@ class GateStaticContractTests(unittest.TestCase):
             "srpc.heartbeat": (25, 26),
             "srpc.any_message": (10, 11),
             # The Lion transport tasks, write-through and the cork (S5);
-            # -51 unique / -55 raw: S7b retires TCP's pollable surface.
+            # -51 unique / -55 raw: S7b retires TCP's pollable surface; the
+            # move onto lion-net (L3) is count-neutral (+3 / -3 / 3 respelled).
             "srpc.tcp_channel": (165, 181),
         }
         for module, (unique_count, raw_count) in expected.items():
@@ -549,8 +550,13 @@ class GateContractTests(unittest.TestCase):
                 "placeholder marker",
             ),
             (
+                # After the module line rather than beside a port import: the
+                # last provider (lion_net since L3) imports no port at all.
                 "srpc import",
-                mutate_text("import std_port;", "import std_port;\nimport srpc.misc;"),
+                mutate_text(
+                    f"export module {lion.module};",
+                    f"export module {lion.module};\nimport srpc.misc;",
+                ),
                 "private imports must be exactly",
             ),
             ("slots", mutate_slots, "hand-slot manifest"),
@@ -633,7 +639,8 @@ class GateContractTests(unittest.TestCase):
             "srpc.heartbeat": (25, 26),
             "srpc.any_message": (10, 11),
             # The Lion transport tasks, write-through and the cork (S5);
-            # -51 unique / -55 raw: S7b retires TCP's pollable surface.
+            # -51 unique / -55 raw: S7b retires TCP's pollable surface; the
+            # move onto lion-net (L3) is count-neutral (+3 / -3 / 3 respelled).
             "srpc.tcp_channel": (165, 181),
         }
         for module, (unique_count, raw_count) in expected.items():
