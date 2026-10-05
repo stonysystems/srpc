@@ -230,6 +230,21 @@ in its reader, writer and accept tasks.
   - **The fix:** header and test only, so the generated code is
     byte-identical. T6's Lion snapshot is not regenerated: it pins its own
     copy of Lion at `3496113`.
+  - **rusty-cpp's own suite at `3535f2aa`:** the new option test passes, and
+    fails on the old header. `lion_parity` passes 1/1 and
+    `runtime_move_semantics` 39/0. The full transpiler suite gives 2,853
+    passed and 9 failed, against T6's 2,859 and 3 at `7e0c201f`. The L3 run
+    attributes all 9 to its environment, before any C++ compiles against the
+    header:
+    - a `missing-rustc` cargo-metadata message;
+    - the opaque-expansion check;
+    - seven parity-harness tests that need
+      `tests/transpile_tests/either/run_parity_harness.sh`, absent from its
+      worktree, or that hit cargo-lock contention.
+
+    It did not re-run `7e0c201f` in the same worktree. So that the 6 extra
+    failures are environmental is **unverified**. T8, rusty-cpp's gate
+    baseline, remains set aside by the owner.
   - Fix the lowering gaps from L0.
   - Regenerate T6's Lion snapshot (`transpiler/tests/fixtures/lion/regen.sh`),
     whose per-crate counts and crate list are pinned.
