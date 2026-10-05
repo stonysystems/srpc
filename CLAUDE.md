@@ -16,31 +16,33 @@ All 37 production modules are canonical **Rust** files living at their historica
 
 **The executor, I/O reactor and timers are Lion's, not SRPC's.** [Lion](https://github.com/stonysystems/lion)
 is a Tokio-shaped async runtime whose executor and reactor are verified in Verus. It enters as pinned,
-*unmodified* crates from the `third-party/lion` gitlink: `srpc` depends on `lion-reactor` and
-`lion-executor` as path dependencies with `default-features = false` (so no mio, socket2 or tokio), and
-they bring `lion-slab`, `lion-timer-wheel`, the `*-spec` crates and Verus's erased `vstd` from Verus git
-`db81a74`. Both lanes read Lion's bytes unchanged. rustc compiles them through the `verus!` macro, whose
-erasure drops specs and proofs; `--verus-exec` runs that same erasure (Verus's own `EraseAll` pass, out of
-process in rusty-cpp's `rusty-cpp-verus-erase` helper) and transpiles what is left. The five generated Lion
-modules (`lion_executor_spec`, `lion_slab`, `lion_timer_wheel`, `lion_reactor`, `lion_executor`, each in its
-own `namespace`) compile in SRPC's file set and land in `libsrpc.a` as a **separately inventoried provider
+*unmodified* crates from the `third-party/lion` gitlink: `srpc` depends on `lion-reactor`, `lion-executor` and
+`lion-net` as path dependencies with `default-features = false` (so no mio, socket2 or tokio), and they bring
+`lion-slab`, `lion-timer-wheel`, the `*-spec` crates and Verus's erased `vstd` from Verus git `db81a74`. Both
+lanes read Lion's bytes unchanged. rustc compiles them through the `verus!` macro, whose erasure drops specs
+and proofs; `--verus-exec` runs that same erasure (Verus's own `EraseAll` pass, out of process in rusty-cpp's
+`rusty-cpp-verus-erase` helper) and transpiles what is left. The six generated Lion modules
+(`lion_executor_spec`, `lion_slab`, `lion_timer_wheel`, `lion_reactor`, `lion_executor`, `lion_net`, each in
+its own `namespace`) compile in SRPC's file set and land in `libsrpc.a` as a **separately inventoried provider
 class**: they are not canonical modules, and none of the 37-module tables, totals or the seven-place edit
 apply to them. SRPC's claim about Lion is identity with Lion@pin, with Lion's own CI as the proof of record.
-Never write that SRPC is "verified live": the theorem covers spawned stackless tasks under stated
-assumptions, not fibers, events, the transport, the `block_on` root, or tasks that are aborted, panic or
-are dropped while waiting on I/O.
+Never write that SRPC is "verified live": the theorem covers spawned stackless tasks under stated assumptions,
+not fibers, events, the transport, the `block_on` root, or tasks that are aborted, panic or are dropped while
+waiting on I/O.
 
-Ownership is split. Verified Lion owns the executor, the reactor and the timer wheel. Canonical Rust owns
-everything SRPC-specific: stackful fibers, the event family, the `PollThread` driver, the epoll OS backend
-Lion runs on (`SrpcEpollBackend` in `reactor/epoll_wrapper.rs`), the TCP transport, serialization and
-reliability logic. `build.rs` and CMake compile the same nine C sources plus the selected architecture's
-fiber assembly from `scripts/native-kernel-sources.txt`. Those sources provide individual OS operations,
-platform layouts, entropy and clock reads, and context switching. Compatibility headers import generated
-modules, while `misc/serializable_support.hpp` supplies bounded C++ trait forwarding. Do not put SRPC
-policy in these adapters or patch generated C++ (SRPC's or Lion's) to bypass lowering. Fix canonical Rust
-or general compiler support; a Lion fix lands in `stonysystems/lion`, is re-proved there, and arrives by
-pin bump. [docs/dev/lion-runtime-plan.md](docs/dev/lion-runtime-plan.md) records the migration and its
-decisions (D1–D5); [the runtime notes](docs/canonical-rust-runtime.md) cover the older API migrations.
+Ownership is split. Verified Lion owns the executor, the reactor and the timer wheel, and lion-net's
+`TcpStream`/`TcpListener`, whose verified `IoKernel` decides every poll of the TCP transport's tasks.
+Canonical Rust owns everything SRPC-specific: stackful fibers, the event family, the `PollThread` driver, the
+epoll OS backend Lion runs on (`SrpcEpollBackend` in `reactor/epoll_wrapper.rs`), the TCP transport's socket
+syscalls, policy and tasks, serialization and reliability logic. `build.rs` and CMake compile the same nine C
+sources plus the selected architecture's fiber assembly from `scripts/native-kernel-sources.txt`. Those
+sources provide individual OS operations, platform layouts, entropy and clock reads, and context switching.
+Compatibility headers import generated modules, while `misc/serializable_support.hpp` supplies bounded C++
+trait forwarding. Do not put SRPC policy in these adapters or patch generated C++ (SRPC's or Lion's) to bypass
+lowering. Fix canonical Rust or general compiler support; a Lion fix lands in `stonysystems/lion`, is
+re-proved there, and arrives by pin bump. [docs/dev/lion-runtime-plan.md](docs/dev/lion-runtime-plan.md)
+records the migration and its decisions (D1–D5); [the runtime notes](docs/canonical-rust-runtime.md) cover the
+older API migrations.
 
 The dual-compile gate recompiles generated providers, runs its C++ importer against fresh objects and
 against the production archive, and compares measured ABI and import inventories, for SRPC's providers
@@ -214,18 +216,18 @@ Native source/header changes require review against `scripts/native-kernels.json
 `scripts/native-abi-bindings.json`. These inventories have no automatic approval command. Check test
 output for skips: missing compiler dependencies can skip contract tests and cannot establish acceptance.
 
-`scripts/check_rust_independence.py` is an exact **allowlist**, not a ban. It requires `[dependencies]` to
-be exactly `lion-reactor` and `lion-executor`, each `{ path = "third-party/lion/<crate>", default-features =
-false }`, with no build or target dependencies, no `[patch]`/`[replace]`, and no workspace member besides
-`srpc` (`[workspace] exclude` keeps Lion's crates from becoming members). In the resolved graph, everything
-linked into `srpc` must be one of the eight `LION_CRATES` at its directory under the gitlink, built with no
-features, or `vstd`/`verus_builtin` at exactly `VERUS_SOURCE`. The only proc-macros may be Verus's two, and
-their host-only closure may come only from crates.io and Verus's parser crates. mio, flume, tokio, socket2,
-futures-task and pin-project-lite must appear nowhere, including `cargo tree -e normal`, and the submodule
-must sit at the gitlink commit with no local change in the compiled crates. It then copies the Cargo
-inputs, canonical Rust, tests, the C/assembly kernel and the Lion crates' tracked files into a fresh tree,
-and runs Rust tests and doctests there offline, with `-Dwarnings`, `CXX=/bin/false` and no C++ runtime or
-compiler on its tool path.
+`scripts/check_rust_independence.py` is an exact **allowlist**, not a ban. It requires `[dependencies]` to be
+exactly `lion-reactor`, `lion-executor` and `lion-net`, each `{ path = "third-party/lion/<crate>",
+default-features = false }`, with no build or target dependencies, no `[patch]`/`[replace]`, and no workspace
+member besides `srpc` (`[workspace] exclude` keeps Lion's crates from becoming members). In the resolved
+graph, everything linked into `srpc` must be one of the nine `LION_CRATES` at its directory under the gitlink,
+built with no features, or `vstd`/`verus_builtin` at exactly `VERUS_SOURCE`. The only proc-macros may be
+Verus's two, and their host-only closure may come only from crates.io and Verus's parser crates. mio, flume,
+tokio, socket2, futures-task and pin-project-lite must appear nowhere, including `cargo tree -e normal`, and
+the submodule must sit at the gitlink commit with no local change in the compiled crates. It then copies the
+Cargo inputs, canonical Rust, tests, the C/assembly kernel and the Lion crates' tracked files into a fresh
+tree, and runs Rust tests and doctests there offline, with `-Dwarnings`, `CXX=/bin/false` and no C++ runtime
+or compiler on its tool path.
 
 **Verus version coupling.** The Rust lane erases Lion's `verus!` blocks with the `verus_builtin_macros`
 that `Cargo.lock` resolves; the C++ lane uses the copy rusty-cpp vendors. `verify_verus_erasure_coupling`
@@ -239,9 +241,10 @@ equal the transpiler's `crate-graph.json` exactly: order, the ghost-only `lion-f
 unused `lion-utility-spec` and `lion-reactor-spec`. CMake's `SRPC_LION_PROVIDERS` must match in order
 (`test_goal0_contracts.py`). Each provider needs zero hand slots, exact private imports, no `srpc` import,
 and exact strong symbols in both its fresh object and `libsrpc.a`. Only `srpc.epoll_wrapper`
-(→ `lion_reactor`), `srpc.reactor` and `srpc.tcp_channel` (→ both) may `export import` a Lion module. The
-importer imports and uses `lion_reactor` and `lion_executor`, and builds a Lion runtime over
-`SrpcEpollBackend`. This inventory changes only with a Lion or transpiler bump.
+(→ `lion_reactor`), `srpc.reactor` (→ `lion_executor`, `lion_reactor`) and `srpc.tcp_channel`
+(→ `lion_executor`, `lion_net`) may `export import` a Lion module. The importer imports and uses
+`lion_reactor`, `lion_executor` and `lion_net`, and builds a Lion runtime over `SrpcEpollBackend`. This
+inventory changes only with a Lion or transpiler bump, or when `srpc` takes another Lion crate.
 
 **Verus** (separate lanes, not wired into CMake or ctest):
 
@@ -420,7 +423,8 @@ Runtime tests run on real Lion runtimes over `SrpcEpollBackend`, as production d
 forwarding and cross-thread wakes. `epoll_backend_rust` holds the backend to Lion's `OsBackend` contract.
 `pollthread_lion_rust` covers the driver: jobs, stackless spawns, fiber sleeps and event wakes, the
 `add_proxy` adapter, shutdown, wake latency and idle CPU. `tcp_transport_rust` covers the reader, writer
-and accept tasks, write-through, and close/EOF ordering (the cork's interval test is
+and accept tasks, write-through, close/EOF ordering, the reader and writer sharing one stream, and a
+handler that closes its connection inside `on_frame` (the cork's interval test is
 `tests/helpers/tcp_cork.rs`). `reactor_{wake_on_change,deadline,composite,ping}_rust` cover the
 wake-on-change event model. The older suites still cover real TCP requests, a suspended handler sharing
 its service with a fast request, timer ordering, foreign wake dispatch on the owner thread, retained wake
@@ -469,7 +473,7 @@ Lion is verified separately, by its own CI (`scripts/verify_lion.sh`, above).
 ## Runtime architecture
 
 Layering is `base/` → `misc/` → `reactor/` → `rpc/`, within one flat `srpc` crate, on top of
-`lion-reactor` and `lion-executor`. `reactor/reactor.rs` imports the pollable contract from
+`lion-reactor`, `lion-executor` and `lion-net`. `reactor/reactor.rs` imports the pollable contract from
 `rpc/pollable_proxy.rs`. Its callers use canonical `crate::reactor` types and functions. Cargo uses the
 Rust standard library, the reviewed C/assembly kernel and the allowlisted Lion closure; no facade package
 or generated C++ runtime enters that dependency graph. C-layout declarations, fibers, events and wake
@@ -479,18 +483,18 @@ admission remain canonical Rust.
 `clientconn_request_via_channel` (circuit-breaker gate → stale-request expiry → offline-queue check →
 `Future::create(xid)` into `pending_fu_` → serialize `v64 xid | i32 rpc_id | args`) →
 `ChannelConnectionProxy::send_frame` → **the TCP backend appends the 4-byte header** and the frame to the
-connection's outbound buffer. On the buffer's empty→non-empty edge it wakes the connection's **writer
-task**. A sender on another thread instead writes the frame through itself, under the outbound lock, when
-the connection's last `send(2)` is at least `kTcpWriteThroughIdleUs` (20 µs) old: the *cork*, which keeps
-batching on busy connections and latency on idle ones → the server's **reader task** (`rpc/tcp_channel.rs`,
-*not* `server.rs`) reads until `EAGAIN` into its `FrameStreamReader`, which re-frames and fires `on_frame`
-→ `sconn_decode_request_and_dispatch` → fast RPCs dispatch inline in the reader's poll on the poll thread,
-everything else starts a stackful fiber there → `sconn_reply` writes
-`v64 xid | v32 error | v64 server_instance_id | payload`. A reply sent inside the reader's poll wakes the
-writer through the thread's local ready queue, so one drain carries every reply of that poll → the
-client's reader task → `clientconn_decode_response_and_notify` resolves the async slot
-(`xid % kAsyncSlotCount`, 16384) first, then the `pending_fu_` map. A reply matching neither is silently
-dropped — the normal outcome after a timeout, and it leaves no trace.
+connection's outbound buffer. On the buffer's empty→non-empty edge it wakes the connection's **writer task**.
+A sender on another thread instead writes the frame through itself, under the outbound lock, when the
+connection's last `send(2)` is at least `kTcpWriteThroughIdleUs` (20 µs) old: the *cork*, which keeps batching
+on busy connections and latency on idle ones → the server's **reader task** (`rpc/tcp_channel.rs`, *not*
+`server.rs`) reads until Lion suspends it on `EAGAIN` into its `FrameStreamReader`, which re-frames and fires
+`on_frame` → `sconn_decode_request_and_dispatch` → fast RPCs dispatch inline in the reader's poll on the poll
+thread, everything else starts a stackful fiber there → `sconn_reply` writes `v64 xid | v32 error | v64
+server_instance_id | payload`. A reply sent inside the reader's poll wakes the writer through the thread's
+local ready queue, so one drain carries every reply of that poll → the client's reader task →
+`clientconn_decode_response_and_notify` resolves the async slot (`xid % kAsyncSlotCount`, 16384) first, then
+the `pending_fu_` map. A reply matching neither is silently dropped — the normal outcome after a timeout, and
+it leaves no trace.
 
 **Wire format** (`rpc/internal_protocol.rs`, `rpc/frame_codec.rs`): 4-byte **native-endian** header — bit 31
 is the extended-header flag, bits 0-30 the payload size. `kMaxFramePayloadSize` (64 MiB) is a
@@ -516,12 +520,19 @@ waker, the driver:
 - sleeps on a Lion timer until `event_next_deadline_us`, rounded up to whole milliseconds (Lion's clock).
 
 There is no polling interval, with one exception: a `Job` whose `Ready()` is false has no wake, so it is
-re-checked every millisecond. Commands, pings, the ready queue's WAIT→READY edge, the stackless wake
-ingress and an earlier deadline each wake the driver on their own edge; TCP frames never pass through it
-(connect and listen hand their socket over by job). TCP connections run as a reader task and a writer
-task over one `lion_reactor::AsyncFd`, and each listener as an accept task. A stackless task that is still
-pending after its inline first poll becomes a Lion `spawn_local` task. An `add_proxy` pollable gets an
-adapter task (`PollFdTask`). A task on a poll thread aborts the process if its poll unwinds
+re-checked every millisecond. Commands, pings, the ready queue's WAIT→READY edge, the stackless wake ingress
+and an earlier deadline each wake the driver on their own edge; TCP frames never pass through it (connect and
+listen hand their socket over by job). TCP connections run as a reader task and a writer task over one
+`lion_net::TcpStream`, and each listener as an accept task over a `lion_net::TcpListener`. Neither owns the
+descriptor or makes a syscall: each poll runs SRPC's own operation as a closure (`recv(2)` and `send(2)`
+through the C kernels, the accept step through the bound `std` listener) that reports `WouldBlock` exactly on
+`EAGAIN`, and Lion's verified `IoKernel` decides whether the poll completes or arms the task's waker. The two
+tasks share the stream through a `RefCell` borrowed only for one poll call; `on_frame`, errors and closes run
+after the borrow ends, since a handler may send, close or drop the connection. The stream is owner-thread
+state: it is `Send`, but used off its reactor's thread it fails closed, so the cork's foreign `send(2)` stays
+on the raw descriptor under the outbound mutex and never touches the stream or its readiness. A stackless task
+that is still pending after its inline first poll becomes a Lion `spawn_local` task. An `add_proxy` pollable
+gets an adapter task (`PollFdTask`). A task on a poll thread aborts the process if its poll unwinds
 (`PollTaskUnwindAbort`).
 
 **Fibers and events stay SRPC's.** The `Reactor` survives as the lazily created per-thread fiber and event

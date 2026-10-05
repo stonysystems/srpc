@@ -73,7 +73,8 @@ in its reader, writer and accept tasks.
 
 - **The cork stays a raw-fd path.** S5's write-through (`kTcpWriteThroughIdleUs`)
   is a `send(2)` from a *foreign* thread under the outbound mutex. Lion's
-  stream is `!Send`, and its readiness flags are owner-thread state. The
+  stream's readiness flags are owner-thread state: since L1 the stream is
+  `Send`, but every use off its reactor's thread fails closed. The
   stream is used only by the owner's reader, writer and accept tasks. A
   foreign send that hits `EAGAIN` wakes the writer and never touches a flag.
   The cork is where S5's gains came from (817 to 9184 qps at window 1), so a
@@ -210,7 +211,24 @@ in its reader, writer and accept tasks.
   - Regenerate T6's Lion snapshot (`transpiler/tests/fixtures/lion/regen.sh`),
     whose per-crate counts and crate list are pinned.
   - Bump SRPC's pin (four edits).
-- [ ] **L3. SRPC.**
+  - **Reopened by L3 for one runtime fix (2026-10-04).** L0 and L1 only
+    compiled lion-net as C++; L3's battery was its first run, and every
+    accept and stream poll after the first aborted the poll thread.
+    `rusty::Option<T>::unwrap()` on an lvalue moved the payload out and
+    emptied the Option for every `T`, while Rust's `self.rid.unwrap()` on a
+    `Copy` `Option<u64>` copies: the verified `IoKernel::poll_step` reads
+    `self.rid.unwrap()` on every poll, so the second poll panicked with
+    "Called unwrap on None". The same lowering made lion-timer-wheel's
+    `invalidate_min` drop a still-valid `cached_min` (a performance-only
+    divergence) since S1. Fixed in the runtime header, not the emitter, as
+    rusty-cpp `2eaae959` (local branch `lion/l3-copy-unwrap` on top of
+    `7e0c201f`): `unwrap()` keeps a trivially copyable payload, the test the
+    move constructor already used (`f5767705`). Generated text is unchanged,
+    so T6's snapshot needs no regeneration. SRPC pins it in its own commit.
+- [x] **L3. SRPC.** Done (2026-10-04) on SRPC branch `lion/tcp-l3` (local):
+  `2a0f98e` (Lion pin `3496113` -> `d697b77`), `006547a` (rusty-cpp pin
+  `7e0c201f` -> `3535f2aa`, the L2 reopening above), `33cc30d` (the
+  transport) and the docs commit that carries this note. See *Result* below.
   - `Cargo.toml` dependency, and `LION_CRATES` in
     `scripts/check_rust_independence.py`.
   - `rpc/tcp_channel.rs`: reader, writer and accept over the Lion stream and
@@ -221,6 +239,55 @@ in its reader, writer and accept tasks.
   - `SRPC_LION_PROVIDERS` in CMake, and `test_goal0_contracts.py` totals.
   - Books and CLAUDE.md, which describe `AsyncFd` tasks and are gate-checked
     (books).
+  - **Result.**
+    - **Shape.** `TcpTransport` holds `RefCell<Option<lion_net::TcpStream>>`
+      and the accept task a `lion_net::TcpListener`; each is created on the
+      PollThread and dropped before the descriptor lease. Every poll passes
+      SRPC's own operation as a closure (`poll_read_with`, `poll_write_with`,
+      `poll_accept_with`) that returns `WouldBlock` exactly on `EAGAIN`:
+      `recv(2)` through `srpc_tcp_recv_bytes` into the thread's scratch; the
+      outbound drain under the outbound gate, which trims what it sent
+      before reporting `EAGAIN`; and the whole accept step (std's accept and
+      SRPC's policy). The read budget, close and EOF ordering are unchanged.
+    - **Borrowing.** The stream is borrowed only for one poll call; frame
+      delivery, `on_error` and `on_closed` run after it ends. The writer's
+      closure takes the outbound gate inside the borrow; the cork takes only
+      the gate, so the order is fixed.
+    - **The cork** is byte-identical: write-through, the idle test and
+      `last_send_us_` stay on the raw descriptor and never touch the stream.
+    - **No `SocketOps` impl.** Its `accept` must return an `accept4(2)` fd,
+      SRPC has no reviewed accept kernel (accept is std's in Rust and
+      rusty's in C++, and SRPC needs the peer address), and the writer's
+      drain is a closure; an impl would carry two dead methods. No native
+      code was added.
+    - **Kept:** the `add_proxy` adapter stays on `AsyncFd` (a pollable is any
+      descriptor and drains without reporting `EAGAIN`), so
+      `lion_fd_poll_ready`/`lion_fd_consume_ready` stay as its private
+      helpers (no longer `pub`). Removed: `tcp_transport_{ready,consume,fd}`.
+    - **Gate.** `lion_net` is the sixth Lion provider (28 strong symbols;
+      Lion total 374 -> 379 at the bump, then 407). `srpc.tcp_channel`
+      re-exports `lion_executor` and `lion_net` (no longer `lion_reactor`).
+      SRPC's ABI is count-neutral, 2107: `srpc.tcp_channel` +3/-3 and three
+      private respellings.
+    - **Found:** the first C++ run of lion-net aborted on the second poll of
+      every stream and listener: rusty-cpp's `Option::unwrap()` emptied a
+      Copy `Option<u64>` (see L2). L0's and L1's transpile checks compiled
+      lion-net but never ran it; only `ctest` caught this.
+    - **Measured at `33cc30d`:** cargo 400 passed / 0 failed / 1 ignored
+      (two new tests); build exit 0 with both gates; `ctest -L srpc` 51/51;
+      `verify_lion.sh` on `d697b77`: 10 of 10 crates (net 10 verified).
+    - **Tests** (`tcp_transport_rust`):
+      - `a_handler_that_closes_its_connection_inside_on_frame_retires_the_transport`:
+        a poll-thread abort if delivery held the borrow;
+      - `the_reader_and_the_writer_share_one_stream_in_both_directions`: red
+        when either task polls the other's direction.
+    - **For L4/L5.** Sanitizers were not run here. Per poll, each stream
+      operation now passes through lion-net's observe, guard and
+      `poll_step` (no allocation: the kernel's log is ghost), and an
+      `EAGAIN` builds a `rusty::io::Error` in C++; the separate
+      consume-readiness poll the old reader and writer made after an
+      `EAGAIN` is gone. The writer's 16-drain budget now wakes the task
+      before checking writability, which costs at most one extra poll.
 - [ ] **L4. Acceptance**, one quiet run on the final SHA:
   - the full gate and `ctest -L srpc`;
   - ASan, UBSan and TSan;

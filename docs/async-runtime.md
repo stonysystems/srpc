@@ -83,8 +83,10 @@ The executors are cooperative and local to their thread. A poll that does not
 return blocks the thread. Tasks do not migrate between threads.
 
 SRPC's TCP transport runs as Lion tasks on the `PollThread` (a reader and a
-writer task per connection over `lion_reactor::AsyncFd`, an accept task per
-listener), over SRPC's own epoll backend. Stackful fibers remain SRPC's: they
+writer task per connection over one `lion_net::TcpStream`, an accept task per
+listener over a `lion_net::TcpListener`), over SRPC's own epoll backend. Each
+poll runs SRPC's own socket operation and lets lion-net's verified `IoKernel`
+decide whether the task completes or waits. Stackful fibers remain SRPC's: they
 block on SRPC events, and a fiber resumes only in its owner thread's drain.
 Stackless futures and fibers run side by side; the fiber blocking operations
 are not replaced by async I/O.
