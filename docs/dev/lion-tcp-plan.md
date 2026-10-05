@@ -156,7 +156,45 @@ in its reader, writer and accept tasks.
   - this needs lion-executor to cache one waker per task. `poll_task_contained`
     makes a fresh one on every poll, so `will_wake` never matches.
   - Verified executor code; about 1-3 days.
-- [ ] **L1. Lion.**
+- [x] **L1. Lion.** Done (2026-10-04) as Lion `lion/net`, `3496113..d697b77`:
+  - `40a5c7a` reactor: `AsyncFd` Send + Sync over a process-wide epoch;
+  - `0c8d128` net: add lion-net, with `kernel.rs`, `method.rs` and `proof.rs`
+    as 100% renames;
+  - `a4b956b` lion: `lion::io::Interest`, which pingora's recvmsg uses;
+  - `850e780` utility: sockets on lion-net, with mio, socket2 and tokio
+    optional;
+  - `d697b77` docs: TCB §2 and §4 now say TCP and UDP waits are TaskWake
+    and the IoKernel log is per-utility.
+
+  Every commit builds with default features and with
+  `--no-default-features`, across 7 downstream crates.
+
+  Measured:
+  - `./ci.sh`: "All checks passed" in 9m39s, with 0 errors (net 10,
+    utility 80, reactor 208, executor 99, liveness 556). The `poll_step`
+    negative control fails with "postcondition not satisfied".
+  - Tests: reactor 5, executor 5, net 14 (6 real-socket, 8 mock), utility
+    56 (24 without default features; at `3496113` that configuration did
+    not compile), facade 2. The net and socket suites were clean in 20 of
+    20 repeated runs.
+  - Each of the five audit fixes, and the drop and deregister path, has a
+    mutation that turns its tests red.
+  - Default dependency graphs gain only `lion-net`. tokio's `Interest` impl
+    was dropped rather than gated, because it needed tokio's `net` feature.
+    `try_io` takes Lion's `Interest`.
+  - The SRPC-shaped graph has 23 packages and no forbidden crate.
+  - Transpile at rusty-cpp `7e0c201f`: 0 hand slots and 0 compile errors.
+    `poll_{read,write,accept}` lower to `template<typename O>` over
+    `const O&`.
+
+  For L3:
+  - Polls take `&mut self`, with one registration per fd, so the reader
+    and writer share one stream through `Rc<RefCell<_>>`, borrowed only
+    inside a poll.
+  - `from_raw_fd` needs the thread's reactor.
+  - A `Ready` from `poll_*_ready` obliges the caller to `try_*_io` until
+    `WouldBlock`.
+  - Off-thread use fails with `ErrorKind::Other`.
   - Land the refactor on `srpc-lion` locally.
   - The stream and listener sit on `AsyncFd`'s protocol plus `IoKernel`, and
     store `cx.waker()`.
