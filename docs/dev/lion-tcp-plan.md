@@ -204,9 +204,25 @@ in its reader, writer and accept tasks.
     stream, and add regression tests for items 1 and 2.
   - Update `TCB_and_limitations.md`.
   - `./ci.sh` passes with 0 errors.
-- [~] **L2. rusty-cpp.** Not required (L0: no gap on SRPC's path). G1-G3 (a
+- [x] **L2. rusty-cpp.** No *lowering* gap on SRPC's path (L0). G1-G3 (a
   return-type-only generic, `&dyn Trait` from another crate, generic dispatch
   to an escaped method name) are worth general fixes later.
+
+  L3's first C++ run found one **runtime-header** bug, now fixed as rusty-cpp
+  `3535f2aa` (local branch `lion/l3-copy-unwrap` on `7e0c201f`; pinned by
+  SRPC `006547a`).
+  - **The bug:** `rusty::Option<T>::unwrap()` on an lvalue emptied the
+    Option for every `T`. Rust's `place.unwrap()` on a `Copy` Option copies
+    and leaves the place `Some`.
+  - **What it broke:** lion-net's verified `IoKernel::poll_step` reads
+    `self.rid.unwrap()` on every poll, so every stream's second poll
+    panicked, and 5 of 51 suites failed.
+  - **Already in the tree:** the same bug was dropping lion-timer-wheel's
+    still-valid cached minimum (`invalidate_min`), which cost performance
+    only.
+  - **The fix:** header and test only, so the generated code is
+    byte-identical. T6's Lion snapshot is not regenerated: it pins its own
+    copy of Lion at `3496113`.
   - Fix the lowering gaps from L0.
   - Regenerate T6's Lion snapshot (`transpiler/tests/fixtures/lion/regen.sh`),
     whose per-crate counts and crate list are pinned.
