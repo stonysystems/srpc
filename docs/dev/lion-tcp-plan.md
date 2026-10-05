@@ -2,11 +2,18 @@
 
 Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 
-**Status: IN PROGRESS (started 2026-10-04).** Requested by the owner after
-the Lion runtime migration (`docs/dev/lion-runtime-plan.md`) was accepted and
-published. Everything in this plan stays local until the owner asks for a push:
-`srpc-lion` will diverge locally from the published Lion branch, and a cold
-clone cannot fetch new pins until they are pushed.
+**Status: DONE (2026-10-05).** SRPC's TCP transport runs on Lion's
+`lion-net` `TcpStream`/`TcpListener` on SRPC branch `lion-tcp`, pinned to
+Lion `d697b77` (local branch `lion/net`) and rusty-cpp `3535f2aa` (local
+branch `lion/l3-copy-unwrap`). It is accepted (L4), and performance is
+unchanged against `c544c0c` (L5). The owner requested this after the Lion
+runtime migration (`docs/dev/lion-runtime-plan.md`) was accepted and
+published.
+
+**Everything is local.** A cold clone cannot fetch the new pins until they
+are pushed, in this order: rusty-cpp `lion/l3-copy-unwrap` (or a merge into
+rusty-cpp `main`), Lion `lion/net` (or an update of `srpc-lion`), then
+SRPC. L1b is optional and was not taken.
 
 ## 0. The short version
 
@@ -338,10 +345,67 @@ in its reader, writer and accept tasks.
   - `verify_lion.sh`;
   - the D5 allowlist;
   - a Mako source-compat refresh.
-- [ ] **L5. Performance, before (`c544c0c`) against after.**
+- [x] **L5. Performance, before (`c544c0c`) against after.** Done
+  (2026-10-05); see *Result* at the end of this item.
   - rpcbench: one interleaved sitting, all five modes, 6 trials, build order
     rotated (`s8/rpcbench_interleave.sh`).
   - `run_rpc_echo_bench.sh --compare c544c0c <after>`.
   - Per-request counters (sends, write-throughs, reader and writer polls,
     allocations per wait), so any delta has a mechanism.
   - Read the spread, not the best number.
+  - **Result.**
+    - **Builds:** A = `c544c0c` (before); B = `006547a` (Lion `d697b77`
+      and rusty-cpp `3535f2aa`, with the old `AsyncFd` transport);
+      C = `22d8e7f` (the transport on lion-net); B' = `2a0f98e` (Lion bump
+      only, for the Rust lane).
+    - **Method:** rpcbench defaults, interleaved, build order rotated per
+      trial. Medians (min-max) in qps.
+    - **Sitting 1** (n=6 per cell, load1 5.8 / 9.2 / 28.5 min / median /
+      max):
+
+      | mode | A | B | C |
+      | --- | --- | --- | --- |
+      | fast | 1153k (973-1188) | 1135k (1035-1173) | 1141k (1121-1162) |
+      | fiber | 656k (628-661) | 645k (640-660) | 641k (614-651) |
+      | defer | 636k (613-640) | 633k (620-638) | 631k (617-639) |
+      | async | 746k (733-755) | 743k (695-755) | 737k (713-754) |
+      | fast_vec | 366k (357-371) | 367k (353-370) | 366k (359-370) |
+
+    - **Sitting 2** (fiber, async and defer, n=8, load1 6.3 / 9.3 / 11.9).
+      Paired by trial and pooled (14 trials per mode), B to C is: fiber
+      -0.00%, async +0.67%, defer -0.11%. In sitting 1: fast +0.6%,
+      fast_vec -0.4%. Server CPU per request moves by at most 0.008 us.
+      The only consistent paired lean is fiber at -1.1% (11 of 14 trials;
+      +0.017 us server CPU per request). It is inside the spread and lies in
+      A to B, the pin bumps, not in the transport.
+    - **Rust echo** (`run_rpc_echo_bench.sh --compare c544c0c 2a0f98e
+      22d8e7f`, 12 alternating trials per window, load1 about 7-9):
+
+      | | A | B' | C |
+      | --- | --- | --- | --- |
+      | qps, window 1 | 11.7k (7.8k-14.6k) | 10.9k (8.9k-14.7k) | 10.9k (7.1k-14.7k) |
+      | qps, window 64 | 241k (230k-258k) | 235k (228k-259k) | 242k (218k-260k) |
+      | qps, window 512 | 369k (353k-390k) | 372k (357k-391k) | 366k (331k-402k) |
+      | CPU/req at 512 | 4.08 us | 4.12 us | 4.11 us |
+      | p50 / p99, one in flight | 72.5 / 299 us | 74.0 / 301 us | 74.8 / 300 us |
+
+    - **Counters** (instrumented scratch copies of A and C, per completed
+      request):
+      - readiness operations: `AsyncFd::poll_ready` and consume polls
+        before, against observe-and-`poll_step` after. These fall from 9
+        to 7 at one in flight, and from 0.225 to 0.161 at window 512.
+      - the old consume poll is gone (from 2 to 0 at one in flight).
+      - the following are unchanged: `recv`, `send` and `EAGAIN`,
+        write-throughs, waker registrations, edge wakes, eventfd signals,
+        blocking epoll waits, and allocations (25.011 against 25.011 at one
+        in flight).
+      - the writer-budget self-wake fired in none of 60 phase-runs.
+      - a `rusty::io::Error` per `EAGAIN` in C++ is not new. A built one in
+        `lion_fd_consume_ready`; C builds it in the transport closures. Its
+        message fits libc++'s short-string buffer, so it costs no
+        allocation.
+    - **Verdict:** moving SRPC's TCP transport onto lion-net neither cost nor
+      gained anything measurable, in either lane. It swaps AsyncFd readiness
+      polls for lion-net's verified decision path with slightly fewer
+      readiness operations, and identical syscalls, wakes and allocations.
+      Logs: scratchpad `l5/runs/`.
