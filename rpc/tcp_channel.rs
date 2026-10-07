@@ -2173,9 +2173,25 @@ mod native_connect_tests {
 
     #[test]
     fn canonical_connect_reports_refusal_from_socket_error() {
-        let listener = NativeListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let (address, port) = native_address(&listener);
-        drop(listener);
+        // Keep the port bound, but not listening, for the whole attempt: the
+        // kernel still refuses the SYN, and no concurrently running test can
+        // bind(0) the port. A dropped listener frees it, and with a reserved
+        // port band (as in mako's CI container) bind(0) hands that same first
+        // free port to most callers.
+        let raw = unsafe { srpc_tcp_socket_open() };
+        assert!(raw >= 0);
+        // SAFETY: socket_open returns a unique descriptor on success.
+        let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+        let any_port = SockaddrIn {
+            family: 2,
+            port: 0,
+            address: u32::from_ne_bytes(Ipv4Addr::LOCALHOST.octets()),
+            padding: [0; 8],
+        };
+        assert_eq!(unsafe { bind(socket.as_raw_fd(), &any_port, std::mem::size_of::<SockaddrIn>() as u32) }, 0);
+        let mut address = 0;
+        let mut port = 0;
+        assert_eq!(unsafe { srpc_tcp_local_endpoint(raw, &raw mut address, &raw mut port) }, 0);
         let mut error = 0;
         assert_eq!(tcp_connect_socket(address, port, 1000, &mut error), -1);
         assert_eq!(error, TCP_ERR_CONNECTION_REFUSED);
