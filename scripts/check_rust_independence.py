@@ -309,8 +309,16 @@ def run(repo: Path) -> None:
         tool_dir = Path(directory) / 'tools'
         tool_dir.mkdir()
         # Use real toolchain binaries, bypassing rustup proxies in the restricted PATH.
+        # Without rustup (a toolchain installed from the static tarball, as in the
+        # CI image), the binaries on PATH are already the real ones.
+        rustup = shutil.which('rustup')
         for name in ('cargo', 'rustc', 'rustdoc'):
-            path = subprocess.check_output(['rustup', 'which', name], text=True).strip()
+            if rustup is not None:
+                path = subprocess.check_output([rustup, 'which', name], text=True).strip()
+            else:
+                path = shutil.which(name)
+                if path is None:
+                    raise ValueError(f'required C/Rust build tool is missing: {name}')
             (tool_dir / name).symlink_to(path)
         for name in ('cc', 'ar', 'as', 'ld', 'sh'):
             path = shutil.which(name)
