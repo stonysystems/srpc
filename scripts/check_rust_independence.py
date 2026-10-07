@@ -101,9 +101,29 @@ def validate_manifest(repo: Path) -> None:
             raise ValueError(f'retired facade package still exists: {name}')
 
 
+def ownership_exception(cwd: Path) -> list[str]:
+    """`-c safe.directory=...` flags vouching for the worktree that holds `cwd`.
+
+    git refuses a repository whose worktree belongs to another uid ("detected
+    dubious ownership"). That is the normal shape of a container CI job, such
+    as Mako's, which runs this gate as root over a checkout owned by the runner
+    user. Naming the one worktree being read on the command line keeps the
+    check working without depending on, or changing, global git config. The
+    worktree is the nearest directory with a `.git`: this repository's root, or
+    Mako's when SRPC is vendored at src/srpc, or the Lion submodule's own. This
+    waives git's ownership heuristic and nothing else.
+    """
+    top = next((d for d in (cwd, *cwd.parents) if (d / '.git').exists()), cwd)
+    # git matches safe.directory against the worktree path it computed, which
+    # has symlinks resolved; cover the path both as found and as resolved.
+    directories = sorted({str(top), str(top.resolve())})
+    return [argument for directory in directories
+            for argument in ('-c', f'safe.directory={directory}')]
+
+
 def git_output(args: list[str], cwd: Path) -> str:
-    return subprocess.run(['git', *args], cwd=cwd, check=True, text=True,
-                          stdout=subprocess.PIPE).stdout
+    return subprocess.run(['git', *ownership_exception(cwd), *args], cwd=cwd, check=True,
+                          text=True, stdout=subprocess.PIPE).stdout
 
 
 def check_lion_checkout(repo: Path, crate_dirs: list[str], git=git_output) -> str:
