@@ -741,7 +741,7 @@ impl WaitAll {
         // The child tells this parent when it becomes ready (S4 step 4).
         event_parent_link::<()>(&x, &self.self_);
         // Bind the guard, then deref — chaining `.borrow_mut().push(x)`
-        // mis-lowers to push(Vec::from_iter(x)). See §7.33.
+        // mis-lowers to push(Vec::from_iter(x)). See §8.33.
         let mut g = self.events_.borrow_mut();
         (*g).push(x);
     }
