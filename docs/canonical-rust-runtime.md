@@ -18,18 +18,19 @@ are in the plan's result notes.
 | Behavior | Owner |
 | --- | --- |
 | The executor (`block_on`, `spawn_local`, task wakes), the I/O reactor (`AsyncFd` registrations and readiness delivery to wakers), and the timer wheel | Lion: `lion-executor` and `lion-reactor` from the `third-party/lion` gitlink, with the Lion crates they bring (the timer wheel is `lion-timer-wheel`), compiled unmodified ([Cargo.toml](../Cargo.toml)) |
+| Each poll of a TCP connection's stream and a listener: whether it completes or suspends (the verified `IoKernel` decision), readiness through `AsyncFd`, and registering the task's waker | Lion: `lion-net`'s `TcpStream` and `TcpListener`, from the same gitlink; they own no descriptor and make no syscall |
 | `PollThread` commands, jobs, the driver task and the `add_proxy` adapter; fibers; events, their ready queue, deadline map and pings; the per-thread `Reactor`, its stackless executor for threads with no `PollThread`, and that executor's wake admission | [reactor/reactor.rs](../reactor/reactor.rs) |
 | `SrpcEpollBackend`, the OS backend Lion runs on: registration flags, tokens, the eventfd interrupt, readiness mapping, timeout rounding, and `EINTR`/`EAGAIN` policy | [reactor/epoll_wrapper.rs](../reactor/epoll_wrapper.rs) |
 | Public fiber helpers and promise/future event behavior | [reactor/fiber.rs](../reactor/fiber.rs), [reactor/future.rs](../reactor/future.rs) |
 | Callback delivery converted into a suspended fiber receive | [rpc/fiber_channel.rs](../rpc/fiber_channel.rs) |
-| TCP connect policy, the reader, writer and accept tasks, send buffering and write-through, framing, close, and accept policy | [rpc/tcp_channel.rs](../rpc/tcp_channel.rs) |
+| TCP connect policy, the reader, writer and accept tasks and the socket operations they pass to lion-net, send buffering and write-through (the cork, on the raw descriptor), framing, close, and accept policy | [rpc/tcp_channel.rs](../rpc/tcp_channel.rs) |
 | RPC dispatch, request/reply ownership, completion, and teardown | [rpc/server.rs](../rpc/server.rs), [rpc/client.rs](../rpc/client.rs) |
 | Connection state, heartbeat, circuit breaker, and offline queue policy | [rpc/connection_state.rs](../rpc/connection_state.rs), [rpc/heartbeat.rs](../rpc/heartbeat.rs), [rpc/circuit_breaker.rs](../rpc/circuit_breaker.rs), [rpc/request_queue.rs](../rpc/request_queue.rs) |
 | Archives, serialization loops, payload holders, registry dispatch, and unpacking | [misc/serializable.rs](../misc/serializable.rs), [misc/any_message.rs](../misc/any_message.rs), [misc/serializable_envelope.rs](../misc/serializable_envelope.rs) |
 | Port search, I/O retry policy, and random range/selection policy | [rpc/utils.rs](../rpc/utils.rs), [misc/serializable.rs](../misc/serializable.rs), [misc/rand.rs](../misc/rand.rs) |
 
 Client, server, TCP, fiber helpers, and fiber futures use `crate::reactor` types and functions; the TCP
-transport also calls `lion_reactor` and `lion_executor` directly for its registrations and tasks.
+transport also calls `lion_net` and `lion_executor` directly for its streams, listeners and tasks.
 Explicit canonical dependency anchors preserve the generated imports where the compiler needs them.
 There is no separate `rusty-rustc::srpc` scheduler, sleep recorder, yield counter, event
 implementation, RNG, archive implementation, or payload holder.
@@ -57,9 +58,9 @@ the owner re-tests the waiter's readiness predicate, which checks the shared sta
 ## Permitted adapters and native kernels
 
 The canonical Cargo package's production Rust dependencies are the Lion runtime
-crates, under an exact allowlist (docs/dev/lion-runtime-plan.md, D5): `lion-reactor`
-and `lion-executor` from the `third-party/lion` gitlink with `default-features =
-false`, the Lion crates they bring, the erased `vstd` library at the Verus revision
+crates, under an exact allowlist (docs/dev/lion-runtime-plan.md, D5): `lion-reactor`,
+`lion-executor` and `lion-net` from the `third-party/lion` gitlink with
+`default-features = false`, the Lion crates they bring, the erased `vstd` library at the Verus revision
 Lion names, and the proc-macros' build-time closure. mio, flume, tokio, socket2,
 futures-task and pin-project-lite must stay out. Otherwise it uses Rust std and
 the C/assembly kernel described below. The `rusty-rustc` and `rusty-cpp-markers`
@@ -246,7 +247,8 @@ This is a synchronized request counter, not a count of successful epoll removals
 
 A TCP connection's reader and writer tasks, and a listener's accept task, clone a shared socket
 owner (a descriptor lease) when they start on the `PollThread`, and release it only after their
-Lion `AsyncFd` registration has been dropped. Logical close immediately clears the transport's
+Lion `TcpStream` or `TcpListener` has been dropped, which deregisters the descriptor (neither owns
+it). Logical close immediately clears the transport's
 socket slot and shuts down the socket; the lease prevents physical descriptor reuse until Lion has
 deregistered the descriptor. A connection closed before its tasks start has no descriptor left,
 and no tasks start for it. A send wakes the connection's writer task through a waker kept under

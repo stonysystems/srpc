@@ -1859,7 +1859,8 @@ A poll thread stores each `add_proxy` registration as a `PollableProxy`, emitted
 operations. It never calls `handle_error`: an error or hang-up wakes the read side,
 so `handle_read` sees it as a failed `recv` or end of file. The TCP transport does
 not register through this interface; its connections and listeners run their own
-reader, writer and accept tasks.
+reader, writer and accept tasks over the generated `lion_net` module's
+`TcpStream` and `TcpListener`, which `srpc.tcp_channel` re-exports.
 
 #### Typed shared adapters
 

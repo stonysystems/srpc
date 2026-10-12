@@ -49,9 +49,9 @@ compiler and an archiver. `build.rs` uses `CC` and `AR` when set, otherwise `cc`
 `ar`, and selects the fiber assembly for the target architecture. The native build
 currently assumes those tools produce code for the Cargo target.
 
-The root Cargo package's only production dependencies are the Lion runtime crates
-`lion-reactor` and `lion-executor`, path dependencies into the `third-party/lion`
-submodule built without their `mio` feature. They bring the other Lion crates and
+The root Cargo package's only production dependencies are the Lion crates
+`lion-reactor`, `lion-executor` and `lion-net`, path dependencies into the
+`third-party/lion` submodule built without the `mio` feature. They bring the other Lion crates and
 Verus's erased `vstd` library from Verus's git repository. Its property tests use
 `proptest` as a development dependency. The library is consumed from a checkout;
 `Cargo.toml` currently sets `publish = false`.
@@ -735,8 +735,9 @@ state. It does not expose the worker's reactor for use on another thread.
 The worker thread runs a Lion runtime over SRPC's epoll backend. One task on
 it, the driver, handles commands, runs jobs and calls the thread's own
 `Reactor::run_loop(false, true)`. Each TCP connection on the thread is a
-reader task and a writer task over one descriptor registration, and each TCP
-listener an accept task; any other pollable registered with `add_proxy` has a
+reader task and a writer task over one Lion `TcpStream`, and each TCP listener
+an accept task over a Lion `TcpListener`; any other pollable registered with
+`add_proxy` has a
 task that waits for its descriptor and calls its readiness callbacks. The
 worker does not poll: commands, pings, event wakes and timer deadlines each
 wake the driver, a send wakes its connection's writer, and an idle worker
@@ -1241,8 +1242,14 @@ Use a direct `PollableBase` implementation.
 
 The TCP runtime does not register pollable proxies. Each connection is a reader
 task and a writer task on its PollThread, and each listener an accept task;
-they register the socket with the thread's Lion runtime themselves, so the
-only registrations `add_proxy` sees are an application's own pollables. RPC
+they register the socket with the thread's Lion runtime themselves, through
+lion-net's `TcpStream` and `TcpListener`, so the only registrations `add_proxy`
+sees are an application's own pollables. Neither lion-net type owns the socket
+or makes a system call: each poll runs sRPC's own `recv`, `send` or accept step
+and reports `EAGAIN` to Lion as `WouldBlock`, and Lion's verified io kernel
+decides whether the task completes or waits for the next readiness edge. The
+two tasks of a connection share its stream, borrowing it only for one such
+poll, and frame delivery, errors and closes run after that borrow ends. RPC
 `ClientConnection` and `ServerConnection` objects sit
 above the channel and do not become epoll registrations merely by having
 similarly named methods. In particular, a method on an RPC wrapper is not
@@ -1343,7 +1350,9 @@ the writer only for bytes the socket did not take. On the poll thread itself,
 for example a reply sent from a fast handler, the wake only queues the writer on
 that thread, and it runs after the handler's reader task. The writer drains
 until the buffer is empty or the socket reports `EAGAIN`, and then waits for
-write readiness.
+write readiness. The write-through send runs on the raw socket under the
+buffer's mutex, never through the writer's Lion stream, whose readiness state
+belongs to the poll thread.
 
 Close and errors reach both tasks: a close from any thread wakes the writer,
 and the task that retires the connection wakes the other. A pollable

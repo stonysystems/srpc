@@ -24,7 +24,7 @@ DEFAULT_TRANSPILER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-transpiler"
 )
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "7e0c201f1b0d548f0166dc9ee700f24bc18066a4"
+REQUIRED_RUSTY_CPP_COMMIT = "3535f2aa40fe6438e8de0bd5e7c5588933e1db7c"
 EXTRACTION_DRIVER = "scripts/extract_srpc_rust.py"
 EXTRACTION_MANIFEST = "rust-modules.toml"
 MODULE_PREAMBLE = "module-preambles.toml"
@@ -233,6 +233,22 @@ BENIGN_GENERATED_IDENTIFIERS = ("rusty::io::Error::Kind::Unsupported",)
 # Raw entries: epoll_wrapper 56 -> 47 (Pollable's two destructor aliases
 # gone), reactor 449 -> 425, tcp_channel 236 -> 181 (four shim constructor
 # aliases gone).
+# 2107 -> 2107: the TCP transport tasks move from lion_reactor::AsyncFd onto
+# lion-net's TcpStream and TcpListener (L3 of docs/dev/lion-tcp-plan.md);
+# measured from fresh objects at Lion d697b77 / rusty-cpp 7e0c201f, every
+# other module unchanged. srpc.tcp_channel stays 165 unique / 181 raw: +3
+# for the stream polls that replaced the readiness helpers
+# (tcp_transport_recv, tcp_transport_drain) and the accept step's poll of
+# the Lion listener (tcplistener_accept_polled); -3 for tcp_transport_fd,
+# tcp_transport_ready and tcp_transport_consume, which lion-net's polls
+# made dead; and three respellings: the TcpTransport and TcpAcceptTask
+# fieldwise constructors (the AsyncFd field became the Lion stream or
+# listener; each with its RAW_ABI_ALIASES copy) and
+# tcplistener_accept_until_blocked, which now takes the Lion listener and
+# the task's Context. All are private to the module; no consumer calls
+# them. srpc.reactor keeps its rows: lion_fd_poll_ready and
+# lion_fd_consume_ready lost `pub` (their only user is now the add_proxy
+# adapter) but keep their symbols.
 EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2107
 
 # ---------------------------------------------------------------------------
@@ -283,7 +299,9 @@ EXPECTED_TOTAL_PROVIDER_SYMBOLS = 2107
 #     public PollThread::notify_pending_write.
 #   - S5 (9d587bd), shared with the transport: lion_fd_poll_ready,
 #     lion_fd_consume_ready, the PollTaskUnwindAbort guard and
-#     PollThread::is_current_thread.
+#     PollThread::is_current_thread. Since L3 (docs/dev/lion-tcp-plan.md)
+#     the transport polls lion-net instead, and the two readiness helpers
+#     are private to the add_proxy adapter again; their symbols remain.
 # S7b removed PollThread::notify_pending_write and the three helpers that
 # woke registrations for it (poll_driver_wake_fd, poll_driver_wake_fd_here,
 # poll_driver_wake_writers); 53 remain. The rest of the S3 adapter stays: it
@@ -991,11 +1009,11 @@ EXPECTED_GENERATED_MODULE_SHA256 = {
     "srpc.threading": '8e1314597c52613be00f92173a2afbaa57483e214959426898a6b4514e3ac13b',
     "srpc.debugging": 'd076ecd139b73d23fde38e49f341e6c317afae47761152921c15b1613aa08db2',
     "srpc.any_message": 'd500eff960ccf596c130eef447f2b8d124373066fe3bd58400eb14f9d69e8eb3',
-    "srpc.tcp_channel": 'f9fbec41d77e428b4162d86b54ac371fe84fd13cc80b2113129ae38d2f5c46a9',
+    "srpc.tcp_channel": '149d9390a87956632d77e754d83252fa2143ec379dac7b242e0a25be39aedec4',
     # Re-authored with the clippy-gate work (measured ABI-neutral: same 324 raw /
     # 301 unique demangled strong symbols, same 29-row layout).  Digest drift is
     # advisory; this keeps the advisory list honest rather than permanently noisy.
-    "srpc.reactor": '2527368a88ee0f72d4fd137b58ad16ad50205e96bd23f28ecb085043d809ff77',
+    "srpc.reactor": 'fe06e1c09f93c0ab487836f1485fd14c2ebec172a22dcfd1c6467efd1b174c6f',
     "srpc.server": '774e5803e4499cfa92942804001b7bf137416ba1199cfb7f4a217822358ae4bf',
     "srpc.client": 'd9f806460b687f8c87467b88ba989a77ef78a8ac9e00e1a9f5a526d9ef91b313',
 }
@@ -1082,8 +1100,12 @@ class DependencyProvider:
 
 # crate-graph.json's `crates`, in its order (dependencies first). Measured
 # from `--verus-exec --crate-graph` output at Lion 3496113 / rusty-cpp
-# dc6e7558, and unchanged at a130025e and 0d3b990f. lion-executor-spec emits a provider (its executable remainder);
-# the other *-spec crates do not.
+# dc6e7558, and unchanged at a130025e and 0d3b990f, and at Lion d697b77 /
+# rusty-cpp 7e0c201f. lion-executor-spec emits a provider (its executable
+# remainder); the other *-spec crates do not. lion_net joined last when srpc
+# took lion-net as a dependency for its TCP transport (L3 of
+# docs/dev/lion-tcp-plan.md); lion-utility-spec stays unused, since lion-net
+# reaches it only from ghost code.
 DEPENDENCY_PROVIDERS: tuple[DependencyProvider, ...] = (
     DependencyProvider("lion-executor-spec", "lion_executor_spec", ()),
     DependencyProvider("lion-slab", "lion_slab", ()),
@@ -1096,6 +1118,7 @@ DEPENDENCY_PROVIDERS: tuple[DependencyProvider, ...] = (
         "lion_executor",
         ("lion_executor_spec", "lion_reactor", "lion_slab"),
     ),
+    DependencyProvider("lion-net", "lion_net", ("lion_reactor",)),
 )
 # crate-graph.json's `ghost_only` (crates erased to nothing) and `unused`
 # (graph members no emitted crate names) lists, in order.
@@ -1109,6 +1132,7 @@ DEPENDENCY_PRIVATE_IMPORTS: dict[str, list[str]] = {
     "lion_timer_wheel": ["vec_port.vec", "std_port"],
     "lion_reactor": ["vec_port.vec", "std_port"],
     "lion_executor": ["vec_port.vec", "std_port"],
+    "lion_net": [],
 }
 # The canonical children that re-export dependency providers. The transpiler
 # re-exports (`export import`) every dependency crate a child names, rather
@@ -1117,17 +1141,21 @@ DEPENDENCY_PRIVATE_IMPORTS: dict[str, list[str]] = {
 #   srpc.epoll_wrapper: `impl OsBackend for SrpcEpollBackend` (S1, eedc960).
 #   srpc.reactor: the Lion-driven PollThread (S3, 04aebb2) and the shared
 #     AsyncFd readiness helpers (S5, 9d587bd).
-#   srpc.tcp_channel: the reader/writer/accept tasks (S5, 21ce10a).
+#   srpc.tcp_channel: the reader/writer/accept tasks (S5, 21ce10a), which
+#     poll lion-net's TcpStream and TcpListener since L3 and name no
+#     lion_reactor item of their own any more (AsyncFd and the reactor's
+#     readiness helpers left the module), so lion_net replaced lion_reactor.
 EXPECTED_DEPENDENCY_REEXPORTS: dict[str, list[str]] = {
     "srpc.epoll_wrapper": ["lion_reactor"],
     "srpc.reactor": ["lion_executor", "lion_reactor"],
-    "srpc.tcp_channel": ["lion_executor", "lion_reactor"],
+    "srpc.tcp_channel": ["lion_executor", "lion_net"],
 }
 # The dependency providers SRPC's own children import directly. The combined
 # importer must import each of these exactly once and use it.
 DEPENDENCY_IMPORTER_USE_MARKERS: dict[str, str] = {
     "lion_reactor": "lion_reactor::Instant::now()",
     "lion_executor": "lion_executor::RuntimeBuilder::new_()",
+    "lion_net": "lion_net::TcpStream::from_raw_fd(",
 }
 # Each dependency provider's exact strong symbols, measured with
 # `nm --defined-only --demangle` (the same filter as the canonical ABI_SPECS:
@@ -1145,6 +1173,27 @@ DEPENDENCY_IMPORTER_USE_MARKERS: dict[str, str] = {
 #   lion_executor 157 = 374. lion_reactor and lion_executor each include three
 #   unattached std::hash specializations (see dependency_module_symbols).
 # A transpiler or Lion bump re-measures this whole table.
+#
+# Re-measured at Lion d697b77 (lion/net) / rusty-cpp 7e0c201f: 374 -> 379,
+# lion_reactor 190 -> 195 (+6, -1), the other providers unchanged. Lion's
+# 40a5c7a made AsyncFd Send + Sync by dropping its PhantomData<*const ()>
+# marker (the guard keeps one), so AsyncFd's fieldwise constructor is
+# respelled without it (-1/+1), and added the observation-only readiness
+# accessors lion-net's stream polls through: resource_id, try_read_ready,
+# try_write_ready and their private try_ready and guard (+5). The
+# process-wide NEXT_EPOCH atomic that replaced the per-thread counter lowers
+# to an inline variable (weak, V) and adds no strong row.
+#
+# 379 -> 407 when srpc took lion-net for its TCP transport (L3 of
+# docs/dev/lion-tcp-plan.md): lion_net 28, measured from its fresh object
+# at Lion d697b77 / rusty-cpp 7e0c201f. Its strong rows are the verified
+# IoKernel's new_/poll_step/drop_step, IoResource's non-generic members,
+# TcpStream's and TcpListener's from_raw_fd/as_raw_fd/resource_id/fmt (and
+# the stream's poll_read_ready/poll_write_ready), the gone/observe helpers,
+# and the SocketOps trait's vtable, typeinfo and destructor. Every
+# poll_*_with/poll_*/try_*_io entry point is generic over the closure or
+# the SocketOps type, so it is a weak instantiation in its caller (here
+# srpc.tcp_channel) and adds no row.
 DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
     "lion_executor_spec": frozenset({
         ('T', 'lion_executor_spec::events::Tick@lion_executor_spec(rusty::Option<std::__1::tuple<>>)'),
@@ -1188,18 +1237,23 @@ DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
         ('R', 'lion_reactor::readiness::WRITABLE@lion_reactor'),
         ('R', 'typeinfo name for lion_reactor::os::OsBackend@lion_reactor'),
         ('R', 'typeinfo name for lion_reactor::os::OsInterrupt@lion_reactor'),
-        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(int, lion_reactor::types::resource_id::ResourceId@lion_reactor, unsigned long, rusty::PhantomData<std::__1::tuple<> const*>)'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(int, lion_reactor::types::resource_id::ResourceId@lion_reactor, unsigned long)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::AsyncFd(lion_reactor::async_fd::AsyncFd@lion_reactor&&)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::as_raw_fd() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::check_reactor() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::guard(lion_reactor::async_fd::Direction@lion_reactor) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::new_(int)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::operator=(lion_reactor::async_fd::AsyncFd@lion_reactor&&)'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_read_ready(rusty::Context&) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_ready(lion_reactor::async_fd::Direction@lion_reactor, rusty::Context&) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::poll_write_ready(rusty::Context&) const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::readable() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::resource_id() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::rusty_mark_forgotten() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::try_read_ready() const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::try_ready(lion_reactor::async_fd::Direction@lion_reactor) const'),
+        ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::try_write_ready() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::writable() const'),
         ('T', 'lion_reactor::async_fd::AsyncFd@lion_reactor::~AsyncFd()'),
         ('T', 'lion_reactor::async_fd::AsyncFdReadyGuard@lion_reactor::fd() const'),
@@ -1530,8 +1584,38 @@ DEPENDENCY_ABI: dict[str, frozenset[tuple[str, str]]] = {
         ('T', 'std::__1::hash<lion_executor::types::instant::Instant@lion_executor>::operator()(lion_executor::types::instant::Instant@lion_executor const&) const'),
         ('T', 'std::__1::hash<lion_executor::types::task_id::TaskId@lion_executor>::operator()(lion_executor::types::task_id::TaskId@lion_executor const&) const'),
     }),
+    "lion_net": frozenset({
+        ('D', 'typeinfo for lion_net::net::tcp::ops::SocketOps@lion_net'),
+        ('D', 'vtable for lion_net::net::tcp::ops::SocketOps@lion_net'),
+        ('R', 'typeinfo name for lion_net::net::tcp::ops::SocketOps@lion_net'),
+        ('T', 'lion_net::net::tcp::kernel::IoKernel@lion_net::drop_step()'),
+        ('T', 'lion_net::net::tcp::kernel::IoKernel@lion_net::new_(unsigned long)'),
+        ('T', 'lion_net::net::tcp::kernel::IoKernel@lion_net::poll_step(lion_net::net::tcp::method::IoMethod@lion_net, bool, bool)'),
+        ('T', 'lion_net::net::tcp::listener::TcpListener@lion_net::as_raw_fd() const'),
+        ('T', 'lion_net::net::tcp::listener::TcpListener@lion_net::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_net::net::tcp::listener::TcpListener@lion_net::from_raw_fd(int)'),
+        ('T', 'lion_net::net::tcp::listener::TcpListener@lion_net::resource_id() const'),
+        ('T', 'lion_net::net::tcp::ops::SocketOps@lion_net::~SocketOps()'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::IoResource(lion_net::net::tcp::stream::IoResource@lion_net&&)'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::IoResource(rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>, lion_net::net::tcp::kernel::IoKernel@lion_net)'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::as_raw_fd() const'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::new_(int)'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::operator=(lion_net::net::tcp::stream::IoResource@lion_net&&)'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::poll_ready(lion_net::net::tcp::stream::Dir@lion_net, lion_net::net::tcp::method::IoMethod@lion_net, rusty::Context&)'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::resource_id() const'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::rusty_mark_forgotten() const'),
+        ('T', 'lion_net::net::tcp::stream::IoResource@lion_net::~IoResource()'),
+        ('T', 'lion_net::net::tcp::stream::TcpStream@lion_net::as_raw_fd() const'),
+        ('T', 'lion_net::net::tcp::stream::TcpStream@lion_net::fmt(rusty::fmt::Formatter&) const'),
+        ('T', 'lion_net::net::tcp::stream::TcpStream@lion_net::from_raw_fd(int)'),
+        ('T', 'lion_net::net::tcp::stream::TcpStream@lion_net::poll_read_ready(rusty::Context&)'),
+        ('T', 'lion_net::net::tcp::stream::TcpStream@lion_net::poll_write_ready(rusty::Context&)'),
+        ('T', 'lion_net::net::tcp::stream::TcpStream@lion_net::resource_id() const'),
+        ('T', 'lion_net::net::tcp::stream::gone@lion_net()'),
+        ('T', 'lion_net::net::tcp::stream::observe@lion_net(lion_reactor::async_fd::AsyncFd@lion_reactor const&, lion_net::net::tcp::stream::Dir@lion_net)'),
+    }),
 }
-EXPECTED_TOTAL_DEPENDENCY_SYMBOLS = 374
+EXPECTED_TOTAL_DEPENDENCY_SYMBOLS = 407
 
 
 @dataclass(frozen=True)
@@ -4627,14 +4711,14 @@ ABI_SPECS = {
             ('T', 'srpc::tcplistener_is_bound@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&)'),
             ('T', 'srpc::tcplistener_take_proxy@srpc.tcp_channel(srpc::AcceptStep@srpc.tcp_channel&)'),
                 ('R', 'srpc::kTcpWriteThroughIdleUs@srpc.tcp_channel'),
-                ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)'),
+                ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<lion_net::net::tcp::listener::TcpListener@lion_net>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)'),
                 ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(srpc::TcpAcceptTask@srpc.tcp_channel&&)'),
                 ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::operator=(srpc::TcpAcceptTask@srpc.tcp_channel&&)'),
                 ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::poll(rusty::Context&)'),
                 ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::rusty_mark_forgotten() const'),
                 ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::~TcpAcceptTask()'),
                 ('T', 'srpc::TcpReaderTask@srpc.tcp_channel::poll(rusty::Context&)'),
-                ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::RefCell<rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>>, rusty::RefCell<rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>>, rusty::RefCell<rusty::Option<rusty::Waker>>)'),
+                ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::RefCell<rusty::Option<lion_net::net::tcp::stream::TcpStream@lion_net>>, rusty::RefCell<rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>>, rusty::RefCell<rusty::Option<rusty::Waker>>)'),
                 ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(srpc::TcpTransport@srpc.tcp_channel&&)'),
                 ('T', 'srpc::TcpTransport@srpc.tcp_channel::operator=(srpc::TcpTransport@srpc.tcp_channel&&)'),
                 ('T', 'srpc::TcpTransport@srpc.tcp_channel::rusty_mark_forgotten() const'),
@@ -4646,10 +4730,7 @@ ABI_SPECS = {
                 ('T', 'srpc::tcp_reader_finish@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&)'),
                 ('T', 'srpc::tcp_reader_poll@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&, rusty::Context&)'),
                 ('T', 'srpc::tcp_reader_unpark@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&)'),
-                ('T', 'srpc::tcp_transport_consume@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&, rusty::Context&, bool)'),
-                ('T', 'srpc::tcp_transport_fd@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&)'),
                 ('T', 'srpc::tcp_transport_is_retired@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&)'),
-                ('T', 'srpc::tcp_transport_ready@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&, rusty::Context&, bool)'),
                 ('T', 'srpc::tcp_transport_release@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&)'),
                 ('T', 'srpc::tcp_transport_retire@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&)'),
                 ('T', 'srpc::tcp_writer_drain@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&, bool&)'),
@@ -4668,7 +4749,10 @@ ABI_SPECS = {
                 ('T', 'srpc::tcpconn_start_transport@srpc.tcp_channel(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)'),
                 ('T', 'srpc::tcpconn_take_writer_locked@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&)'),
                 ('T', 'srpc::tcpconn_write_through_locked@srpc.tcp_channel(srpc::TcpConnection@srpc.tcp_channel const&, std::__1::vector<unsigned char, std::__1::allocator<unsigned char>>&)'),
-                ('T', 'srpc::tcplistener_accept_until_blocked@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&, bool&)'),
+                ('T', 'srpc::tcplistener_accept_until_blocked@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&, lion_net::net::tcp::listener::TcpListener@lion_net&, rusty::Context&, bool&)'),
+                ('T', 'srpc::tcp_transport_drain@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&, rusty::Context&, bool&)'),
+                ('T', 'srpc::tcp_transport_recv@srpc.tcp_channel(srpc::TcpTransport@srpc.tcp_channel const&, rusty::Context&)'),
+                ('T', 'srpc::tcplistener_accept_polled@srpc.tcp_channel(srpc::TcpListener@srpc.tcp_channel const&, lion_net::net::tcp::listener::TcpListener@lion_net&, rusty::Context&, srpc::AcceptStep@srpc.tcp_channel&)'),
                 ('T', 'srpc::tcplistener_attach@srpc.tcp_channel(rusty::Arc<srpc::TcpListener@srpc.tcp_channel> const&)'),
                 ('T', 'srpc::tcplistener_start_accept@srpc.tcp_channel(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>)'),
         }),
@@ -5606,7 +5690,7 @@ RAW_ABI_ALIASES = {
         ),
     ),
     "srpc.tcp_channel": (
-        ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)'),
+        ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(rusty::Arc<srpc::TcpListener@srpc.tcp_channel>, rusty::Option<lion_net::net::tcp::listener::TcpListener@lion_net>, rusty::Option<rusty::Arc<rusty::net::TcpListener>>)'),
         ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::TcpAcceptTask(srpc::TcpAcceptTask@srpc.tcp_channel&&)'),
         ('T', 'srpc::TcpAcceptTask@srpc.tcp_channel::~TcpAcceptTask()'),
         ('T', 'srpc::TcpChannelShim@srpc.tcp_channel::TcpChannelShim(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>)'),
@@ -5618,7 +5702,7 @@ RAW_ABI_ALIASES = {
         ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::TcpListenerHandleReadScope(rusty::sync::atomic::detail::Atomic<unsigned int> const*, bool)'),
         ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::TcpListenerHandleReadScope(srpc::TcpListenerHandleReadScope@srpc.tcp_channel&&)'),
         ('T', 'srpc::TcpListenerHandleReadScope@srpc.tcp_channel::~TcpListenerHandleReadScope()'),
-        ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::RefCell<rusty::Option<lion_reactor::async_fd::AsyncFd@lion_reactor>>, rusty::RefCell<rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>>, rusty::RefCell<rusty::Option<rusty::Waker>>)'),
+        ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(rusty::Arc<srpc::TcpConnection@srpc.tcp_channel>, rusty::RefCell<rusty::Option<lion_net::net::tcp::stream::TcpStream@lion_net>>, rusty::RefCell<rusty::Option<rusty::Arc<rusty::os::fd::OwnedFd>>>, rusty::RefCell<rusty::Option<rusty::Waker>>)'),
         ('T', 'srpc::TcpTransport@srpc.tcp_channel::TcpTransport(srpc::TcpTransport@srpc.tcp_channel&&)'),
         ('T', 'srpc::TcpTransport@srpc.tcp_channel::~TcpTransport()'),
     ),
@@ -7170,9 +7254,11 @@ import srpc.tcp_channel;
 import srpc.reactor;
 import srpc.server;
 import srpc.client;
-// The dependency providers SRPC's children re-export (plan S1/S7).
+// The dependency providers SRPC's children re-export (plan S1/S7; lion_net
+// since L3 of docs/dev/lion-tcp-plan.md).
 import lion_reactor;
 import lion_executor;
+import lion_net;
 
 static std::int32_t rand_raw_value = 0;
 static std::uint32_t rand_raw_draws = 0;
@@ -10746,6 +10832,13 @@ int main() {
             lion_start + lion_reactor::Duration::from_millis(5);
         if (!lion_runtime.is_ok() || !(lion_start < lion_later) ||
             lion_later - lion_reactor::Duration::from_millis(5) != lion_start) {
+            return 254;
+        }
+        // lion-net's stream and listener (L3) register with the calling
+        // thread's entered Lion reactor; with none entered here, both fail
+        // closed instead of registering the descriptor.
+        if (lion_net::TcpStream::from_raw_fd(-1).is_ok() ||
+            lion_net::TcpListener::from_raw_fd(-1).is_ok()) {
             return 254;
         }
     }

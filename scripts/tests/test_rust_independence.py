@@ -13,6 +13,7 @@ LION_DEPENDENCIES = (
     '[dependencies]\n'
     'lion-reactor = { path = "third-party/lion/lion-reactor", default-features = false }\n'
     'lion-executor = { path = "third-party/lion/lion-executor", default-features = false }\n'
+    'lion-net = { path = "third-party/lion/lion-net", default-features = false }\n'
 )
 MANIFEST = '[package]\nname="fixture"\nversion="0.0.0"\n' + LION_DEPENDENCIES
 
@@ -66,6 +67,18 @@ class RustIndependenceTests(unittest.TestCase):
         (self.repo / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.0.0"\n')
         with self.assertRaisesRegex(ValueError, 'exactly'):
             gate.validate_manifest(self.repo)
+
+    def test_each_lion_dependency_is_required(self):
+        # lion-net joined the two runtime crates in L3 (docs/dev/lion-tcp-plan.md):
+        # the manifest must name all three, so dropping any one is rejected.
+        for name in gate.LION_DIRECT:
+            with self.subTest(dependency=name):
+                line = (f'{name} = {{ path = "third-party/lion/{name}", '
+                        'default-features = false }\n')
+                self.assertIn(line, MANIFEST)
+                (self.repo / 'Cargo.toml').write_text(MANIFEST.replace(line, ''))
+                with self.assertRaisesRegex(ValueError, 'exactly'):
+                    gate.validate_manifest(self.repo)
 
     def test_test_only_dependencies_are_permitted(self):
         (self.repo / 'Cargo.toml').write_text(MANIFEST + '[dev-dependencies]\nproptest="1"\n')
@@ -272,7 +285,7 @@ def fixture_metadata():
     """A small graph shaped like the real one: srpc -> Lion -> vstd -> proc-macros."""
     packages = [
         package('srpc', None, REPO / 'Cargo.toml'),
-        lion('lion-executor'), lion('lion-reactor'), lion('lion-slab'),
+        lion('lion-executor'), lion('lion-net'), lion('lion-reactor'), lion('lion-slab'),
         lion('lion-utility-spec'),
         verus('vstd'), verus('verus_builtin'),
         verus('verus_builtin_macros', kinds=('proc-macro',)),
@@ -281,8 +294,10 @@ def fixture_metadata():
         package('autocfg', REGISTRY), package('proptest', REGISTRY),
     ]
     graph = {
-        'srpc': [dep('lion-executor'), dep('lion-reactor'), dep('proptest', 'dev')],
+        'srpc': [dep('lion-executor'), dep('lion-net'), dep('lion-reactor'),
+                 dep('proptest', 'dev')],
         'lion-executor': [dep('lion-reactor'), dep('lion-slab'), dep('vstd')],
+        'lion-net': [dep('lion-reactor'), dep('lion-utility-spec'), dep('vstd')],
         'lion-reactor': [dep('lion-slab'), dep('lion-utility-spec'), dep('vstd')],
         'lion-slab': [dep('vstd')],
         'lion-utility-spec': [dep('vstd')],
@@ -325,7 +340,7 @@ class LionGraphTests(unittest.TestCase):
 
     def test_allowlisted_graph_is_accepted(self):
         self.assertEqual(gate.validate_graph(REPO, fixture_metadata()),
-                         ['lion-executor', 'lion-reactor', 'lion-slab',
+                         ['lion-executor', 'lion-net', 'lion-reactor', 'lion-slab',
                           'lion-utility/lion-utility-spec'])
 
     def test_extra_registry_dependency_is_rejected(self):

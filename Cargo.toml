@@ -36,6 +36,12 @@ path = "src/lib.rs"
 # on. scripts/check_rust_independence.py enforces the exact allowlist.
 lion-reactor = { path = "third-party/lion/lion-reactor", default-features = false }
 lion-executor = { path = "third-party/lion/lion-executor", default-features = false }
+# Lion's TCP stream and listener over a raw fd (docs/dev/lion-tcp-plan.md, L3):
+# the verified IoKernel decides each poll of SRPC's transport tasks. It has no
+# features and no OS crate; it depends on lion-reactor (without `mio`), vstd
+# and two spec crates, all already in the closure above. The socket syscalls
+# stay SRPC's (rpc/tcp_channel.rs passes them in as closures).
+lion-net = { path = "third-party/lion/lion-net", default-features = false }
 
 [dev-dependencies]
 # Property-based testing for the wire codecs (tests only; not linked into the

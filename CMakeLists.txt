@@ -491,7 +491,9 @@ set_source_files_properties(${SRPC_GOAL0_CRATE_CHILD_SRC}
 # crate-graph.json exactly. `--crate-graph` emits each dependency crate as ONE
 # named module at <output>/<package>/<module>.cppm; this order is
 # crate-graph.json's, dependencies first. The list changes only with a Lion
-# pin or a transpiler bump.
+# pin, a transpiler bump, or a change to the Lion crates srpc depends on
+# (lion-net joined with the TCP transport's move onto it, L3 of
+# docs/dev/lion-tcp-plan.md).
 #
 # They compile in the SAME target and file set as SRPC's providers, with the
 # same flags: a separate library target got CMake's other rusty-port BMI
@@ -503,6 +505,7 @@ set(SRPC_LION_PROVIDERS
     lion-timer-wheel/lion_timer_wheel
     lion-reactor/lion_reactor
     lion-executor/lion_executor
+    lion-net/lion_net
 )
 set(SRPC_LION_PROVIDER_SRC)
 foreach(_SRPC_LION_PROVIDER IN LISTS SRPC_LION_PROVIDERS)
