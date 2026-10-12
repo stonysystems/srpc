@@ -10,10 +10,18 @@ unchanged against `c544c0c` (L5). The owner requested this after the Lion
 runtime migration (`docs/dev/lion-runtime-plan.md`) was accepted and
 published.
 
-**Everything is local.** A cold clone cannot fetch the new pins until they
-are pushed, in this order: rusty-cpp `lion/l3-copy-unwrap` (or a merge into
-rusty-cpp `main`), Lion `lion/net` (or an update of `srpc-lion`), then
-SRPC. L1b is optional and was not taken.
+**Pins published (2026-10-12), SRPC branch still local.**
+- rusty-cpp `3535f2aa` is merged into rusty-cpp `main` as `92b74759`.
+- Lion `srpc-lion` is fast-forwarded to `d697b77`.
+- `.gitmodules`' branch hints, `main` and `srpc-lion`, now contain both
+  pins, and a clean clone of `lion-tcp` fetches them from GitHub.
+- `lion-tcp` itself is not pushed. SRPC `main` has since moved to
+  `6f5ca63`, five commits from 2026-10-07 that touch `reactor/reactor.rs`,
+  `rpc/client.rs`, `rpc/tcp_channel.rs` and gate scripts. A trial merge is
+  textually clean, but the merged tree needs a gate run before it goes to
+  `main`.
+
+L1b is optional and was not taken.
 
 ## 0. The short version
 
