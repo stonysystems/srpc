@@ -209,9 +209,20 @@ lane.
         pass the URL, and its dual-compile gate would reject the 41-file
         output.
       - `--verus-build-info` is unchanged.
-- [ ] **G2. SRPC: transpiler pin.** `build: bump rusty-cpp 3535f2aa -> <new>`,
-  the four edits, in its own commit. ABI is unchanged.
-- [ ] **G3. SRPC: Lion as a git dependency.**
+- [x] **G2. SRPC: transpiler pin.** Done (2026-10-13) as `f90af7f`
+  (`build: bump rusty-cpp 3535f2aa -> e0b6578d`): the four edits, in their
+  own commit.
+  - It does not pass `--crate-graph-git`, because with Lion still a path
+    dependency, naming the URL is an error.
+  - Gate: `RUSTFLAGS=-Dwarnings cargo test` passed 400, failed 0 and ignored
+    1. Configure and build exited 0.
+  - SRPC 2107 and Lion 407 strong symbols, 0 hand slots, ctest 51/51.
+  - `goal0-crate-cpp` is byte-identical to `main`'s, 65 files. ABI is
+    unchanged.
+- [x] **G3. SRPC: Lion as a git dependency.** Done (2026-10-13) as `5e3a91f`
+  (`build: take lion as a cargo git dependency pinned by rev`, everything
+  gated as one tree) and `4bf0ce3` (a prose and docstring correction; see
+  *Result*).
   - `Cargo.toml` and `Cargo.lock`;
   - remove the submodule: the gitlink, the `.gitmodules` entry and the
     workspace exclude;
@@ -225,6 +236,72 @@ lane.
   - both `--compare` benchmark scripts, for both eras;
   - CLAUDE.md (cold machine, the Lion pin-bump procedure, D5) and the docs
     that name the submodule.
+  - **Result.**
+    - **Tree:** `Cargo.toml` names `{ git = LION_GIT_URL, rev = "d697b779…",
+      default-features = false }` three times. `Cargo.lock` gains the nine
+      git sources. `third-party/lion` and its `.gitmodules` stanza are gone.
+    - **CMake:** passes `--crate-graph-git ${SRPC_LION_GIT_URL}` and drops
+      the Lion source glob. Crate generation already depends on `Cargo.lock`,
+      and a pinned checkout never changes.
+    - **New helper:** `scripts/lion_source.sh` extracts Lion at a commit with
+      `git archive`. It is shared by `verify_lion.sh` and both `--compare`
+      scripts, which now build submodule-era refs too.
+    - **The independence gate now checks:**
+      - **`Cargo.toml`:** exactly the three crates, each `{ git, rev = <40
+        lowercase hex>, default-features = false }`, all with one rev. The
+        rev in `Cargo.toml` is the pin of record, with no second copy in the
+        script.
+      - **`Cargo.lock`:** each Lion package resolves once to
+        `git+URL?rev=R#R`. Nothing else comes from Lion's URL, and no git
+        source but Verus's is allowed.
+      - **The resolved graph:** each Lion crate comes from that source with
+        no features, and any path package is rejected.
+      - **Cargo's checkout:** all nine crates lie in one checkout, at their
+        expected directories, with HEAD at the rev and no tracked change.
+        Every git call keeps `safe.directory`.
+      - **The offline copy:** it resolves Lion from the same `CARGO_HOME`.
+    - **`test_rust_independence.py`** has 53 tests, and ten mutations of the
+      gate each turned them red.
+    - **The real script, on mutated trees with a private `CARGO_HOME`,**
+      exits 1 for each of these, while the untouched tree passes:
+      - a wrong rev;
+      - `branch =`;
+      - a path dependency;
+      - a short rev;
+      - revs that differ across the three dependencies;
+      - a lockfile that disagrees;
+      - a `.git`-suffixed URL;
+      - a lock entry from another URL;
+      - an edited tracked file in the checkout.
+    - **`test_goal0_contracts.py`** goes red when CMake drops the flag, or
+      when CMake and the gates name different URLs.
+    - **Cargo resets a moved HEAD:** a checkout whose HEAD was moved is reset
+      by Cargo during `cargo metadata`, before the gate looks. So that control
+      passes through the script and fails only when `check_lion_checkout` is
+      called directly. `4bf0ce3` corrects the prose that said Cargo never
+      re-checks its checkout. Cargo does not notice an edited file, and the
+      gate's status check is what catches it.
+    - **Gate at `5e3a91f`,** in a clone with no `third-party/lion`:
+      - `cargo test` passed 400, failed 0 and ignored 1. Doctests 2/2, and
+        clippy is clean.
+      - The source gate's Python suites have 0 skips, and its Cargo runs pass
+        804, fail 0 and ignore 2.
+      - The transpiler reports "Crate graph (9 dependency crate(s))".
+      - SRPC 2107 and Lion 407 strong symbols, 0 hand slots, ctest 51/51.
+      - `goal0-crate-cpp` is byte-identical to `main`'s, 65 files.
+      - `4bf0ce3`'s own checks: independence tests 53 OK, standalone tests
+        7 OK, the docs lint, and the real script exits 0.
+    - **`verify_lion.sh --dry-run`** resolves `d697b779` (tree `f0cce113`,
+      2,091 files, equal to Cargo's checkout). It works from Cargo's
+      database, and from GitHub with an empty `CARGO_HOME`.
+    - **`--compare` smoke runs** built and ran every side:
+      - `run_rpc_echo_bench.sh --compare 3312dda 21f2320 <G3>`;
+      - `run_microbench.sh --compare 21f2320 <G3>`.
+    - **Deferred to G4:**
+      - a cold clone with an empty `CARGO_HOME`;
+      - a full `verify_lion.sh` run;
+      - an untracked file added inside a Lion crate in Cargo's checkout is
+        not yet detected. The submodule check had the same gap.
 - [ ] **G4. Acceptance.**
   - The full gate on a cold clone, which no longer fetches a Lion submodule.
   - Generated C++ byte-identical to `main`'s.
@@ -233,7 +310,11 @@ lane.
   - Each new gate check goes red under a negative control: a wrong `rev`, a
     `branch` dependency, a path dependency, and a lockfile that disagrees.
   - `verify_lion.sh` 10/10.
-  - A `--compare` smoke run between `21f2320` and the new head.
-  - Mako builds and passes its tests in a scratch copy.
+  - A `--compare` smoke run between `21f2320` and the new head (done in G3).
+  - Mako builds and passes its tests in a scratch copy. This is moot per
+    G0: Mako's SRPC copy predates Lion, so nothing in Mako changes.
+  - Close G3's untracked-file gap: the checkout check rejects any untracked
+    file except Cargo's root `.cargo-ok`, with a negative control.
+  - The moved-HEAD control, run against `check_lion_checkout` directly.
 - [ ] **G5. Publish (owner's OK).** Merge the rusty-cpp branch into rusty-cpp
   `main`, and this branch into SRPC `main`.
