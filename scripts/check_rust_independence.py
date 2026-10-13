@@ -213,9 +213,12 @@ def lion_checkout_root(manifests: dict[str, str]) -> Path:
 def check_lion_checkout(root: Path, rev: str, git=git_output) -> None:
     """The checkout Cargo compiles Lion from must be the pinned commit, unmodified.
 
-    Cargo checks out a git dependency once, into CARGO_HOME, with its own `.git`, and
-    never re-verifies it; the directory is shared by every project on the machine and
-    writable. An edited tracked file would compile silently. Cargo leaves an untracked
+    Cargo checks out a git dependency into CARGO_HOME, with its own `.git`; the
+    directory is shared by every project on the machine and writable. Cargo's own
+    freshness check compares only HEAD with the locked commit, and resets a moved
+    checkout before this runs (measured with Cargo 1.97.1), so the HEAD check here is
+    defense in depth. An edited tracked file passes Cargo's check and would compile
+    silently; the status check is what catches it. Cargo leaves an untracked
     `.cargo-ok` marker at the root, so untracked files are not reported. If a future
     Cargo stops leaving a `.git` here, this fails closed.
     """

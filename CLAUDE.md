@@ -237,11 +237,13 @@ into `srpc` must be one of the nine `LION_CRATES` from that exact source, built 
 `vstd`/`verus_builtin` at exactly `VERUS_SOURCE`; a path package is rejected. The only proc-macros may be
 Verus's two, and their host-only closure may come only from crates.io and Verus's parser crates. mio, flume,
 tokio, socket2, futures-task and pin-project-lite must appear nowhere, including `cargo tree -e normal`.
-Cargo never re-verifies its checkout, which every project on the machine shares, so the gate checks it:
-all nine crates' manifests must lie in **one** checkout at their `LION_CRATES` directories, that checkout's
-`git rev-parse HEAD` must equal the `rev`, and `git status --untracked-files=no` must be empty (Cargo leaves an
-untracked `.cargo-ok`). The identity check relies on Cargo keeping a `.git` in its checkout and fails closed
-without one. It then copies the Cargo inputs, canonical Rust, tests and the C/assembly kernel into a fresh
+Cargo's checkout is shared by every project on the machine and writable, and Cargo re-checks only its HEAD
+(a checkout moved off the locked commit is reset before the gate reads it; measured) — an edited tracked file
+compiles silently. So the gate checks it: all nine crates' manifests must lie in **one** checkout at their
+`LION_CRATES` directories, that checkout's `git rev-parse HEAD` must equal the `rev` (defense in depth), and
+`git status --untracked-files=no` must be empty (the load-bearing check; Cargo leaves an untracked
+`.cargo-ok`). The identity check relies on Cargo keeping a `.git` in its checkout and fails closed without
+one. It then copies the Cargo inputs, canonical Rust, tests and the C/assembly kernel into a fresh
 tree, which resolves Lion from the same Cargo git cache (and must resolve it to the same checkout), and runs
 Rust tests and doctests there offline, with `-Dwarnings`, `CXX=/bin/false` and no C++ runtime, compiler or
 `git` on its tool path.
