@@ -70,7 +70,7 @@ lane.
 
 ## 2. Phases
 
-- [ ] **G0. Spike.** In a scratch clone of `main`:
+- [x] **G0. Spike.** Done (2026-10-13); see *Result* below. In a scratch clone of `main`:
   - switch `Cargo.toml` to git dependencies, and re-lock only the Lion
     packages;
   - check `cargo tree -e normal`, the `Cargo.lock` sources, and any warnings
@@ -82,11 +82,72 @@ lane.
     `crate-graph.json` fields);
   - list every SRPC file that names `third-party/lion`;
   - read (never write) Mako for references to SRPC's Lion submodule.
+  - **Result.**
+    - **Cargo:** re-locking adds exactly nine `source =
+      "git+https://github.com/stonysystems/lion?rev=d697b77…#d697b77…"`
+      lines, one per Lion package: executor, executor-spec, framework-spec,
+      net, reactor, reactor-spec, slab, timer-wheel and utility-spec. The
+      package count stays 58, and the Verus entries are unchanged.
+      - Cargo prints no warnings. Lion's 22 duplicate package names are all
+        under `lion-benchmark/`, outside the graph.
+      - No forbidden crate appears, even in `cargo tree -e all --target all`.
+      - The checkout (`~/.cargo/git/checkouts/lion-<hash>/d697b77/`) has a
+        full `.git` whose HEAD is the rev, and it is clean.
+      - Lion and `vstd` now build with `--cap-lints allow`.
+    - **Rust lane:** `RUSTFLAGS=-Dwarnings cargo test` passes 400, fails 0
+      and ignores 1, the same as `main`, with Lion coming from the git URL.
+    - **rusty-cpp `3535f2aa` fails open.** It exits 0 with "Crate graph (0
+      dependency crate(s))" and emits no Lion provider. It also silently
+      mis-generates three SRPC providers:
+      - `srpc.epoll_wrapper` loses `export import lion_reactor;` and gains a
+        self-recursive `deregister`;
+      - `srpc.reactor` turns `os_backend` into `void*`;
+      - `srpc.tcp_channel` loses its Lion re-exports.
+
+      SRPC's dual-compile gate would reject this, because it requires the
+      six providers. Still, G3 must not land before G1 and G2.
+    - **Correction to §0:** `main.rs:1824` and `:2229` handle
+      workspace-inherited dependencies, not the crate graph. The graph skips
+      git packages in `metadata.rs`:
+      - `:1834`, where only path packages get a `cargo tree` rendering;
+      - `:2120`, where the walk does not descend into sourced packages;
+      - `:2166`, where sourced dependencies get no edge.
+
+      The graph is resolved at three call sites (`main.rs:4200`, `:4684`,
+      `:2701`). Output layout, `crate-graph.json` and the verus-erase helper
+      carry no paths.
+    - **Prototype:** an environment-variable opt-in in `metadata.rs` only
+      (+36/−5 lines). With Lion's nine packages opted in, all 65 output files
+      are byte-identical to `main`'s `goal0-crate-cpp`. With none opted in,
+      the output is identical to the stock transpiler's.
+    - **SRPC files to change:**
+      - `check_rust_independence.py`: `:207-211` reject any git source but
+        `vstd`, and the manifest check, the graph check and
+        `check_lion_checkout` change;
+      - `test_rust_independence.py`;
+      - `CMakeLists.txt`: drop the `:518-521` glob, since the transpile
+        already depends on `Cargo.lock`, and add the flag near `:895`;
+      - `check_srpc_crate_mode.py`: `LION_CRATE_MODE_ARGUMENTS`, `:1083`;
+      - `test_goal0_contracts.py`: `:232`;
+      - `verify_lion.sh`;
+      - the two `--compare` scripts. Submodule-era refs need Lion fetched at
+        their gitlink commit. All three historical pins (`aa5bebe`,
+        `3496113`, `d697b77`) are ancestors of `srpc-lion`.
+      - `bench/Cargo.lock` already lacks `lion-net` (pre-existing).
+    - **Mako:** no change today. Its `src/srpc` is a copied subtree of SRPC
+      `683c506`, from before Lion. Its next SRPC sync needs network or a
+      warm `CARGO_HOME`, and its own rusty-cpp pin must include G1.
 - [ ] **G1. rusty-cpp.** On a branch from `3535f2aa`:
-  - let `--crate-graph` transpile git packages named on the command line,
-    reading each from the manifest path `cargo metadata` reports;
-  - keep the default unchanged and `vstd` excluded;
-  - add tests;
+  - Add a repeatable `--crate-graph-git <URL>` option. Each git package whose
+    source repository equals a named URL joins the crate graph as if local,
+    read from `cargo metadata`'s manifest path.
+  - Opting in by repository rather than by package name means SRPC names one
+    URL, not Lion's crate list, and a partial list cannot occur.
+  - A named URL that matches no package is an error, raised before any
+    output is written.
+  - Keep the default unchanged and `vstd` excluded (it comes from another
+    repository).
+  - Add tests;
   - run rusty-cpp's crate-graph tests and `lion_parity`.
 - [ ] **G2. SRPC: transpiler pin.** `build: bump rusty-cpp 3535f2aa -> <new>`,
   the four edits, in its own commit. ABI is unchanged.
