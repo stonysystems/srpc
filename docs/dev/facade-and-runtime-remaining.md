@@ -35,8 +35,9 @@ the three are Cargo git dependencies on Lion's repository, all pinned by one
 full commit `rev`, and the `third-party/lion` submodule is gone. The
 allowlist is unchanged in substance. The independence check now also requires
 `Cargo.lock` to resolve every Lion package to that exact commit, and Cargo's
-checkout of Lion to sit at the commit with no tracked change. Its isolated
-copy resolves Lion from the same Cargo git cache, offline.
+checkout of Lion to sit at the commit with no tracked change and, since G4, no
+untracked or ignored file but Cargo's root `.cargo-ok`. Its isolated copy
+resolves Lion from the same Cargo git cache, offline.
 
 The [independence check](../../scripts/check_rust_independence.py) copies only
 canonical Rust modules, tests, Cargo inputs and native kernel sources into a

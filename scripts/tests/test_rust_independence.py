@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Negative controls for the Cargo-only copy, the manifest and lock checks, the D5
 allowlist, and the identity of Cargo's Lion checkout."""
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_rust_independence as gate
@@ -307,22 +309,26 @@ def git(args, cwd):
 
 
 class LionCheckoutTests(unittest.TestCase):
-    """Cargo's checkout must be one tree, at the rev, with no tracked change.
+    """Cargo's checkout must be one tree, at the rev, with no tracked change and no
+    untracked or ignored file but Cargo's root `.cargo-ok`.
 
-    The fixture is a real git repository laid out like Lion's, checked by the real
-    `git` and the gate's own functions.
+    The fixture is a real git repository laid out like Lion's, with a tracked
+    `.gitignore` holding some of Lion's own rules, checked by the real `git` and the
+    gate's own functions.
     """
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.checkout = Path(temporary.name) / 'checkouts/lion-e399824530cb448a/d697b77'
+        self.scratch = Path(temporary.name)
+        self.checkout = self.scratch / 'checkouts/lion-e399824530cb448a/d697b77'
         for relative in gate.LION_CRATES.values():
             crate = self.checkout / relative
             (crate / 'src').mkdir(parents=True)
             (crate / 'Cargo.toml').write_text(f'# {relative}\n')
             (crate / 'src/lib.rs').write_text(f'// {relative}\n')
         (self.checkout / 'ci.sh').write_text('#!/bin/sh\n')
+        (self.checkout / '.gitignore').write_text('**/target/\nlion*/Cargo.lock\n*.log\n')
         git(['init', '-q'], self.checkout)
         git(['add', '.'], self.checkout)
         git(['commit', '-q', '-m', 'fixture'], self.checkout)
@@ -356,6 +362,85 @@ class LionCheckoutTests(unittest.TestCase):
         git(['commit', '-q', '-am', 'next'], self.checkout)
         with self.assertRaisesRegex(ValueError, 'but Cargo.toml pins'):
             gate.check_lion_checkout(self.checkout, self.rev)
+
+    def assertChanges(self, *entries):
+        """The checkout is rejected, naming each of `entries` as a status line."""
+        with self.assertRaises(ValueError) as caught:
+            gate.check_lion_checkout(self.checkout, self.rev)
+        lines = str(caught.exception).splitlines()
+        self.assertIn('local changes:', lines[0])
+        for entry in entries:
+            self.assertIn(entry, lines)
+
+    def status_lines(self):
+        """The lines of the checkout check's error, or none if it passes."""
+        try:
+            gate.check_lion_checkout(self.checkout, self.rev)
+        except ValueError as error:
+            return str(error).splitlines()
+        return []
+
+    def test_untracked_build_script_is_rejected(self):
+        # Cargo would discover and run it: target discovery reads the directory.
+        (self.checkout / 'lion-net/build.rs').write_text('fn main() {}\n')
+        self.assertChanges('?? lion-net/build.rs')
+
+    def test_each_file_in_an_untracked_directory_is_named(self):
+        extra = self.checkout / 'lion-slab/src/extra'
+        extra.mkdir()
+        (extra / 'mod.rs').write_text('// extra\n')
+        self.assertChanges('?? lion-slab/src/extra/mod.rs')
+
+    def test_file_hidden_by_lions_own_ignore_rules_is_rejected(self):
+        (self.checkout / 'lion-slab/Cargo.lock').write_text('version = 4\n')
+        (self.checkout / 'lion-net/target/debug').mkdir(parents=True)
+        (self.checkout / 'lion-net/target/debug/out.rs').write_text('// built\n')
+        self.assertChanges('!! lion-slab/Cargo.lock', '!! lion-net/target/debug/out.rs')
+
+    def test_self_hiding_gitignore_is_rejected(self):
+        # An untracked `.gitignore` of `*` hides itself and everything beside it.
+        (self.checkout / 'lion-net/.gitignore').write_text('*\n')
+        (self.checkout / 'lion-net/build.rs').write_text('fn main() {}\n')
+        self.assertChanges('!! lion-net/.gitignore', '!! lion-net/build.rs')
+
+    def test_file_hidden_by_info_exclude_is_rejected(self):
+        exclude = self.checkout / '.git/info/exclude'
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text('build.rs\n')
+        (self.checkout / 'lion-reactor/build.rs').write_text('fn main() {}\n')
+        self.assertChanges('!! lion-reactor/build.rs')
+
+    def test_file_hidden_by_an_excludes_file_is_rejected(self):
+        excludes = self.scratch / 'excludes'
+        excludes.write_text('build.rs\n')
+        (self.checkout / 'lion-reactor/build.rs').write_text('fn main() {}\n')
+        with self.subTest(scope="the checkout's own config"):
+            git(['config', 'core.excludesFile', str(excludes)], self.checkout)
+            self.assertChanges('!! lion-reactor/build.rs')
+            git(['config', '--unset', 'core.excludesFile'], self.checkout)
+        with self.subTest(scope="the user's config"):
+            # The running user's core.excludesFile, given here through the environment.
+            environment = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.excludesFile',
+                           'GIT_CONFIG_VALUE_0': str(excludes)}
+            with mock.patch.dict(os.environ, environment):
+                self.assertChanges('!! lion-reactor/build.rs')
+
+    def test_cargo_marker_is_accepted_only_at_the_root(self):
+        # Accepted when some exclude rule happens to ignore it, too.
+        exclude = self.checkout / '.git/info/exclude'
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text('.cargo-ok\n')
+        gate.check_lion_checkout(self.checkout, self.rev)
+        (self.checkout / 'lion-net/.cargo-ok').write_text('')
+        self.assertChanges('!! lion-net/.cargo-ok')
+        self.assertNotIn('!! .cargo-ok', self.status_lines())
+
+    def test_many_changes_are_summarised(self):
+        for index in range(gate.CHANGES_SHOWN + 5):
+            (self.checkout / f'lion-slab/src/extra{index:02}.rs').write_text('\n')
+        lines = self.status_lines()
+        self.assertEqual(sum(line.startswith('?? ') for line in lines), gate.CHANGES_SHOWN)
+        self.assertIn('... and 5 more', lines)
 
     def test_checkout_without_git_is_rejected(self):
         bare = self.checkout.parent / 'copied'

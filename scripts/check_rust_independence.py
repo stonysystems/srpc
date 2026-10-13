@@ -19,9 +19,10 @@ Their resolved closure may contain only:
 Nothing from a registry may be linked into srpc, and Lion's runtime crates (FORBIDDEN)
 must not appear anywhere in `cargo tree -e normal`. Cargo compiles Lion from its own
 checkout of the pinned commit, and nothing stops a process from editing that checkout,
-so the Lion crates must all come from one checkout whose HEAD is the rev and which has
-no tracked change. The isolated copy contains the Cargo sources, tests and native
-kernels; it resolves Lion from the same Cargo git cache and builds and tests offline.
+so the Lion crates must all come from one checkout whose HEAD is the rev, with no
+tracked change and no untracked or ignored file but Cargo's own root marker. The
+isolated copy contains the Cargo sources, tests and native kernels; it resolves Lion
+from the same Cargo git cache and builds and tests offline.
 """
 from __future__ import annotations
 import argparse
@@ -71,6 +72,11 @@ CRATES_IO = 'registry+https://github.com/rust-lang/crates.io-index'
 # Lion's runtime crates, which its `mio` feature and lion-utility bring in (D5).
 FORBIDDEN = ('mio', 'flume', 'tokio', 'socket2', 'futures-task', 'pin-project-lite')
 RETIRED_FACADES = ('rusty-rustc', 'rusty-cpp-markers')
+# The file Cargo writes at the root of a finished git checkout, and the only path in
+# Lion's checkout that may differ from the pinned commit (check_lion_checkout).
+CARGO_CHECKOUT_MARKER = '.cargo-ok'
+# How many local changes a failed checkout check names before it summarises.
+CHANGES_SHOWN = 20
 
 
 def lion_source(rev: str) -> str:
@@ -217,10 +223,20 @@ def check_lion_checkout(root: Path, rev: str, git=git_output) -> None:
     directory is shared by every project on the machine and writable. Cargo's own
     freshness check compares only HEAD with the locked commit, and resets a moved
     checkout before this runs (measured with Cargo 1.97.1), so the HEAD check here is
-    defense in depth. An edited tracked file passes Cargo's check and would compile
-    silently; the status check is what catches it. Cargo leaves an untracked
-    `.cargo-ok` marker at the root, so untracked files are not reported. If a future
-    Cargo stops leaving a `.git` here, this fails closed.
+    defense in depth. Cargo does not notice anything else, and the status check is
+    what catches it. An edited tracked file compiles silently. So can an added one:
+    Cargo's target discovery and rustc's module lookup read the directory, not git's
+    index, and a stray `build.rs` in a crate root is a build script Cargo runs. So
+    the status may list nothing but CARGO_CHECKOUT_MARKER at the root.
+
+    Ignored files count too (`--ignored`). Ignore rules decide what git reports, not
+    what Cargo compiles, and they are not all part of the pinned commit: an
+    untracked `.gitignore` can hide itself and its neighbours, and the checkout's
+    `.git/info/exclude`, its own config and the user's `core.excludesFile` can hide
+    anything. Lion's tracked rules already hide `lion*/Cargo.lock`, `*.log` and
+    `**/target/`. A checkout as Cargo leaves it holds no ignored file (measured with
+    Cargo 1.97.1), so nothing legitimate is lost. If a future Cargo stops leaving a
+    `.git` here, this fails closed.
     """
     if not (root / '.git').exists():
         raise ValueError(f'the Lion checkout {root} has no .git; cannot prove it is {rev}')
@@ -228,11 +244,21 @@ def check_lion_checkout(root: Path, rev: str, git=git_output) -> None:
     if head != rev:
         raise ValueError(f'the Lion checkout {root} is at {head}, but Cargo.toml pins {rev}')
     # --no-optional-locks: status must not rewrite the index of a checkout that is
-    # shared with every other project using this CARGO_HOME.
-    changed = git(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'],
-                  root)
-    if changed.strip():
-        raise ValueError(f'the Lion checkout {root} has local changes:\n{changed}')
+    # shared with every other project using this CARGO_HOME. --untracked-files=all
+    # lists each file in an untracked directory, and with it --ignored lists each
+    # ignored file. -z keeps every path unquoted, one NUL-terminated entry each.
+    status = git(['--no-optional-locks', 'status', '--porcelain', '-z',
+                  '--untracked-files=all', '--ignored=traditional'], root)
+    # The marker is untracked, or ignored if some exclude rule happens to match it.
+    marker = (f'?? {CARGO_CHECKOUT_MARKER}', f'!! {CARGO_CHECKOUT_MARKER}')
+    changed = [entry for entry in status.split('\0') if entry and entry not in marker]
+    if changed:
+        shown = '\n'.join(changed[:CHANGES_SHOWN])
+        if len(changed) > CHANGES_SHOWN:
+            shown += f'\n... and {len(changed) - CHANGES_SHOWN} more'
+        raise ValueError(f'the Lion checkout {root} has local changes:\n{shown}\n'
+                         f'(?? untracked, !! ignored; only the root {CARGO_CHECKOUT_MARKER} '
+                         f'may differ from {rev})')
 
 
 def is_proc_macro(package: dict) -> bool:
