@@ -4,19 +4,25 @@ and the pinned Lion crates.
 
 The production dependency policy is an exact allowlist (docs/dev/lion-runtime-plan.md,
 D5 and S1). srpc's normal dependencies are exactly `lion-reactor`, `lion-executor` and
-`lion-net` (docs/dev/lion-tcp-plan.md, L3), as path dependencies into the third-party/lion
-gitlink with `default-features = false`.
+`lion-net` (docs/dev/lion-tcp-plan.md, L3), as Cargo git dependencies on LION_GIT_URL,
+each `{ git = LION_GIT_URL, rev = "<40-hex commit>", default-features = false }`, all at
+one `rev` (docs/dev/lion-git-dep-plan.md, G3). That `rev` in Cargo.toml is the pin of
+record; Cargo.lock must resolve every Lion package to exactly that commit.
 Their resolved closure may contain only:
 
-* the Lion path crates named in LION_CRATES, each at its directory under the gitlink;
+* the Lion crates named in LION_CRATES, each from `git+LION_GIT_URL?rev=<rev>#<rev>`, at
+  its directory in Lion's repository, with no features;
 * the erased Verus library (vstd and verus_builtin) at exactly VERUS_SOURCE;
 * the Verus proc-macros and their build-time (host-only) closure: registry crates that
   are reached only through a proc-macro, plus Verus's own parser crates at VERUS_SOURCE.
 
 Nothing from a registry may be linked into srpc, and Lion's runtime crates (FORBIDDEN)
-must not appear anywhere in `cargo tree -e normal`. The isolated copy contains the
-Cargo sources, tests, native kernels and the tracked files of the Lion crates in that
-closure, and it builds and tests offline.
+must not appear anywhere in `cargo tree -e normal`. Cargo compiles Lion from its own
+checkout of the pinned commit, and nothing stops a process from editing that checkout,
+so the Lion crates must all come from one checkout whose HEAD is the rev, with no
+tracked change and no untracked or ignored file but Cargo's own root marker. The
+isolated copy contains the Cargo sources, tests and native kernels; it resolves Lion
+from the same Cargo git cache and builds and tests offline.
 """
 from __future__ import annotations
 import argparse
@@ -31,11 +37,18 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 
-LION_GITLINK = Path('third-party/lion')
-# srpc's direct normal dependencies: exactly these, as path deps into the gitlink.
+# Lion's repository, exactly as Cargo.toml's git dependencies spell it. CMakeLists.txt
+# (SRPC_LION_GIT_URL) and scripts/check_srpc_crate_mode.py (LION_GIT_URL) name the same
+# URL to the transpiler's --crate-graph-git; scripts/tests/test_goal0_contracts.py
+# requires the three to agree.
+LION_GIT_URL = 'https://github.com/stonysystems/lion'
+# A pinned commit: a full lowercase SHA-1, never a branch, tag or abbreviation.
+FULL_COMMIT = re.compile(r'[0-9a-f]{40}')
+# srpc's direct normal dependencies: exactly these, as git dependencies at one rev.
 LION_DIRECT = ('lion-executor', 'lion-net', 'lion-reactor')
-# Every Lion package the closure may contain, and its directory under the gitlink.
-# A Lion pin bump that adds, removes or moves a crate fails here and needs review.
+# Every Lion package the closure may contain, and its directory in Lion's repository
+# (relative to the checkout root). A Lion pin bump that adds, removes or moves a crate
+# fails here and needs review.
 LION_CRATES = {
     'lion-executor': 'lion-executor',
     'lion-executor-spec': 'lion-executor-spec',
@@ -59,6 +72,22 @@ CRATES_IO = 'registry+https://github.com/rust-lang/crates.io-index'
 # Lion's runtime crates, which its `mio` feature and lion-utility bring in (D5).
 FORBIDDEN = ('mio', 'flume', 'tokio', 'socket2', 'futures-task', 'pin-project-lite')
 RETIRED_FACADES = ('rusty-rustc', 'rusty-cpp-markers')
+# The file Cargo writes at the root of a finished git checkout, and the only path in
+# Lion's checkout that may differ from the pinned commit (check_lion_checkout).
+CARGO_CHECKOUT_MARKER = '.cargo-ok'
+# How many local changes a failed checkout check names before it summarises.
+CHANGES_SHOWN = 20
+
+
+def lion_source(rev: str) -> str:
+    """The Cargo source id of a Lion package pinned at `rev`."""
+    return f'git+{LION_GIT_URL}?rev={rev}#{rev}'
+
+
+def is_lion_repository(source: str | None) -> bool:
+    """Whether a source id names LION_GIT_URL itself, at any reference."""
+    return source is not None and (source.startswith(f'git+{LION_GIT_URL}?')
+                                   or source.startswith(f'git+{LION_GIT_URL}#'))
 
 
 def production_dependencies(manifest: dict) -> list[tuple[str, str, object]]:
@@ -72,7 +101,8 @@ def production_dependencies(manifest: dict) -> list[tuple[str, str, object]]:
             for name, spec in scope.get(key, {}).items()]
 
 
-def validate_manifest(repo: Path) -> None:
+def validate_manifest(repo: Path) -> str:
+    """Check Cargo.toml against the allowlist; return the one Lion rev it pins."""
     manifest = tomllib.loads((repo / 'Cargo.toml').read_text())
     direct: dict[str, object] = {}
     for scope, name, spec in production_dependencies(manifest):
@@ -82,17 +112,27 @@ def validate_manifest(repo: Path) -> None:
     if sorted(direct) != sorted(LION_DIRECT):
         raise ValueError('production dependencies must be exactly '
                          f'{sorted(LION_DIRECT)}; dependencies: {sorted(direct)}')
-    for name, spec in direct.items():
-        expected = (LION_GITLINK / LION_CRATES[name]).as_posix()
-        if not isinstance(spec, dict) or set(spec) != {'path', 'default-features'}:
-            raise ValueError(f'dependency {name} must be exactly '
-                             f'{{ path = "{expected}", default-features = false }}')
-        if spec['path'] != expected:
-            raise ValueError(f'dependency {name} must resolve under the gitlink at '
-                             f'{expected}, not {spec["path"]}')
+    shape = f'{{ git = "{LION_GIT_URL}", rev = "<40-hex commit>", default-features = false }}'
+    for name, spec in sorted(direct.items()):
+        if isinstance(spec, dict):
+            for key in ('branch', 'tag', 'path'):
+                if key in spec:
+                    raise ValueError(f'dependency {name} must pin Lion by a full commit '
+                                     f'`rev`, not `{key}`: {shape}')
+        if not isinstance(spec, dict) or set(spec) != {'git', 'rev', 'default-features'}:
+            raise ValueError(f'dependency {name} must be exactly {shape}')
+        if spec['git'] != LION_GIT_URL:
+            raise ValueError(f'dependency {name} must come from {LION_GIT_URL}, '
+                             f'not {spec["git"]}')
+        if not isinstance(spec['rev'], str) or not FULL_COMMIT.fullmatch(spec['rev']):
+            raise ValueError(f'dependency {name} must pin a full 40-character lowercase '
+                             f'commit hash, not rev = {spec["rev"]!r}')
         if spec['default-features'] is not False:
             raise ValueError(f'dependency {name} must set default-features = false '
                              '(Lion\'s default `mio` feature brings mio, socket2 and tokio)')
+    revs = sorted({spec['rev'] for spec in direct.values()})
+    if len(revs) != 1:
+        raise ValueError(f'the Lion dependencies must pin one rev; Cargo.toml names {revs}')
     for table in ('patch', 'replace'):
         if table in manifest:
             raise ValueError(f'[{table}] would redirect a pinned dependency; it is forbidden')
@@ -101,6 +141,37 @@ def validate_manifest(repo: Path) -> None:
     for name in RETIRED_FACADES:
         if (repo / name).exists():
             raise ValueError(f'retired facade package still exists: {name}')
+    return revs[0]
+
+
+def validate_lockfile(repo: Path, rev: str) -> None:
+    """Cargo.lock must resolve every Lion package to `rev`, and nothing else to Lion.
+
+    `cargo metadata --locked` also refuses a lock that disagrees with Cargo.toml; this
+    reads the file itself, so the pin it records is checked even before Cargo runs.
+    """
+    lock = tomllib.loads((repo / 'Cargo.lock').read_text())
+    expected = lion_source(rev)
+    found: dict[str, int] = {}
+    for package in lock.get('package', []):
+        name, source = package.get('name'), package.get('source')
+        if name in LION_CRATES:
+            if source != expected:
+                raise ValueError(f'Cargo.lock resolves {name} to {source or "a path"}, but '
+                                 f'Cargo.toml pins {expected}')
+            found[name] = found.get(name, 0) + 1
+        elif is_lion_repository(source):
+            raise ValueError(f'Cargo.lock takes {name} from Lion\'s repository, but it is not '
+                             'one of the allowlisted Lion crates')
+        elif source is not None and source.startswith('git+') and source != VERUS_SOURCE:
+            raise ValueError(f'Cargo.lock has a git package outside the allowlist: '
+                             f'{name} ({source})')
+    duplicated = sorted(name for name, count in found.items() if count > 1)
+    if duplicated:
+        raise ValueError(f'Cargo.lock resolves {duplicated} more than once')
+    missing = sorted(set(LION_DIRECT) - set(found))
+    if missing:
+        raise ValueError(f'Cargo.lock does not resolve {missing}')
 
 
 def ownership_exception(cwd: Path) -> list[str]:
@@ -109,11 +180,12 @@ def ownership_exception(cwd: Path) -> list[str]:
     git refuses a repository whose worktree belongs to another uid ("detected
     dubious ownership"). That is the normal shape of a container CI job, such
     as Mako's, which runs this gate as root over a checkout owned by the runner
-    user. Naming the one worktree being read on the command line keeps the
-    check working without depending on, or changing, global git config. The
-    worktree is the nearest directory with a `.git`: this repository's root, or
-    Mako's when SRPC is vendored at src/srpc, or the Lion submodule's own. This
-    waives git's ownership heuristic and nothing else.
+    user, with a CARGO_HOME that may belong to someone else too. Naming the one
+    worktree being read on the command line keeps the check working without
+    depending on, or changing, global git config. The worktree is the nearest
+    directory with a `.git`: this repository's root, or Mako's when SRPC is
+    vendored at src/srpc, or Cargo's checkout of Lion. This waives git's
+    ownership heuristic and nothing else.
     """
     top = next((d for d in (cwd, *cwd.parents) if (d / '.git').exists()), cwd)
     # git matches safe.directory against the worktree path it computed, which
@@ -128,21 +200,65 @@ def git_output(args: list[str], cwd: Path) -> str:
                           text=True, stdout=subprocess.PIPE).stdout
 
 
-def check_lion_checkout(repo: Path, crate_dirs: list[str], git=git_output) -> str:
-    """The gitlink commit, after checking the submodule serves exactly its bytes."""
-    fields = git(['ls-files', '--stage', '--', LION_GITLINK.as_posix()], repo).split()
-    if len(fields) < 3 or fields[0] != '160000':
-        raise ValueError(f'{LION_GITLINK} must be a gitlink (mode 160000)')
-    pinned = fields[1]
-    lion = repo / LION_GITLINK
-    head = git(['rev-parse', 'HEAD'], lion).strip()
-    if head != pinned:
-        raise ValueError(f'{LION_GITLINK} is checked out at {head}, but the gitlink pins '
-                         f'{pinned} (git submodule update {LION_GITLINK})')
-    changed = git(['status', '--porcelain', '--untracked-files=no', '--', *crate_dirs], lion)
-    if changed.strip():
-        raise ValueError(f'{LION_GITLINK} has local changes in the compiled crates:\n{changed}')
-    return pinned
+def lion_checkout_root(manifests: dict[str, str]) -> Path:
+    """The one checkout every Lion package's manifest lies in, at its LION_CRATES dir."""
+    roots = set()
+    for name, manifest in sorted(manifests.items()):
+        path = Path(manifest).resolve()
+        relative = Path(LION_CRATES[name]) / 'Cargo.toml'
+        if path.parts[-len(relative.parts):] != relative.parts:
+            raise ValueError(f'{name} must be built from {relative.as_posix()} in Lion\'s '
+                             f'repository, not {manifest}')
+        roots.add(Path(*path.parts[:-len(relative.parts)]))
+    if len(roots) != 1:
+        raise ValueError(f'the Lion crates must come from one checkout; found '
+                         f'{sorted(str(root) for root in roots)}')
+    return roots.pop()
+
+
+def check_lion_checkout(root: Path, rev: str, git=git_output) -> None:
+    """The checkout Cargo compiles Lion from must be the pinned commit, unmodified.
+
+    Cargo checks out a git dependency into CARGO_HOME, with its own `.git`; the
+    directory is shared by every project on the machine and writable. Cargo's own
+    freshness check compares only HEAD with the locked commit, and resets a moved
+    checkout before this runs (measured with Cargo 1.97.1), so the HEAD check here is
+    defense in depth. Cargo does not notice anything else, and the status check is
+    what catches it. An edited tracked file compiles silently. So can an added one:
+    Cargo's target discovery and rustc's module lookup read the directory, not git's
+    index, and a stray `build.rs` in a crate root is a build script Cargo runs. So
+    the status may list nothing but CARGO_CHECKOUT_MARKER at the root.
+
+    Ignored files count too (`--ignored`). Ignore rules decide what git reports, not
+    what Cargo compiles, and they are not all part of the pinned commit: an
+    untracked `.gitignore` can hide itself and its neighbours, and the checkout's
+    `.git/info/exclude`, its own config and the user's `core.excludesFile` can hide
+    anything. Lion's tracked rules already hide `lion*/Cargo.lock`, `*.log` and
+    `**/target/`. A checkout as Cargo leaves it holds no ignored file (measured with
+    Cargo 1.97.1), so nothing legitimate is lost. If a future Cargo stops leaving a
+    `.git` here, this fails closed.
+    """
+    if not (root / '.git').exists():
+        raise ValueError(f'the Lion checkout {root} has no .git; cannot prove it is {rev}')
+    head = git(['rev-parse', 'HEAD'], root).strip()
+    if head != rev:
+        raise ValueError(f'the Lion checkout {root} is at {head}, but Cargo.toml pins {rev}')
+    # --no-optional-locks: status must not rewrite the index of a checkout that is
+    # shared with every other project using this CARGO_HOME. --untracked-files=all
+    # lists each file in an untracked directory, and with it --ignored lists each
+    # ignored file. -z keeps every path unquoted, one NUL-terminated entry each.
+    status = git(['--no-optional-locks', 'status', '--porcelain', '-z',
+                  '--untracked-files=all', '--ignored=traditional'], root)
+    # The marker is untracked, or ignored if some exclude rule happens to match it.
+    marker = (f'?? {CARGO_CHECKOUT_MARKER}', f'!! {CARGO_CHECKOUT_MARKER}')
+    changed = [entry for entry in status.split('\0') if entry and entry not in marker]
+    if changed:
+        shown = '\n'.join(changed[:CHANGES_SHOWN])
+        if len(changed) > CHANGES_SHOWN:
+            shown += f'\n... and {len(changed) - CHANGES_SHOWN} more'
+        raise ValueError(f'the Lion checkout {root} has local changes:\n{shown}\n'
+                         f'(?? untracked, !! ignored; only the root {CARGO_CHECKOUT_MARKER} '
+                         f'may differ from {rev})')
 
 
 def is_proc_macro(package: dict) -> bool:
@@ -154,8 +270,11 @@ def edges(node: dict, kinds: tuple) -> list[str]:
             if any(kind['kind'] in kinds for kind in dep['dep_kinds'])]
 
 
-def validate_graph(repo: Path, metadata: dict) -> list[str]:
-    """Check the resolved graph against the allowlist; return the Lion crate dirs."""
+def validate_graph(metadata: dict, rev: str) -> dict[str, str]:
+    """Check the resolved graph against the allowlist.
+
+    Returns {Lion package name: manifest_path} for the Lion crates linked into srpc.
+    """
     packages = {package['id']: package for package in metadata['packages']}
     nodes = {node['id']: node for node in metadata['resolve']['nodes']}
     root = metadata['resolve']['root']
@@ -165,14 +284,13 @@ def validate_graph(repo: Path, metadata: dict) -> list[str]:
     if members != [root]:
         names = sorted(packages[member]['name'] for member in members)
         raise ValueError(f'canonical Cargo workspace must contain only the root package; '
-                         f'members: {names} (a path dependency under the workspace root '
-                         f'is a member unless [workspace] excludes it)')
+                         f'members: {names}')
     if edges(nodes[root], ('build',)):
         raise ValueError('srpc takes no build-dependencies')
     direct = sorted(packages[dep]['name'] for dep in edges(nodes[root], (None,)))
     if direct != sorted(LION_DIRECT):
         raise ValueError(f'srpc must depend on exactly {sorted(LION_DIRECT)}; resolved: {direct}')
-    lion_root = (repo / LION_GITLINK).resolve()
+    expected_lion = lion_source(rev)
 
     def describe(package: dict) -> str:
         return f'{package["name"]} {package["version"]} ({package["source"] or "path"})'
@@ -181,6 +299,7 @@ def validate_graph(repo: Path, metadata: dict) -> list[str]:
     # on the host at build time and are checked with their own closure below.
     linked: set[str] = set()
     macros: set[str] = set()
+    lion: dict[str, str] = {}
     pending = edges(nodes[root], (None,))
     while pending:
         current = pending.pop()
@@ -194,17 +313,19 @@ def validate_graph(repo: Path, metadata: dict) -> list[str]:
             macros.add(current)
             continue
         if source is None:
+            raise ValueError(f'path dependency outside the allowlist: {describe(package)} '
+                             f'(Lion comes only from {LION_GIT_URL})')
+        if source == expected_lion:
             if name not in LION_CRATES:
-                raise ValueError(f'path dependency outside the Lion allowlist: {describe(package)}')
-            expected = (lion_root / LION_CRATES[name] / 'Cargo.toml').resolve()
-            if Path(package['manifest_path']).resolve() != expected:
-                raise ValueError(f'{name} must resolve under the {LION_GITLINK} gitlink at '
-                                 f'{expected}, not {package["manifest_path"]}')
+                raise ValueError(f'Lion package outside the allowlist: {describe(package)}')
             features = nodes[current]['features']
             if features:
                 raise ValueError(f'{name} must build with no features (mio stays off); '
                                  f'resolved features: {features}')
+            lion[name] = package['manifest_path']
         elif source.startswith('git+'):
+            if name in LION_CRATES:
+                raise ValueError(f'{name} must come from {expected_lion}, not {source}')
             if name not in VERUS_LINKED:
                 raise ValueError(f'git dependency outside the allowlist: {describe(package)}')
             if source != VERUS_SOURCE:
@@ -239,8 +360,7 @@ def validate_graph(repo: Path, metadata: dict) -> list[str]:
     for package_id in linked | macros | host:
         if packages[package_id]['name'] in FORBIDDEN:
             raise ValueError(f'{describe(packages[package_id])} must not enter the graph (D5)')
-    return sorted(LION_CRATES[packages[package_id]['name']] for package_id in linked
-                  if packages[package_id]['source'] is None)
+    return lion
 
 
 def check_normal_tree(tree_output: str) -> None:
@@ -251,15 +371,7 @@ def check_normal_tree(tree_output: str) -> None:
         raise ValueError(f'cargo tree -e normal contains {found}; they must stay out (D5)')
 
 
-def tracked_files(repo: Path, crate_dirs: list[str], git=git_output) -> list[Path]:
-    """Repository-relative paths of the Lion crates' tracked files."""
-    if not crate_dirs:
-        return []
-    listing = git(['ls-files', '-z', '--', *crate_dirs], repo / LION_GITLINK)
-    return [LION_GITLINK / name for name in listing.split('\0') if name]
-
-
-def copy_cargo_tree(repo: Path, dest: Path, lion_files: list[Path] = ()) -> None:
+def copy_cargo_tree(repo: Path, dest: Path) -> None:
     paths = {Path(name) for name in ('Cargo.toml', 'Cargo.lock', 'build.rs', 'src/lib.rs',
                                     'scripts/native-kernel-sources.txt')}
     modules = tomllib.loads((repo / 'rust-modules.toml').read_text())['module']
@@ -287,12 +399,6 @@ def copy_cargo_tree(repo: Path, dest: Path, lion_files: list[Path] = ()) -> None
             if included is None or included.is_absolute() or included.suffix != '.h' or '..' in included.parts:
                 raise ValueError(f'unsupported local kernel include: {path}: {name}')
             native.append(included)
-    # The Lion crates in the resolved closure, whole (Cargo loads each manifest's
-    # declared targets), but only their tracked files and nothing else of the gitlink.
-    for path in lion_files:
-        if path.is_absolute() or '..' in path.parts or LION_GITLINK not in path.parents:
-            raise ValueError(f'Lion source must stay inside {LION_GITLINK}: {path}')
-        paths.add(path)
     for relative in sorted(paths):
         if relative.is_absolute() or '..' in relative.parts:
             raise ValueError(f'Cargo source must stay inside the repository: {relative}')
@@ -317,17 +423,18 @@ def cargo_normal_tree(cargo: list[str], cwd: Path, env: dict | None = None) -> s
 
 
 def run(repo: Path) -> None:
-    validate_manifest(repo)
-    lion_dirs = validate_graph(repo, cargo_json(['cargo'], repo))
+    rev = validate_manifest(repo)
+    validate_lockfile(repo, rev)
+    lion = validate_graph(cargo_json(['cargo'], repo), rev)
     check_normal_tree(cargo_normal_tree(['cargo'], repo))
-    pinned = check_lion_checkout(repo, lion_dirs)
-    lion_files = tracked_files(repo, lion_dirs)
+    checkout = lion_checkout_root(lion)
+    check_lion_checkout(checkout, rev)
     scratch = repo / 'target' / 'rust-independence'
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='cargo-only-', dir=scratch) as directory:
         dest = Path(directory) / 'source'
         dest.mkdir()
-        copy_cargo_tree(repo, dest, lion_files)
+        copy_cargo_tree(repo, dest)
         tool_dir = Path(directory) / 'tools'
         tool_dir.mkdir()
         # Use real toolchain binaries, bypassing rustup proxies in the restricted PATH.
@@ -347,23 +454,28 @@ def run(repo: Path) -> None:
             if path is None:
                 raise ValueError(f'required C/Rust build tool is missing: {name}')
             (tool_dir / name).symlink_to(path)
+        # CARGO_HOME (or HOME, which locates it) stays inherited: the copy resolves
+        # Lion and vstd from the same git cache. The restricted PATH has no `git`,
+        # and needs none: with --offline Cargo never fetches, and it reads its git
+        # database and checkouts with its built-in git support, not the git CLI.
         environment = os.environ.copy()
         environment.update(PATH=str(tool_dir), CC=str(tool_dir / 'cc'), AR=str(tool_dir / 'ar'),
                            CXX='/bin/false', RUSTC=str(tool_dir / 'rustc'),
                            RUSTDOC=str(tool_dir / 'rustdoc'), RUSTFLAGS='-Dwarnings',
                            CARGO_INCREMENTAL='0', CARGO_TARGET_DIR=str(Path(directory) / 'target'))
         cargo = [str(tool_dir / 'cargo')]
-        # The copy resolves its Lion crates under its own third-party/lion, offline.
-        copied = validate_graph(dest, cargo_json(cargo, dest, environment))
-        if copied != lion_dirs:
-            raise ValueError(f'the copy resolved Lion crates {copied}, expected {lion_dirs}')
+        copied = validate_graph(cargo_json(cargo, dest, environment), rev)
+        if copied != lion:
+            raise ValueError(f'the copy resolved the Lion crates to {copied}, '
+                             f'expected the checked checkout {lion}')
         check_normal_tree(cargo_normal_tree(cargo, dest, environment))
         # The copied tree has no C++ source, facade, marker crate or other third-party code.
         for args in (['test', '--workspace', '--all-targets'], ['test', '--workspace', '--doc']):
             subprocess.run([*cargo, *args, '--locked', '--offline'],
                            cwd=dest, env=environment, check=True)
-    print(f'Cargo independence passed: std + C/assembly kernel + Lion {pinned[:7]} '
-          f'({len(lion_dirs)} path crates) + erased vstd at {VERUS_SOURCE.rsplit("#", 1)[1][:7]}; '
+    print(f'Cargo independence passed: std + C/assembly kernel + Lion {rev[:7]} '
+          f'({len(lion)} git crates from {LION_GIT_URL}, checkout {checkout} clean at the rev) '
+          f'+ erased vstd at {VERUS_SOURCE.rsplit("#", 1)[1][:7]}; '
           f'no {", ".join(FORBIDDEN)}; no facade or C++ tools/runtime')
 
 

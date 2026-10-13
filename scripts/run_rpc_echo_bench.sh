@@ -8,21 +8,30 @@
 # Each run starts a fresh server and client (two PollThreads, loopback TCP)
 # and prints one `RPC_ECHO qps=... p50_us=... p99_us=...` line: throughput with
 # RPC_ECHO_WINDOW requests in flight, and the round-trip latency distribution
-# with one in flight. Compare mode builds each commit from `git archive` (plus
-# the Lion submodule at the commit that ref records, when it has one) with
-# today's bench/ copied in, so the harness is held constant, then alternates
+# with one in flight. Compare mode builds each commit from `git archive`, with
+# today's bench/ in place of the ref's own, so the harness is held constant, and
+# Lion as that ref takes it: a ref from the submodule era (21f2320 and older)
+# reaches Lion by path under its `third-party/lion` gitlink, so Lion at that
+# gitlink commit is extracted there from a bare clone of Lion's repository
+# (scripts/lion_source.sh; ${XDG_CACHE_HOME:-~/.cache}/srpc/lion.git, fetched on
+# demand); a later ref names Lion as a Cargo git dependency, which Cargo
+# resolves from CARGO_HOME. Then it alternates
 # RPC_ECHO_TRIALS runs of the builds (round-robin, in the order given) and
 # prints the spread per build: throughput, the process's CPU per request, and
 # the one-in-flight p50/p99. Like rpcbench, read the spread, not the best run:
 # on a shared host an effect smaller than the trial-to-trial range is not an
 # effect.
 #
-# Builds are offline: the Cargo registry and the Verus git checkout must be
-# warm (see CLAUDE.md). bench/ is workspace-excluded, so none of this touches
-# the source gate.
+# Builds are offline: the Cargo registry and the git checkouts of Verus and,
+# for git-dependency refs, Lion must be warm (`cargo fetch --locked`; see
+# CLAUDE.md). Only a submodule-era ref's Lion may come from the network, into the
+# bare clone above. bench/ is workspace-excluded, so none of this touches the
+# source gate.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lion_source.sh
+. "$REPO/scripts/lion_source.sh"
 TRIALS="${RPC_ECHO_TRIALS:-5}"
 
 summarize() {
@@ -65,18 +74,28 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/srpc-rpc-echo-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 declare -A BIN
+built=0
 for ref in "${REFS[@]}"; do
-    dir="$WORK/$(git -C "$REPO" rev-parse --short "$ref")"
+    # One build per ref: BIN is keyed by ref, so a ref given twice reuses it.
+    if [[ -n "${BIN[$ref]:-}" ]]; then
+        continue
+    fi
+    # Numbered, so two names for one commit still get separate fresh trees.
+    built=$((built + 1))
+    dir="$WORK/$built-$(git -C "$REPO" rev-parse --short "$ref")"
     echo "### building $ref in $dir" >&2
     mkdir -p "$dir"
-    git -C "$REPO" archive "$ref" | tar -x -C "$dir"
+    # The ref's own bench/ stays out of the extraction; today's goes in below.
+    git -C "$REPO" archive "$ref" | tar -x -C "$dir" --anchored --exclude=bench
+    # A submodule-era ref: Lion at the commit its gitlink records, where its
+    # Cargo.toml's path dependencies look for it. A git-dependency ref has no
+    # gitlink and needs nothing here.
     if lion="$(git -C "$REPO" rev-parse --verify --quiet "$ref:third-party/lion")"; then
         mkdir -p "$dir/third-party/lion"
-        git -C "$REPO/third-party/lion" archive "$lion" | tar -x -C "$dir/third-party/lion"
+        lion_archive "$(lion_cache_default)" "$lion" "$dir/third-party/lion"
     fi
     # Today's harness into that tree.
-    rm -rf "$dir/bench"
-    mkdir -p "$dir/bench"
+    mkdir "$dir/bench"
     cp -r "$REPO/bench/Cargo.toml" "$REPO/bench/Cargo.lock" "$REPO/bench/src" "$dir/bench/"
     cargo build --release --quiet --offline --manifest-path "$dir/bench/Cargo.toml" --bin rpc_echo >&2
     BIN[$ref]="$dir/bench/target/release/rpc_echo"

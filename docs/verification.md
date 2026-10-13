@@ -70,11 +70,11 @@ supported path, so it is what `scripts/verify_srpc.sh` uses.
 
 ### Lion's proofs: the `verify-lion` lane
 
-SRPC depends on Lion's verified executor and reactor (`third-party/lion`,
-docs/dev/lion-runtime-plan.md, D2). SRPC does not re-prove them in `verify/`:
-Lion's own CI (`./ci.sh`, Verus) is the proof of record, and SRPC's claim is
-identity with the pinned commit. The optional lane re-runs that CI on exactly
-the gitlink's bytes:
+SRPC depends on Lion's verified executor and reactor (Cargo git dependencies on
+Lion's repository at one pinned `rev`, docs/dev/lion-runtime-plan.md, D2). SRPC
+does not re-prove them in `verify/`: Lion's own CI (`./ci.sh`, Verus) is the
+proof of record, and SRPC's claim is identity with the pinned commit. The
+optional lane re-runs that CI on exactly the pinned commit's bytes:
 
 ```sh
 VERUS_PATH=/path/to/verus-x86-linux scripts/verify_lion.sh
@@ -83,10 +83,12 @@ VERUS_PATH=/path/to/verus-x86-linux scripts/verify_lion.sh
 
 It needs Verus `0.2025.11.15.db81a74` (not the `verify/` harness's crates.io
 Verus) and the Rust 1.91.0 toolchain through rustup, both as Lion's
-REQUIREMENTS.md pins them. It extracts the gitlink commit with `git archive`
-into `VERIFY_LION_DIR` (default `~/.cache/srpc/verify-lion`, which must lie
-outside the checkout: Cargo would take the checkout for the Lion crates'
-workspace), so a dirty submodule cannot change what is verified. Lion's CI also
+REQUIREMENTS.md pins them. It takes the commit `Cargo.lock` records for every
+Lion package, fetches it into a bare clone under `VERIFY_LION_DIR` (default
+`~/.cache/srpc/verify-lion`, which must lie outside the checkout: Cargo would
+take the checkout for the Lion crates' workspace) and extracts it with
+`git archive`, so no modified checkout can change what is verified;
+`--dry-run` stops after resolving the commit. Lion's CI also
 verifies lion-utility and lion-liveness, which pull mio and tokio from
 crates.io, so the first run needs network access or a warm registry. Like
 `verify_srpc.sh`, it is not wired to CMake or ctest.

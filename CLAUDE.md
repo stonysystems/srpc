@@ -11,24 +11,28 @@ All 37 production modules are canonical **Rust** files living at their historica
 
 - **rustc/Cargo** — via `src/lib.rs`, a *generated* crate index of
   `#[path = "../rpc/frame_codec.rs"] pub mod frame_codec;` declarations. `src/` holds nothing else.
-- **rusty-cpp** — one whole-crate invocation (`--crate Cargo.toml --verus-exec --crate-graph`) emits all
-  37 `srpc.*.cppm` providers *and* the Lion dependency providers below.
+- **rusty-cpp** — one whole-crate invocation (`--crate Cargo.toml --verus-exec --crate-graph
+  --crate-graph-git https://github.com/stonysystems/lion`) emits all 37 `srpc.*.cppm` providers *and* the Lion
+  dependency providers below. A git package joins the crate graph only when its repository is named with
+  `--crate-graph-git`; without the flag the transpiler skips Lion like `vstd`, exits 0, and mis-generates three
+  SRPC providers, which the dual-compile gate rejects.
 
 **The executor, I/O reactor and timers are Lion's, not SRPC's.** [Lion](https://github.com/stonysystems/lion)
 is a Tokio-shaped async runtime whose executor and reactor are verified in Verus. It enters as pinned,
-*unmodified* crates from the `third-party/lion` gitlink: `srpc` depends on `lion-reactor`, `lion-executor` and
-`lion-net` as path dependencies with `default-features = false` (so no mio, socket2 or tokio), and they bring
-`lion-slab`, `lion-timer-wheel`, the `*-spec` crates and Verus's erased `vstd` from Verus git `db81a74`. Both
-lanes read Lion's bytes unchanged. rustc compiles them through the `verus!` macro, whose erasure drops specs
-and proofs; `--verus-exec` runs that same erasure (Verus's own `EraseAll` pass, out of process in rusty-cpp's
-`rusty-cpp-verus-erase` helper) and transpiles what is left. The six generated Lion modules
-(`lion_executor_spec`, `lion_slab`, `lion_timer_wheel`, `lion_reactor`, `lion_executor`, `lion_net`, each in
-its own `namespace`) compile in SRPC's file set and land in `libsrpc.a` as a **separately inventoried provider
-class**: they are not canonical modules, and none of the 37-module tables, totals or the seven-place edit
-apply to them. SRPC's claim about Lion is identity with Lion@pin, with Lion's own CI as the proof of record.
-Never write that SRPC is "verified live": the theorem covers spawned stackless tasks under stated assumptions,
-not fibers, events, the transport, the `block_on` root, or tasks that are aborted, panic or are dropped while
-waiting on I/O.
+*unmodified* crates from Lion's repository: `srpc` depends on `lion-reactor`, `lion-executor` and `lion-net`
+as Cargo git dependencies pinned by one full commit `rev`, with `default-features = false` (so no mio, socket2
+or tokio). Cargo fetches that commit into its own checkout under `CARGO_HOME`; there is no Lion submodule.
+They bring `lion-slab`, `lion-timer-wheel`, the `*-spec` crates and Verus's erased `vstd` from Verus git
+`db81a74`. Both lanes read Lion's bytes unchanged. rustc compiles them through the `verus!` macro, whose
+erasure drops specs and proofs; `--verus-exec` runs that same erasure (Verus's own `EraseAll` pass, out of
+process in rusty-cpp's `rusty-cpp-verus-erase` helper) and transpiles what is left. The six generated Lion
+modules (`lion_executor_spec`, `lion_slab`, `lion_timer_wheel`, `lion_reactor`, `lion_executor`, `lion_net`,
+each in its own `namespace`) compile in SRPC's file set and land in `libsrpc.a` as a **separately inventoried
+provider class**: they are not canonical modules, and none of the 37-module tables, totals or the seven-place
+edit apply to them. SRPC's claim about Lion is identity with Lion@pin, with Lion's own CI as the proof of
+record. Never write that SRPC is "verified live": the theorem covers spawned stackless tasks under stated
+assumptions, not fibers, events, the transport, the `block_on` root, or tasks that are aborted, panic or are
+dropped while waiting on I/O.
 
 Ownership is split. Verified Lion owns the executor, the reactor and the timer wheel, and lion-net's
 `TcpStream`/`TcpListener`, whose verified `IoKernel` decides every poll of the TCP transport's tasks.
@@ -67,21 +71,33 @@ cmake --build build --parallel 4                                    # -> build e
 ctest --test-dir build -L srpc --output-on-failure                  # inspect the registered suites too
 ```
 
-Initialize `third-party/rusty-cpp`, `third-party/lion` and `third-party/googletest` before building. The
-Rust lane needs `third-party/lion` as well: Cargo resolves Lion as path dependencies, and nothing builds
-without it. The gitlinks and the hard checks in `scripts/extract_srpc_rust.py`,
-`scripts/check_srpc_crate_mode.py` and `scripts/check_rust_independence.py` define the current pins; a
-copied revision in prose is not authoritative:
+Initialize `third-party/rusty-cpp` and `third-party/googletest` before building. Lion is not a submodule:
+Cargo fetches it at the `rev` that `Cargo.toml` pins, for the Rust lane and the transpiler alike. The rusty-cpp
+gitlink, Lion's `rev` in `Cargo.toml` (which `Cargo.lock` must agree with) and the hard checks in
+`scripts/extract_srpc_rust.py`, `scripts/check_srpc_crate_mode.py` and `scripts/check_rust_independence.py`
+define the current pins; a copied revision in prose is not authoritative:
 
 ```sh
 git submodule update --init --recursive
 ```
 
 **Cold machine.** Several steps run Cargo `--offline` (`check_rust_independence.py`, the
-`rust_source_audit.py` scanner build, `run_rpc_echo_bench.sh`), and Lion's `vstd` and the verus-erase
-helper's `verus_syn`/`verus_prettyplease` come from Verus's *git* repository, not crates.io. Warm
-`~/.cargo` once with network access: `cargo fetch --locked` in the SRPC root and in `third-party/rusty-cpp`
-(plus the `scripts/rust_source_audit/` registry crates, below).
+`rust_source_audit.py` scanner build, and the benchmark scripts' builds). Lion itself comes from Lion's *git*
+repository, and Lion's `vstd` and the verus-erase helper's `verus_syn`/`verus_prettyplease` from Verus's, not
+crates.io. Warm Cargo's cache (`$CARGO_HOME`, default `~/.cargo`) once with network access. Each lockfile
+needs its own fetch:
+
+```sh
+cargo fetch --locked                                                       # SRPC root; Lion at its rev too
+(cd third-party/rusty-cpp && cargo fetch --locked)                         # transpiler and verus-erase helper
+cargo fetch --locked --manifest-path scripts/rust_source_audit/Cargo.toml  # the source audit's scanner
+cargo fetch --locked --manifest-path bench/Cargo.toml                      # only for the benchmark scripts
+```
+
+After the first three, the commit gate above needs no network. Measured from an empty `CARGO_HOME` with
+`CARGO_NET_OFFLINE=true` exported, it passed in full, including the transpiler's crate-graph probe, which runs
+Cargo without `--offline` and would otherwise fetch. `bench/Cargo.lock` resolves a crate the other three
+lockfiles do not, so an offline benchmark build fails without the fourth fetch.
 
 **Rust lane.** Cargo also needs a C compiler and archiver for the shared native kernels:
 
@@ -146,8 +162,11 @@ scripts/run_rpc_echo_bench.sh                               # current tree, RPC_
 scripts/run_rpc_echo_bench.sh --compare <refA> <refB> [...] # alternating, same sitting, spread per build
 ```
 
-Compare mode builds each ref from `git archive` plus the Lion gitlink that ref records, with today's
-`bench/` copied in, and alternates the builds; `RPC_ECHO_SECONDS` and `RPC_ECHO_LATENCY_N` set the phases.
+Compare mode builds each ref from `git archive`, with today's `bench/` copied in, and alternates the builds;
+`RPC_ECHO_SECONDS` and `RPC_ECHO_LATENCY_N` set the phases. A ref from the submodule era (`21f2320` and
+older) gets Lion at the commit its `third-party/lion` gitlink records, extracted from a bare clone of Lion's
+repository (`scripts/lion_source.sh`, cached at `${XDG_CACHE_HOME:-~/.cache}/srpc/lion.git` and fetched on
+demand); a later ref gets Lion from Cargo, offline, so `CARGO_HOME` must already hold that ref's Lion commit.
 
 `bench/` is also the *nanosecond* benchmark, and it answers a different question: timing of the hot leaf
 codecs (`frame_codec_write_header`, `sparseint_dump64`/`load64` per length class). rpcbench cannot see
@@ -160,13 +179,13 @@ scripts/run_microbench.sh                          # current tree
 scripts/run_microbench.sh --compare <refA> <refB>  # A/B, alternating, same sitting
 ```
 
-The compare mode is the one that answers questions: like `run_rpc_echo_bench.sh`, it builds each ref from
-`git archive` plus the Lion gitlink that ref records, so pre-Lion and Lion-era refs both build. It puts
-*today's* `bench/` in place of the ref's own, checking the copy before it builds, so the harness is
-held constant; then it interleaves the runs. Absolute ns/op is machine- and thermal-dependent; only the
-back-to-back delta means anything. A cautionary tale lives in `docs/verification.md`: a "+12% regression"
-sat in that file for a while on the strength of an uncommitted harness, and vanished the moment a
-committed one re-took it.
+The compare mode is the one that answers questions: like `run_rpc_echo_bench.sh`, it builds each ref from `git
+archive` and supplies Lion the way that ref takes it, so pre-Lion, submodule-era and git-dependency refs all
+build. It puts *today's* `bench/` in place of the ref's own, checking the copy before it builds, so the
+harness is held constant; then it interleaves the runs. Absolute ns/op is machine- and thermal-dependent; only
+the back-to-back delta means anything. A cautionary tale lives in `docs/verification.md`: a "+12% regression"
+sat in that file for a while on the strength of an uncommitted harness, and vanished the moment a committed
+one re-took it.
 
 **Individual gates.** The source gate checks the test inventory, canonical inventory, compiler contracts,
 native kernel and ABI-binding ownership, canonical Rust bodies, the Cargo dependency allowlist, negative
@@ -217,17 +236,30 @@ Native source/header changes require review against `scripts/native-kernels.json
 output for skips: missing compiler dependencies can skip contract tests and cannot establish acceptance.
 
 `scripts/check_rust_independence.py` is an exact **allowlist**, not a ban. It requires `[dependencies]` to be
-exactly `lion-reactor`, `lion-executor` and `lion-net`, each `{ path = "third-party/lion/<crate>",
-default-features = false }`, with no build or target dependencies, no `[patch]`/`[replace]`, and no workspace
-member besides `srpc` (`[workspace] exclude` keeps Lion's crates from becoming members). In the resolved
-graph, everything linked into `srpc` must be one of the nine `LION_CRATES` at its directory under the gitlink,
-built with no features, or `vstd`/`verus_builtin` at exactly `VERUS_SOURCE`. The only proc-macros may be
+exactly `lion-reactor`, `lion-executor` and `lion-net`, each exactly `{ git = LION_GIT_URL, rev = "<40-hex
+commit>", default-features = false }` with one `rev` for all three (no `branch`, `tag`, `path`, short or
+uppercase rev, rename or features), no build or target dependencies, no `[patch]`/`[replace]`, and no
+workspace member besides `srpc`. That `rev` is the pin of record; the gate holds no second copy of it.
+`Cargo.lock` must resolve each Lion package to exactly `git+LION_GIT_URL?rev=<rev>#<rev>`, once, and take
+nothing else from Lion's repository and no other git package but Verus's. In the resolved graph (`cargo
+metadata --locked --offline`, which also refuses a lock that disagrees with `Cargo.toml`), everything linked
+into `srpc` must be one of the nine `LION_CRATES` from that exact source, built with no features, or
+`vstd`/`verus_builtin` at exactly `VERUS_SOURCE`; a path package is rejected. The only proc-macros may be
 Verus's two, and their host-only closure may come only from crates.io and Verus's parser crates. mio, flume,
-tokio, socket2, futures-task and pin-project-lite must appear nowhere, including `cargo tree -e normal`, and
-the submodule must sit at the gitlink commit with no local change in the compiled crates. It then copies the
-Cargo inputs, canonical Rust, tests, the C/assembly kernel and the Lion crates' tracked files into a fresh
-tree, and runs Rust tests and doctests there offline, with `-Dwarnings`, `CXX=/bin/false` and no C++ runtime
-or compiler on its tool path.
+tokio, socket2, futures-task and pin-project-lite must appear nowhere, including `cargo tree -e normal`.
+Cargo's checkout is shared by every project on the machine and writable, and Cargo re-checks only its HEAD
+(a checkout moved off the locked commit is reset before the gate reads it; measured) — an edited tracked file
+compiles silently, and so can an added one (Cargo discovers a stray `build.rs` in a crate root and runs it).
+So the gate checks it: all nine crates' manifests must lie in **one** checkout at their `LION_CRATES`
+directories, that checkout's `git rev-parse HEAD` must equal the `rev` (defense in depth), and
+`git status --untracked-files=all --ignored` must list nothing but Cargo's own `.cargo-ok` at the root (the
+load-bearing check). Ignored files count, because ignore rules are not all part of the pinned commit: an
+untracked `.gitignore`, the checkout's `.git/info/exclude` or a user's `core.excludesFile` can hide any file,
+and Lion's own rules already hide `lion*/Cargo.lock`, `*.log` and `target/`. The identity check relies on
+Cargo keeping a `.git` in its checkout and fails closed without one. It then copies the Cargo inputs,
+canonical Rust, tests and the C/assembly kernel into a fresh tree, which resolves Lion from the same Cargo
+git cache (and must resolve it to the same checkout), and runs Rust tests and doctests there offline, with
+`-Dwarnings`, `CXX=/bin/false` and no C++ runtime, compiler or `git` on its tool path.
 
 **Verus version coupling.** The Rust lane erases Lion's `verus!` blocks with the `verus_builtin_macros`
 that `Cargo.lock` resolves; the C++ lane uses the copy rusty-cpp vendors. `verify_verus_erasure_coupling`
@@ -250,16 +282,18 @@ inventory changes only with a Lion or transpiler bump, or when `srpc` takes anot
 
 ```sh
 VERUS_HOME=/path/to/verus-dist scripts/verify_srpc.sh   # SRPC's own specs (verify/)
-VERUS_PATH=/path/to/verus-dist scripts/verify_lion.sh   # Lion's ci.sh on the gitlink commit
+VERUS_PATH=/path/to/verus-dist scripts/verify_lion.sh   # Lion's ci.sh on the pinned commit
 ```
 
-`verify_lion.sh` re-runs Lion's own CI on the commit the gitlink records (extracted with `git archive`,
-so a dirty submodule cannot change what is verified). It needs exactly Verus `0.2025.11.15.db81a74` and
-the Rust `1.91.0` toolchain through rustup; SRPC's own toolchain is unaffected. `VERUS_HOME` is accepted
-too. `VERIFY_LION_DIR` (default `${XDG_CACHE_HOME:-~/.cache}/srpc/verify-lion`) must lie outside the
-checkout, or Cargo takes SRPC's root as the Lion crates' workspace. `ci.sh` also verifies `lion-utility`
-and `lion-liveness`, which pull mio and tokio, so it needs network or a warm registry. A cold run takes
-about nine minutes. It is optional and non-gating, like `verify_srpc.sh`.
+`verify_lion.sh` re-runs Lion's own CI on the commit `Cargo.lock` records for every Lion package (they must
+agree). It fetches that commit into a bare clone under `VERIFY_LION_DIR` (from Cargo's git database when
+present, else from Lion's URL) and extracts it with `git archive`, so no checkout on disk can change what is
+verified; `--dry-run` stops after resolving the commit and needs no Verus. It needs exactly Verus
+`0.2025.11.15.db81a74` and the Rust `1.91.0` toolchain through rustup; SRPC's own toolchain is unaffected.
+`VERUS_HOME` is accepted too. `VERIFY_LION_DIR` (default `${XDG_CACHE_HOME:-~/.cache}/srpc/verify-lion`) must
+lie outside the checkout, or Cargo takes SRPC's root as the Lion crates' workspace. `ci.sh` also verifies
+`lion-utility` and `lion-liveness`, which pull mio and tokio, so it needs network or a warm registry. A cold
+run takes about nine minutes. It is optional and non-gating, like `verify_srpc.sh`.
 
 **Sanitizers** are a whole-configuration switch, so use a separate build dir:
 `cmake -S . -B build-asan -G Ninja -DSRPC_SANITIZER=address` (`none|address|thread|undefined`).
@@ -390,8 +424,11 @@ build-dependent, so they go behind the plain-C seam (`srpc_reactor_gettid`, `srp
 The Verus coupling must still hold: a transpiler that vendors a different Verus fails the extraction check.
 
 **Bumping the Lion pin** gets its own commit (`build: bump lion <old> -> <new>`) and is more than the
-gitlink:
-- re-resolve `Cargo.lock`; the `--locked` gates reject a stale one;
+`rev`:
+- change the full 40-hex `rev` of all three Lion dependencies in `Cargo.toml` (the gate rejects differing
+  revs), then re-resolve `Cargo.lock` (`cargo fetch` without `--locked`, which re-locks only what changed) and
+  check that every Lion package moved to `git+https://github.com/stonysystems/lion?rev=<new>#<new>`; the
+  `--locked` gates reject a stale lock;
 - if Lion adds, drops or moves a crate, update `LION_CRATES` in `check_rust_independence.py`;
 - if Lion moves its Verus revision, update `VERUS_SOURCE` there and `EXPECTED_VERUS_VERSION` and
   `EXPECTED_RUST_TOOLCHAIN` in `scripts/verify_lion.sh`. rusty-cpp must re-vendor the erasure, and its
@@ -399,14 +436,14 @@ gitlink:
 - re-measure the Lion provider inventory (`DEPENDENCY_PROVIDERS`, `_GHOST_ONLY`, `_UNUSED`,
   `_PRIVATE_IMPORTS`, `_ABI`) from fresh objects, and keep CMake's `SRPC_LION_PROVIDERS` in the same order;
 - run `scripts/verify_lion.sh` on the new commit;
-- keep the build warning-free. Lion's path crates compile **uncapped** under the gate's
-  `RUSTFLAGS=-Dwarnings`, because Cargo caps lints only for non-path dependencies. `[workspace] exclude`
-  only keeps them from being members, and clippy still lints only `srpc`. A new rustc lint or a Lion change
-  can therefore fail SRPC's gate, so "Lion is warning-free on SRPC's toolchain" is a standing upstream
-  requirement.
+- the Lion crates are git dependencies, so Cargo compiles them with `--cap-lints allow`: a Lion warning, or
+  a new rustc lint firing in Lion, no longer fails the gate's `RUSTFLAGS=-Dwarnings`, and clippy lints only
+  `srpc`. A hard error in Lion still fails the build. The generated C++ is not capped by this: the new
+  commit's providers face the dual-compile gate like any transpiler input.
 
-Never patch the submodule to get past any of these: the independence check rejects local changes, and
-the identity claim would no longer hold.
+Never patch Cargo's checkout of Lion, or redirect it with `[patch]` or a path dependency, to get past any of
+these: the independence check rejects all three, and the identity claim would no longer hold. A Lion fix lands
+in `stonysystems/lion` and arrives by `rev`.
 
 ## Testing
 

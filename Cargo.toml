@@ -13,12 +13,7 @@ publish = false
 # other direction: the source gate runs `cargo test --workspace --all-targets`
 # under -Dwarnings, and a benchmark must not add compile time or lint surface
 # to a correctness gate.
-# third-party/lion holds the Lion path dependencies. Cargo makes every path
-# dependency under the workspace root a member unless it is excluded, and as
-# members `--workspace` would run Lion's own test suites and clippy would lint
-# Lion's code. Excluded, they are plain dependencies: still compiled with no
-# lint cap (Cargo caps only non-path dependencies), so -Dwarnings reaches them.
-exclude = ["verify", "bench", "third-party/lion"]
+exclude = ["verify", "bench"]
 resolver = "2"
 
 [lib]
@@ -26,22 +21,29 @@ path = "src/lib.rs"
 
 [dependencies]
 # Lion's verified executor and reactor (docs/dev/lion-runtime-plan.md, S1 and
-# D5), compiled unmodified from the third-party/lion gitlink. They bring the
-# other Lion path crates (slab, timer wheel, the *-spec crates) and the erased
-# vstd library from Verus's git repository at the revision Lion names.
+# D5), compiled unmodified from Lion's repository at one pinned commit: Cargo
+# fetches that `rev` into its own checkout (docs/dev/lion-git-dep-plan.md, G3).
+# The `rev` is the pin of record: all three dependencies name the same full
+# commit, Cargo.lock must resolve every Lion package to it, and a Lion pin bump
+# changes all three and re-locks. They bring the other Lion crates (slab, timer
+# wheel, the *-spec crates) from the same commit and the erased vstd library
+# from Verus's git repository at the revision Lion names. As git dependencies
+# they are not workspace members and Cargo compiles them with
+# `--cap-lints allow`, so a warning in Lion does not fail SRPC's -Dwarnings.
 # default-features = false turns off Lion's `mio` feature, so no mio, socket2 or
 # tokio enters the graph; the reactor runs on SRPC's OS backend instead
 # (SrpcEpollBackend in reactor/epoll_wrapper.rs). Never depend on lion-utility
 # or the `lion` facade: Cargo unifies features, and either one turns mio back
-# on. scripts/check_rust_independence.py enforces the exact allowlist.
-lion-reactor = { path = "third-party/lion/lion-reactor", default-features = false }
-lion-executor = { path = "third-party/lion/lion-executor", default-features = false }
+# on. scripts/check_rust_independence.py enforces the exact allowlist and that
+# Cargo's checkout of Lion is the pinned commit, unmodified.
+lion-reactor = { git = "https://github.com/stonysystems/lion", rev = "d697b779bb05314e7425b1746b5f89441e8e6712", default-features = false }
+lion-executor = { git = "https://github.com/stonysystems/lion", rev = "d697b779bb05314e7425b1746b5f89441e8e6712", default-features = false }
 # Lion's TCP stream and listener over a raw fd (docs/dev/lion-tcp-plan.md, L3):
 # the verified IoKernel decides each poll of SRPC's transport tasks. It has no
 # features and no OS crate; it depends on lion-reactor (without `mio`), vstd
 # and two spec crates, all already in the closure above. The socket syscalls
 # stay SRPC's (rpc/tcp_channel.rs passes them in as closures).
-lion-net = { path = "third-party/lion/lion-net", default-features = false }
+lion-net = { git = "https://github.com/stonysystems/lion", rev = "d697b779bb05314e7425b1746b5f89441e8e6712", default-features = false }
 
 [dev-dependencies]
 # Property-based testing for the wire codecs (tests only; not linked into the

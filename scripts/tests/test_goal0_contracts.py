@@ -34,6 +34,9 @@ def load_script(name: str, relative: str):
 
 DRIVER = load_script("extract_srpc_rust", "scripts/extract_srpc_rust.py")
 GATE = load_script("check_srpc_crate_mode", "scripts/check_srpc_crate_mode.py")
+INDEPENDENCE = load_script(
+    "check_rust_independence", "scripts/check_rust_independence.py"
+)
 
 
 class GateStaticContractTests(unittest.TestCase):
@@ -231,6 +234,21 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertLessEqual(reexported, lion_modules)
         for argument in ("--verus-exec", "--crate-graph", "--verus-erase-helper"):
             self.assertIn(argument, cmake)
+        # Lion is a Cargo git dependency, which the transpiler takes into the
+        # crate graph only from a named repository (docs/dev/lion-git-dep-plan.md,
+        # G3). CMake, this gate and the Cargo allowlist must name one URL.
+        self.assertEqual(
+            GATE.LION_CRATE_MODE_ARGUMENTS[-2:],
+            ("--crate-graph-git", GATE.LION_GIT_URL),
+        )
+        self.assertEqual(GATE.LION_GIT_URL, INDEPENDENCE.LION_GIT_URL)
+        self.assertIn(
+            f'set(SRPC_LION_GIT_URL "{GATE.LION_GIT_URL}")', cmake
+        )
+        self.assertIn(
+            '--crate-graph\n        --crate-graph-git "${SRPC_LION_GIT_URL}"\n',
+            cmake,
+        )
         # The helper is built in its own cargo invocation (plan T1b).
         self.assertIn("-p\n        verus-erase", cmake)
         self.assertNotRegex(cmake, r"rusty-cpp-transpiler\s+-p\s+verus-erase")
