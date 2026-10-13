@@ -115,7 +115,10 @@ for every input or execution schedule.
 
 Use Linux, Clang 22 or newer with libc++, CMake 3.30+, Ninja, a Rust toolchain with
 clippy, Python 3.11+ and ripgrep. CMake builds the pinned transpiler from the
-submodule and uses it to generate the production modules.
+submodule and uses it to generate the production modules. Lion is not a
+submodule: Cargo fetches its crates at the commit `Cargo.toml` pins, for the
+Rust tests and the module generation alike, so the first build needs network
+access or a warm Cargo cache (`cargo fetch --locked`).
 
 ```sh
 git submodule update --init --recursive

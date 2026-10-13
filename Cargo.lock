@@ -111,6 +111,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "lion-executor"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "lion-executor-spec",
  "lion-framework-spec",
@@ -125,6 +126,7 @@ dependencies = [
 [[package]]
 name = "lion-executor-spec"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "lion-framework-spec",
  "vstd",
@@ -133,6 +135,7 @@ dependencies = [
 [[package]]
 name = "lion-framework-spec"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "vstd",
 ]
@@ -140,6 +143,7 @@ dependencies = [
 [[package]]
 name = "lion-net"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "lion-framework-spec",
  "lion-reactor",
@@ -150,6 +154,7 @@ dependencies = [
 [[package]]
 name = "lion-reactor"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "lion-framework-spec",
  "lion-reactor-spec",
@@ -162,6 +167,7 @@ dependencies = [
 [[package]]
 name = "lion-reactor-spec"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "lion-framework-spec",
  "lion-utility-spec",
@@ -171,6 +177,7 @@ dependencies = [
 [[package]]
 name = "lion-slab"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "vstd",
 ]
@@ -178,6 +185,7 @@ dependencies = [
 [[package]]
 name = "lion-timer-wheel"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "vstd",
 ]
@@ -185,6 +193,7 @@ dependencies = [
 [[package]]
 name = "lion-utility-spec"
 version = "0.1.0"
+source = "git+https://github.com/stonysystems/lion?rev=d697b779bb05314e7425b1746b5f89441e8e6712#d697b779bb05314e7425b1746b5f89441e8e6712"
 dependencies = [
  "lion-framework-spec",
  "vstd",

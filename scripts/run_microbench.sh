@@ -8,19 +8,25 @@
 # The compare mode is the one that answers questions. Absolute ns/op is
 # machine-, thermal- and compiler-dependent and means very little on its own; a
 # delta taken back-to-back on one box means something. It builds each commit
-# from `git archive` (plus the Lion submodule at the commit that ref records,
-# when it has one -- the extraction scripts/run_rpc_echo_bench.sh does), leaves
+# from `git archive` (plus, for a submodule-era ref, Lion at the commit its
+# `third-party/lion` gitlink records -- the extraction scripts/run_rpc_echo_bench.sh
+# does; a git-dependency ref gets Lion from Cargo), leaves
 # that ref's own bench/ out and puts today's in its place (so the HARNESS is held
 # constant and only the measured code varies), checks that the bench/ it is
 # about to build is today's, then runs the builds alternately to spread thermal
 # drift across both sides rather than loading it onto whichever ran second.
 #
 # Compare builds are offline: the Cargo registry and, for Lion-era refs, the
-# Verus git checkout must be warm (see CLAUDE.md). bench/ is workspace-excluded,
-# so none of this touches the source gate.
+# git checkouts of Verus and (for git-dependency refs) Lion must be warm
+# (`cargo fetch --locked`; see CLAUDE.md). Only a submodule-era ref's Lion may
+# come from the network, into a bare clone of Lion's repository
+# (scripts/lion_source.sh). bench/ is workspace-excluded, so none of this
+# touches the source gate.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lion_source.sh
+. "$REPO/scripts/lion_source.sh"
 
 if [[ $# -eq 0 ]]; then
     exec cargo run --release --quiet --manifest-path "$REPO/bench/Cargo.toml"
@@ -62,14 +68,16 @@ for side in 0 1; do
     # over: `cp -r bench <tree>/bench` into a tree that already has bench/ lands
     # in bench/bench and builds the ref's harness instead of today's.
     git -C "$REPO" archive "$ref" | tar -x -C "$dir" --anchored --exclude=bench
+    # A submodule-era ref: Lion at the commit its gitlink records, where its
+    # Cargo.toml's path dependencies look for it. A git-dependency ref has no
+    # gitlink and needs nothing here.
     if lion="$(git -C "$REPO" rev-parse --verify --quiet "$ref:third-party/lion")"; then
-        if ! git -C "$REPO/third-party/lion" cat-file -e "$lion^{commit}" 2>/dev/null; then
-            echo "$ref records third-party/lion at $lion, which $REPO/third-party/lion" \
-                "does not have; run: git submodule update --init third-party/lion" >&2
+        mkdir -p "$dir/third-party/lion"
+        if ! lion_archive "$(lion_cache_default)" "$lion" "$dir/third-party/lion"; then
+            echo "$ref records third-party/lion at $lion, which $LION_GIT_URL" \
+                "could not provide" >&2
             exit 1
         fi
-        mkdir -p "$dir/third-party/lion"
-        git -C "$REPO/third-party/lion" archive "$lion" | tar -x -C "$dir/third-party/lion"
     fi
     # Today's harness into that tree.
     mkdir "$dir/bench"

@@ -484,7 +484,8 @@ set_source_files_properties(${SRPC_GOAL0_CRATE_CHILD_SRC}
 
 # Dependency providers: the generated Lion crates (docs/dev/lion-runtime-plan.md,
 # D5 and S1). They are NOT canonical SRPC modules -- they are Lion's pinned,
-# unmodified sources under the third-party/lion gitlink -- so they stay out of
+# unmodified sources at the commit Cargo.toml's git dependencies pin by `rev`
+# (docs/dev/lion-git-dep-plan.md, G3) -- so they stay out of
 # SRPC_MODULE_SRC and the 37-provider checks above, and are inventoried as a
 # separate class here and in scripts/check_srpc_crate_mode.py
 # (DEPENDENCY_PROVIDERS), which requires this list to equal the transpiler's
@@ -514,11 +515,20 @@ foreach(_SRPC_LION_PROVIDER IN LISTS SRPC_LION_PROVIDERS)
 endforeach()
 set_source_files_properties(${SRPC_LION_PROVIDER_SRC}
     PROPERTIES GENERATED TRUE)
-# Lion's sources are transpiler inputs exactly like the canonical modules, so a
-# gitlink bump must re-run crate generation.
-file(GLOB_RECURSE SRPC_LION_RUST_SRC CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/third-party/lion/lion-*/Cargo.toml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/third-party/lion/lion-*/src/*.rs")
+# Lion's repository, exactly as Cargo.toml's git dependencies name it. The
+# transpiler's --crate-graph takes a git package into the graph only when its
+# repository is named with --crate-graph-git; unnamed, Lion would be skipped
+# like vstd, every Lion provider would vanish and three SRPC providers would be
+# silently mis-generated (docs/dev/lion-git-dep-plan.md, G0 and G1). Not a cache
+# variable: it is part of the build contract, not a knob. scripts/
+# check_rust_independence.py and scripts/check_srpc_crate_mode.py name the same
+# URL, and scripts/tests/test_goal0_contracts.py requires the three to agree.
+#
+# Lion's sources are transpiler inputs exactly like the canonical modules, but
+# no glob tracks them: Cargo fetches Lion at the pinned commit into its own
+# checkout, which a rev never changes, and a rev bump re-resolves Cargo.lock,
+# which crate generation below depends on.
+set(SRPC_LION_GIT_URL "https://github.com/stonysystems/lion")
 
 list(LENGTH SRPC_INLINE_MODULE_SRC _SRPC_INLINE_MODULE_COUNT)
 list(LENGTH SRPC_MODULE_SRC _SRPC_PRODUCTION_MODULE_COUNT)
@@ -893,6 +903,7 @@ add_custom_command(
         --cpp-module-index "${SRPC_GOAL0_CPP_MODULE_INDEX}"
         --verus-exec
         --crate-graph
+        --crate-graph-git "${SRPC_LION_GIT_URL}"
         --verus-erase-helper "${SRPC_VERUS_ERASE_HELPER}"
     DEPENDS
         srpc_goal0_source_gate
@@ -908,7 +919,6 @@ add_custom_command(
         "${SRPC_GOAL0_CPP_MODULE_INDEX}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
         ${SRPC_GOAL0_CANONICAL_RUST_SRC}
-        ${SRPC_LION_RUST_SRC}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Generating Goal-0 srpc crate C++ child modules"
     USES_TERMINAL

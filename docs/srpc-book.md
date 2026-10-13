@@ -50,8 +50,8 @@ compiler and an archiver. `build.rs` uses `CC` and `AR` when set, otherwise `cc`
 currently assumes those tools produce code for the Cargo target.
 
 The root Cargo package's only production dependencies are the Lion crates
-`lion-reactor`, `lion-executor` and `lion-net`, path dependencies into the
-`third-party/lion` submodule built without the `mio` feature. They bring the other Lion crates and
+`lion-reactor`, `lion-executor` and `lion-net`, git dependencies on Lion's
+repository pinned to one commit and built without the `mio` feature. They bring the other Lion crates and
 Verus's erased `vstd` library from Verus's git repository. Its property tests use
 `proptest` as a development dependency. The library is consumed from a checkout;
 `Cargo.toml` currently sets `publish = false`.
@@ -61,16 +61,15 @@ Verus's erased `vstd` library from Verus's git repository. Its property tests us
 ```sh
 git clone https://github.com/stonysystems/srpc
 cd srpc
-git submodule update --init third-party/lion
 cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --doc
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo doc --locked --no-deps --open
 ```
 
-These commands need only the `third-party/lion` submodule. The first build
-fetches `vstd` from Verus's git repository and a few crates.io crates for its
-proc-macros; after that Cargo also works offline. For an application beside the
+These commands need no submodule. The first build fetches Lion from Lion's git
+repository at the pinned commit, `vstd` from Verus's git repository and a few
+crates.io crates for its proc-macros; after that Cargo also works offline. For an application beside the
 checkout, create a Cargo project and add a path dependency:
 
 ```sh
@@ -2996,8 +2995,10 @@ The helper also has a comparison mode:
 scripts/run_microbench.sh --compare <commit-a> <commit-b>
 ```
 
-It extracts each revision with `git archive`, plus the Lion submodule at the
-commit that revision records, replaces the revision's own `bench/` with the
+It extracts each revision with `git archive` (plus, for a revision from before
+Lion became a Cargo git dependency, Lion at the commit its `third-party/lion`
+submodule records, from a cached clone of Lion's repository), replaces the
+revision's own `bench/` with the
 current one, and alternates runs. Before building each side it checks that the
 copied benchmark files match the current `bench/` and prints their digest. Keep
 the compiler, optimization settings and machine load consistent; report the

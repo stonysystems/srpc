@@ -51,7 +51,7 @@ BENIGN_GENERATED_DIAGNOSTIC = re.compile(
 # The one other allowlisted form is executable code, not a marker: Rust's
 # `std::io::ErrorKind::Unsupported` lowers to this exact qualified C++
 # enumerator. Lion's executor returns it when built without its `mio`
-# feature (third-party/lion/lion-executor/src/lib.rs, the no-default-backend
+# feature (lion-executor/src/lib.rs in Lion's repository, the no-default-backend
 # error SRPC's builds always take; plan S1). Only this fully qualified token is
 # removed before the scan, so a bare `Unsupported`, an `UNSUPPORTED:` comment,
 # or any other spelling still fails.
@@ -1064,8 +1064,9 @@ IMPORTER_USE_MARKERS = {
 #
 # docs/dev/lion-runtime-plan.md D5/S1/S7: libsrpc.a now holds "the 37 SRPC
 # providers plus the generated Lion providers". The Lion providers are NOT
-# canonical SRPC modules: they are Lion's pinned, unmodified sources under the
-# third-party/lion gitlink, emitted by `--verus-exec --crate-graph` as one
+# canonical SRPC modules: they are Lion's pinned, unmodified sources at the
+# commit Cargo.toml's git dependencies pin by `rev`, emitted by `--verus-exec
+# --crate-graph --crate-graph-git <LION_GIT_URL>` as one
 # named module per dependency crate at <output>/<package>/<module>.cppm, in
 # `namespace <module>`. They are a separately inventoried class: none of the
 # 37-module tables above (ABI_SPECS, EXPECTED_IMPORTS, the digests, the
@@ -1077,10 +1078,23 @@ CRATE_GRAPH_MANIFEST = "crate-graph.json"
 DEFAULT_VERUS_ERASE_HELPER = (
     "third-party/rusty-cpp/target/release/rusty-cpp-verus-erase"
 )
+# Lion's repository, exactly as Cargo.toml's git dependencies name it. The
+# transpiler takes a git package into the crate graph only when its repository
+# is named with --crate-graph-git; without it Lion is skipped like vstd and the
+# output loses every Lion provider (docs/dev/lion-git-dep-plan.md, G0/G1).
+# CMakeLists.txt (SRPC_LION_GIT_URL) and scripts/check_rust_independence.py
+# (LION_GIT_URL) name the same URL; scripts/tests/test_goal0_contracts.py
+# requires the three to agree.
+LION_GIT_URL = "https://github.com/stonysystems/lion"
 # The transpiler arguments that select the Lion lane. Every crate-mode
 # invocation (CMake, this gate's own fallback, the contract tests) passes
 # these plus `--verus-erase-helper <path>`.
-LION_CRATE_MODE_ARGUMENTS = ("--verus-exec", "--crate-graph")
+LION_CRATE_MODE_ARGUMENTS = (
+    "--verus-exec",
+    "--crate-graph",
+    "--crate-graph-git",
+    LION_GIT_URL,
+)
 
 
 @dataclass(frozen=True)

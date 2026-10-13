@@ -1,5 +1,5 @@
 // A Lion runtime driven by SRPC's OS backend (plan item S1): the executor and
-// reactor are Lion's (third-party/lion, built without its `mio` feature), and
+// reactor are Lion's (the pinned git dependency, built without `mio`), and
 // every wait, registration and cross-thread interrupt goes through
 // `impl lion_reactor::os::OsBackend for SrpcEpollBackend`
 // (reactor/epoll_wrapper.rs) to srpc_epoll.c.

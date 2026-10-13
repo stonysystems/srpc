@@ -28,6 +28,16 @@ serialization policy stay in canonical Rust" under *What remains by design*
 describes the tree at completion. See
 [canonical-rust-runtime.md](../canonical-rust-runtime.md) for the current split.
 
+**Update, 2026-10-13: Lion as a git dependency.** The TCP transport's move
+onto Lion ([lion-tcp-plan.md](lion-tcp-plan.md), L3) added `lion-net` as the
+third dependency. Since G3 of [lion-git-dep-plan.md](lion-git-dep-plan.md),
+the three are Cargo git dependencies on Lion's repository, all pinned by one
+full commit `rev`, and the `third-party/lion` submodule is gone. The
+allowlist is unchanged in substance. The independence check now also requires
+`Cargo.lock` to resolve every Lion package to that exact commit, and Cargo's
+checkout of Lion to sit at the commit with no tracked change. Its isolated
+copy resolves Lion from the same Cargo git cache, offline.
+
 The [independence check](../../scripts/check_rust_independence.py) copies only
 canonical Rust modules, tests, Cargo inputs and native kernel sources into a
 new directory, plus, since S1, the tracked files of the Lion crates in the

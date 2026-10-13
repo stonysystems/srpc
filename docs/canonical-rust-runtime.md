@@ -3,7 +3,8 @@
 SRPC's Rust files own its protocol behavior and the SRPC-specific runtime: fibers, events, the
 `PollThread` driver, the epoll backend and the transport. Since the move onto Lion
 ([lion-runtime-plan.md](dev/lion-runtime-plan.md)), the executor, the I/O reactor and the timer wheel
-are Lion's, compiled from the pinned `third-party/lion` crates. Cargo compiles SRPC's sources directly,
+are Lion's, compiled from Lion's crates at the commit `Cargo.toml` pins (a Cargo git dependency).
+Cargo compiles SRPC's sources directly,
 and rusty-cpp generates the C++ named-module providers from the same files. The
 [translation audit](translation-parity-audit.md) records the earlier substitutes that prompted this
 repair. This document describes the changed implementation and public contracts. The historical
@@ -17,8 +18,8 @@ are in the plan's result notes.
 
 | Behavior | Owner |
 | --- | --- |
-| The executor (`block_on`, `spawn_local`, task wakes), the I/O reactor (`AsyncFd` registrations and readiness delivery to wakers), and the timer wheel | Lion: `lion-executor` and `lion-reactor` from the `third-party/lion` gitlink, with the Lion crates they bring (the timer wheel is `lion-timer-wheel`), compiled unmodified ([Cargo.toml](../Cargo.toml)) |
-| Each poll of a TCP connection's stream and a listener: whether it completes or suspends (the verified `IoKernel` decision), readiness through `AsyncFd`, and registering the task's waker | Lion: `lion-net`'s `TcpStream` and `TcpListener`, from the same gitlink; they own no descriptor and make no syscall |
+| The executor (`block_on`, `spawn_local`, task wakes), the I/O reactor (`AsyncFd` registrations and readiness delivery to wakers), and the timer wheel | Lion: `lion-executor` and `lion-reactor`, Cargo git dependencies on Lion's repository at one pinned `rev`, with the Lion crates they bring (the timer wheel is `lion-timer-wheel`), compiled unmodified ([Cargo.toml](../Cargo.toml)) |
+| Each poll of a TCP connection's stream and a listener: whether it completes or suspends (the verified `IoKernel` decision), readiness through `AsyncFd`, and registering the task's waker | Lion: `lion-net`'s `TcpStream` and `TcpListener`, from the same commit; they own no descriptor and make no syscall |
 | `PollThread` commands, jobs, the driver task and the `add_proxy` adapter; fibers; events, their ready queue, deadline map and pings; the per-thread `Reactor`, its stackless executor for threads with no `PollThread`, and that executor's wake admission | [reactor/reactor.rs](../reactor/reactor.rs) |
 | `SrpcEpollBackend`, the OS backend Lion runs on: registration flags, tokens, the eventfd interrupt, readiness mapping, timeout rounding, and `EINTR`/`EAGAIN` policy | [reactor/epoll_wrapper.rs](../reactor/epoll_wrapper.rs) |
 | Public fiber helpers and promise/future event behavior | [reactor/fiber.rs](../reactor/fiber.rs), [reactor/future.rs](../reactor/future.rs) |
@@ -59,8 +60,8 @@ the owner re-tests the waiter's readiness predicate, which checks the shared sta
 
 The canonical Cargo package's production Rust dependencies are the Lion runtime
 crates, under an exact allowlist (docs/dev/lion-runtime-plan.md, D5): `lion-reactor`,
-`lion-executor` and `lion-net` from the `third-party/lion` gitlink with
-`default-features = false`, the Lion crates they bring, the erased `vstd` library at the Verus revision
+`lion-executor` and `lion-net` as git dependencies on Lion's repository at one
+pinned `rev`, with `default-features = false`, the Lion crates they bring, the erased `vstd` library at the Verus revision
 Lion names, and the proc-macros' build-time closure. mio, flume, tokio, socket2,
 futures-task and pin-project-lite must stay out. Otherwise it uses Rust std and
 the C/assembly kernel described below. The `rusty-rustc` and `rusty-cpp-markers`
@@ -368,5 +369,6 @@ fixtures. Retry tests also observe detached worker completion by requiring a ret
 after user ownership is released. These checks cover the exercised operations and schedules; they do
 not prove equivalence for every input, interleaving, platform, or shutdown path. These historical
 sanitizer passes do not validate the current facade-removal changes; their acceptance remains tracked
-in [Rust lane independence](dev/facade-and-runtime-remaining.md). The gitlink and executable gate
-files remain the authoritative pin and inventory definitions.
+in [Rust lane independence](dev/facade-and-runtime-remaining.md). The rusty-cpp gitlink, Lion's
+`rev` in `Cargo.toml` and the executable gate files remain the authoritative pin and inventory
+definitions.
