@@ -137,7 +137,9 @@ lane.
     - **Mako:** no change today. Its `src/srpc` is a copied subtree of SRPC
       `683c506`, from before Lion. Its next SRPC sync needs network or a
       warm `CARGO_HOME`, and its own rusty-cpp pin must include G1.
-- [ ] **G1. rusty-cpp.** On a branch from `3535f2aa`:
+- [x] **G1. rusty-cpp.** Done (2026-10-13) as rusty-cpp `e0b6578d` on local
+  branch `lion/git-crate-graph`, whose parent is `3535f2aa`; see *Result*
+  below. On a branch from `3535f2aa`:
   - Add a repeatable `--crate-graph-git <URL>` option. Each git package whose
     source repository equals a named URL joins the crate graph as if local,
     read from `cargo metadata`'s manifest path.
@@ -149,6 +151,64 @@ lane.
     repository).
   - Add tests;
   - run rusty-cpp's crate-graph tests and `lion_parity`.
+  - **Result.**
+    - **Size:** +931/−33 lines. Most of it is in `transpiler/src/metadata.rs`
+      (+591/−32, about 283 of them tests) and `transpiler/tests/crate_graph.rs`
+      (+295).
+    - **Semantics:**
+      - `--crate-graph-git <URL>` is repeatable and requires `--crate-graph`.
+        It reaches all three graph resolutions: the driver, the root
+        preflight and `--expand`.
+      - A package joins the graph when it has no source, or when its source
+        is `git+<URL>[?ref]#<commit>` and the URL matches a named one. Matching
+        follows Cargo's `CanonicalUrl`: scheme and host ignore case, a
+        trailing `/` and then `.git` are dropped, and `github.com` paths are
+        lowercased.
+      - **Errors:**
+        - These values are rejected before any output: an empty value, a
+          `git+` prefix, a `?` or `#`, or no scheme.
+        - A named URL that contributes no package is an error. The message
+          lists the git repositories the graph does reach.
+        - So is a name shared by two graph packages.
+      - **Matching `cargo tree` output:** the transpiler matches a git
+        package to Cargo's own rendering, which form-urlencodes the reference
+        and cuts the commit to 8 hex digits. G0's prototype skipped the
+        encoding, and it worked only because Lion's rev is plain hex.
+      - With a repository named, crate mode always resolves the exact graph,
+        so its marker preflight reaches git packages.
+      - With nothing named, behaviour is the old `source.is_none()` rule.
+    - **Tests:** 7 new unit tests and 4 integration tests. The integration
+      tests use `file://` repositories, a `feat/x+y` branch and a private
+      `CARGO_HOME`. Negative controls turned them red. `crate_graph` 7/7,
+      `lion_parity` 1/1, and the focused metadata and codegen tests 88/88.
+    - **Full transpiler suite, same worktree:**
+
+      | Rev | Passed | Failed | Ignored |
+      |---|---|---|---|
+      | `3535f2aa` | 2,853 | 9 | 23 |
+      | `e0b6578d` | 2,864 | 9 | 23 |
+
+      The 11 extra passes are exactly the new tests. The same nine tests fail
+      at both revs:
+      - `cpp_name_crate_mode_rejects_opaque_expansion_before_output`;
+      - `crate_mode_uses_one_cargo_selected_target_dependency_graph_atomically`,
+        whose `RUSTC=missing-rustc` fixture breaks `cargo metadata` first;
+      - five `test_either_parity_harness_*` and two `test_parity_matrix_*`
+        tests.
+
+      The suite deletes the tracked `run_parity_harness.sh` it needs. This
+      settles L2's open question: the 9 failures at `3535f2aa` are
+      pre-existing, not caused by the Option fix.
+    - **End to end, with CMake's exact command:**
+      - **Lion as a git dependency, URL named:** exit 0, nine dependency
+        crates, and 65 files byte-identical to `main`'s `goal0-crate-cpp`.
+      - **Lion as the submodule, option absent:** 65 identical files.
+      - **A misspelled URL:** exit 1 and no output.
+      - **Lion as a git dependency, option absent:** the transpiler still
+        fails open, emitting 41 files with no Lion modules. SRPC must always
+        pass the URL, and its dual-compile gate would reject the 41-file
+        output.
+      - `--verus-build-info` is unchanged.
 - [ ] **G2. SRPC: transpiler pin.** `build: bump rusty-cpp 3535f2aa -> <new>`,
   the four edits, in its own commit. ABI is unchanged.
 - [ ] **G3. SRPC: Lion as a git dependency.**
