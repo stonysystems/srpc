@@ -6,7 +6,8 @@ Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 take Lion as a Cargo dependency instead of a submodule, pinned by `rev`, and
 that this plan be carried out self-paced. At the owner's direction, rusty-cpp
 `e0b6578d` is merged into rusty-cpp `main` as `6753edf5`, and this branch
-into SRPC `main` (G5).
+into SRPC `main` (G5). Follow-up F1 (§3), a byte-for-byte check of Cargo's
+Lion checkout, is done on a local branch.
 
 ## 0. The short version
 
@@ -343,7 +344,7 @@ lane.
       - **Build footprint:** four checkouts, including one after a full CMake
         build, list only `.cargo-ok`, so the build writes nothing there.
       - **Not covered:** a tracked file marked `assume-unchanged` or
-        `skip-worktree` in the checkout's index.
+        `skip-worktree` in the checkout's index. F1 closes this.
     - **`06e43f8` (CLAUDE.md):** a cold machine needs four `cargo fetch
       --locked` runs:
       - the root;
@@ -378,7 +379,7 @@ lane.
       unchanged from `main`, so its 35/35 results stand.
     - **One new subtest** sets git's excludes file through `GIT_CONFIG_*`
       environment variables, which needs git 2.31 or later. This host has
-      2.47.3.
+      2.47.3. F1 replaces them with a scratch `HOME`.
 - [x] **G5. Publish (owner's OK).** Done (2026-10-13) at the owner's
   direction. Merge the rusty-cpp branch into rusty-cpp `main`, and this branch
   into SRPC `main`.
@@ -412,3 +413,75 @@ lane.
       - ctest 51/51.
       - `goal0-crate-cpp` is byte-identical to the build of `main`
         `21f2320`, 65 files.
+
+## 3. Follow-ups
+
+- [x] **F1. Byte-compare Cargo's Lion checkout.** Done (2026-10-13) on local
+  branch `lion-checkout-content`. After G5 the owner asked to close two of the
+  gaps G4 left open: the `assume-unchanged`/`skip-worktree` hole in the
+  checkout check, and the subtest that needs git 2.31. The third, rusty-cpp
+  exiting 0 without `--crate-graph-git`, is for the owner to decide.
+  - **The gap:** the check trusted `git status`, which reads the checkout's
+    index, ignore rules and config. Measured with git 2.47.3, status shows
+    nothing for any of these:
+    - an edit to a file marked `assume-unchanged`;
+    - an edit or a deletion of a file marked `skip-worktree`;
+    - a FIFO;
+    - an edited file committed and registered with `git replace` for the
+      rev, with HEAD moved back to the rev. HEAD still names the rev, and
+      both `status` and `ls-tree` read the replacement commit.
+  - **The check:** `check_lion_files` now carries it.
+    - It lists the rev's tree with `git --no-replace-objects ls-tree -r`.
+    - It walks the checkout directory, skipping only the root `.git`. It
+      follows no link, takes a link to a directory as an entry (Lion's tree
+      has four), and fails on any directory it cannot list.
+    - It hashes each file and link as a git blob, and requires the tree's
+      paths, kinds and blob ids, with only the root `.cargo-ok` added.
+    - A tree entry that is neither a file nor a link, such as a submodule,
+      is refused. The executable bit is not compared.
+    - `git status` still runs first, now with `--no-replace-objects` (as do
+      `rev-parse` and `ls-tree`), as a second opinion.
+  - **Cost:** the whole checkout check took 0.35 s on a local-disk
+    `CARGO_HOME` and 5.2 s on the NFS-backed `~/.cargo` (16.8 s with a cold
+    cache), for 2,091 tree entries: 2,087 files and 4 links, about 57 MB.
+  - **Tests:** `test_rust_independence.py` has 70 tests, 9 of them new. The
+    fixture gains an executable script and a link to a directory.
+    - Each of 12 mutations of the check turned at least one test red, among
+      them dropping `--no-replace-objects` from `ls-tree` or `status`,
+      dropping links to directories from the walk, and walking without
+      `onerror`.
+    - The unreadable directory is injected through `os.scandir`, because
+      `chmod` does not stop root, and Mako's CI runs this gate as root.
+  - **Real script:** against a copy of a Cargo cache, with plain `git status`
+    blind to each case:
+    - an `assume-unchanged` edit, a `skip-worktree` edit and a FIFO each exit
+      1 in the byte comparison;
+    - the replaced commit exits 1 in `status`, which now reads the real
+      objects;
+    - a `skip-worktree` deletion of a crate's `lib.rs` exits 1 earlier, in
+      `cargo metadata`;
+    - the untouched checkout passes.
+  - **The git 2.31 subtest:** the user's `core.excludesFile` now comes from
+    a scratch `HOME`'s `.gitconfig`, which every git version reads. The
+    subtest sets `XDG_CONFIG_HOME` to an empty directory and
+    `GIT_CONFIG_NOSYSTEM=1`, and removes `GIT_CONFIG_GLOBAL` and
+    `GIT_CONFIG_COUNT`.
+    - Writing the config elsewhere, or keeping a caller's
+      `GIT_CONFIG_GLOBAL`, turns it red.
+    - It has not been run on a git older than 2.31; none is installed here.
+  - **Gate:** on the branch's tree, in a warm local-disk clone:
+    - `RUSTFLAGS=-Dwarnings cargo test` passed 400, failed 0, ignored 1;
+      doctests 2/2; clippy is clean.
+    - Configure and build exited 0. The 8 Python suites passed with 0
+      skips, and the source gate's Cargo runs passed 804, failed 0 and
+      ignored 2. The independence check reported `~/.cargo`'s checkout
+      identical to the rev.
+    - Lion 6 providers and 407 symbols; SRPC 2107 symbols and 0 hand slots.
+    - ctest 51/51.
+    - `goal0-crate-cpp` is byte-identical to the build of `main` `21f2320`,
+      65 files.
+  - **Not covered:**
+    - a rewrite of the checkout's git objects themselves. That is
+      deliberate tampering, and whoever can do it can as easily change the
+      toolchain;
+    - a change made after the check and before Cargo compiles.
