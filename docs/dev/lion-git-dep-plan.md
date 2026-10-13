@@ -2,7 +2,7 @@
 
 Status legend: `[ ]` not started · `[~]` deferred with reason · `[x]` done.
 
-**Status: IN PROGRESS (2026-10-13).** The owner asked (2026-10-13) that SRPC
+**Status: G0–G4 DONE (2026-10-13); G5 (publish) awaits the owner.** The owner asked (2026-10-13) that SRPC
 take Lion as a Cargo dependency instead of a submodule, pinned by `rev`, and
 that this plan be carried out self-paced. Nothing is pushed without the
 owner's OK.
@@ -302,7 +302,7 @@ lane.
       - a full `verify_lion.sh` run;
       - an untracked file added inside a Lion crate in Cargo's checkout is
         not yet detected. The submodule check had the same gap.
-- [ ] **G4. Acceptance.**
+- [x] **G4. Acceptance.** Done (2026-10-13) as `b7ea803` and `06e43f8`; see *Result* below.
   - The full gate on a cold clone, which no longer fetches a Lion submodule.
   - Generated C++ byte-identical to `main`'s.
   - ABI 2107 + 407.
@@ -316,5 +316,67 @@ lane.
   - Close G3's untracked-file gap: the checkout check rejects any untracked
     file except Cargo's root `.cargo-ok`, with a negative control.
   - The moved-HEAD control, run against `check_lion_checkout` directly.
+  - **Result.**
+    - **`b7ea803` (gate):** `check_lion_checkout` runs `git status
+      --porcelain -z --untracked-files=all --ignored=traditional`, with
+      `safe.directory`. It fails on any entry except Cargo's root
+      `.cargo-ok`.
+      - **Ignored files count too:** ignore rules decide what git shows, not
+        what Cargo compiles. Lion's own rules hide `**/target/` and `*.log`,
+        and a self-hiding `.gitignore` or the checkout's `info/exclude` can
+        hide anything.
+      - **The gap was real:** an untracked `lion-net/build.rs` became a
+        build-script target that `cargo build` ran, and G3's check passed it.
+      - **Tests:** `test_rust_independence.py` has 61 tests. Seven mutations
+        of the check all turned it red, among them reverting to
+        `--untracked-files=no` (9 failures).
+      - **Real script:** it exits 1 on each of these, and the clean checkout
+        passes:
+        - an untracked `build.rs`;
+        - an ignored `x.log`;
+        - a `build.rs` hidden by `info/exclude`;
+        - a self-hiding `.gitignore`;
+        - a new source directory.
+      - **Moved HEAD:** `check_lion_checkout` rejects it when called
+        directly.
+      - **Build footprint:** four checkouts, including one after a full CMake
+        build, list only `.cargo-ok`, so the build writes nothing there.
+      - **Not covered:** a tracked file marked `assume-unchanged` or
+        `skip-worktree` in the checkout's index.
+    - **`06e43f8` (CLAUDE.md):** a cold machine needs four `cargo fetch
+      --locked` runs:
+      - the root;
+      - `third-party/rusty-cpp`;
+      - `scripts/rust_source_audit/`;
+      - `bench/`, which the old list missed: `rpc_echo` failed offline on
+        `unicode-ident` 1.0.26.
+
+      The gate needs only the first three.
+    - **Cold cache:** a fresh clone with an empty `CARGO_HOME`. The first
+      three fetches came to 436 MB. Every gate step then ran with
+      `CARGO_NET_OFFLINE=true`, and the cache did not grow. Results at
+      `b7ea803`:
+      - `RUSTFLAGS=-Dwarnings cargo test` passed 400, failed 0 and ignored
+        1. Doctests 2/2, and clippy is clean.
+      - Configure and build exited 0. The source gate's Python suites had 0
+        skips, and its Cargo runs passed 804, failed 0 and ignored 2.
+      - "Crate graph (9 dependency crate(s))". Lion 6 providers and 407
+        symbols; SRPC 2107 symbols and 0 hand slots.
+      - ctest 51/51.
+      - `goal0-crate-cpp` is byte-identical to `main`'s, 65 files.
+      - Until G5 publishes rusty-cpp `e0b6578d`, a fresh clone's `git
+        submodule update` fails with "not our ref".
+    - **`verify_lion.sh`:** Lion `d697b779` with Verus `0.2025.11.15.db81a74`
+      printed "All checks passed" in 588 s, with 0 errors. Verified counts:
+      net 10, utility 80, reactor 208, executor 99, liveness 556,
+      timer-wheel 117, reactor-spec 57, executor-spec 12, framework-spec 8,
+      slab 5.
+    - **Mako:** needs nothing. No Mako file names Lion, and its
+      `src/srpc/Cargo.toml` predates Lion.
+    - **Sanitizers:** not rerun. The generated C++ and the C kernels are
+      unchanged from `main`, so its 35/35 results stand.
+    - **One new subtest** sets git's excludes file through `GIT_CONFIG_*`
+      environment variables, which needs git 2.31 or later. This host has
+      2.47.3.
 - [ ] **G5. Publish (owner's OK).** Merge the rusty-cpp branch into rusty-cpp
   `main`, and this branch into SRPC `main`.
