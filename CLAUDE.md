@@ -82,12 +82,22 @@ git submodule update --init --recursive
 ```
 
 **Cold machine.** Several steps run Cargo `--offline` (`check_rust_independence.py`, the
-`rust_source_audit.py` scanner build, `run_rpc_echo_bench.sh`). Lion itself comes from Lion's *git*
+`rust_source_audit.py` scanner build, and the benchmark scripts' builds). Lion itself comes from Lion's *git*
 repository, and Lion's `vstd` and the verus-erase helper's `verus_syn`/`verus_prettyplease` from Verus's, not
-crates.io. Warm `~/.cargo` once with network access: `cargo fetch --locked` in the SRPC root (this fetches
-Lion at the pinned `rev` too) and in `third-party/rusty-cpp` (plus the `scripts/rust_source_audit/` registry
-crates, below). The transpiler's crate-graph probe runs Cargo without `--offline`, so a cold C++ lane may
-fetch as well.
+crates.io. Warm Cargo's cache (`$CARGO_HOME`, default `~/.cargo`) once with network access. Each lockfile
+needs its own fetch:
+
+```sh
+cargo fetch --locked                                                       # SRPC root; Lion at its rev too
+(cd third-party/rusty-cpp && cargo fetch --locked)                         # transpiler and verus-erase helper
+cargo fetch --locked --manifest-path scripts/rust_source_audit/Cargo.toml  # the source audit's scanner
+cargo fetch --locked --manifest-path bench/Cargo.toml                      # only for the benchmark scripts
+```
+
+After the first three, the commit gate above needs no network. Measured from an empty `CARGO_HOME` with
+`CARGO_NET_OFFLINE=true` exported, it passed in full, including the transpiler's crate-graph probe, which runs
+Cargo without `--offline` and would otherwise fetch. `bench/Cargo.lock` resolves a crate the other three
+lockfiles do not, so an offline benchmark build fails without the fourth fetch.
 
 **Rust lane.** Cargo also needs a C compiler and archiver for the shared native kernels:
 
