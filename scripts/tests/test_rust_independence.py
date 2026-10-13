@@ -424,10 +424,17 @@ class LionCheckoutTests(unittest.TestCase):
             self.assertChanges('!! lion-reactor/build.rs')
             git(['config', '--unset', 'core.excludesFile'], self.checkout)
         with self.subTest(scope="the user's config"):
-            # The running user's core.excludesFile, given here through the environment.
-            environment = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.excludesFile',
-                           'GIT_CONFIG_VALUE_0': str(excludes)}
+            # The running user's core.excludesFile, from a scratch HOME's .gitconfig,
+            # which every git version reads. GIT_CONFIG_GLOBAL or GIT_CONFIG_COUNT in
+            # the caller's environment would override or add to it.
+            home = self.scratch / 'home'
+            home.mkdir()
+            (home / '.gitconfig').write_text(f'[core]\n\texcludesFile = "{excludes}"\n')
+            environment = {'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config'),
+                           'GIT_CONFIG_NOSYSTEM': '1'}
             with mock.patch.dict(os.environ, environment):
+                os.environ.pop('GIT_CONFIG_GLOBAL', None)
+                os.environ.pop('GIT_CONFIG_COUNT', None)
                 self.assertChanges('!! lion-reactor/build.rs')
 
     def test_cargo_marker_is_accepted_only_at_the_root(self):
