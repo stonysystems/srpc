@@ -19,18 +19,20 @@ Their resolved closure may contain only:
 Nothing from a registry may be linked into srpc, and Lion's runtime crates (FORBIDDEN)
 must not appear anywhere in `cargo tree -e normal`. Cargo compiles Lion from its own
 checkout of the pinned commit, and nothing stops a process from editing that checkout,
-so the Lion crates must all come from one checkout whose HEAD is the rev, with no
-tracked change and no untracked or ignored file but Cargo's own root marker. The
+so the Lion crates must all come from one checkout whose HEAD is the rev and whose files
+are exactly the pinned tree's, byte for byte, apart from Cargo's own root marker. The
 isolated copy contains the Cargo sources, tests and native kernels; it resolves Lion
 from the same Cargo git cache and builds and tests offline.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import tomllib
@@ -77,6 +79,9 @@ RETIRED_FACADES = ('rusty-rustc', 'rusty-cpp-markers')
 CARGO_CHECKOUT_MARKER = '.cargo-ok'
 # How many local changes a failed checkout check names before it summarises.
 CHANGES_SHOWN = 20
+# The git tree modes with bytes to compare: a file, an executable file, a symbolic link.
+FILE_MODES = frozenset({'100644', '100755'})
+SYMLINK_MODE = '120000'
 
 
 def lion_source(rev: str) -> str:
@@ -216,6 +221,94 @@ def lion_checkout_root(manifests: dict[str, str]) -> Path:
     return roots.pop()
 
 
+def summarise(entries: list[str]) -> str:
+    """The first CHANGES_SHOWN entries, one per line, then a count of the rest."""
+    shown = '\n'.join(entries[:CHANGES_SHOWN])
+    if len(entries) > CHANGES_SHOWN:
+        shown += f'\n... and {len(entries) - CHANGES_SHOWN} more'
+    return shown
+
+
+def git_blob_id(data: bytes) -> str:
+    """The object id git gives a blob holding `data`: SHA-1, like every pinned rev."""
+    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+def pinned_tree(root: Path, rev: str, git=git_output) -> dict[str, tuple[str, str]]:
+    """Every path in `rev`'s tree, mapped to its (mode, blob id)."""
+    listing = git(['--no-replace-objects', 'ls-tree', '-r', '-z', '--full-tree', rev], root)
+    tree = {}
+    for entry in filter(None, listing.split('\0')):
+        header, path = entry.split('\t', 1)
+        mode, _, object_id = header.split(' ')
+        if mode not in FILE_MODES and mode != SYMLINK_MODE:
+            raise ValueError(f'{rev} has {path} with git mode {mode}; the Lion checkout '
+                             'check compares files and symbolic links only')
+        tree[path] = (mode, object_id)
+    return tree
+
+
+def checkout_files(root: Path) -> dict[str, tuple[str, str | None]]:
+    """Every path under `root` that is not a directory, mapped to its kind and blob id.
+
+    The kind is 'file', 'symlink' (whose blob is its target, as git stores it) or
+    'other' (a FIFO, socket or device), which has no id. The root's own `.git` is
+    skipped and nothing else is.
+    """
+    def fail(error: OSError) -> None:
+        # Without this, os.walk skips a directory it cannot list.
+        raise error
+
+    found: dict[str, tuple[str, str | None]] = {}
+    for directory, subdirectories, names in os.walk(root, onerror=fail):
+        here = Path(directory)
+        if here == root:
+            subdirectories[:] = [name for name in subdirectories if name != '.git']
+            names = [name for name in names if name != '.git']
+        # os.walk lists a symbolic link to a directory with the directories and does
+        # not follow it; Lion's tree has four.
+        links = [name for name in subdirectories if (here / name).is_symlink()]
+        for name in [*names, *links]:
+            path = here / name
+            mode = os.lstat(path).st_mode
+            if stat.S_ISLNK(mode):
+                entry = ('symlink', git_blob_id(os.fsencode(os.readlink(path))))
+            elif stat.S_ISREG(mode):
+                entry = ('file', git_blob_id(path.read_bytes()))
+            else:
+                entry = ('other', None)
+            found[path.relative_to(root).as_posix()] = entry
+    return found
+
+
+def check_lion_files(root: Path, rev: str, git=git_output) -> None:
+    """The checkout's files must be `rev`'s tree, byte for byte (check_lion_checkout).
+
+    The executable bit is not compared: rustc reads a file's bytes, not its mode.
+    """
+    tree = pinned_tree(root, rev, git)
+    found = checkout_files(root)
+    differences = []
+    for path in sorted(tree.keys() | found.keys()):
+        if path not in found:
+            differences.append(f'missing {path}')
+        elif path not in tree:
+            if path != CARGO_CHECKOUT_MARKER:
+                differences.append(f'added {path}')
+        else:
+            mode, object_id = tree[path]
+            kind, found_id = found[path]
+            expected = 'symlink' if mode == SYMLINK_MODE else 'file'
+            if kind != expected:
+                differences.append(f'retyped {path} ({expected} in the tree, {kind} here)')
+            elif found_id != object_id:
+                differences.append(f'changed {path}')
+    if differences:
+        raise ValueError(f'the Lion checkout {root} differs from {rev}:\n'
+                         f'{summarise(differences)}\n(compared byte for byte with the '
+                         f'pinned tree; only the root {CARGO_CHECKOUT_MARKER} may be added)')
+
+
 def check_lion_checkout(root: Path, rev: str, git=git_output) -> None:
     """The checkout Cargo compiles Lion from must be the pinned commit, unmodified.
 
@@ -223,42 +316,55 @@ def check_lion_checkout(root: Path, rev: str, git=git_output) -> None:
     directory is shared by every project on the machine and writable. Cargo's own
     freshness check compares only HEAD with the locked commit, and resets a moved
     checkout before this runs (measured with Cargo 1.97.1), so the HEAD check here is
-    defense in depth. Cargo does not notice anything else, and the status check is
-    what catches it. An edited tracked file compiles silently. So can an added one:
-    Cargo's target discovery and rustc's module lookup read the directory, not git's
-    index, and a stray `build.rs` in a crate root is a build script Cargo runs. So
-    the status may list nothing but CARGO_CHECKOUT_MARKER at the root.
+    defense in depth. Cargo does not notice anything else. An edited tracked file
+    compiles silently. So can an added one: Cargo's target discovery and rustc's
+    module lookup read the directory, not git's index, and a stray `build.rs` in a
+    crate root is a build script Cargo runs.
 
-    Ignored files count too (`--ignored`). Ignore rules decide what git reports, not
-    what Cargo compiles, and they are not all part of the pinned commit: an
-    untracked `.gitignore` can hide itself and its neighbours, and the checkout's
+    The load-bearing check is check_lion_files: every file and symbolic link on disk
+    must be the pinned tree's, byte for byte, and only CARGO_CHECKOUT_MARKER may be
+    added, at the root. It reads the tree from git's objects and the files from the
+    directory, and consults no index, ignore rule or config. `git status` consults
+    all three, so it runs first only as a second opinion that names a change in
+    git's terms, and also reports a changed executable bit. On its own it misses a
+    change to a file marked `assume-unchanged` or `skip-worktree` in the checkout's
+    index, and a FIFO (measured with git 2.47.3).
+
+    The status lists ignored files too (`--ignored`). Ignore rules decide what git
+    reports, not what Cargo compiles, and they are not all part of the pinned commit:
+    an untracked `.gitignore` can hide itself and its neighbours, and the checkout's
     `.git/info/exclude`, its own config and the user's `core.excludesFile` can hide
     anything. Lion's tracked rules already hide `lion*/Cargo.lock`, `*.log` and
     `**/target/`. A checkout as Cargo leaves it holds no ignored file (measured with
-    Cargo 1.97.1), so nothing legitimate is lost. If a future Cargo stops leaving a
-    `.git` here, this fails closed.
+    Cargo 1.97.1), so nothing legitimate is lost.
+
+    Every git command here passes --no-replace-objects. A `refs/replace/` entry for
+    the rev makes git read another commit in its place, and then `status` and
+    `ls-tree` both agree with an edited checkout whose HEAD is still the rev
+    (measured). Neither check survives a rewrite of the checkout's git objects
+    themselves; that is deliberate tampering, and whoever can do it can as easily
+    change the toolchain. If a future Cargo stops leaving a `.git` here, this fails
+    closed.
     """
     if not (root / '.git').exists():
         raise ValueError(f'the Lion checkout {root} has no .git; cannot prove it is {rev}')
-    head = git(['rev-parse', 'HEAD'], root).strip()
+    head = git(['--no-replace-objects', 'rev-parse', 'HEAD'], root).strip()
     if head != rev:
         raise ValueError(f'the Lion checkout {root} is at {head}, but Cargo.toml pins {rev}')
     # --no-optional-locks: status must not rewrite the index of a checkout that is
     # shared with every other project using this CARGO_HOME. --untracked-files=all
     # lists each file in an untracked directory, and with it --ignored lists each
     # ignored file. -z keeps every path unquoted, one NUL-terminated entry each.
-    status = git(['--no-optional-locks', 'status', '--porcelain', '-z',
+    status = git(['--no-replace-objects', '--no-optional-locks', 'status', '--porcelain', '-z',
                   '--untracked-files=all', '--ignored=traditional'], root)
     # The marker is untracked, or ignored if some exclude rule happens to match it.
     marker = (f'?? {CARGO_CHECKOUT_MARKER}', f'!! {CARGO_CHECKOUT_MARKER}')
     changed = [entry for entry in status.split('\0') if entry and entry not in marker]
     if changed:
-        shown = '\n'.join(changed[:CHANGES_SHOWN])
-        if len(changed) > CHANGES_SHOWN:
-            shown += f'\n... and {len(changed) - CHANGES_SHOWN} more'
-        raise ValueError(f'the Lion checkout {root} has local changes:\n{shown}\n'
+        raise ValueError(f'the Lion checkout {root} has local changes:\n{summarise(changed)}\n'
                          f'(?? untracked, !! ignored; only the root {CARGO_CHECKOUT_MARKER} '
                          f'may differ from {rev})')
+    check_lion_files(root, rev, git)
 
 
 def is_proc_macro(package: dict) -> bool:
@@ -474,7 +580,7 @@ def run(repo: Path) -> None:
             subprocess.run([*cargo, *args, '--locked', '--offline'],
                            cwd=dest, env=environment, check=True)
     print(f'Cargo independence passed: std + C/assembly kernel + Lion {rev[:7]} '
-          f'({len(lion)} git crates from {LION_GIT_URL}, checkout {checkout} clean at the rev) '
+          f'({len(lion)} git crates from {LION_GIT_URL}, checkout {checkout} identical to the rev) '
           f'+ erased vstd at {VERUS_SOURCE.rsplit("#", 1)[1][:7]}; '
           f'no {", ".join(FORBIDDEN)}; no facade or C++ tools/runtime')
 

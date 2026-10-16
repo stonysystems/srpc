@@ -251,12 +251,18 @@ Cargo's checkout is shared by every project on the machine and writable, and Car
 (a checkout moved off the locked commit is reset before the gate reads it; measured) — an edited tracked file
 compiles silently, and so can an added one (Cargo discovers a stray `build.rs` in a crate root and runs it).
 So the gate checks it: all nine crates' manifests must lie in **one** checkout at their `LION_CRATES`
-directories, that checkout's `git rev-parse HEAD` must equal the `rev` (defense in depth), and
-`git status --untracked-files=all --ignored` must list nothing but Cargo's own `.cargo-ok` at the root (the
-load-bearing check). Ignored files count, because ignore rules are not all part of the pinned commit: an
-untracked `.gitignore`, the checkout's `.git/info/exclude` or a user's `core.excludesFile` can hide any file,
-and Lion's own rules already hide `lion*/Cargo.lock`, `*.log` and `target/`. The identity check relies on
-Cargo keeping a `.git` in its checkout and fails closed without one. It then copies the Cargo inputs,
+directories, that checkout's `git rev-parse HEAD` must equal the `rev` (defense in depth), and its files
+must be the pinned tree's **byte for byte** (the load-bearing check). The gate walks the directory, hashes
+every file and symbolic link the way git does, and compares the result with `git ls-tree -r <rev>`; only
+Cargo's own `.cargo-ok` may be added, at the root. It consults no index, ignore rule or git config, since
+each can hide a change from `git status`: a file marked `assume-unchanged` or `skip-worktree`, an untracked
+`.gitignore`, the checkout's `.git/info/exclude` or a user's `core.excludesFile` (Lion's own rules already
+hide `lion*/Cargo.lock`, `*.log` and `target/`). Status does not list a FIFO either. `git status
+--untracked-files=all --ignored` still runs first, as a second opinion that names a change in git's terms.
+Every git call passes `--no-replace-objects`, because a `refs/replace/` entry makes git read an edited commit
+in place of the `rev`. Hashing Lion's whole tree (about 57 MB) takes under a second on local disk and
+several seconds on an NFS-backed `CARGO_HOME`. The identity check relies on Cargo keeping a `.git` in its
+checkout and fails closed without one. It then copies the Cargo inputs,
 canonical Rust, tests and the C/assembly kernel into a fresh tree, which resolves Lion from the same Cargo
 git cache (and must resolve it to the same checkout), and runs Rust tests and doctests there offline, with
 `-Dwarnings`, `CXX=/bin/false` and no C++ runtime, compiler or `git` on its tool path.

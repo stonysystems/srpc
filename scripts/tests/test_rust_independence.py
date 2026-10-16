@@ -309,12 +309,13 @@ def git(args, cwd):
 
 
 class LionCheckoutTests(unittest.TestCase):
-    """Cargo's checkout must be one tree, at the rev, with no tracked change and no
-    untracked or ignored file but Cargo's root `.cargo-ok`.
+    """Cargo's checkout must be one tree, at the rev, whose files are the pinned
+    tree's byte for byte, with nothing added but Cargo's root `.cargo-ok`; and `git
+    status` must agree.
 
     The fixture is a real git repository laid out like Lion's, with a tracked
-    `.gitignore` holding some of Lion's own rules, checked by the real `git` and the
-    gate's own functions.
+    `.gitignore` holding some of Lion's own rules, an executable script and a symbolic
+    link to a directory, checked by the real `git` and the gate's own functions.
     """
 
     def setUp(self):
@@ -328,6 +329,10 @@ class LionCheckoutTests(unittest.TestCase):
             (crate / 'Cargo.toml').write_text(f'# {relative}\n')
             (crate / 'src/lib.rs').write_text(f'// {relative}\n')
         (self.checkout / 'ci.sh').write_text('#!/bin/sh\n')
+        (self.checkout / 'ci.sh').chmod(0o755)
+        # Lion's tree holds four symbolic links, each to a directory.
+        (self.checkout / 'lion-net/tests').mkdir()
+        (self.checkout / 'lion-net/tests/keys').symlink_to('../src')
         (self.checkout / '.gitignore').write_text('**/target/\nlion*/Cargo.lock\n*.log\n')
         git(['init', '-q'], self.checkout)
         git(['add', '.'], self.checkout)
@@ -419,10 +424,17 @@ class LionCheckoutTests(unittest.TestCase):
             self.assertChanges('!! lion-reactor/build.rs')
             git(['config', '--unset', 'core.excludesFile'], self.checkout)
         with self.subTest(scope="the user's config"):
-            # The running user's core.excludesFile, given here through the environment.
-            environment = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.excludesFile',
-                           'GIT_CONFIG_VALUE_0': str(excludes)}
+            # The running user's core.excludesFile, from a scratch HOME's .gitconfig,
+            # which every git version reads. GIT_CONFIG_GLOBAL or GIT_CONFIG_COUNT in
+            # the caller's environment would override or add to it.
+            home = self.scratch / 'home'
+            home.mkdir()
+            (home / '.gitconfig').write_text(f'[core]\n\texcludesFile = "{excludes}"\n')
+            environment = {'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config'),
+                           'GIT_CONFIG_NOSYSTEM': '1'}
             with mock.patch.dict(os.environ, environment):
+                os.environ.pop('GIT_CONFIG_GLOBAL', None)
+                os.environ.pop('GIT_CONFIG_COUNT', None)
                 self.assertChanges('!! lion-reactor/build.rs')
 
     def test_cargo_marker_is_accepted_only_at_the_root(self):
@@ -441,6 +453,112 @@ class LionCheckoutTests(unittest.TestCase):
         lines = self.status_lines()
         self.assertEqual(sum(line.startswith('?? ') for line in lines), gate.CHANGES_SHOWN)
         self.assertIn('... and 5 more', lines)
+
+    def status(self, *flags):
+        """What `git status`, as the gate runs it, lists besides Cargo's marker."""
+        output = git([*flags, 'status', '--porcelain', '--untracked-files=all', '--ignored'],
+                     self.checkout)
+        return [line for line in output.splitlines() if line != '?? .cargo-ok']
+
+    def assertDiffers(self, *entries, check=gate.check_lion_checkout, rev=None):
+        """The byte comparison rejects the checkout, naming each of `entries`."""
+        with self.assertRaises(ValueError) as caught:
+            check(self.checkout, rev or self.rev)
+        lines = str(caught.exception).splitlines()
+        self.assertIn(f'differs from {rev or self.rev}:', lines[0])
+        for entry in entries:
+            self.assertIn(entry, lines)
+
+    def test_change_hidden_by_assume_unchanged_is_rejected(self):
+        # git does not look at a file marked assume-unchanged, so status is blind to it.
+        git(['update-index', '--assume-unchanged', 'lion-slab/src/lib.rs'], self.checkout)
+        (self.checkout / 'lion-slab/src/lib.rs').write_text('// patched\n')
+        self.assertEqual(self.status('--no-replace-objects'), [])
+        self.assertDiffers('changed lion-slab/src/lib.rs')
+
+    def test_changes_hidden_by_skip_worktree_are_rejected(self):
+        git(['update-index', '--skip-worktree', 'lion-reactor/src/lib.rs', 'lion-net/src/lib.rs'],
+            self.checkout)
+        (self.checkout / 'lion-reactor/src/lib.rs').write_text('// patched\n')
+        (self.checkout / 'lion-net/src/lib.rs').unlink()
+        self.assertEqual(self.status('--no-replace-objects'), [])
+        self.assertDiffers('changed lion-reactor/src/lib.rs', 'missing lion-net/src/lib.rs')
+
+    def test_replaced_commit_is_rejected(self):
+        # Commit an edit, have git read that commit in place of the rev, and move HEAD
+        # back to the rev: HEAD names the rev and plain status sees nothing.
+        (self.checkout / 'lion-slab/src/lib.rs').write_text('// patched\n')
+        git(['commit', '-q', '-am', 'patched'], self.checkout)
+        patched = git(['rev-parse', 'HEAD'], self.checkout).strip()
+        git(['replace', self.rev, patched], self.checkout)
+        git(['reset', '-q', '--soft', self.rev], self.checkout)
+        self.assertEqual(git(['rev-parse', 'HEAD'], self.checkout).strip(), self.rev)
+        self.assertEqual(self.status(), [])
+        # Both checks read the real objects.
+        self.assertIn('M  lion-slab/src/lib.rs', self.status('--no-replace-objects'))
+        self.assertChanges('M  lion-slab/src/lib.rs')
+        self.assertDiffers('changed lion-slab/src/lib.rs', check=gate.check_lion_files)
+
+    def test_byte_comparison_names_each_difference(self):
+        (self.checkout / 'lion-slab/src/lib.rs').write_text('// patched\n')
+        (self.checkout / 'lion-executor/src/lib.rs').unlink()
+        (self.checkout / 'lion-net/build.rs').write_text('fn main() {}\n')
+        (self.checkout / 'lion-net/.cargo-ok').write_text('')
+        # Only the checkout's own .git is skipped.
+        (self.checkout / 'lion-slab/.git').mkdir()
+        (self.checkout / 'lion-slab/.git/config').write_text('')
+        self.assertDiffers('changed lion-slab/src/lib.rs', 'missing lion-executor/src/lib.rs',
+                           'added lion-net/build.rs', 'added lion-net/.cargo-ok',
+                           'added lion-slab/.git/config', check=gate.check_lion_files)
+
+    def test_byte_comparison_reads_symbolic_links(self):
+        # A link's bytes are its target, and a link to a directory is an entry too.
+        (self.checkout / 'lion-net/tests/keys').unlink()
+        (self.checkout / 'lion-net/tests/keys').symlink_to('../..')
+        (self.checkout / 'lion-slab/src/extra').symlink_to('../../lion-net/src')
+        self.assertDiffers('changed lion-net/tests/keys', 'added lion-slab/src/extra',
+                           check=gate.check_lion_files)
+
+    def test_byte_comparison_reads_the_kind_of_each_entry(self):
+        # Each swap keeps the blob git would store, so only the kind differs.
+        script = self.checkout / 'ci.sh'
+        script.unlink()
+        script.symlink_to('#!/bin/sh\n')
+        keys = self.checkout / 'lion-net/tests/keys'
+        keys.unlink()
+        keys.write_text('../src')
+        self.assertDiffers('retyped ci.sh (file in the tree, symlink here)',
+                           'retyped lion-net/tests/keys (symlink in the tree, file here)',
+                           check=gate.check_lion_files)
+
+    def test_special_file_is_rejected(self):
+        # git status does not list a FIFO (measured with git 2.47.3).
+        os.mkfifo(self.checkout / 'lion-net/src/pipe')
+        self.assertDiffers('added lion-net/src/pipe')
+
+    def test_unreadable_directory_fails_closed(self):
+        # os.walk skips a directory it cannot list unless told to raise. The error is
+        # injected rather than made with chmod, which does not stop root.
+        blocked = self.checkout / 'lion-slab/src'
+        real_scandir = os.scandir
+
+        def scandir(path='.'):
+            if Path(path) == blocked:
+                raise PermissionError(13, 'Permission denied', str(path))
+            return real_scandir(path)
+
+        with mock.patch('os.scandir', scandir):
+            with self.assertRaisesRegex(PermissionError, 'lion-slab/src'):
+                gate.check_lion_files(self.checkout, self.rev)
+
+    def test_tree_with_a_submodule_is_rejected(self):
+        # A gitlink has no bytes in the checkout to compare.
+        git(['update-index', '--add', '--cacheinfo', f'160000,{self.rev},lion-net/vendor'],
+            self.checkout)
+        git(['commit', '-q', '-m', 'submodule'], self.checkout)
+        rev = git(['rev-parse', 'HEAD'], self.checkout).strip()
+        with self.assertRaisesRegex(ValueError, 'lion-net/vendor with git mode 160000'):
+            gate.check_lion_files(self.checkout, rev)
 
     def test_checkout_without_git_is_rejected(self):
         bare = self.checkout.parent / 'copied'
