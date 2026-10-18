@@ -7,7 +7,10 @@ take Lion as a Cargo dependency instead of a submodule, pinned by `rev`, and
 that this plan be carried out self-paced. At the owner's direction, rusty-cpp
 `e0b6578d` is merged into rusty-cpp `main` as `6753edf5`, and this branch
 into SRPC `main` (G5). Follow-up F1 (§3), a byte-for-byte check of Cargo's
-Lion checkout, is merged into `main` too (2026-10-16).
+Lion checkout, is merged into `main` too (2026-10-16). Follow-up F2, rusty-cpp
+refusing a git dependency from a repository no `--crate-graph-git` names, is
+merged into rusty-cpp `main` as `baf6453b` (2026-10-18); SRPC's pin stays
+`e0b6578d`.
 
 ## 0. The short version
 
@@ -424,7 +427,7 @@ lane.
   0 without `--crate-graph-git`, the owner decided (2026-10-16) that rusty-cpp
   should refuse a git dependency from a repository no `--crate-graph-git`
   names, with Verus's repository exempt under `--verus-exec`. That change is
-  rusty-cpp's; SRPC needs none.
+  rusty-cpp's, and F2 records it; SRPC needs none.
   - **The gap:** the check trusted `git status`, which reads the checkout's
     index, ignore rules and config. Measured with git 2.47.3, status shows
     nothing for any of these:
@@ -489,3 +492,77 @@ lane.
       deliberate tampering, and whoever can do it can as easily change the
       toolchain;
     - a change made after the check and before Cargo compiles.
+
+- [x] **F2. rusty-cpp refuses a git dependency from an unnamed repository.**
+  Done (2026-10-16) as rusty-cpp `7180eeaa` on branch
+  `lion/unnamed-git-dependency`, whose parent is `e0b6578d`, and merged into
+  rusty-cpp `main` as `baf6453b` at the owner's direction (2026-10-18). The
+  owner chose a refusal (2026-10-16), not an option to keep a git repository
+  external.
+  - **The gap:** without `--crate-graph-git`, `e0b6578d` keeps Lion's git
+    packages external, as it does `vstd`. On SRPC it exits 0, prints "Crate
+    graph (0 dependency crate(s))", writes 41 files instead of 65 and
+    mis-generates three SRPC providers. Only SRPC's dual-compile gate notices.
+  - **The rule:** under `--crate-graph`, a graph crate whose normal dependency
+    for the target is a git package from a repository no `--crate-graph-git`
+    names is an error, raised before any output.
+    - The message lists each such edge as `<graph crate> -> <package>
+      v<version> (<repository>)`, then the `--crate-graph-git` option that
+      admits each repository.
+    - Verus's repository, `https://github.com/verus-lang/verus` compared as
+      Cargo compares git URLs, is exempt under `--verus-exec`, which erases
+      or lowers every use of `vstd`. Without `--verus-exec` a `vstd` edge is
+      refused too, and the message names `--verus-exec` as the remedy.
+    - The exemption matches the URL at any commit. SRPC's
+      `verify_verus_erasure_coupling` checks the commit.
+    - Only the edges Cargo selects for the target count. A registry package
+      stays external, and so does a git package reached only through an
+      external crate.
+    - A `--crate-graph-git` that matches no package is still reported first,
+      so a typo is not mistaken for a missing repository.
+    - There is no opt-out. A git dependency from another repository must be
+      named, and so transpiled, or `--crate-graph` dropped. An explicit
+      `--crate-graph-external-git <URL>` was considered and not taken.
+    - Outside `--crate-graph`, crate mode's source-contract preflight and
+      `--expand` keep an unnamed git package external, as before.
+  - **Tests:** 4 new unit tests in `metadata.rs`. In `tests/crate_graph.rs`,
+    `crate_graph_git_repository_stays_external_unless_named` becomes
+    `crate_graph_refuses_a_git_dependency_until_its_repository_is_named`.
+    `tests/lion_parity.rs` gains
+    `crate_graph_refuses_lions_vstd_without_verus_exec`, and its parity test
+    checks the exemption end to end. Each of 7 mutations turned at least one
+    test red, among them dropping the exemption, dropping the refusal, and not
+    setting the policy under `--crate-graph`.
+  - **Full release suite** (`cargo test --release --no-fail-fast`):
+    `e0b6578d` passed 2,864, failed 9, ignored 23; `7180eeaa` 2,874, 4, 23.
+    The 4 are among the nine known failures and fail at the same assertions;
+    the five `either_parity_harness` tests passed in that run.
+  - **On SRPC,** with CMake's exact transpiler command, `7180eeaa`'s release
+    build and `main`'s transpiler inputs:
+    - with `--crate-graph-git https://github.com/stonysystems/lion`, exit 0,
+      "Crate graph (9 dependency crate(s))", and all 65 files byte-identical
+      to `goal0-crate-cpp`;
+    - without it, exit 1, naming `srpc -> lion-executor`, `lion-net` and
+      `lion-reactor`, and no output directory;
+    - without `--verus-exec`, exit 1, naming the `vstd` edge of each of the
+      nine Lion crates;
+    - `Cargo.lock` and Cargo's Lion checkout are unchanged.
+  - **Merge:** rusty-cpp `main` had moved to `d204bcd4`, 12 commits past
+    `6753edf5` (codegen fixes and re-vendored ports).
+    - Both sides touch `main.rs`, `transpile.rs` and `tests/crate_graph.rs`.
+      git merged them without conflict, and each side's diff reached the merge
+      unchanged apart from line offsets.
+    - On the merge: `crate_graph` 7 passed, `lion_parity` 2 passed, and the
+      metadata and crate-graph unit tests 92 passed (88 at `6753edf5`, plus
+      F2's 4).
+    - Full release suite, in separate target directories: `main` passed
+      2,908, failed 4, ignored 23; the merge 2,912, 5, 23. The 5 extra tests
+      are F2's.
+    - `main` fails four of the nine known failures. The merge fails those
+      four and `test_either_parity_harness_baseline_stage_is_rerunnable`,
+      also one of the nine. That test's failing stage is a plain `cargo test`
+      of the `either` crate, which waited on Cargo's artifact lock in that
+      run; alone on the merged tree it passed twice.
+  - **SRPC:** nothing changes. Its pin stays `e0b6578d`, which still exits 0
+    without `--crate-graph-git`, as CLAUDE.md says. The refusal arrives with
+    SRPC's next rusty-cpp bump to a `main` that contains `baf6453b`.
