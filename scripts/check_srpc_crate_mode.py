@@ -6177,6 +6177,15 @@ def require_dependency_providers(output: Path) -> None:
             )
 
 
+# The two `requires` spellings the trait lane emits into srpc.load_balancer
+# (measured on the rusty-cpp bump past the §3.2 series: 10 dispatcher guards
+# and 30 dyn-adapter probes, nothing else).
+LOAD_BALANCER_LANE_REQUIRES = (
+    "requires (!std::same_as<std::remove_cvref_t<S>, impl_::tag>)",
+    "if constexpr (requires { ",
+)
+
+
 def require_cpp_surfaces(
     root: Path, output: Path, modules: list[extraction.ModuleEntry]
 ) -> None:
@@ -6421,13 +6430,26 @@ def require_cpp_surfaces(
                 "rusty::LoadBalancerMetrics",
                 "rusty::LoadBalancerClientHandle",
                 "rusty::LoadBalancerClientVec",
-                "requires ",
             ):
                 if forbidden in live_cpp:
                     raise GateError(
                         "rustc-only load-balancer facade leaked into generated "
                         f"C++: {forbidden!r}"
                     )
+            # The C++ load balancer has no constrained template of its own.
+            # rusty-cpp's trait lane (book §3.2, 2026-10-07) emits exactly two
+            # `requires` shapes into every trait-bearing module: the tag guard
+            # on each `Tr_::m` dispatcher and the `if constexpr (requires { … })`
+            # probes of the dyn adapters. Any other `requires` is still a leak.
+            residue = live_cpp
+            for lane_shape in LOAD_BALANCER_LANE_REQUIRES:
+                residue = residue.replace(lane_shape, "")
+            if "requires " in residue:
+                raise GateError(
+                    "rustc-only load-balancer facade leaked into generated "
+                    "C++: a 'requires ' outside the trait lane's dispatcher "
+                    "and dyn-adapter shapes"
+                )
         elif module.cpp_module == "srpc.utils":
             require_exact_module_imports(text, "srpc.utils", ["srpc.logging"])
             if text.count(netdb_preamble) != 1:
