@@ -6177,12 +6177,14 @@ def require_dependency_providers(output: Path) -> None:
             )
 
 
-# The two `requires` spellings the trait lane emits into srpc.load_balancer
-# (measured on the rusty-cpp bump past the §3.2 series: 10 dispatcher guards
-# and 30 dyn-adapter probes, nothing else).
+# The three `requires` spellings the trait lane emits into srpc.load_balancer
+# (measured on the rusty-cpp bump past the §3.2 series, 5e1e5de6: 10
+# dispatcher guards, 30 dyn-adapter probes and 6 owning-forwarder pointer
+# tests, `!has_<Tr><U> && requires { ... }` for three traits, nothing else).
 LOAD_BALANCER_LANE_REQUIRES = (
     "requires (!std::same_as<std::remove_cvref_t<S>, impl_::tag>)",
     "if constexpr (requires { ",
+    " && requires { value_.operator->(); *value_; })",
 )
 
 
@@ -6437,10 +6439,11 @@ def require_cpp_surfaces(
                         f"C++: {forbidden!r}"
                     )
             # The C++ load balancer has no constrained template of its own.
-            # rusty-cpp's trait lane (book §3.2, 2026-10-07) emits exactly two
+            # rusty-cpp's trait lane (book §3.2, 2026-10-07) emits exactly three
             # `requires` shapes into every trait-bearing module: the tag guard
-            # on each `Tr_::m` dispatcher and the `if constexpr (requires { … })`
-            # probes of the dyn adapters. Any other `requires` is still a leak.
+            # on each `Tr_::m` dispatcher, the `if constexpr (requires { … })`
+            # probes of the dyn adapters, and the owning adapter's test for an
+            # `Arc` it shares. Any other `requires` is still a leak.
             residue = live_cpp
             for lane_shape in LOAD_BALANCER_LANE_REQUIRES:
                 residue = residue.replace(lane_shape, "")
