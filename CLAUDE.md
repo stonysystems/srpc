@@ -314,20 +314,21 @@ breaks the C++ build. A green source gate says nothing about ABI.
 ## Invariants that will bite you
 
 **`#[cfg_attr(any(), …)]` is the emitter's directive language, and rustc never sees it.** `any()` is
-always false, so these 58 attributes are invisible to `cargo build`, `cargo test` and clippy while being
+always false, so these 62 attributes are invisible to `cargo build`, `cargo test` and clippy while being
 the only way to state a C++ contract Rust cannot: `cpp_inherit` (19), `cpp_native_type` (9),
 `cpp_namespace(::janus)` (8 — the Quorum surface, which must live in *global* `::janus`;
 `srpc::janus::QuorumEvent` mangles differently and is not a substitute), `cpp_noexcept` (4),
-`cpp_no_auto_traits` (3), `cpp_abi` (3), `cpp_trait_member_dispatch` (3), `cpp_declaration` (2),
-`cpp_default_argument` (2), `cpp_marker_trait` (2), `cpp_no_fieldwise_ctor` (2), `cpp_abi_alias` (1).
-`thread_local` is retired (0): per-thread state is real `thread_local!`, which the transpiler lowers to
-`inline thread_local rusty::LocalKey<T>`. Three further `cfg_attr(any(), …)` spellings live inside `//`
-comments (`base/misc.rs`, `reactor/reactor.rs` twice) and are not attributes — do not count them.
-Deleting or mistyping one is silent in the Rust lane and changes the emitted module. The mirror form
-`#[cfg_attr(not(any()), derive(...))]` (19 sites) is the opposite — derives rustc *does* apply but the
-emitter must not see, so plain `#[derive(...)]` is not the same edit and emits C++ operators that were
-deliberately withheld. (`IdempotencyKey`'s hand-written `impl PartialEq` is the only source of the
-`operator==` symbol the ABI table pins, precisely because its derive is hidden behind `not(any())`.)
+`cpp_no_inherit` (4 — the plain sink and source structs), `cpp_no_auto_traits` (3), `cpp_abi` (3),
+`cpp_trait_member_dispatch` (3), `cpp_declaration` (2), `cpp_default_argument` (2), `cpp_marker_trait` (2),
+`cpp_no_fieldwise_ctor` (2), `cpp_abi_alias` (1). `thread_local` is retired (0): per-thread state is real
+`thread_local!`, which the transpiler lowers to `inline thread_local rusty::LocalKey<T>`. Three further
+`cfg_attr(any(), …)` spellings live inside `//` comments (`base/misc.rs`, `reactor/reactor.rs` twice) and are
+not attributes — do not count them. Deleting or mistyping one is silent in the Rust lane and changes the
+emitted module. The mirror form `#[cfg_attr(not(any()), derive(...))]` (19 sites) is the opposite — derives
+rustc *does* apply but the emitter must not see, so plain `#[derive(...)]` is not the same edit and emits C++
+operators that were deliberately withheld. (`IdempotencyKey`'s hand-written `impl PartialEq` is the only
+source of the `operator==` symbol the ABI table pins, precisely because its derive is hidden behind
+`not(any())`.)
 
 **`#[allow(clippy::…)]` in canonical sources are measured emitter pins, not style waivers.**
 `rpc/client.rs` opens with a block recording what each family costs: taking `ptr_arg` retypes

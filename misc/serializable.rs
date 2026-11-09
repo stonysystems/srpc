@@ -52,7 +52,15 @@ pub type SourceProxy = Box<dyn SourceBase>;
 pub struct BufferSink {
     pub bytes: Vec<u8>,
 }
+// BufferSink, BufferSource, FdSink and FdSource stay plain C++ structs.
+// rusty-cpp's tier-1 default makes an implementor of a crate trait inherit the
+// trait's interface class; `cpp_no_inherit` opts these four impls out. With
+// the base they would carry a vtable pointer, lose C++20 parenthesized
+// construction (`BufferSource(p, n)` in C++ callers and tests), and `Future`
+// would grow by 8 bytes through `ReplyBuffer::src`. Nothing needs the base:
+// the proxies box `BorrowedSink`/`BorrowedSource`, which inherit it.
 #[allow(unsafe_code)]
+#[cfg_attr(any(), cpp_no_inherit)]
 impl SinkBase for BufferSink {
     unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
         if n == 0 {
@@ -104,7 +112,9 @@ impl BufferSource {
     }
 }
 
+// No interface base; see the BufferSink impl.
 #[allow(unsafe_code)]
+#[cfg_attr(any(), cpp_no_inherit)]
 impl SourceBase for BufferSource {
     unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
         let avail: usize = self.len_ - self.pos_;
@@ -161,7 +171,9 @@ impl FdSink {
     }
 }
 
+// No interface base; see the BufferSink impl.
 #[allow(unsafe_code)]
+#[cfg_attr(any(), cpp_no_inherit)]
 impl SinkBase for FdSink {
     unsafe fn write_bytes(&mut self, p: *const u8, n: usize) {
         let mut written = 0usize;
@@ -194,7 +206,9 @@ impl FdSource {
     }
 }
 
+// No interface base; see the BufferSink impl.
 #[allow(unsafe_code)]
+#[cfg_attr(any(), cpp_no_inherit)]
 impl SourceBase for FdSource {
     unsafe fn read_bytes(&mut self, p: *mut u8, n: usize) -> usize {
         let mut got = 0usize;
