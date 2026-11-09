@@ -33,7 +33,7 @@ PACKAGE_NAME = "srpc"
 GENERATED_ROOT = PurePosixPath("src")
 GENERATED_LIB = GENERATED_ROOT / "lib.rs"
 RUSTY_CPP_SUBMODULE = "third-party/rusty-cpp"
-REQUIRED_RUSTY_CPP_COMMIT = "e0b6578dda8a8d56457e8152d923d7be950da727"
+REQUIRED_RUSTY_CPP_COMMIT = "9fb12c15929e542afce507caf248a05ca31ee763"
 APPROVED_PRODUCTION_ROOTS = (
     PurePosixPath("base"),
     PurePosixPath("misc"),
