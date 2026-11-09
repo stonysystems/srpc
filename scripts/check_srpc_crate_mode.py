@@ -3633,9 +3633,9 @@ ABI_SPECS = {
                 "int32_t srpc_get_ncpu();",
                 "int32_t srpc_format_fixed_2(double value, int8_t* output, size_t capacity);",
                 "namespace Job_",
-                "export bool Ready(OneTimeJob& self_)",
-                "export void Work(OneTimeJob& self_)",
-                "export bool Done(OneTimeJob& self_)",
+                "export inline bool Ready(OneTimeJob& self_)",
+                "export inline void Work(OneTimeJob& self_)",
+                "export inline bool Done(OneTimeJob& self_)",
             }
         ),
         symbols=frozenset(
