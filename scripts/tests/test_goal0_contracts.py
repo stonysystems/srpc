@@ -90,9 +90,9 @@ class GateStaticContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
         self.assertEqual(
-            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2107
+            sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1633
         )
-        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 2107)
+        self.assertEqual(GATE.EXPECTED_TOTAL_PROVIDER_SYMBOLS, 1633)
         GATE.require_importer_coverage(self.modules)
 
     def test_platform_implementation_symbols_are_exhaustive(self) -> None:
@@ -115,12 +115,17 @@ class GateStaticContractTests(unittest.TestCase):
     def test_each_promoted_module_has_surface_and_raw_abi_ratchets(self) -> None:
         expected = {
             "srpc.load_balancer": (14, 19),
-            "srpc.serializable": (601, 738),
+            # -464 unique / -576 raw: the section 3.2 trait lane retires the
+            # per-type adapter classes and rusty_ext, and respells impls to
+            # tagged impl_ functions (the gate's 2107 -> 1633 paragraph).
+            "srpc.serializable": (137, 162),
             # +57 unique / +63 raw: the Lion driver, adapter and stackless
             # forwarding (S3) and the shared readiness helpers (S5); -24
             # unique / -24 raw: S7b retires the epoll loop and the
             # pending-write path.
-            "srpc.reactor": (398, 425),
+            # -6 unique / -12 raw: the section 3.2 lane drops the six event
+            # move constructors and their aliases; 54 rows are respelled.
+            "srpc.reactor": (392, 413),
             "srpc.server": (86, 98),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
@@ -132,10 +137,12 @@ class GateStaticContractTests(unittest.TestCase):
             # two aliases: S7b retires Epoll, those helpers and Pollable; +8:
             # SrpcInterest and SrpcOsEvent back on plain derives. Only the
             # initializer is pinned beyond the unique rows.
-            "srpc.epoll_wrapper": (46, 47),
+            # +6 alias-free rows: the section 3.2 lane gives the OsBackend and
+            # OsInterrupt impls lane functions under Lion's tag.
+            "srpc.epoll_wrapper": (52, 53),
             "srpc.pollable_proxy": (4, 7),
             "srpc.callbacks": (27, 28),
-            "srpc.inmemory_channel": (78, 85),
+            "srpc.inmemory_channel": (75, 79),
             # Owned callback state replaces four raw-receiver/wait helpers.
             # One C++ ABI alias and the initializer remain separately pinned.
             "srpc.fiber_channel": (13, 15),
@@ -146,7 +153,7 @@ class GateStaticContractTests(unittest.TestCase):
             # The Lion transport tasks, write-through and the cork (S5);
             # -51 unique / -55 raw: S7b retires TCP's pollable surface; the
             # move onto lion-net (L3) is count-neutral (+3 / -3 / 3 respelled).
-            "srpc.tcp_channel": (165, 181),
+            "srpc.tcp_channel": (162, 175),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):
@@ -434,7 +441,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(set(GATE.EXPECTED_IMPORTS), manifest)
         self.assertEqual(set(GATE.EXPECTED_GENERATED_MODULE_SHA256), manifest)
         self.assertEqual(set(GATE.IMPORTER_USE_MARKERS), manifest)
-        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 2107)
+        self.assertEqual(sum(len(spec.symbols) for spec in GATE.ABI_SPECS.values()), 1633)
         GATE.require_importer_coverage(self.modules)
         GATE.require_cpp_surfaces(ROOT, self.generated, self.modules)
 
@@ -619,12 +626,17 @@ class GateContractTests(unittest.TestCase):
     def test_all_promoted_modules_pin_unique_and_raw_counts(self) -> None:
         expected = {
             "srpc.load_balancer": (14, 19),
-            "srpc.serializable": (601, 738),
+            # -464 unique / -576 raw: the section 3.2 trait lane retires the
+            # per-type adapter classes and rusty_ext, and respells impls to
+            # tagged impl_ functions (the gate's 2107 -> 1633 paragraph).
+            "srpc.serializable": (137, 162),
             # +57 unique / +63 raw: the Lion driver, adapter and stackless
             # forwarding (S3) and the shared readiness helpers (S5); -24
             # unique / -24 raw: S7b retires the epoll loop and the
             # pending-write path.
-            "srpc.reactor": (398, 425),
+            # -6 unique / -12 raw: the section 3.2 lane drops the six event
+            # move constructors and their aliases; 54 rows are respelled.
+            "srpc.reactor": (392, 413),
             "srpc.server": (86, 98),
             "srpc.client": (271, 284),
             "srpc.request_queue": (33, 34),
@@ -636,7 +648,7 @@ class GateContractTests(unittest.TestCase):
             # entries (39 -> 37), unique count unchanged.
             "srpc.idempotency": (36, 37),
             "srpc.fiber": (8, 9),
-            "srpc.misc": (21, 26),
+            "srpc.misc": (17, 21),
             "srpc.channel": (14, 21),
             # Four epoll-control helpers once lowered from canonical Rust,
             # with two C++ ABI aliases (Pollable's destructor).
@@ -645,10 +657,12 @@ class GateContractTests(unittest.TestCase):
             # two aliases: S7b retires Epoll, those helpers and Pollable; +8:
             # SrpcInterest and SrpcOsEvent back on plain derives. Only the
             # initializer is pinned beyond the unique rows.
-            "srpc.epoll_wrapper": (46, 47),
+            # +6 alias-free rows: the section 3.2 lane gives the OsBackend and
+            # OsInterrupt impls lane functions under Lion's tag.
+            "srpc.epoll_wrapper": (52, 53),
             "srpc.pollable_proxy": (4, 7),
             "srpc.callbacks": (27, 28),
-            "srpc.inmemory_channel": (78, 85),
+            "srpc.inmemory_channel": (75, 79),
             # Owned callback state replaces four raw-receiver/wait helpers.
             # One C++ ABI alias and the initializer remain separately pinned.
             "srpc.fiber_channel": (13, 15),
@@ -659,7 +673,7 @@ class GateContractTests(unittest.TestCase):
             # The Lion transport tasks, write-through and the cork (S5);
             # -51 unique / -55 raw: S7b retires TCP's pollable surface; the
             # move onto lion-net (L3) is count-neutral (+3 / -3 / 3 respelled).
-            "srpc.tcp_channel": (165, 181),
+            "srpc.tcp_channel": (162, 175),
         }
         for module, (unique_count, raw_count) in expected.items():
             with self.subTest(module=module):
