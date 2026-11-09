@@ -16,7 +16,7 @@
     },
     "misc/serializable_adapters.hpp": {
       "role": "trait-dispatch",
-      "sha256": "b43946ee8e55d6d4da42b2ece9ce3af6454e28b78e0d407a5f8d699759e808aa"
+      "sha256": "4326264f430f92530f0f5ef30ba1adfbb37e44db0d58b3bb63f7dae66e1fd2e8"
     },
     "misc/serializable_support.hpp": {
       "role": "trait-dispatch",

@@ -35,24 +35,29 @@ void adl_deserialize_bridge(T& value, BinaryReadArchive& archive) {
 }
 }
 
-// Match the generated adapters' recursive trait bounds. Container shape alone
-// does not make an unsupported element serializable.
+// Whether a payload reaches the trait through these adapters: a canonical
+// impl (`has_Serialize`, the generated implementor marker), a string or an STL
+// pair, map or sequence whose elements qualify in turn, or a C++ class that
+// derives the interface. The generated `SerializeAdapter<U>` is the trait's
+// generic forwarder and is complete for every U, so its completeness proves
+// nothing: an unsupported payload would fail only inside the forwarder's body.
+// These concepts are the support contract, and they constrain the STL
+// specializations below. Container shape alone does not make an unsupported
+// element serializable.
+template<class T> consteval bool serialize_adapter_element();
+template<class T> consteval bool deserialize_adapter_element();
+
 template<class T> inline constexpr bool stl_serialize_adapter = [] {
     if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view>) {
         return true;
     } else if constexpr (rusty::srpc_stl_pair<T>) {
-        return (requires { sizeof(SerializeAdapter<typename T::first_type>); }
-                || std::is_base_of_v<Serialize, typename T::first_type>)
-            && (requires { sizeof(SerializeAdapter<typename T::second_type>); }
-                || std::is_base_of_v<Serialize, typename T::second_type>);
+        return serialize_adapter_element<typename T::first_type>()
+            && serialize_adapter_element<typename T::second_type>();
     } else if constexpr (rusty::srpc_stl_map<T>) {
-        return (requires { sizeof(SerializeAdapter<typename T::key_type>); }
-                || std::is_base_of_v<Serialize, typename T::key_type>)
-            && (requires { sizeof(SerializeAdapter<typename T::mapped_type>); }
-                || std::is_base_of_v<Serialize, typename T::mapped_type>);
+        return serialize_adapter_element<typename T::key_type>()
+            && serialize_adapter_element<typename T::mapped_type>();
     } else if constexpr (rusty::srpc_stl_sequence<T>) {
-        return requires { sizeof(SerializeAdapter<typename T::value_type>); }
-            || std::is_base_of_v<Serialize, typename T::value_type>;
+        return serialize_adapter_element<typename T::value_type>();
     } else return false;
 }();
 
@@ -69,25 +74,29 @@ template<class T> inline constexpr bool stl_deserialize_adapter = [] {
     if constexpr (std::is_same_v<T, std::string>) {
         return true;
     } else if constexpr (rusty::srpc_stl_pair<T>) {
-        return (requires { sizeof(DeserializeAdapter<typename T::first_type>); }
-                || std::is_base_of_v<Deserialize, typename T::first_type>)
-            && (requires { sizeof(DeserializeAdapter<typename T::second_type>); }
-                || std::is_base_of_v<Deserialize, typename T::second_type>);
+        return deserialize_adapter_element<typename T::first_type>()
+            && deserialize_adapter_element<typename T::second_type>();
     } else if constexpr (rusty::srpc_stl_map<T>) {
-        return (requires { sizeof(DeserializeAdapter<typename T::key_type>); }
-                || std::is_base_of_v<Deserialize, typename T::key_type>)
-            && (requires { sizeof(DeserializeAdapter<typename T::mapped_type>); }
-                || std::is_base_of_v<Deserialize, typename T::mapped_type>)
+        return deserialize_adapter_element<typename T::key_type>()
+            && deserialize_adapter_element<typename T::mapped_type>()
             && std::default_initializable<typename T::key_type>
             && std::default_initializable<typename T::mapped_type>
             && stl_deserialize_key<T>;
     } else if constexpr (rusty::srpc_stl_sequence<T>) {
-        return (requires { sizeof(DeserializeAdapter<typename T::value_type>); }
-                || std::is_base_of_v<Deserialize, typename T::value_type>)
+        return deserialize_adapter_element<typename T::value_type>()
             && std::default_initializable<typename T::value_type>
             && stl_deserialize_key<T>;
     } else return false;
 }();
+
+template<class T> consteval bool serialize_adapter_element() {
+    return has_Serialize<T> || stl_serialize_adapter<T> || std::is_base_of_v<Serialize, T>;
+}
+template<class T> consteval bool deserialize_adapter_element() {
+    return has_Deserialize<T> || stl_deserialize_adapter<T> || std::is_base_of_v<Deserialize, T>;
+}
+template<class T> concept serialize_adapter_supported = serialize_adapter_element<std::remove_cvref_t<T>>();
+template<class T> concept deserialize_adapter_supported = deserialize_adapter_element<std::remove_cvref_t<T>>();
 
 template<class T> requires stl_serialize_adapter<T>
 class SerializeAdapter<T> final : public Serialize {

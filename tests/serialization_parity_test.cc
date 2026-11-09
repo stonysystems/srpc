@@ -15,8 +15,10 @@ struct NonDefaultDeserializationField final : srpc::Deserialize {
   explicit NonDefaultDeserializationField(int);
   void deserialize(srpc::BinaryReadArchive&) override {}
 };
-template<class T> concept HasSerializeAdapter = requires { sizeof(srpc::SerializeAdapter<T>); };
-template<class T> concept HasDeserializeAdapter = requires { sizeof(srpc::DeserializeAdapter<T>); };
+// SerializeAdapter<T> is the trait's generic forwarder, complete for every T, so
+// support is the adapter header's concept, not the adapter's completeness.
+template<class T> concept HasSerializeAdapter = srpc::serialize_adapter_supported<T>;
+template<class T> concept HasDeserializeAdapter = srpc::deserialize_adapter_supported<T>;
 static_assert(!HasSerializeAdapter<std::vector<UnsupportedSerializationField>>);
 static_assert(!HasDeserializeAdapter<std::map<int32_t, UnsupportedSerializationField>>);
 static_assert(!HasDeserializeAdapter<std::string_view>);
@@ -55,8 +57,8 @@ TEST(SerializationParity, NestedContainersMatchRustWireVector) {
   EXPECT_EQ(Encode(original), expected);
   EXPECT_EQ(Decode<std::vector<int64_t>>(Encode(original.front())), original.front());
   EXPECT_EQ(Decode<std::vector<std::vector<int64_t>>>(expected), original);
-  static_assert(sizeof(srpc::SerializeAdapter<std::vector<int64_t>>) > 0);
-  static_assert(sizeof(srpc::DeserializeAdapter<std::vector<int64_t>>) > 0);
+  static_assert(HasSerializeAdapter<std::vector<int64_t>>);
+  static_assert(HasDeserializeAdapter<std::vector<int64_t>>);
 }
 
 TEST(SerializationParity, ImportedStlAdaptersSupportErasedDispatch) {
@@ -156,8 +158,8 @@ TEST(SerializationParity, ImportedPairFieldsKeepTupleWireOrder) {
   expected.insert(expected.end(), second.begin(), second.end());
   EXPECT_EQ(Encode(original), expected);
   EXPECT_EQ((Decode<std::pair<int32_t, std::string>>(expected)), original);
-  static_assert(sizeof(srpc::SerializeAdapter<std::pair<int32_t, std::string>>) > 0);
-  static_assert(sizeof(srpc::DeserializeAdapter<std::pair<int32_t, std::string>>) > 0);
+  static_assert(HasSerializeAdapter<std::pair<int32_t, std::string>>);
+  static_assert(HasDeserializeAdapter<std::pair<int32_t, std::string>>);
 }
 
 TEST(SerializationParity, MapsKeepFirstDuplicateWireKey) {
