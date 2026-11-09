@@ -5,18 +5,33 @@
 // Canonical Rust functions own byte handling and collection traversal.
 namespace srpc {
 
+// A canonical impl is a trait-lane function, `Serialize_::impl_::serialize(
+// impl_::tag, const T&, ...)`, reached by tag-ADL. Only an overload found by
+// ADL on the payload or archive (the STL and string operations of
+// serializable_support.hpp, a C++ consumer's own) is reached through the
+// poison-scoped adapter. The canonical generic `Serialize_::serialize<T>`
+// cannot stand in for the lane call: it outranks the lane's dispatcher, so it
+// would call this bridge again.
 namespace Serialize_ {
 namespace adl_detail_ { void serialize(); }
 template<class T>
 void adl_serialize_bridge(const T& value, BinaryWriteArchive& archive) {
-    rusty::srpc_adl_serialize(value, archive);
+    if constexpr (requires { serialize(impl_::tag{}, value, archive); }) {
+        serialize(impl_::tag{}, value, archive);
+    } else {
+        rusty::srpc_adl_serialize(value, archive);
+    }
 }
 }
 namespace Deserialize_ {
 namespace adl_detail_ { void deserialize(); }
 template<class T>
 void adl_deserialize_bridge(T& value, BinaryReadArchive& archive) {
-    rusty::srpc_adl_deserialize(value, archive);
+    if constexpr (requires { deserialize(impl_::tag{}, value, archive); }) {
+        deserialize(impl_::tag{}, value, archive);
+    } else {
+        rusty::srpc_adl_deserialize(value, archive);
+    }
 }
 }
 
